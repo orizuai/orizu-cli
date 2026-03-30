@@ -220,6 +220,9 @@ Interactive fallback:
 
 ## Datasets
 
+Canonical contract reference:
+- `docs/contracts/dataset-canonical-contract.md`
+
 ### Upload dataset
 
 ```bash
@@ -279,17 +282,65 @@ Behavior:
 Interactive fallback:
 - If `--dataset` is omitted, CLI prompts for team/project/dataset.
 
+### Edit dataset rows
+
+```bash
+orizu datasets edit-rows --dataset <datasetId|datasetUrl> --file ./edited-rows.jsonl
+```
+
+Supported file types:
+- `.csv`
+- `.json` (array of objects)
+- `.jsonl` (one object per line)
+
+Requirements:
+- Every row in the file must include canonical `id` as a non-empty string.
+
+Behavior:
+- Updates row payloads by canonical row `id`.
+- Does not change row identity.
+
+Interactive fallback:
+- If `--dataset` is omitted, CLI prompts for team/project/dataset.
+
 ### Delete dataset rows
 
 ```bash
 orizu datasets delete-rows --dataset <datasetId|datasetUrl> --row-ids row-1,row-2
-orizu datasets delete-rows --dataset <datasetId|datasetUrl> --row-indices 0,4,7
 ```
 
 Requirements:
-- Provide at least one selector:
-  - `--row-ids <id1,id2>`
-  - `--row-indices <n1,n2>`
+- Provide `--row-ids <id1,id2>`.
+
+Contract note:
+- Canonical row identity is row `id`.
+- `row_index` selectors are removed from the canonical CLI runtime path.
+
+Interactive fallback:
+- If `--dataset` is omitted, CLI prompts for team/project/dataset.
+
+### Lock dataset
+
+```bash
+orizu datasets lock --dataset <datasetId|datasetUrl> --reason "Finalize for labeling"
+```
+
+Behavior:
+- Locks the dataset as a one-way operation.
+- Locked datasets reject append/edit/delete mutations.
+
+Interactive fallback:
+- If `--dataset` is omitted, CLI prompts for team/project/dataset.
+
+### Clone dataset
+
+```bash
+orizu datasets clone --dataset <datasetId|datasetUrl> --name "Batch 1 Copy"
+```
+
+Behavior:
+- Creates an independent copy with lineage metadata.
+- Clone is unlocked by default.
 
 Interactive fallback:
 - If `--dataset` is omitted, CLI prompts for team/project/dataset.
@@ -367,6 +418,11 @@ orizu teams create --name "Ops Eval"
 orizu projects create --name "Support QA" --team ops-eval
 
 orizu datasets upload --project ops-eval/support-qa --file ./datasets/support.jsonl --name "Support Batch 1"
+orizu datasets append --dataset <datasetId> --file ./datasets/support-extra.jsonl
+orizu datasets edit-rows --dataset <datasetId> --file ./datasets/support-edits.jsonl
+orizu datasets delete-rows --dataset <datasetId> --row-ids row-10,row-11
+orizu datasets lock --dataset <datasetId> --reason "Finalize for labeling"
+orizu datasets clone --dataset <datasetId> --name "Support Batch 1 Copy"
 
 orizu apps create \
   --project ops-eval/support-qa \

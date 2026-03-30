@@ -1,14 +1,20 @@
 ---
 name: orizu-cli
-description: Operate and troubleshoot the Orizu CLI for authentication and workspace operations. Use when Codex must run or explain `orizu` commands for login/logout/whoami, team and member management, project/app lifecycle, dataset upload/download/append/delete-rows (`csv`/`json`/`jsonl`), and task lifecycle (create/assign/status/export), including interactive selection fallbacks and non-interactive flag requirements.
+description: Runs and troubleshoots Orizu CLI workflows for auth and workspace operations. Use when a request involves `orizu` commands, flags, interactive fallback behavior, or team/project/app/dataset/task lifecycle actions.
 ---
 
 # Orizu CLI
 
-## Overview
+## Use This Skill When
 
-Execute end-to-end Orizu workflows from the terminal using the `orizu` CLI.
-Prefer explicit flags in automation and CI; use interactive prompts only in TTY sessions.
+- The request asks to run, explain, or debug `orizu` commands.
+- The request involves auth (`login`, `logout`, `whoami`) or workspace setup.
+- The request involves CLI lifecycle operations for teams, projects, apps, datasets, or tasks.
+
+## Skip This Skill When
+
+- The request is web-UI only and does not involve the CLI.
+- The request is unrelated to Orizu workspace operations.
 
 ## Prerequisites
 
@@ -22,7 +28,20 @@ Prefer explicit flags in automation and CI; use interactive prompts only in TTY 
   ```
 - Use `orizu` directly when globally installed; otherwise run `node packages/cli/dist/index.js ...`.
 
-## Core Workflow
+## Default Workflow
+
+Copy this checklist for complex requests:
+
+```text
+CLI Progress:
+- [ ] 1. Verify auth and target server (`orizu whoami`)
+- [ ] 2. Resolve required identifiers (team/project/app/task/dataset)
+- [ ] 3. Run command with explicit flags first
+- [ ] 4. Validate output and side effects
+- [ ] 5. If failure, read error, fix inputs, rerun
+```
+
+## Quick Start
 
 1. Authenticate:
    ```bash
@@ -42,11 +61,20 @@ Prefer explicit flags in automation and CI; use interactive prompts only in TTY 
    ```bash
    orizu datasets append --dataset <datasetId> --file ./datasets/support-additional.jsonl
    ```
-5. Optionally delete incorrect rows:
+5. Optionally edit existing rows in place (each row must include canonical `id`):
+   ```bash
+   orizu datasets edit-rows --dataset <datasetId> --file ./datasets/support-edits.jsonl
+   ```
+6. Optionally delete incorrect rows:
    ```bash
    orizu datasets delete-rows --dataset <datasetId> --row-ids <rowId1,rowId2>
    ```
-6. Create or update app from file (dataset is required):
+7. Optionally lock or clone dataset snapshots:
+   ```bash
+   orizu datasets lock --dataset <datasetId> --reason "Finalize for labeling"
+   orizu datasets clone --dataset <datasetId> --name "Support Batch 1 Copy"
+   ```
+7. Create or update app from file (dataset is required):
    ```bash
    orizu apps create \
      --project ops-eval/support-qa \
@@ -56,47 +84,35 @@ Prefer explicit flags in automation and CI; use interactive prompts only in TTY 
      --input-schema ./schemas/support-input.json \
      --output-schema ./schemas/support-output.json
    ```
-7. Optionally link a different dataset to an existing app version:
+8. Optionally link a different dataset to an existing app version:
    ```bash
    orizu apps link-dataset --app <appId> --dataset <datasetId>
    ```
-8. Run task lifecycle (task create requires assignees and creates assignments immediately):
+9. Run task lifecycle (task create requires assignees and creates assignments immediately):
    ```bash
    orizu tasks create --project ops-eval/support-qa --dataset <datasetId> --app <appId> --title "Support QA Round 1" --assignees <userId1,userId2>
    orizu tasks status --task <taskId>
    orizu tasks export --task <taskId> --format csv --out ./support-round1.csv
    ```
 
-## Interactive vs Non-Interactive
+## Execution Rules
 
-- Use interactive fallback only when running in a TTY and flags are omitted.
-- Provide explicit identifiers in scripts/CI:
+- Prefer explicit flags for automation and CI.
+- Use interactive fallback only in a TTY when required selectors are omitted.
+- Use explicit selectors whenever possible:
   - `--team`, `--project`, `--app`, `--task`, `--dataset`, `--assignees`.
-- For `tasks assign`, pass user IDs (comma-separated), not emails.
-- Export defaults:
-  - `--format` defaults to `jsonl`.
-  - output defaults to `<taskId>.<format>`.
-- Dataset row mutation:
-  - `datasets append` accepts `--file` in `.csv`, `.json`, or `.jsonl`.
-  - `datasets delete-rows` requires at least one of `--row-ids` or `--row-indices`.
-
-## Auth and Error Handling
-
-- On auth failure, run `orizu login` and confirm with `orizu whoami`.
-- Login requires localhost callback availability on `127.0.0.1:43123`.
-- Credentials are stored in `~/.config/orizu/credentials.json`.
-- In non-interactive contexts, avoid prompt-dependent commands; pass required flags explicitly.
-
-## Command Coverage
-
-- Auth: `login`, `logout`, `whoami`
-- Teams: list/create, members list/add/remove/role
-- Projects: list/create
-- Apps: list/create/update/link-dataset
-- Datasets: upload/download/append/delete-rows (`.csv`, `.json`, `.jsonl`)
-- Tasks: list/create/assign/status/export
+- For `tasks assign`, pass user IDs, not emails.
+- For `datasets edit-rows`, each row object in `--file` must include a non-empty string `id`.
+- For `datasets delete-rows`, use `--row-ids` selectors.
+- Export defaults: `--format jsonl`, output `<taskId>.<format>`.
+- Auth failure loop:
+  - run `orizu login`
+  - confirm with `orizu whoami`
+  - rerun command
+- Login callback requires `127.0.0.1:43123`.
+- Credentials path: `~/.config/orizu/credentials.json`.
 
 ## References
 
 - Read `references/cli-reference.md` for complete command examples and end-to-end flows.
-- Read `docs/cli.md` for the authoritative project-local CLI guide when working in this repository.
+- Read `references/dataset-canonical-contract.md` for dataset identity, count, lineage, lock, and HF compatibility rules used by CLI workflows.

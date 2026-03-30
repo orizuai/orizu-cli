@@ -1,5 +1,20 @@
 # Orizu CLI Reference
 
+## Contents
+
+- [Default Command Strategy](#default-command-strategy)
+- [Command Matrix](#command-matrix)
+- [End-to-End Flows](#end-to-end-flows)
+- [Notes and Limits](#notes-and-limits)
+
+## Default Command Strategy
+
+1. Verify auth first: `orizu whoami`.
+2. Prefer explicit flags over prompts.
+3. Use interactive fallback only in TTY sessions.
+4. Validate command output before proceeding.
+5. On failure, fix flags/identifiers and rerun.
+
 ## Command Matrix
 
 ### Authentication
@@ -73,8 +88,10 @@ orizu apps link-dataset --app <appId> --dataset <datasetId>
 orizu datasets upload --file ./data.csv --project my-team/quality-eval --name "Batch 1"
 orizu datasets download --dataset <datasetId|datasetUrl> --format jsonl --out ./dataset.jsonl
 orizu datasets append --dataset <datasetId|datasetUrl> --file ./new-rows.jsonl
+orizu datasets edit-rows --dataset <datasetId|datasetUrl> --file ./edited-rows.jsonl
 orizu datasets delete-rows --dataset <datasetId|datasetUrl> --row-ids row-1,row-2
-orizu datasets delete-rows --dataset <datasetId|datasetUrl> --row-indices 0,4,7
+orizu datasets lock --dataset <datasetId|datasetUrl> --reason "Finalize for labeling"
+orizu datasets clone --dataset <datasetId|datasetUrl> --name "Batch 1 Copy"
 ```
 
 Supported file types:
@@ -83,8 +100,10 @@ Supported file types:
 - `.jsonl` (one object per line)
 
 Delete rows selectors:
-- `--row-ids <id1,id2>`
-- `--row-indices <n1,n2>`
+- `--row-ids <id1,id2>` (canonical selector)
+
+Edit rows requirements:
+- `--file` rows must include canonical `id` for each row being updated.
 
 ### Tasks
 
@@ -145,7 +164,10 @@ orizu projects create --name "Support QA" --team ops-eval
 
 orizu datasets upload --project ops-eval/support-qa --file ./datasets/support.jsonl --name "Support Batch 1"
 orizu datasets append --dataset <datasetId> --file ./datasets/support-extra.jsonl
-orizu datasets delete-rows --dataset <datasetId> --row-indices 10,11
+orizu datasets edit-rows --dataset <datasetId> --file ./datasets/support-edits.jsonl
+orizu datasets delete-rows --dataset <datasetId> --row-ids row-10,row-11
+orizu datasets lock --dataset <datasetId> --reason "Freeze for labeling"
+orizu datasets clone --dataset <datasetId> --name "Support Batch 1 Copy"
 
 orizu apps create \
   --project ops-eval/support-qa \
@@ -184,6 +206,11 @@ Use these shortcuts only in TTY environments where prompts can run.
 
 - `tasks assign` expects user IDs, not emails.
 - `tasks create` requires `--assignees` and creates assignments at creation time.
-- `datasets delete-rows` requires at least one of `--row-ids` or `--row-indices`.
+- `datasets delete-rows` requires `--row-ids`.
+- `datasets edit-rows` requires row objects in `--file` to include canonical `id`.
+- `--row-ids` is the canonical row selection for delete operations.
+- Locked datasets reject append/edit/delete row mutations.
+- Row deletes are rejected when targeted rows are assignment-referenced.
 - Login currently requires callback availability on `127.0.0.1:43123`.
 - In non-interactive contexts, pass explicit selection flags.
+- Dataset contract and HF compatibility profile: `references/dataset-canonical-contract.md`.

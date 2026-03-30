@@ -106,7 +106,7 @@ interface TaskStatusPayload {
 }
 
 function printUsage() {
-  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userId1,userId2> [--instructions <text>] [--labels-per-item <n>]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--row-ids <id1,id2>] [--row-indices <n1,n2>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userId1,userId2> [--instructions <text>] [--labels-per-item <n>]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
 }
 
 let cliArgs = process.argv.slice(2)
@@ -1265,32 +1265,73 @@ async function appendDatasetRows() {
   )
 }
 
-function parseCommaSeparatedIntegers(value: string | null): number[] {
-  if (!value) {
-    return []
+async function editDatasetRows() {
+  const projectArg = getArg('--project')
+  const datasetInput = getDatasetReferenceInput()
+  const fileArg = getArg('--file')
+
+  if (!fileArg) {
+    throw new Error('Usage: orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>')
   }
 
-  const rawItems = value
-    .split(',')
-    .map(item => item.trim())
-    .filter(Boolean)
-  const parsed = rawItems.map(item => Number(item))
-  const invalid = parsed.some(item => !Number.isInteger(item) || item < 0)
-  if (invalid) {
-    throw new Error('row-indices must be comma-separated non-negative integers')
+  let datasetId: string
+  if (datasetInput) {
+    datasetId = parseDatasetReference(datasetInput).datasetId
+  } else {
+    const selected = await selectDatasetInteractively(projectArg)
+    datasetId = selected.datasetId
   }
 
-  return parsed
+  const file = expandHomePath(fileArg)
+  const { rows } = parseDatasetFile(file)
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error('Dataset edit file must contain at least one row')
+  }
+
+  const normalizedRows = rows.map((row, index) => {
+    if (typeof row !== 'object' || row === null || Array.isArray(row)) {
+      throw new Error(`Dataset edit file rows[${index}] must be an object`)
+    }
+
+    const rowRecord = row as Record<string, unknown>
+    const rowId = typeof rowRecord.id === 'string' ? rowRecord.id.trim() : ''
+    if (!rowId) {
+      throw new Error(`Dataset edit file rows[${index}] must include a non-empty string id`)
+    }
+
+    return {
+      ...rowRecord,
+      id: rowId,
+    }
+  })
+
+  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/rows`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows: normalizedRows }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Edit rows failed: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{
+    dataset: { id: string; name: string; rowCount: number }
+    updatedCount: number
+  }>(response, 'Dataset edit rows')
+
+  console.log(
+    `Updated ${data.updatedCount} rows in dataset ${data.dataset.name} (${data.dataset.id}). Current row count: ${data.dataset.rowCount}`
+  )
 }
 
 async function deleteDatasetRows() {
   const projectArg = getArg('--project')
   const datasetInput = getDatasetReferenceInput()
   const rowIds = parseCommaSeparated(getArg('--row-ids'))
-  const rowIndices = parseCommaSeparatedIntegers(getArg('--row-indices'))
 
-  if (rowIds.length === 0 && rowIndices.length === 0) {
-    throw new Error('Usage: orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--row-ids <id1,id2>] [--row-indices <n1,n2>]')
+  if (rowIds.length === 0) {
+    throw new Error('Usage: orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>')
   }
 
   let datasetId: string
@@ -1306,7 +1347,6 @@ async function deleteDatasetRows() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       rowIds,
-      rowIndices,
     }),
   })
 
@@ -1321,6 +1361,81 @@ async function deleteDatasetRows() {
 
   console.log(
     `Deleted ${data.deletedCount} rows from dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`
+  )
+}
+
+async function lockDataset() {
+  const projectArg = getArg('--project')
+  const datasetInput = getDatasetReferenceInput()
+  const reason = getArg('--reason')
+
+  let datasetId: string
+  if (datasetInput) {
+    datasetId = parseDatasetReference(datasetInput).datasetId
+  } else {
+    const selected = await selectDatasetInteractively(projectArg)
+    datasetId = selected.datasetId
+  }
+
+  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/lock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reason ? { reason } : {}),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Lock failed: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{
+    dataset: {
+      id: string
+      name: string
+      rowCount: number
+      lockedAt: string
+      lockedBy: string | null
+    }
+  }>(response, 'Dataset lock')
+
+  console.log(
+    `Locked dataset ${data.dataset.name} (${data.dataset.id}) at ${data.dataset.lockedAt}. Row count: ${data.dataset.rowCount}`
+  )
+}
+
+async function cloneDataset() {
+  const projectArg = getArg('--project')
+  const datasetInput = getDatasetReferenceInput()
+  const name = getArg('--name')
+
+  let datasetId: string
+  if (datasetInput) {
+    datasetId = parseDatasetReference(datasetInput).datasetId
+  } else {
+    const selected = await selectDatasetInteractively(projectArg)
+    datasetId = selected.datasetId
+  }
+
+  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/clone`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(name ? { name } : {}),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Clone failed: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{
+    dataset: {
+      id: string
+      name: string
+      rowCount: number
+      parentDatasetId: string
+    }
+  }>(response, 'Dataset clone')
+
+  console.log(
+    `Cloned dataset ${data.dataset.parentDatasetId} -> ${data.dataset.name} (${data.dataset.id}). Row count: ${data.dataset.rowCount}`
   )
 }
 
@@ -1474,8 +1589,23 @@ async function main() {
     return
   }
 
+  if (command === 'datasets' && subcommand === 'edit-rows') {
+    await editDatasetRows()
+    return
+  }
+
   if (command === 'datasets' && subcommand === 'delete-rows') {
     await deleteDatasetRows()
+    return
+  }
+
+  if (command === 'datasets' && subcommand === 'lock') {
+    await lockDataset()
+    return
+  }
+
+  if (command === 'datasets' && subcommand === 'clone') {
+    await cloneDataset()
     return
   }
 

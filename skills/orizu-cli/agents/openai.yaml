@@ -1,4 +1,4 @@
 interface:
   display_name: "Orizu CLI"
-  short_description: "Operate Orizu CLI end-to-end workflows"
-  default_prompt: "Use $orizu-cli to run end-to-end Orizu CLI workflows for auth, teams, projects, apps, datasets, and tasks."
+  short_description: "Runs and debugs Orizu CLI auth/workspace workflows"
+  default_prompt: "Use $orizu-cli for Orizu CLI requests involving auth, teams, projects, apps, datasets, and tasks."
