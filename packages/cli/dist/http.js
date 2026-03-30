@@ -19,6 +19,17 @@ export function resolveBaseUrl(flags = runtimeFlags) {
     }
     return 'https://orizu.ai';
 }
+export function resolveLoginBaseUrl(flags = runtimeFlags) {
+    const fromFlags = getFlagBaseUrl(flags);
+    if (fromFlags) {
+        return fromFlags;
+    }
+    const fromEnv = process.env.ORIZU_BASE_URL;
+    if (fromEnv) {
+        return normalizeBaseUrl(fromEnv);
+    }
+    return 'https://orizu.ai';
+}
 export function getBaseUrl() {
     return resolveBaseUrl();
 }

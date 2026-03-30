@@ -10,7 +10,7 @@ import { clearServerCredentials, getServerCredentials, saveServerCredentials } f
 import { parseDatasetFile } from './file-parser.js'
 import { parseDatasetReference } from './dataset-download.js'
 import { parseGlobalFlags } from './global-flags.js'
-import { authedFetch, getBaseUrl, setGlobalFlags } from './http.js'
+import { authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js'
 import { LoginResponse } from './types.js'
 
 interface Team {
@@ -594,7 +594,7 @@ function printTaskStatusSummary(data: TaskStatusPayload) {
 }
 
 async function login() {
-  const baseUrl = getBaseUrl()
+  const baseUrl = resolveLoginBaseUrl()
   const codeVerifier = createCodeVerifier()
   const codeChallenge = createCodeChallenge(codeVerifier)
 
