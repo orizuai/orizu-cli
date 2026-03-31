@@ -212,7 +212,7 @@ orizu apps link-dataset --app <appId> --dataset <datasetId>
 ```
 
 Optional:
-- `--version <n>` (defaults to latest app version)
+- `--version <n>` (defaults to the app's current pinned version)
 - `--project my-team/quality-eval` (used when selecting app interactively)
 
 Interactive fallback:
@@ -361,6 +361,7 @@ orizu tasks create \
   --project my-team/quality-eval \
   --dataset <datasetId> \
   --app <appId> \
+  --version 3 \
   --title "Round 1 labeling" \
   --assignees <userId1,userId2> \
   --instructions "Follow rubric v1" \
@@ -369,9 +370,10 @@ orizu tasks create \
 
 Task creation behavior:
 - `--assignees` is required.
+- `--version <n>` is optional and defaults to the app's current pinned version.
 - Assignments are created immediately during `tasks create`.
-- The backend resolves and pins the app's current `version_id` at task-creation time.
-- Dataset compatibility is validated against that pinned app version before any task rows are inserted.
+- The backend resolves and pins either the requested app version or the app's current `version_id` at task-creation time.
+- Dataset compatibility is validated against that pinned app version before any task rows are inserted, including per-row input-schema checks.
 
 ### Assign task
 
@@ -442,6 +444,7 @@ orizu tasks create \
   --project ops-eval/support-qa \
   --dataset <datasetId> \
   --app <appId> \
+  --version 1 \
   --title "Support QA Round 1" \
   --assignees <userId1,userId2> \
   --labels-per-item 2

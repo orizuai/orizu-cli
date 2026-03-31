@@ -106,7 +106,7 @@ interface TaskStatusPayload {
 }
 
 function printUsage() {
-  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userId1,userId2> [--instructions <text>] [--labels-per-item <n>]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userId1,userId2> [--version <n>] [--instructions <text>] [--labels-per-item <n>]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
 }
 
 let cliArgs = process.argv.slice(2)
@@ -921,10 +921,16 @@ async function linkAppDataset() {
   const project = getArg('--project')
   let appId = getArg('--app')
   const versionArg = getArg('--version')
-  const versionNum = versionArg ? Number(versionArg) : undefined
+  const parsedVersionNum = versionArg ? Number(versionArg) : Number.NaN
+  const versionNum =
+    Number.isInteger(parsedVersionNum) && parsedVersionNum > 0 ? parsedVersionNum : undefined
 
   if (!datasetId) {
     throw new Error('Usage: orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]')
+  }
+
+  if (versionArg && versionNum === undefined) {
+    throw new Error('--version must be a positive integer')
   }
 
   if (!appId) {
@@ -972,12 +978,20 @@ async function createTask() {
   const appId = getArg('--app')
   const title = getArg('--title')
   const assignees = parseCommaSeparated(getArg('--assignees'))
+  const versionArg = getArg('--version')
   const instructions = getArg('--instructions')
   const labelsPerItemArg = getArg('--labels-per-item')
   const labelsPerItem = labelsPerItemArg ? Number(labelsPerItemArg) : 1
+  const parsedVersionNum = versionArg ? Number(versionArg) : Number.NaN
+  const versionNum =
+    Number.isInteger(parsedVersionNum) && parsedVersionNum > 0 ? parsedVersionNum : null
 
   if (!projectSlug || !datasetId || !appId || !title || assignees.length === 0) {
-    throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userId1,userId2> [--instructions <text>] [--labels-per-item <n>]')
+    throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userId1,userId2> [--version <n>] [--instructions <text>] [--labels-per-item <n>]')
+  }
+
+  if (versionArg && versionNum === null) {
+    throw new Error('--version must be a positive integer')
   }
 
   const response = await authedFetch('/api/cli/tasks', {
@@ -987,6 +1001,7 @@ async function createTask() {
       projectSlug,
       datasetId,
       appId,
+      versionNum,
       title,
       memberIds: assignees,
       instructions,
@@ -999,11 +1014,17 @@ async function createTask() {
   }
 
   const data = await parseJsonResponse<{
-    task: { id: string; title: string; status: string; requiredAssignmentsPerRow: number }
+    task: {
+      id: string
+      title: string
+      status: string
+      requiredAssignmentsPerRow: number
+      versionNum: number
+    }
     assignmentsCreated: number
   }>(response, 'Task create')
   console.log(
-    `Created task ${data.task.title} (${data.task.id}) [${data.task.status}], labels/item=${data.task.requiredAssignmentsPerRow}, assignments=${data.assignmentsCreated}`
+    `Created task ${data.task.title} (${data.task.id}) [${data.task.status}], version=v${data.task.versionNum}, labels/item=${data.task.requiredAssignmentsPerRow}, assignments=${data.assignmentsCreated}`
   )
 }
 
