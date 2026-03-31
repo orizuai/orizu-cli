@@ -125,6 +125,11 @@ orizu tasks create \
   --labels-per-item 2
 ```
 
+Behavior:
+- task creation resolves and stores the app's pinned current `version_id` at create time
+- dataset compatibility is validated against that pinned app version before the task is inserted
+- malformed JSON and mixed-type assignee arrays fail with deterministic `400` responses
+
 Assign:
 
 ```bash
@@ -137,6 +142,12 @@ Status:
 orizu tasks status --task <taskId>
 orizu tasks status --task <taskId> --json
 ```
+
+Includes:
+- task metadata
+- progress counts
+- per-assignee breakdown
+- paused assignments as a distinct count, not folded into pending
 
 Export:
 
@@ -205,7 +216,9 @@ Use these shortcuts only in TTY environments where prompts can run.
 ## Notes and Limits
 
 - `tasks assign` expects user IDs, not emails.
-- `tasks create` requires `--assignees` and creates assignments at creation time.
+- `tasks create` requires `--assignees`, creates assignments at creation time, and pins the app's current version when the task is created.
+- Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
+- Assignment completion payloads are validated against the pinned app-version `output_json_schema`.
 - `datasets delete-rows` requires `--row-ids`.
 - `datasets edit-rows` requires row objects in `--file` to include canonical `id`.
 - `--row-ids` is the canonical row selection for delete operations.
@@ -214,3 +227,5 @@ Use these shortcuts only in TTY environments where prompts can run.
 - Login currently requires callback availability on `127.0.0.1:43123`.
 - In non-interactive contexts, pass explicit selection flags.
 - Dataset contract and HF compatibility profile: `references/dataset-canonical-contract.md`.
+- Task contract and pinned-version rules: `references/task-canonical-contract.md`.
+- Assignment ownership/response rules: `references/assignment-canonical-contract.md`.

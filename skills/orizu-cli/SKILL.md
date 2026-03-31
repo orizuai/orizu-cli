@@ -102,6 +102,7 @@ CLI Progress:
 - Use explicit selectors whenever possible:
   - `--team`, `--project`, `--app`, `--task`, `--dataset`, `--assignees`.
 - For `tasks assign`, pass user IDs, not emails.
+- For assignment semantics, assume worker queues are assignee-self-only and operator summaries expose paused counts separately.
 - For `datasets edit-rows`, each row object in `--file` must include a non-empty string `id`.
 - For `datasets delete-rows`, use `--row-ids` selectors.
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.
@@ -116,3 +117,4 @@ CLI Progress:
 
 - Read `references/cli-reference.md` for complete command examples and end-to-end flows.
 - Read `references/dataset-canonical-contract.md` for dataset identity, count, lineage, lock, and HF compatibility rules used by CLI workflows.
+- Read `references/task-canonical-contract.md` for pinned-version task creation, fanout, and export rules.

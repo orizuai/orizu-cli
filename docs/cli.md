@@ -370,6 +370,8 @@ orizu tasks create \
 Task creation behavior:
 - `--assignees` is required.
 - Assignments are created immediately during `tasks create`.
+- The backend resolves and pins the app's current `version_id` at task-creation time.
+- Dataset compatibility is validated against that pinned app version before any task rows are inserted.
 
 ### Assign task
 
@@ -391,6 +393,7 @@ Includes:
 - task metadata
 - progress counts
 - per-assignee breakdown
+- paused assignments as a distinct count, not folded into pending
 
 ### Export task outputs
 
@@ -472,5 +475,7 @@ The commands above will prompt for team/project/task selection where needed.
 ## Current Limitations
 
 - `tasks assign` accepts assignee user IDs, not emails.
+- Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
+- Assignment completion payloads are validated against the task's pinned app-version `output_json_schema`.
 - Login flow currently expects localhost callback availability (`127.0.0.1:43123`).
 - CLI package publishing/distribution is separate from this usage doc (examples assume local build or installed binary).
