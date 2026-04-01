@@ -2,7 +2,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { basename } from 'path';
 import { createServer } from 'http';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, statSync, writeFileSync } from 'fs';
 import { spawn } from 'child_process';
 import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
@@ -11,8 +11,9 @@ import { parseDatasetFile } from './file-parser.js';
 import { parseDatasetReference } from './dataset-download.js';
 import { parseGlobalFlags } from './global-flags.js';
 import { authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js';
+import { formatTaskCreateError } from './task-create-error.js';
 function printUsage() {
-    console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`);
+    console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`);
 }
 let cliArgs = process.argv.slice(2);
 function getArg(name) {
@@ -83,36 +84,6 @@ async function parseJsonResponse(response, context) {
         throw new Error(`${context} returned invalid JSON (status ${response.status}). ` +
             `Body preview: ${rawBody.slice(0, 180)}`);
     }
-}
-async function formatTaskCreateError(response) {
-    const contentType = response.headers.get('content-type') || '';
-    const rawBody = await response.text();
-    if (!contentType.includes('application/json')) {
-        return `Failed to create task: ${rawBody}`;
-    }
-    try {
-        const payload = JSON.parse(rawBody);
-        if (Array.isArray(payload.invalidAssigneeErrors) &&
-            payload.invalidAssigneeErrors.length > 0) {
-            const details = payload.invalidAssigneeErrors
-                .filter(item => typeof item.assignee === 'string' &&
-                item.assignee.length > 0 &&
-                typeof item.reason === 'string' &&
-                item.reason.length > 0)
-                .map(item => `  - ${item.assignee}: ${item.reason}`)
-                .join('\n');
-            if (details) {
-                return `Failed to create task: ${payload.error || 'Invalid assignees'}\n${details}`;
-            }
-        }
-        if (typeof payload.error === 'string' && payload.error.length > 0) {
-            return `Failed to create task: ${payload.error}`;
-        }
-    }
-    catch {
-        return `Failed to create task: ${rawBody}`;
-    }
-    return `Failed to create task: ${rawBody}`;
 }
 async function promptSelect(title, items, label, options) {
     if (items.length === 0) {
@@ -372,14 +343,27 @@ function printTaskStatusSummary(data) {
         });
     }
 }
+const DEFAULT_AUTH_CALLBACK_PORT = 43123;
+function resolveAuthCallbackPort() {
+    const envPort = process.env.ORIZU_AUTH_PORT;
+    if (!envPort) {
+        return DEFAULT_AUTH_CALLBACK_PORT;
+    }
+    const parsed = parseInt(envPort, 10);
+    if (Number.isNaN(parsed) || parsed < 1024 || parsed > 65535) {
+        throw new Error(`Invalid ORIZU_AUTH_PORT: '${envPort}'. Must be a number between 1024 and 65535.`);
+    }
+    return parsed;
+}
 async function login() {
     const baseUrl = resolveLoginBaseUrl();
     const codeVerifier = createCodeVerifier();
     const codeChallenge = createCodeChallenge(codeVerifier);
+    const callbackPort = resolveAuthCallbackPort();
     const callbackCode = await new Promise((resolve, reject) => {
         const server = createServer((request, response) => {
             try {
-                const url = new URL(request.url || '/', 'http://127.0.0.1:43123');
+                const url = new URL(request.url || '/', `http://127.0.0.1:${callbackPort}`);
                 const code = url.searchParams.get('code');
                 if (!code) {
                     response.statusCode = 400;
@@ -397,10 +381,17 @@ async function login() {
                 reject(error);
             }
         });
-        server.on('error', reject);
-        server.listen(43123, '127.0.0.1', async () => {
+        server.on('error', (error) => {
+            if (error.code === 'EADDRINUSE') {
+                reject(new Error(`Port ${callbackPort} is already in use. Set ORIZU_AUTH_PORT to a different port (1024–65535) and retry.`));
+            }
+            else {
+                reject(error);
+            }
+        });
+        server.listen(callbackPort, '127.0.0.1', async () => {
             try {
-                const redirectUri = 'http://127.0.0.1:43123/callback';
+                const redirectUri = `http://127.0.0.1:${callbackPort}/callback`;
                 const response = await fetch(`${baseUrl}/api/cli/auth/start`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -681,7 +672,7 @@ async function createTask() {
     const parsedVersionNum = versionArg ? Number(versionArg) : Number.NaN;
     const versionNum = Number.isInteger(parsedVersionNum) && parsedVersionNum > 0 ? parsedVersionNum : null;
     if (!projectSlug || !datasetId || !appId || !title || assignees.length === 0) {
-        throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>]');
+        throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]');
     }
     if (versionArg && versionNum === null) {
         throw new Error('--version must be a positive integer');
@@ -701,10 +692,44 @@ async function createTask() {
         }),
     });
     if (!response.ok) {
-        throw new Error(await formatTaskCreateError(response));
+        const cliError = await formatTaskCreateError(response);
+        if (hasArg('--json')) {
+            const payload = cliError.structuredPayload ?? { error: cliError.message };
+            console.log(JSON.stringify({
+                ...payload,
+                httpStatus: cliError.httpStatus,
+            }, null, 2));
+            process.exit(1);
+        }
+        throw cliError;
     }
     const data = await parseJsonResponse(response, 'Task create');
-    console.log(`Created task ${data.task.title} (${data.task.id}) [${data.task.status}], version=v${data.task.versionNum}, labels/item=${data.task.requiredAssignmentsPerRow}, assignments=${data.assignmentsCreated}`);
+    if (hasArg('--json')) {
+        console.log(JSON.stringify({
+            taskId: data.task.id,
+            datasetId,
+            versionId: data.task.versionId,
+            versionNum: data.task.versionNum,
+            taskUrl: `${getBaseUrl()}/d/${projectSlug}/tasks/${data.task.id}`,
+            title: data.task.title,
+            status: data.task.status,
+            requiredAssignmentsPerRow: data.task.requiredAssignmentsPerRow,
+            assignmentsCreated: data.assignmentsCreated,
+            ...(data.assignmentShortfall !== undefined ? { assignmentShortfall: data.assignmentShortfall } : {}),
+            ...(data.warning ? { warning: data.warning } : {}),
+        }, null, 2));
+        return;
+    }
+    const baseUrl = getBaseUrl();
+    const taskUrl = `${baseUrl}/d/${projectSlug}/tasks/${data.task.id}`;
+    console.log(`Created task ${data.task.title} (${data.task.id}) [${data.task.status}]` +
+        `\n  Task ID:    ${data.task.id}` +
+        `\n  Dataset ID: ${datasetId}` +
+        `\n  Version:    v${data.task.versionNum} (${data.task.versionId})` +
+        `\n  Labels/row: ${data.task.requiredAssignmentsPerRow}` +
+        `\n  Assignments: ${data.assignmentsCreated}` +
+        (data.warning ? `\n  Warning:    ${data.warning}` : '') +
+        `\n  URL:        ${taskUrl}`);
 }
 async function assignTask() {
     const taskId = getArg('--task');
@@ -730,7 +755,22 @@ async function taskStatus() {
     }
     const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`);
     if (!response.ok) {
-        throw new Error(`Failed to fetch task status: ${await response.text()}`);
+        const rawBody = await response.text();
+        if (hasArg('--json')) {
+            let errorPayload = { error: rawBody };
+            try {
+                errorPayload = JSON.parse(rawBody);
+            }
+            catch {
+                // keep raw body as error
+            }
+            console.log(JSON.stringify({
+                ...errorPayload,
+                httpStatus: response.status,
+            }, null, 2));
+            process.exit(1);
+        }
+        throw new Error(`Failed to fetch task status: ${rawBody}`);
     }
     const data = await parseJsonResponse(response, 'Task status');
     if (hasArg('--json')) {
@@ -738,6 +778,68 @@ async function taskStatus() {
         return;
     }
     printTaskStatusSummary(data);
+}
+async function updateTaskStatus(targetStatus) {
+    const taskId = getArg('--task');
+    if (!taskId) {
+        const verb = targetStatus === 'paused' ? 'pause' : 'unpause';
+        throw new Error(`Usage: orizu tasks ${verb} --task <taskId>`);
+    }
+    const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: targetStatus }),
+    });
+    if (!response.ok) {
+        const verb = targetStatus === 'paused' ? 'pause' : 'unpause';
+        throw new Error(`Failed to ${verb} task: ${await response.text()}`);
+    }
+    const data = await parseJsonResponse(response, 'Task status update');
+    const action = targetStatus === 'paused' ? 'Paused' : 'Unpaused';
+    console.log(`${action} task ${data.task.id} [${data.task.status}]`);
+}
+async function appDetail() {
+    const appId = getArg('--app');
+    const project = getArg('--project');
+    if (!appId) {
+        throw new Error('Usage: orizu apps detail --app <appId> [--project <team/project>] [--json]');
+    }
+    const projectSlug = project || await resolveProjectSlug(null);
+    const apps = await fetchApps(projectSlug);
+    const app = apps.find(a => a.id === appId);
+    if (!app) {
+        throw new Error(`App '${appId}' not found in project '${projectSlug}'`);
+    }
+    // Re-fetch full detail from the list (it already returns full data)
+    const detailResponse = await authedFetch(`/api/cli/apps?project=${encodeURIComponent(projectSlug)}`);
+    if (!detailResponse.ok) {
+        throw new Error(`Failed to fetch app detail: ${await detailResponse.text()}`);
+    }
+    const detailData = await parseJsonResponse(detailResponse, 'App detail');
+    const detail = detailData.apps.find(a => a.id === appId);
+    if (!detail) {
+        throw new Error(`App '${appId}' not found`);
+    }
+    if (hasArg('--json')) {
+        console.log(JSON.stringify(detail, null, 2));
+        return;
+    }
+    console.log(`App: ${detail.name} (${detail.id})`);
+    console.log(`  Project: ${detail.teamSlug}/${detail.projectSlug}`);
+    if (detail.currentVersion) {
+        console.log(`  Current version: v${detail.currentVersion.versionNum} (${detail.currentVersion.versionId})`);
+        console.log(`  Input schema: ${detail.currentVersion.inputJsonSchema ? 'defined' : 'none'}`);
+        console.log(`  Output schema: ${detail.currentVersion.outputJsonSchema ? 'defined' : 'none'}`);
+    }
+    else {
+        console.log(`  Current version: none`);
+    }
+    console.log(`  Compatible datasets: ${detail.compatibleDatasetsCount}/${detail.totalDatasetsCount}`);
+    if (detail.createdByEmail) {
+        console.log(`  Created by: ${detail.createdByName || detail.createdByEmail}`);
+    }
+    console.log(`  Created: ${detail.createdAt}`);
+    console.log(`  Updated: ${detail.updatedAt}`);
 }
 async function listTeamMembers() {
     const teamSlug = await resolveTeamSlug(getArg('--team'));
@@ -873,6 +975,19 @@ async function downloadDataset() {
     writeFileSync(filename, bytes);
     console.log(`Saved dataset ${datasetId} (${format.toUpperCase()}) to ${filename}`);
 }
+const MAX_INPUT_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
+const APPEND_CHUNK_SIZE_ROWS = 500;
+async function appendChunk(datasetId, rows) {
+    const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/rows`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows }),
+    });
+    if (!response.ok) {
+        throw new Error(`Append failed: ${await response.text()}`);
+    }
+    return parseJsonResponse(response, 'Dataset append');
+}
 async function appendDatasetRows() {
     const projectArg = getArg('--project');
     const datasetInput = getDatasetReferenceInput();
@@ -889,20 +1004,35 @@ async function appendDatasetRows() {
         datasetId = selected.datasetId;
     }
     const file = expandHomePath(fileArg);
+    const fileSizeBytes = statSync(file).size;
+    if (fileSizeBytes > MAX_INPUT_FILE_SIZE_BYTES) {
+        const sizeMb = (fileSizeBytes / (1024 * 1024)).toFixed(1);
+        throw new Error(`Input file is ${sizeMb} MB, which exceeds the 50 MB limit. Split the file into smaller parts and append each separately.`);
+    }
     const { rows } = parseDatasetFile(file);
     if (!Array.isArray(rows) || rows.length === 0) {
         throw new Error('Dataset append file must contain at least one row');
     }
-    const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/rows`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows }),
-    });
-    if (!response.ok) {
-        throw new Error(`Append failed: ${await response.text()}`);
+    if (rows.length <= APPEND_CHUNK_SIZE_ROWS) {
+        const data = await appendChunk(datasetId, rows);
+        console.log(`Appended ${data.appendedCount} rows to dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`);
+        return;
     }
-    const data = await parseJsonResponse(response, 'Dataset append');
-    console.log(`Appended ${data.appendedCount} rows to dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`);
+    // Chunked upload for large row counts
+    let totalAppended = 0;
+    let lastResult = null;
+    for (let offset = 0; offset < rows.length; offset += APPEND_CHUNK_SIZE_ROWS) {
+        const chunk = rows.slice(offset, offset + APPEND_CHUNK_SIZE_ROWS);
+        const chunkIndex = Math.floor(offset / APPEND_CHUNK_SIZE_ROWS) + 1;
+        const totalChunks = Math.ceil(rows.length / APPEND_CHUNK_SIZE_ROWS);
+        console.log(`Uploading chunk ${chunkIndex}/${totalChunks} (${chunk.length} rows)...`);
+        const data = await appendChunk(datasetId, chunk);
+        totalAppended += data.appendedCount;
+        lastResult = data;
+    }
+    if (lastResult) {
+        console.log(`Appended ${totalAppended} rows to dataset ${lastResult.dataset.name} (${lastResult.dataset.id}). New row count: ${lastResult.dataset.rowCount}`);
+    }
 }
 async function editDatasetRows() {
     const projectArg = getArg('--project');
@@ -1116,6 +1246,10 @@ async function main() {
         await linkAppDataset();
         return;
     }
+    if (command === 'apps' && subcommand === 'detail') {
+        await appDetail();
+        return;
+    }
     if (command === 'tasks' && subcommand === 'list') {
         await listTasks();
         return;
@@ -1130,6 +1264,14 @@ async function main() {
     }
     if (command === 'tasks' && subcommand === 'status') {
         await taskStatus();
+        return;
+    }
+    if (command === 'tasks' && subcommand === 'pause') {
+        await updateTaskStatus('paused');
+        return;
+    }
+    if (command === 'tasks' && subcommand === 'unpause') {
+        await updateTaskStatus('active');
         return;
     }
     if (command === 'datasets' && subcommand === 'upload') {

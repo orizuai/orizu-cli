@@ -68,14 +68,22 @@ export function loadCredentialsConfig() {
         return null;
     }
     const raw = readFileSync(path, 'utf-8');
-    const parsed = JSON.parse(raw);
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        console.warn('Warning: credentials file contains invalid JSON — please re-login with `orizu login`');
+        return null;
+    }
     if (isStoredCredentialsV2(parsed)) {
         return parsed;
     }
     if (isStoredCredentialsV1(parsed)) {
         return migrateToV2(parsed);
     }
-    throw new Error('Invalid credentials file format.');
+    console.warn('Warning: credentials file has unrecognized format — please re-login with `orizu login`');
+    return null;
 }
 export function getServerCredentials(baseUrl) {
     const config = loadCredentialsConfig();

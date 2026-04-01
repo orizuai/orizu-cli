@@ -11,6 +11,7 @@ import { parseDatasetFile } from './file-parser.js'
 import { parseDatasetReference } from './dataset-download.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js'
+import { formatTaskCreateError } from './task-create-error.js'
 import { LoginResponse } from './types.js'
 
 interface Team {
@@ -105,16 +106,8 @@ interface TaskStatusPayload {
   }
 }
 
-interface TaskCreateErrorPayload {
-  error?: string
-  invalidAssigneeErrors?: Array<{
-    assignee?: string
-    reason?: string
-  }>
-}
-
 function printUsage() {
-  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
 }
 
 let cliArgs = process.argv.slice(2)
@@ -205,47 +198,6 @@ async function parseJsonResponse<T>(response: Response, context: string): Promis
       `Body preview: ${rawBody.slice(0, 180)}`
     )
   }
-}
-
-async function formatTaskCreateError(response: Response): Promise<string> {
-  const contentType = response.headers.get('content-type') || ''
-  const rawBody = await response.text()
-
-  if (!contentType.includes('application/json')) {
-    return `Failed to create task: ${rawBody}`
-  }
-
-  try {
-    const payload = JSON.parse(rawBody) as TaskCreateErrorPayload
-
-    if (
-      Array.isArray(payload.invalidAssigneeErrors) &&
-      payload.invalidAssigneeErrors.length > 0
-    ) {
-      const details = payload.invalidAssigneeErrors
-        .filter(
-          item =>
-            typeof item.assignee === 'string' &&
-            item.assignee.length > 0 &&
-            typeof item.reason === 'string' &&
-            item.reason.length > 0
-        )
-        .map(item => `  - ${item.assignee}: ${item.reason}`)
-        .join('\n')
-
-      if (details) {
-        return `Failed to create task: ${payload.error || 'Invalid assignees'}\n${details}`
-      }
-    }
-
-    if (typeof payload.error === 'string' && payload.error.length > 0) {
-      return `Failed to create task: ${payload.error}`
-    }
-  } catch {
-    return `Failed to create task: ${rawBody}`
-  }
-
-  return `Failed to create task: ${rawBody}`
 }
 
 async function promptSelect<T>(
@@ -1071,7 +1023,7 @@ async function createTask() {
     Number.isInteger(parsedVersionNum) && parsedVersionNum > 0 ? parsedVersionNum : null
 
   if (!projectSlug || !datasetId || !appId || !title || assignees.length === 0) {
-    throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>]')
+    throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]')
   }
 
   if (versionArg && versionNum === null) {
@@ -1094,7 +1046,16 @@ async function createTask() {
   })
 
   if (!response.ok) {
-    throw new Error(await formatTaskCreateError(response))
+    const cliError = await formatTaskCreateError(response)
+    if (hasArg('--json')) {
+      const payload = cliError.structuredPayload ?? { error: cliError.message }
+      console.log(JSON.stringify({
+        ...payload,
+        httpStatus: cliError.httpStatus,
+      }, null, 2))
+      process.exit(1)
+    }
+    throw cliError
   }
 
   const data = await parseJsonResponse<{
@@ -1103,12 +1064,42 @@ async function createTask() {
       title: string
       status: string
       requiredAssignmentsPerRow: number
+      versionId: string
       versionNum: number
     }
     assignmentsCreated: number
+    assignmentShortfall?: number
+    warning?: string
   }>(response, 'Task create')
+
+  if (hasArg('--json')) {
+    console.log(JSON.stringify({
+      taskId: data.task.id,
+      datasetId,
+      versionId: data.task.versionId,
+      versionNum: data.task.versionNum,
+      taskUrl: `${getBaseUrl()}/d/${projectSlug}/tasks/${data.task.id}`,
+      title: data.task.title,
+      status: data.task.status,
+      requiredAssignmentsPerRow: data.task.requiredAssignmentsPerRow,
+      assignmentsCreated: data.assignmentsCreated,
+      ...(data.assignmentShortfall !== undefined ? { assignmentShortfall: data.assignmentShortfall } : {}),
+      ...(data.warning ? { warning: data.warning } : {}),
+    }, null, 2))
+    return
+  }
+
+  const baseUrl = getBaseUrl()
+  const taskUrl = `${baseUrl}/d/${projectSlug}/tasks/${data.task.id}`
   console.log(
-    `Created task ${data.task.title} (${data.task.id}) [${data.task.status}], version=v${data.task.versionNum}, labels/item=${data.task.requiredAssignmentsPerRow}, assignments=${data.assignmentsCreated}`
+    `Created task ${data.task.title} (${data.task.id}) [${data.task.status}]` +
+    `\n  Task ID:    ${data.task.id}` +
+    `\n  Dataset ID: ${datasetId}` +
+    `\n  Version:    v${data.task.versionNum} (${data.task.versionId})` +
+    `\n  Labels/row: ${data.task.requiredAssignmentsPerRow}` +
+    `\n  Assignments: ${data.assignmentsCreated}` +
+    (data.warning ? `\n  Warning:    ${data.warning}` : '') +
+    `\n  URL:        ${taskUrl}`
   )
 }
 
@@ -1142,7 +1133,26 @@ async function taskStatus() {
 
   const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`)
   if (!response.ok) {
-    throw new Error(`Failed to fetch task status: ${await response.text()}`)
+    const rawBody = await response.text()
+
+    if (hasArg('--json')) {
+      let errorPayload: Record<string, unknown> = { error: rawBody }
+      try {
+        const parsed = JSON.parse(rawBody)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          errorPayload = parsed as Record<string, unknown>
+        }
+      } catch {
+        // keep raw body as error
+      }
+      console.log(JSON.stringify({
+        ...errorPayload,
+        httpStatus: response.status,
+      }, null, 2))
+      process.exit(1)
+    }
+
+    throw new Error(`Failed to fetch task status: ${rawBody}`)
   }
 
   const data = await parseJsonResponse<TaskStatusPayload>(response, 'Task status')

@@ -9,8 +9,8 @@ The CLI supports:
 - Authentication (`login`, `logout`, `whoami`)
 - Team management (list/create, members list/add/remove/role)
 - Project management (list/create)
-- App management (list/create/update/link dataset)
-- Task management (list/create/assign/status/export)
+- App management (list/create/update/detail/link dataset)
+- Task management (list/create/assign/status/pause/unpause/export)
 - Dataset management (upload/download/append/delete rows: `csv`, `json`, `jsonl`)
 
 ## Prerequisites
@@ -22,6 +22,7 @@ The CLI supports:
 Optional environment variable:
 
 - `ORIZU_BASE_URL` (example: `https://your-orizu-domain.com`)
+- `ORIZU_AUTH_PORT` (example: `44123`, used for the localhost login callback)
 
 If not set, CLI uses `https://orizu.ai`.
 
@@ -62,7 +63,7 @@ orizu login
 
 What happens:
 
-1. CLI starts a localhost callback server on `127.0.0.1:43123`.
+1. CLI starts a localhost callback server on `127.0.0.1:43123` by default, or the port from `ORIZU_AUTH_PORT` if set.
 2. CLI opens browser for approval.
 3. After approval, CLI exchanges auth code for tokens.
 4. Credentials are stored at:
@@ -228,6 +229,22 @@ Optional:
 Interactive fallback:
 - If `--app` is omitted, CLI prompts for app selection.
 
+### Inspect app detail
+
+```bash
+orizu apps detail --app <appId>
+orizu apps detail --app <appId> --project my-team/quality-eval --json
+```
+
+Returns:
+- app metadata
+- pinned `currentVersion` information
+- compatible dataset counts
+
+Notes:
+- `--json` returns the full app detail payload for automation or inspection.
+- If `--project` is omitted, the CLI resolves the app from the selected project context.
+
 ## Datasets
 
 Canonical contract reference:
@@ -375,7 +392,8 @@ orizu tasks create \
   --title "Round 1 labeling" \
   --assignees <userIdOrEmail1,userIdOrEmail2> \
   --instructions "Follow rubric v1" \
-  --labels-per-item 2
+  --labels-per-item 2 \
+  --json
 ```
 
 Task creation behavior:
@@ -386,6 +404,11 @@ Task creation behavior:
 - The backend resolves and pins either the requested app version or the app's current `version_id` at task-creation time.
 - Dataset compatibility is validated against that pinned app version before any task rows are inserted, including per-row input-schema checks.
 - Invalid assignee selectors return per-assignee validation output so operators can fix specific emails or user IDs.
+
+Output:
+- Plain text prints task ID, dataset ID, pinned version metadata, assignments created, and the task URL.
+- `--json` returns `taskId`, `datasetId`, `versionId`, `versionNum`, `taskUrl`, `status`, `assignmentsCreated`, and optional `assignmentShortfall` / `warning`.
+- JSON failures preserve the structured API payload and append `httpStatus` for automation.
 
 ### Assign task
 
@@ -401,9 +424,6 @@ Note:
 ```bash
 orizu tasks status --task <taskId>
 orizu tasks status --task <taskId> --json
-orizu tasks status --task <taskId> --set paused
-orizu tasks status --task <taskId> --set active
-orizu tasks status --task <taskId> --set completed
 ```
 
 Includes:
@@ -414,8 +434,28 @@ Includes:
 
 Notes:
 - task status reads and updates are manager-only operator surfaces
-- `completed` is terminal in the canonical task contract
-- `active` resumes a previously paused task and restores paused assignments to pending
+- `--json` returns the full status payload on success
+- `--json` failures preserve the API error payload and append `httpStatus`
+
+### Pause task
+
+```bash
+orizu tasks pause --task <taskId>
+```
+
+Behavior:
+- pauses an active task through the manager-only task status mutation route
+- pauses in-flight assignments so operators can stop new work cleanly
+
+### Unpause task
+
+```bash
+orizu tasks unpause --task <taskId>
+```
+
+Behavior:
+- resumes a previously paused task through the manager-only task status mutation route
+- restores paused assignments to pending so work can continue
 
 ### Export task outputs
 
@@ -499,11 +539,12 @@ The commands above will prompt for team/project/task selection where needed.
   - App create/update rejects invalid component contract and invalid schema files.
   - App create requires `--dataset`.
   - Task create requires `--assignees` and accepts user IDs or emails.
+  - `tasks create --json` and `tasks status --json` preserve structured error payloads for automation.
 
 ## Current Limitations
 
 - `tasks assign` accepts assignee user IDs, not emails.
 - Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
 - Assignment completion payloads are validated against the task's pinned app-version `output_json_schema`.
-- Login flow currently expects localhost callback availability (`127.0.0.1:43123`).
+- Login flow currently expects localhost callback availability on `127.0.0.1` using `ORIZU_AUTH_PORT` or the default port `43123`.
 - CLI package publishing/distribution is separate from this usage doc (examples assume local build or installed binary).
