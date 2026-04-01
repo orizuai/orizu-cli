@@ -114,7 +114,7 @@ interface TaskCreateErrorPayload {
 }
 
 function printUsage() {
-  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
 }
 
 let cliArgs = process.argv.slice(2)
@@ -1154,6 +1154,103 @@ async function taskStatus() {
   printTaskStatusSummary(data)
 }
 
+async function updateTaskStatus(targetStatus: 'paused' | 'active') {
+  const taskId = getArg('--task')
+  if (!taskId) {
+    const verb = targetStatus === 'paused' ? 'pause' : 'unpause'
+    throw new Error(`Usage: orizu tasks ${verb} --task <taskId>`)
+  }
+
+  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: targetStatus }),
+  })
+
+  if (!response.ok) {
+    const verb = targetStatus === 'paused' ? 'pause' : 'unpause'
+    throw new Error(`Failed to ${verb} task: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{ task: { id: string; status: string } }>(response, 'Task status update')
+  const action = targetStatus === 'paused' ? 'Paused' : 'Unpaused'
+  console.log(`${action} task ${data.task.id} [${data.task.status}]`)
+}
+
+interface AppDetailPayload {
+  id: string
+  name: string
+  currentVersionNum: number | null
+  currentVersion: {
+    versionId: string
+    versionNum: number
+    inputJsonSchema: unknown
+    outputJsonSchema: unknown
+  } | null
+  createdAt: string
+  updatedAt: string
+  projectId: string | null
+  compatibleDatasetsCount: number
+  totalDatasetsCount: number
+  createdByName: string | null
+  createdByEmail: string | null
+  teamSlug: string
+  teamName: string
+  projectSlug: string
+  projectName: string
+}
+
+async function appDetail() {
+  const appId = getArg('--app')
+  const project = getArg('--project')
+
+  if (!appId) {
+    throw new Error('Usage: orizu apps detail --app <appId> [--project <team/project>] [--json]')
+  }
+
+  const projectSlug = project || await resolveProjectSlug(null)
+  const apps = await fetchApps(projectSlug)
+  const app = apps.find(a => a.id === appId)
+
+  if (!app) {
+    throw new Error(`App '${appId}' not found in project '${projectSlug}'`)
+  }
+
+  // Re-fetch full detail from the list (it already returns full data)
+  const detailResponse = await authedFetch(`/api/cli/apps?project=${encodeURIComponent(projectSlug)}`)
+  if (!detailResponse.ok) {
+    throw new Error(`Failed to fetch app detail: ${await detailResponse.text()}`)
+  }
+
+  const detailData = await parseJsonResponse<{ apps: AppDetailPayload[] }>(detailResponse, 'App detail')
+  const detail = detailData.apps.find(a => a.id === appId)
+
+  if (!detail) {
+    throw new Error(`App '${appId}' not found`)
+  }
+
+  if (hasArg('--json')) {
+    console.log(JSON.stringify(detail, null, 2))
+    return
+  }
+
+  console.log(`App: ${detail.name} (${detail.id})`)
+  console.log(`  Project: ${detail.teamSlug}/${detail.projectSlug}`)
+  if (detail.currentVersion) {
+    console.log(`  Current version: v${detail.currentVersion.versionNum} (${detail.currentVersion.versionId})`)
+    console.log(`  Input schema: ${detail.currentVersion.inputJsonSchema ? 'defined' : 'none'}`)
+    console.log(`  Output schema: ${detail.currentVersion.outputJsonSchema ? 'defined' : 'none'}`)
+  } else {
+    console.log(`  Current version: none`)
+  }
+  console.log(`  Compatible datasets: ${detail.compatibleDatasetsCount}/${detail.totalDatasetsCount}`)
+  if (detail.createdByEmail) {
+    console.log(`  Created by: ${detail.createdByName || detail.createdByEmail}`)
+  }
+  console.log(`  Created: ${detail.createdAt}`)
+  console.log(`  Updated: ${detail.updatedAt}`)
+}
+
 async function listTeamMembers() {
   const teamSlug = await resolveTeamSlug(getArg('--team'))
 
@@ -1701,6 +1798,11 @@ async function main() {
     return
   }
 
+  if (command === 'apps' && subcommand === 'detail') {
+    await appDetail()
+    return
+  }
+
   if (command === 'tasks' && subcommand === 'list') {
     await listTasks()
     return
@@ -1718,6 +1820,16 @@ async function main() {
 
   if (command === 'tasks' && subcommand === 'status') {
     await taskStatus()
+    return
+  }
+
+  if (command === 'tasks' && subcommand === 'pause') {
+    await updateTaskStatus('paused')
+    return
+  }
+
+  if (command === 'tasks' && subcommand === 'unpause') {
+    await updateTaskStatus('active')
     return
   }
 
