@@ -33,6 +33,19 @@ Set these in this source repo:
    git push origin cli-v0.0.3
    ```
 3. `publish-cli.yml` publishes npm and pushes `v0.0.3` to CLI mirror.
+4. Verify the published CLI surface:
+   ```bash
+   npx orizu --help
+   ```
+   Confirm the published help output includes:
+   - `tasks create --assignees <userIdOrEmail1,userIdOrEmail2>`
+   - dataset mutation commands: `append`, `edit-rows`, `delete-rows`, `lock`, and `clone`
+
+## Post-Publish Operator Checks
+
+- Run `npx orizu --help` and confirm the published package matches the repo command surface.
+- Run `orizu teams members list --team <team>` and confirm the table shows `MEMBER ID`, `USER ID`, `EMAIL`, and `ROLE`.
+- Run `orizu tasks create --assignees <email-or-user-id>` and confirm task creation still stores canonical user IDs server-side.
 
 ## External Consumption
 

@@ -105,6 +105,16 @@ Interactive fallback:
 orizu teams members list --team my-team
 ```
 
+Output columns:
+- `MEMBER ID`: the `team_memberships` row ID
+- `USER ID`: the canonical user identity used for task assignment and assignment storage
+- `EMAIL`
+- `ROLE`
+
+Notes:
+- `tasks create --assignees` accepts `USER ID` values, emails, or a mix of both.
+- `tasks assign --assignees` still expects canonical `USER ID` values.
+
 Interactive fallback:
 - If `--team` is omitted, CLI prompts for team selection.
 
@@ -363,17 +373,19 @@ orizu tasks create \
   --app <appId> \
   --version 3 \
   --title "Round 1 labeling" \
-  --assignees <userId1,userId2> \
+  --assignees <userIdOrEmail1,userIdOrEmail2> \
   --instructions "Follow rubric v1" \
   --labels-per-item 2
 ```
 
 Task creation behavior:
 - `--assignees` is required.
+- `--assignees` accepts canonical user IDs, emails, or a comma-separated mix.
 - `--version <n>` is optional and defaults to the app's current pinned version.
 - Assignments are created immediately during `tasks create`.
 - The backend resolves and pins either the requested app version or the app's current `version_id` at task-creation time.
 - Dataset compatibility is validated against that pinned app version before any task rows are inserted, including per-row input-schema checks.
+- Invalid assignee selectors return per-assignee validation output so operators can fix specific emails or user IDs.
 
 ### Assign task
 
@@ -459,7 +471,7 @@ orizu tasks create \
   --app <appId> \
   --version 1 \
   --title "Support QA Round 1" \
-  --assignees <userId1,userId2> \
+  --assignees <userIdOrEmail1,userIdOrEmail2> \
   --labels-per-item 2
 
 orizu tasks status --task <taskId>
@@ -486,7 +498,7 @@ The commands above will prompt for team/project/task selection where needed.
 - Validation errors:
   - App create/update rejects invalid component contract and invalid schema files.
   - App create requires `--dataset`.
-  - Task create requires `--assignees`.
+  - Task create requires `--assignees` and accepts user IDs or emails.
 
 ## Current Limitations
 
