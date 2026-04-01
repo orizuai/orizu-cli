@@ -82,7 +82,15 @@ export function loadCredentialsConfig(): StoredCredentialsV2 | null {
   }
 
   const raw = readFileSync(path, 'utf-8')
-  const parsed = JSON.parse(raw) as unknown
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    console.warn('Warning: credentials file contains invalid JSON — please re-login with `orizu login`')
+    return null
+  }
+
   if (isStoredCredentialsV2(parsed)) {
     return parsed
   }
@@ -91,7 +99,8 @@ export function loadCredentialsConfig(): StoredCredentialsV2 | null {
     return migrateToV2(parsed)
   }
 
-  throw new Error('Invalid credentials file format.')
+  console.warn('Warning: credentials file has unrecognized format — please re-login with `orizu login`')
+  return null
 }
 
 export function getServerCredentials(baseUrl: string): ServerCredentials | null {
