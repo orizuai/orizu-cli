@@ -9,6 +9,7 @@ import { stdin as input, stdout as output } from 'process'
 import { clearServerCredentials, getServerCredentials, saveServerCredentials } from './credentials.js'
 import { parseDatasetFile } from './file-parser.js'
 import { parseDatasetReference } from './dataset-download.js'
+import { extractErrorMessage } from './error-response.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js'
 import { formatTaskCreateError } from './task-create-error.js'
@@ -199,7 +200,6 @@ async function parseJsonResponse<T>(response: Response, context: string): Promis
     )
   }
 }
-
 async function promptSelect<T>(
   title: string,
   items: T[],
@@ -1133,9 +1133,8 @@ async function taskStatus() {
 
   const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`)
   if (!response.ok) {
-    const rawBody = await response.text()
-
     if (hasArg('--json')) {
+      const rawBody = await response.text()
       let errorPayload: Record<string, unknown> = { error: rawBody }
       try {
         const parsed = JSON.parse(rawBody)
@@ -1152,7 +1151,7 @@ async function taskStatus() {
       process.exit(1)
     }
 
-    throw new Error(`Failed to fetch task status: ${rawBody}`)
+    throw new Error(`Failed to fetch task status: ${await extractErrorMessage(response)}`)
   }
 
   const data = await parseJsonResponse<TaskStatusPayload>(response, 'Task status')

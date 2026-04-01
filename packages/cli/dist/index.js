@@ -9,6 +9,7 @@ import { stdin as input, stdout as output } from 'process';
 import { clearServerCredentials, getServerCredentials, saveServerCredentials } from './credentials.js';
 import { parseDatasetFile } from './file-parser.js';
 import { parseDatasetReference } from './dataset-download.js';
+import { extractErrorMessage } from './error-response.js';
 import { parseGlobalFlags } from './global-flags.js';
 import { authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js';
 import { formatTaskCreateError } from './task-create-error.js';
@@ -755,11 +756,14 @@ async function taskStatus() {
     }
     const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`);
     if (!response.ok) {
-        const rawBody = await response.text();
         if (hasArg('--json')) {
+            const rawBody = await response.text();
             let errorPayload = { error: rawBody };
             try {
-                errorPayload = JSON.parse(rawBody);
+                const parsed = JSON.parse(rawBody);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    errorPayload = parsed;
+                }
             }
             catch {
                 // keep raw body as error
@@ -770,7 +774,7 @@ async function taskStatus() {
             }, null, 2));
             process.exit(1);
         }
-        throw new Error(`Failed to fetch task status: ${rawBody}`);
+        throw new Error(`Failed to fetch task status: ${await extractErrorMessage(response)}`);
     }
     const data = await parseJsonResponse(response, 'Task status');
     if (hasArg('--json')) {
