@@ -389,6 +389,9 @@ Note:
 ```bash
 orizu tasks status --task <taskId>
 orizu tasks status --task <taskId> --json
+orizu tasks status --task <taskId> --set paused
+orizu tasks status --task <taskId> --set active
+orizu tasks status --task <taskId> --set completed
 ```
 
 Includes:
@@ -396,6 +399,11 @@ Includes:
 - progress counts
 - per-assignee breakdown
 - paused assignments as a distinct count, not folded into pending
+
+Notes:
+- task status reads and updates are manager-only operator surfaces
+- `completed` is terminal in the canonical task contract
+- `active` resumes a previously paused task and restores paused assignments to pending
 
 ### Export task outputs
 
@@ -412,6 +420,11 @@ Defaults:
 - format defaults to `jsonl`
 - output file defaults to `<taskId>.<format>`
 - if `--task` omitted, CLI prompts interactively
+
+Notes:
+- task export is manager-only
+- JSON exports return `{ metadata, responses }`
+- JSONL exports emit one canonical response record per line using the same response shape as JSON
 
 ## End-to-End Examples
 
