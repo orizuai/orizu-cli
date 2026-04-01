@@ -2,7 +2,7 @@
 import { createHash, randomBytes } from 'crypto'
 import { basename } from 'path'
 import { createServer } from 'http'
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, statSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
 import { createInterface } from 'readline/promises'
 import { stdin as input, stdout as output } from 'process'
@@ -650,15 +650,34 @@ function printTaskStatusSummary(data: TaskStatusPayload) {
   }
 }
 
+const DEFAULT_AUTH_CALLBACK_PORT = 43123
+
+function resolveAuthCallbackPort(): number {
+  const envPort = process.env.ORIZU_AUTH_PORT
+  if (!envPort) {
+    return DEFAULT_AUTH_CALLBACK_PORT
+  }
+
+  const parsed = parseInt(envPort, 10)
+  if (Number.isNaN(parsed) || parsed < 1024 || parsed > 65535) {
+    throw new Error(
+      `Invalid ORIZU_AUTH_PORT: '${envPort}'. Must be a number between 1024 and 65535.`
+    )
+  }
+
+  return parsed
+}
+
 async function login() {
   const baseUrl = resolveLoginBaseUrl()
   const codeVerifier = createCodeVerifier()
   const codeChallenge = createCodeChallenge(codeVerifier)
+  const callbackPort = resolveAuthCallbackPort()
 
   const callbackCode = await new Promise<string>((resolve, reject) => {
     const server = createServer((request, response) => {
       try {
-        const url = new URL(request.url || '/', 'http://127.0.0.1:43123')
+        const url = new URL(request.url || '/', `http://127.0.0.1:${callbackPort}`)
         const code = url.searchParams.get('code')
 
         if (!code) {
@@ -679,11 +698,19 @@ async function login() {
       }
     })
 
-    server.on('error', reject)
+    server.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
+        reject(new Error(
+          `Port ${callbackPort} is already in use. Set ORIZU_AUTH_PORT to a different port (1024–65535) and retry.`
+        ))
+      } else {
+        reject(error)
+      }
+    })
 
-    server.listen(43123, '127.0.0.1', async () => {
+    server.listen(callbackPort, '127.0.0.1', async () => {
       try {
-        const redirectUri = 'http://127.0.0.1:43123/callback'
+        const redirectUri = `http://127.0.0.1:${callbackPort}/callback`
         const response = await fetch(`${baseUrl}/api/cli/auth/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1300,6 +1327,29 @@ async function downloadDataset() {
   console.log(`Saved dataset ${datasetId} (${format.toUpperCase()}) to ${filename}`)
 }
 
+const MAX_INPUT_FILE_SIZE_BYTES = 50 * 1024 * 1024 // 50 MB
+const APPEND_CHUNK_SIZE_ROWS = 500
+
+async function appendChunk(
+  datasetId: string,
+  rows: Array<Record<string, unknown>>
+): Promise<{ dataset: { id: string; name: string; rowCount: number }; appendedCount: number }> {
+  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/rows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Append failed: ${await response.text()}`)
+  }
+
+  return parseJsonResponse<{
+    dataset: { id: string; name: string; rowCount: number }
+    appendedCount: number
+  }>(response, 'Dataset append')
+}
+
 async function appendDatasetRows() {
   const projectArg = getArg('--project')
   const datasetInput = getDatasetReferenceInput()
@@ -1318,29 +1368,48 @@ async function appendDatasetRows() {
   }
 
   const file = expandHomePath(fileArg)
+
+  const fileSizeBytes = statSync(file).size
+  if (fileSizeBytes > MAX_INPUT_FILE_SIZE_BYTES) {
+    const sizeMb = (fileSizeBytes / (1024 * 1024)).toFixed(1)
+    throw new Error(
+      `Input file is ${sizeMb} MB, which exceeds the 50 MB limit. Split the file into smaller parts and append each separately.`
+    )
+  }
+
   const { rows } = parseDatasetFile(file)
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error('Dataset append file must contain at least one row')
   }
 
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/rows`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rows }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Append failed: ${await response.text()}`)
+  if (rows.length <= APPEND_CHUNK_SIZE_ROWS) {
+    const data = await appendChunk(datasetId, rows)
+    console.log(
+      `Appended ${data.appendedCount} rows to dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`
+    )
+    return
   }
 
-  const data = await parseJsonResponse<{
-    dataset: { id: string; name: string; rowCount: number }
-    appendedCount: number
-  }>(response, 'Dataset append')
+  // Chunked upload for large row counts
+  let totalAppended = 0
+  let lastResult: { dataset: { id: string; name: string; rowCount: number } } | null = null
 
-  console.log(
-    `Appended ${data.appendedCount} rows to dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`
-  )
+  for (let offset = 0; offset < rows.length; offset += APPEND_CHUNK_SIZE_ROWS) {
+    const chunk = rows.slice(offset, offset + APPEND_CHUNK_SIZE_ROWS)
+    const chunkIndex = Math.floor(offset / APPEND_CHUNK_SIZE_ROWS) + 1
+    const totalChunks = Math.ceil(rows.length / APPEND_CHUNK_SIZE_ROWS)
+
+    console.log(`Uploading chunk ${chunkIndex}/${totalChunks} (${chunk.length} rows)...`)
+    const data = await appendChunk(datasetId, chunk)
+    totalAppended += data.appendedCount
+    lastResult = data
+  }
+
+  if (lastResult) {
+    console.log(
+      `Appended ${totalAppended} rows to dataset ${lastResult.dataset.name} (${lastResult.dataset.id}). New row count: ${lastResult.dataset.rowCount}`
+    )
+  }
 }
 
 async function editDatasetRows() {
