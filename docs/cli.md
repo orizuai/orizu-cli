@@ -129,7 +129,9 @@ Interactive fallback:
 - If `--team` is omitted, CLI prompts for team.
 
 Behavior:
-- If user does not exist yet, invite flow is used (user creation + invitation email + membership).
+- Orizu first tries to create the auth user.
+- If the email already belongs to an existing account, Orizu reuses that account, sends the existing-user invitation email, and adds the team membership directly.
+- If the email is new, invite flow is used (user creation + invitation email + membership).
 
 ### Remove team member
 
