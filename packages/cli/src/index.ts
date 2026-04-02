@@ -1475,7 +1475,26 @@ async function appendDatasetRows() {
 
   const file = expandHomePath(fileArg)
 
-  const fileSizeBytes = statSync(file).size
+  // Check file size before reading to prevent OOM on large files (ALI-565).
+  // Wrap statSync in try/catch so missing/inaccessible files get friendly
+  // errors instead of raw Node.js ENOENT/EPERM (ALI-554).
+  let fileSizeBytes: number
+  try {
+    fileSizeBytes = statSync(file).size
+  } catch (error) {
+    const maybeError = error as NodeJS.ErrnoException
+    if (maybeError.code === 'ENOENT') {
+      throw new Error(
+        `File not found: ${file}. Check the path and filename, then retry.`
+      )
+    }
+    if (maybeError.code === 'EPERM' || maybeError.code === 'EACCES') {
+      throw new Error(
+        `Permission denied: ${file}. Check file permissions, then retry.`
+      )
+    }
+    throw error
+  }
   if (fileSizeBytes > MAX_INPUT_FILE_SIZE_BYTES) {
     const sizeMb = (fileSizeBytes / (1024 * 1024)).toFixed(1)
     throw new Error(
@@ -1496,19 +1515,28 @@ async function appendDatasetRows() {
     return
   }
 
-  // Chunked upload for large row counts
+  // Chunked upload for large row counts (ALI-555: track partial progress)
   let totalAppended = 0
   let lastResult: { dataset: { id: string; name: string; rowCount: number } } | null = null
+  const totalChunks = Math.ceil(rows.length / APPEND_CHUNK_SIZE_ROWS)
 
   for (let offset = 0; offset < rows.length; offset += APPEND_CHUNK_SIZE_ROWS) {
     const chunk = rows.slice(offset, offset + APPEND_CHUNK_SIZE_ROWS)
     const chunkIndex = Math.floor(offset / APPEND_CHUNK_SIZE_ROWS) + 1
-    const totalChunks = Math.ceil(rows.length / APPEND_CHUNK_SIZE_ROWS)
 
     console.log(`Uploading chunk ${chunkIndex}/${totalChunks} (${chunk.length} rows)...`)
-    const data = await appendChunk(datasetId, chunk)
-    totalAppended += data.appendedCount
-    lastResult = data
+    try {
+      const data = await appendChunk(datasetId, chunk)
+      totalAppended += data.appendedCount
+      lastResult = data
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `Chunk ${chunkIndex}/${totalChunks} failed: ${msg}\n` +
+        `${totalAppended} rows from ${chunkIndex - 1} chunk(s) were already appended. ` +
+        `To retry, remove the first ${totalAppended} rows from your file and re-run the command.`
+      )
+    }
   }
 
   if (lastResult) {

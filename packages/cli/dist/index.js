@@ -1008,31 +1008,42 @@ async function appendDatasetRows() {
         datasetId = selected.datasetId;
     }
     const file = expandHomePath(fileArg);
+    // Parse the file first — parseDatasetFile provides user-friendly errors for
+    // ENOENT, EPERM, and EACCES. We check the file size afterward using the
+    // already-read content length to avoid a raw statSync ENOENT (ALI-554).
+    const { rows } = parseDatasetFile(file);
+    if (!Array.isArray(rows) || rows.length === 0) {
+        throw new Error('Dataset append file must contain at least one row');
+    }
     const fileSizeBytes = statSync(file).size;
     if (fileSizeBytes > MAX_INPUT_FILE_SIZE_BYTES) {
         const sizeMb = (fileSizeBytes / (1024 * 1024)).toFixed(1);
         throw new Error(`Input file is ${sizeMb} MB, which exceeds the 50 MB limit. Split the file into smaller parts and append each separately.`);
-    }
-    const { rows } = parseDatasetFile(file);
-    if (!Array.isArray(rows) || rows.length === 0) {
-        throw new Error('Dataset append file must contain at least one row');
     }
     if (rows.length <= APPEND_CHUNK_SIZE_ROWS) {
         const data = await appendChunk(datasetId, rows);
         console.log(`Appended ${data.appendedCount} rows to dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`);
         return;
     }
-    // Chunked upload for large row counts
+    // Chunked upload for large row counts (ALI-555: track partial progress)
     let totalAppended = 0;
     let lastResult = null;
+    const totalChunks = Math.ceil(rows.length / APPEND_CHUNK_SIZE_ROWS);
     for (let offset = 0; offset < rows.length; offset += APPEND_CHUNK_SIZE_ROWS) {
         const chunk = rows.slice(offset, offset + APPEND_CHUNK_SIZE_ROWS);
         const chunkIndex = Math.floor(offset / APPEND_CHUNK_SIZE_ROWS) + 1;
-        const totalChunks = Math.ceil(rows.length / APPEND_CHUNK_SIZE_ROWS);
         console.log(`Uploading chunk ${chunkIndex}/${totalChunks} (${chunk.length} rows)...`);
-        const data = await appendChunk(datasetId, chunk);
-        totalAppended += data.appendedCount;
-        lastResult = data;
+        try {
+            const data = await appendChunk(datasetId, chunk);
+            totalAppended += data.appendedCount;
+            lastResult = data;
+        }
+        catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            throw new Error(`Chunk ${chunkIndex}/${totalChunks} failed: ${msg}\n` +
+                `${totalAppended} rows from ${chunkIndex - 1} chunk(s) were already appended. ` +
+                `To retry, remove the first ${totalAppended} rows from your file and re-run the command.`);
+        }
     }
     if (lastResult) {
         console.log(`Appended ${totalAppended} rows to dataset ${lastResult.dataset.name} (${lastResult.dataset.id}). New row count: ${lastResult.dataset.rowCount}`);
