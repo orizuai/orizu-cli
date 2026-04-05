@@ -1490,10 +1490,10 @@ async function appendDatasetRows() {
     }
     if (maybeError.code === 'EPERM' || maybeError.code === 'EACCES') {
       throw new Error(
-        `Permission denied: ${file}. Check file permissions, then retry.`
+        `Cannot read file: ${file}. Grant folder permission to your terminal app and retry.`
       )
     }
-    throw error
+    throw new Error(`Failed to access file ${file}: ${maybeError.message}`)
   }
   if (fileSizeBytes > MAX_INPUT_FILE_SIZE_BYTES) {
     const sizeMb = (fileSizeBytes / (1024 * 1024)).toFixed(1)
