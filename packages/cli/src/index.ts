@@ -1053,7 +1053,6 @@ async function createTask() {
         ...payload,
         httpStatus: cliError.httpStatus,
       }, null, 2))
-      process.exit(1)
     }
     throw cliError
   }
@@ -1133,8 +1132,8 @@ async function taskStatus() {
 
   const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`)
   if (!response.ok) {
+    const rawBody = await response.text()
     if (hasArg('--json')) {
-      const rawBody = await response.text()
       let errorPayload: Record<string, unknown> = { error: rawBody }
       try {
         const parsed = JSON.parse(rawBody)
@@ -1148,10 +1147,16 @@ async function taskStatus() {
         ...errorPayload,
         httpStatus: response.status,
       }, null, 2))
-      process.exit(1)
     }
 
-    throw new Error(`Failed to fetch task status: ${await extractErrorMessage(response)}`)
+    let errorMsg = rawBody
+    try {
+      const parsed = JSON.parse(rawBody)
+      if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+        errorMsg = parsed.error
+      }
+    } catch { /* use rawBody as-is */ }
+    throw new Error(`Failed to fetch task status: ${errorMsg}`)
   }
 
   const data = await parseJsonResponse<TaskStatusPayload>(response, 'Task status')
@@ -1218,14 +1223,8 @@ async function appDetail() {
   }
 
   const projectSlug = project || await resolveProjectSlug(null)
-  const apps = await fetchApps(projectSlug)
-  const app = apps.find(a => a.id === appId)
 
-  if (!app) {
-    throw new Error(`App '${appId}' not found in project '${projectSlug}'`)
-  }
-
-  // Re-fetch full detail from the list (it already returns full data)
+  // Single fetch — the apps endpoint already returns full detail (ALI-544)
   const detailResponse = await authedFetch(`/api/cli/apps?project=${encodeURIComponent(projectSlug)}`)
   if (!detailResponse.ok) {
     throw new Error(`Failed to fetch app detail: ${await detailResponse.text()}`)
@@ -1235,7 +1234,7 @@ async function appDetail() {
   const detail = detailData.apps.find(a => a.id === appId)
 
   if (!detail) {
-    throw new Error(`App '${appId}' not found`)
+    throw new Error(`App '${appId}' not found in project '${projectSlug}'`)
   }
 
   if (hasArg('--json')) {
