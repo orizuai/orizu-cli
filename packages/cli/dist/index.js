@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'crypto';
-import { basename } from 'path';
+import { basename, extname } from 'path';
 import { createServer } from 'http';
 import { readFileSync, statSync, writeFileSync } from 'fs';
 import { spawn } from 'child_process';
@@ -8,8 +8,8 @@ import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import { clearServerCredentials, getServerCredentials, saveServerCredentials } from './credentials.js';
 import { parseDatasetFile } from './file-parser.js';
+import { streamJsonlRowChunks } from './jsonl-stream.js';
 import { parseDatasetReference } from './dataset-download.js';
-import { extractErrorMessage } from './error-response.js';
 import { parseGlobalFlags } from './global-flags.js';
 import { authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js';
 import { formatTaskCreateError } from './task-create-error.js';
@@ -700,7 +700,6 @@ async function createTask() {
                 ...payload,
                 httpStatus: cliError.httpStatus,
             }, null, 2));
-            process.exit(1);
         }
         throw cliError;
     }
@@ -756,8 +755,8 @@ async function taskStatus() {
     }
     const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`);
     if (!response.ok) {
+        const rawBody = await response.text();
         if (hasArg('--json')) {
-            const rawBody = await response.text();
             let errorPayload = { error: rawBody };
             try {
                 const parsed = JSON.parse(rawBody);
@@ -772,9 +771,16 @@ async function taskStatus() {
                 ...errorPayload,
                 httpStatus: response.status,
             }, null, 2));
-            process.exit(1);
         }
-        throw new Error(`Failed to fetch task status: ${await extractErrorMessage(response)}`);
+        let errorMsg = rawBody;
+        try {
+            const parsed = JSON.parse(rawBody);
+            if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
+                errorMsg = parsed.error;
+            }
+        }
+        catch { /* use rawBody as-is */ }
+        throw new Error(`Failed to fetch task status: ${errorMsg}`);
     }
     const data = await parseJsonResponse(response, 'Task status');
     if (hasArg('--json')) {
@@ -809,12 +815,7 @@ async function appDetail() {
         throw new Error('Usage: orizu apps detail --app <appId> [--project <team/project>] [--json]');
     }
     const projectSlug = project || await resolveProjectSlug(null);
-    const apps = await fetchApps(projectSlug);
-    const app = apps.find(a => a.id === appId);
-    if (!app) {
-        throw new Error(`App '${appId}' not found in project '${projectSlug}'`);
-    }
-    // Re-fetch full detail from the list (it already returns full data)
+    // Single fetch — the apps endpoint already returns full detail (ALI-544)
     const detailResponse = await authedFetch(`/api/cli/apps?project=${encodeURIComponent(projectSlug)}`);
     if (!detailResponse.ok) {
         throw new Error(`Failed to fetch app detail: ${await detailResponse.text()}`);
@@ -822,7 +823,7 @@ async function appDetail() {
     const detailData = await parseJsonResponse(detailResponse, 'App detail');
     const detail = detailData.apps.find(a => a.id === appId);
     if (!detail) {
-        throw new Error(`App '${appId}' not found`);
+        throw new Error(`App '${appId}' not found in project '${projectSlug}'`);
     }
     if (hasArg('--json')) {
         console.log(JSON.stringify(detail, null, 2));
@@ -908,6 +909,84 @@ async function changeTeamMemberRole() {
     }
     console.log(`Updated ${member.email} role to ${role}`);
 }
+async function createDatasetFromRows(project, name, sourceType, rows) {
+    const response = await authedFetch('/api/cli/datasets/upload', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            projectSlug: project,
+            name,
+            rows,
+            sourceType,
+        }),
+    });
+    if (!response.ok) {
+        const body = await parseJsonResponse(response, 'Dataset upload');
+        throw new Error(`Upload failed: ${body.error}`);
+    }
+    return parseJsonResponse(response, 'Dataset upload');
+}
+async function uploadJsonlDatasetInChunks(file, project, datasetName) {
+    let dataset = null;
+    let totalUploaded = 0;
+    let chunkIndex = 0;
+    const chunks = streamJsonlRowChunks(file)[Symbol.asyncIterator]();
+    while (true) {
+        let nextChunk;
+        try {
+            nextChunk = await chunks.next();
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!dataset) {
+                throw new Error(message);
+            }
+            throw new Error(`Upload stopped while reading the next JSONL chunk: ${message}\n` +
+                `Dataset ${dataset.name} (${dataset.id}) was created and ${totalUploaded} rows were uploaded. ` +
+                `Fix the file, remove the first ${totalUploaded} rows, and run ` +
+                `orizu datasets append --dataset ${dataset.id} --file <remaining-file>.`);
+        }
+        if (nextChunk.done) {
+            break;
+        }
+        const chunk = nextChunk.value;
+        chunkIndex += 1;
+        console.log(`Uploading chunk ${chunkIndex} (${chunk.length} rows)...`);
+        try {
+            if (!dataset) {
+                const data = await createDatasetFromRows(project, datasetName, 'jsonl', chunk);
+                dataset = data.dataset;
+                totalUploaded = data.dataset.rowCount;
+                continue;
+            }
+            const data = await appendChunk(dataset.id, chunk);
+            totalUploaded += data.appendedCount;
+            dataset = {
+                ...dataset,
+                rowCount: data.dataset.rowCount,
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!dataset) {
+                throw new Error(message);
+            }
+            throw new Error(`Chunk ${chunkIndex} failed: ${message}\n` +
+                `Dataset ${dataset.name} (${dataset.id}) was created and ${totalUploaded} rows were uploaded. ` +
+                `To retry, remove the first ${totalUploaded} rows from your file and run ` +
+                `orizu datasets append --dataset ${dataset.id} --file <remaining-file>.`);
+        }
+    }
+    if (!dataset) {
+        throw new Error('Dataset file contains no rows');
+    }
+    console.log(`Uploaded dataset ${dataset.name} (${dataset.id}) with ${dataset.rowCount} rows.`);
+    if (dataset.url) {
+        console.log(`View dataset: ${formatTerminalLink(dataset.url)}`);
+    }
+}
 async function uploadDataset() {
     const projectArg = getArg('--project');
     const fileArg = getArg('--file');
@@ -917,25 +996,13 @@ async function uploadDataset() {
     }
     const file = expandHomePath(fileArg);
     const project = await resolveProjectSlug(projectArg);
-    const { rows, sourceType } = parseDatasetFile(file);
     const datasetName = name || basename(file);
-    const response = await authedFetch('/api/cli/datasets/upload', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            projectSlug: project,
-            name: datasetName,
-            rows,
-            sourceType,
-        }),
-    });
-    if (!response.ok) {
-        const body = await parseJsonResponse(response, 'Dataset upload');
-        throw new Error(`Upload failed: ${body.error}`);
+    if (extname(file).toLowerCase() === '.jsonl') {
+        await uploadJsonlDatasetInChunks(file, project, datasetName);
+        return;
     }
-    const data = await parseJsonResponse(response, 'Dataset upload');
+    const { rows, sourceType } = parseDatasetFile(file);
+    const data = await createDatasetFromRows(project, datasetName, sourceType, rows);
     console.log(`Uploaded dataset ${data.dataset.name} (${data.dataset.id}) with ${data.dataset.rowCount} rows.`);
     if (data.dataset.url) {
         console.log(`View dataset: ${formatTerminalLink(data.dataset.url)}`);
@@ -992,6 +1059,45 @@ async function appendChunk(datasetId, rows) {
     }
     return parseJsonResponse(response, 'Dataset append');
 }
+async function appendJsonlDatasetRowsInChunks(datasetId, file) {
+    let totalAppended = 0;
+    let lastResult = null;
+    let chunkIndex = 0;
+    const chunks = streamJsonlRowChunks(file)[Symbol.asyncIterator]();
+    while (true) {
+        let nextChunk;
+        try {
+            nextChunk = await chunks.next();
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Append stopped while reading the next JSONL chunk: ${message}\n` +
+                `${totalAppended} rows from ${chunkIndex} chunk(s) were already appended. ` +
+                `Fix the file, remove the first ${totalAppended} rows, and re-run the command.`);
+        }
+        if (nextChunk.done) {
+            break;
+        }
+        const chunk = nextChunk.value;
+        chunkIndex += 1;
+        console.log(`Uploading chunk ${chunkIndex} (${chunk.length} rows)...`);
+        try {
+            const data = await appendChunk(datasetId, chunk);
+            totalAppended += data.appendedCount;
+            lastResult = data;
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Chunk ${chunkIndex} failed: ${message}\n` +
+                `${totalAppended} rows from ${chunkIndex - 1} chunk(s) were already appended. ` +
+                `To retry, remove the first ${totalAppended} rows from your file and re-run the command.`);
+        }
+    }
+    if (!lastResult) {
+        throw new Error('Dataset append file must contain at least one row');
+    }
+    console.log(`Appended ${totalAppended} rows to dataset ${lastResult.dataset.name} (${lastResult.dataset.id}). New row count: ${lastResult.dataset.rowCount}`);
+}
 async function appendDatasetRows() {
     const projectArg = getArg('--project');
     const datasetInput = getDatasetReferenceInput();
@@ -1008,17 +1114,34 @@ async function appendDatasetRows() {
         datasetId = selected.datasetId;
     }
     const file = expandHomePath(fileArg);
-    // Parse the file first — parseDatasetFile provides user-friendly errors for
-    // ENOENT, EPERM, and EACCES. We check the file size afterward using the
-    // already-read content length to avoid a raw statSync ENOENT (ALI-554).
-    const { rows } = parseDatasetFile(file);
-    if (!Array.isArray(rows) || rows.length === 0) {
-        throw new Error('Dataset append file must contain at least one row');
+    if (extname(file).toLowerCase() === '.jsonl') {
+        await appendJsonlDatasetRowsInChunks(datasetId, file);
+        return;
     }
-    const fileSizeBytes = statSync(file).size;
+    // Check file size before reading to prevent OOM on large files (ALI-565).
+    // Wrap statSync in try/catch so missing/inaccessible files get friendly
+    // errors instead of raw Node.js ENOENT/EPERM (ALI-554).
+    let fileSizeBytes;
+    try {
+        fileSizeBytes = statSync(file).size;
+    }
+    catch (error) {
+        const maybeError = error;
+        if (maybeError.code === 'ENOENT') {
+            throw new Error(`File not found: ${file}. Check the path and filename, then retry.`);
+        }
+        if (maybeError.code === 'EPERM' || maybeError.code === 'EACCES') {
+            throw new Error(`Cannot read file: ${file}. Grant folder permission to your terminal app and retry.`);
+        }
+        throw new Error(`Failed to access file ${file}: ${maybeError.message}`);
+    }
     if (fileSizeBytes > MAX_INPUT_FILE_SIZE_BYTES) {
         const sizeMb = (fileSizeBytes / (1024 * 1024)).toFixed(1);
         throw new Error(`Input file is ${sizeMb} MB, which exceeds the 50 MB limit. Split the file into smaller parts and append each separately.`);
+    }
+    const { rows } = parseDatasetFile(file);
+    if (!Array.isArray(rows) || rows.length === 0) {
+        throw new Error('Dataset append file must contain at least one row');
     }
     if (rows.length <= APPEND_CHUNK_SIZE_ROWS) {
         const data = await appendChunk(datasetId, rows);
