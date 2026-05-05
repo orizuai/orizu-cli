@@ -1,120 +1,145 @@
 ---
 name: orizu-cli
-description: Runs and troubleshoots Orizu CLI workflows for auth and workspace operations. Use when a request involves `orizu` commands, flags, interactive fallback behavior, or team/project/app/dataset/task lifecycle actions.
+description: Use when the user wants to improve an LLM application's performance in a measurable way, or mentions Orizu by name. Triggers include improving model or agent performance, collecting human feedback on model outputs, converting feedback into evals, building or crafting evals, running prompt optimization (including one-off prompt tweaks the user is willing to validate with evals), finetuning against evals, hill-climbing on metrics, or building "continually learning" agents. Orizu is a platform for building evals first, then improving LLM applications by optimizing against them. The CLI handles three workflows – gathering expert feedback, turning feedback into evals, and running optimizations (prompt optimization or finetuning). Do NOT use for prompt advice when the user has explicitly said they don't want to set up evals.
 ---
 
-# Orizu CLI
+# Orizu
 
-## Use This Skill When
+Orizu improves LLM applications by building evals first, then optimizing against them. The end-to-end loop has four steps: **Upload → Annotate → Judge → Optimize**. The CLI covers steps 1–2; steps 3–4 are done offline today (judges in code, optimization with DSPy + GEPA), with platform support coming.
 
-- The request asks to run, explain, or debug `orizu` commands.
-- The request involves auth (`login`, `logout`, `whoami`) or workspace setup.
-- The request involves CLI lifecycle operations for teams, projects, apps, datasets, or tasks.
+For end-to-end methodology and rationale, read `references/primer.md`. The reference docs below cover specific stages in depth.
 
-## Skip This Skill When
+## When to step aside
 
-- The request is web-UI only and does not involve the CLI.
-- The request is unrelated to Orizu workspace operations.
+Skip this skill when:
+- The user wants a one-off prompt tweak they explicitly won't validate with evals.
+- The user has already said they don't want to set up evals.
+- The request is generic prompt-engineering theory unrelated to a specific app.
+
+# Orizu CLI basics
 
 ## Prerequisites
 
-- Ensure Node.js 20+ is installed.
-- Ensure Orizu API is running (`http://localhost:3000` by default) or set `ORIZU_BASE_URL`.
-- Build CLI from source when needed:
-  ```bash
-  bun install
-  bun x tsc -p packages/cli/tsconfig.json
-  node packages/cli/dist/index.js --help
-  ```
-- Use `orizu` directly when globally installed; otherwise run `node packages/cli/dist/index.js ...`.
+- Node.js 20+ installed.
+- Install the CLI: `npm i -g orizu`.
+- Login callback requires `127.0.0.1:43123`.
+- Credentials are stored at `~/.config/orizu/credentials.json`.
 
-## Default Workflow
+## Login
 
-Copy this checklist for complex requests:
+- Verify auth: `orizu whoami`.
+- Start the login flow: `orizu login` (opens a browser tab).
+- Clear session: `orizu logout`.
+- Auth failure loop: `orizu login` → `orizu whoami` → rerun the original command.
 
-```text
-CLI Progress:
-- [ ] 1. Verify auth and target server (`orizu whoami`)
-- [ ] 2. Resolve required identifiers (team/project/app/task/dataset)
-- [ ] 3. Run command with explicit flags first
-- [ ] 4. Validate output and side effects
-- [ ] 5. If failure, read error, fix inputs, rerun
+## Teams and projects
+
+Projects live inside teams. Resolve or create both before any workflow command.
+
+- `orizu teams list` — list teams the user belongs to.
+- `orizu teams create --name "<team name>"` — create a team.
+- `orizu projects list [--team <teamSlug>]` — list projects (optionally scoped to a team).
+- `orizu projects create --name "<project name>" --team <teamSlug>` — create a project.
+
+For team membership, app, dataset, and task command surfaces, see `references/cli-reference.md`.
+
+# Evals best practices
+
+Walk through the four steps in order — each depends on the output of the previous. Methodology and rationale: `references/primer.md`.
+
+## 1. Upload — gather diverse traces
+
+Principles:
+- Mix production traces with a **random sample**. Thumbs-down feedback alone is biased toward extreme failures and misses subtle ones.
+- Aim for **~100+ diverse traces**. Stop adding when you stop discovering new failure modes (theoretical saturation).
+- Synthetic data is fine when real traces are scarce — vary structured inputs (feature × persona × scenario), seed from real logs, and filter for difficulty. Don't ask "generate 50 test cases" cold.
+
+CLI:
+```bash
+orizu datasets upload --project <teamSlug>/<projectSlug> --file <traces.jsonl> --name "<batch>"
+orizu datasets append --dataset <datasetId> --file <more.jsonl>
+orizu datasets lock --dataset <datasetId> --reason "Freeze for labeling"
 ```
 
-## Quick Start
+Deeper: `references/primer.md` (Step 1, Step 0 error analysis); `references/cli-reference.md` (datasets surface).
 
-1. Authenticate:
-   ```bash
-   orizu login
-   orizu whoami
-   ```
-2. Set up workspace:
-   ```bash
-   orizu teams create --name "Ops Eval"
-   orizu projects create --name "Support QA" --team ops-eval
-   ```
-3. Upload dataset:
-   ```bash
-   orizu datasets upload --project ops-eval/support-qa --file ./datasets/support.jsonl --name "Support Batch 1"
-   ```
-4. Optionally append new rows later:
-   ```bash
-   orizu datasets append --dataset <datasetId> --file ./datasets/support-additional.jsonl
-   ```
-5. Optionally edit existing rows in place (each row must include canonical `id`):
-   ```bash
-   orizu datasets edit-rows --dataset <datasetId> --file ./datasets/support-edits.jsonl
-   ```
-6. Optionally delete incorrect rows:
-   ```bash
-   orizu datasets delete-rows --dataset <datasetId> --row-ids <rowId1,rowId2>
-   ```
-7. Optionally lock or clone dataset snapshots:
-   ```bash
-   orizu datasets lock --dataset <datasetId> --reason "Finalize for labeling"
-   orizu datasets clone --dataset <datasetId> --name "Support Batch 1 Copy"
-   ```
-7. Create or update app from file (dataset is required):
-   ```bash
-   orizu apps create \
-     --project ops-eval/support-qa \
-     --name "Support Labeler" \
-     --dataset <datasetId> \
-     --file ./apps/SupportLabeler.tsx \
-     --input-schema ./schemas/support-input.json \
-     --output-schema ./schemas/support-output.json
-   ```
-8. Optionally link a different dataset to an existing app version:
-   ```bash
-   orizu apps link-dataset --app <appId> --dataset <datasetId>
-   ```
-9. Run task lifecycle (task create requires assignees and creates assignments immediately):
-   ```bash
-   orizu tasks create --project ops-eval/support-qa --dataset <datasetId> --app <appId> --title "Support QA Round 1" --assignees <userId1,userId2>
-   orizu tasks status --task <taskId>
-   orizu tasks export --task <taskId> --format csv --out ./support-round1.csv
-   ```
+## 2. Annotate — binary labels per failure mode
 
-## Execution Rules
+Principles:
+- **Binary, not Likert.** Pass/fail forces a ship/no-ship decision; 3/5 doesn't.
+- **One question per failure mode.** Don't bundle correctness, tone, and helpfulness.
+- **Annotate failures you've actually observed.** Hypothetical-failure labels are low-value.
+- **Custom UI per task** — generic annotation interfaces collapse signal. The labeler should feel like an app annotators want to use, not a form they tolerate.
 
-- Prefer explicit flags for automation and CI.
-- Use interactive fallback only in a TTY when required selectors are omitted.
-- Use explicit selectors whenever possible:
-  - `--team`, `--project`, `--app`, `--task`, `--dataset`, `--assignees`.
-- For `tasks assign`, pass user IDs, not emails.
-- For assignment semantics, assume worker queues are assignee-self-only and operator summaries expose paused counts separately.
-- For `datasets edit-rows`, each row object in `--file` must include a non-empty string `id`.
-- For `datasets delete-rows`, use `--row-ids` selectors.
+CLI:
+```bash
+orizu apps create --project <teamSlug>/<projectSlug> --name "<labeler>" --dataset <datasetId> \
+  --file <App.tsx> --input-schema <input.json> --output-schema <output.json>
+
+orizu tasks create --project <teamSlug>/<projectSlug> --dataset <datasetId> --app <appId> \
+  --title "<round>" --assignees <userId1,userId2> --labels-per-item 2
+
+orizu tasks status --task <taskId>
+orizu tasks export --task <taskId> --format jsonl --out ./labels.jsonl
+```
+
+Authoring the labeler: **`references/building-apps.md`** covers the component contract, design principles, common patterns (trace exploration, side-by-side, text annotation, etc.), and the offline smoke test at `scripts/test-app.mjs` (runs on plain `node`). Run the smoke test before `orizu apps create`.
+
+Deeper: `references/primer.md` (Step 2); `references/cli-reference.md` (apps + tasks surface).
+
+## 3. Judge — turn labels into automated evaluators
+
+Done in code today; Orizu platform support is coming.
+
+Principles:
+- **Code assertions first.** If a failure is a rule (keyword present, tool called, format valid), write a code check. Fast, free, deterministic.
+- **LLM-as-a-judge for nuanced criteria only.** Always validate against your human labels.
+- **TPR > 90% and TNR > 90%** before trusting a judge. Track each separately — accuracy is misleading on imbalanced data.
+- **A 100% pass rate is a smell.** Your evals are saturated; add harder cases.
+
+Offline workflow:
+1. Export labels: `orizu tasks export --task <id> --format jsonl --out labels.jsonl`.
+2. For each failure mode, choose code assertion or LLM-judge.
+3. Build the judge.
+4. Validate: split labels train/dev/test (20/40/40), measure TPR + TNR on test, target both > 90%.
+5. Run the validated judge over future outputs.
+
+Detailed walkthrough — code assertion patterns, LLM-judge prompt scaffold, train/dev/test split, TPR/TNR computation, saturation: **`references/building-judges.md`**.
+
+## 4. Optimize — hill-climb against validated judges
+
+Done in code today with DSPy + GEPA; Orizu platform support is coming.
+
+Principles:
+- Only optimize against judges you've validated. Otherwise you Goodhart your way to a worse system.
+- Compare before/after on the **same held-out eval suite**. Don't trust vibes.
+- Read **per-failure-mode metrics**, not just combined — averages hide regressions.
+- Improved-system traces feed back into step 1; the loop continues.
+
+Offline workflow:
+1. Wrap the LLM application as a `dspy.Module`.
+2. Wire each validated judge as a DSPy metric.
+3. Run GEPA against the metric set; keep the highest-scoring candidate.
+4. Diff before/after on a held-out set; ship if it holds.
+
+Detailed walkthrough — DSPy program structure, metric wiring, GEPA invocation, before/after comparison: **`references/optimization-with-dspy-gepa.md`**.
+
+# Reference index
+
+- `references/primer.md` — methodology end-to-end (read first when in doubt about *why*).
+- `references/cli-reference.md` — full CLI command surface.
+- `references/building-apps.md` — labeler app contract, design principles, common patterns, offline smoke test.
+- `references/building-judges.md` — offline judge construction + TPR/TNR validation.
+- `references/optimization-with-dspy-gepa.md` — DSPy + GEPA optimization loop.
+- `scripts/test-app.mjs` — smoke test for `App.tsx` + schemas before `orizu apps create` (runs on plain `node`).
+
+# Execution rules
+
+- Prefer explicit flags in non-TTY contexts; reserve interactive fallback for TTY.
+- Canonical selectors: `--team`, `--project`, `--app`, `--task`, `--dataset`, `--assignees`.
+- `tasks assign` takes user IDs, not emails.
+- `datasets edit-rows` requires a non-empty string `id` on each row in `--file`.
+- `datasets delete-rows` uses `--row-ids` as the canonical selector.
+- Locked datasets reject append/edit/delete row mutations.
+- `--output-schema` JSON Schema validation surface is restricted to `type`, `required`, `properties`, `items`, `enum`.
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.
-- Auth failure loop:
-  - run `orizu login`
-  - confirm with `orizu whoami`
-  - rerun command
-- Login callback requires `127.0.0.1:43123`.
-- Credentials path: `~/.config/orizu/credentials.json`.
-
-## References
-
-- Read `references/cli-reference.md` for complete command examples and end-to-end flows.
-- Read `references/dataset-canonical-contract.md` for dataset identity, count, lineage, lock, and HF compatibility rules used by CLI workflows.
-- Read `references/task-canonical-contract.md` for pinned-version task creation, fanout, and export rules.

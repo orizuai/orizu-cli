@@ -84,6 +84,10 @@ orizu apps link-dataset --app <appId> --dataset <datasetId>
 
 ### Datasets
 
+Row identity contract:
+- `row.id` is the canonical row identifier; the rest of the JSON object is the payload.
+- `row_index` is not part of canonical runtime selection. CLI flags like `--row-ids` always take canonical `id` values.
+
 ```bash
 orizu datasets upload --file ./data.csv --project my-team/quality-eval --name "Batch 1"
 orizu datasets download --dataset <datasetId|datasetUrl> --format jsonl --out ./dataset.jsonl
@@ -127,8 +131,10 @@ orizu tasks create \
 
 Behavior:
 - task creation resolves and stores the app's pinned current `version_id` at create time
+- downstream consumers (exports, judges, optimization) should trust the task's pinned `version_id`, not the app's current pointer
 - dataset compatibility is validated against that pinned app version before the task is inserted
 - malformed JSON and mixed-type assignee arrays fail with deterministic `400` responses
+- assignment fanout enforces unique `(assignee, row)` pairs; `--labels-per-item` cannot exceed the number of unique assignees, and the backend shortfalls instead of duplicating
 
 Assign:
 
@@ -226,6 +232,14 @@ Use these shortcuts only in TTY environments where prompts can run.
 - Row deletes are rejected when targeted rows are assignment-referenced.
 - Login currently requires callback availability on `127.0.0.1:43123`.
 - In non-interactive contexts, pass explicit selection flags.
-- Dataset contract and HF compatibility profile: `references/dataset-canonical-contract.md`.
-- Task contract and pinned-version rules: `references/task-canonical-contract.md`.
-- Assignment ownership/response rules: `references/assignment-canonical-contract.md`.
+
+Output-schema validation surface:
+- `--output-schema` JSON is validated against a subset of JSON Schema only: `type`, `required`, `properties`, `items`, `enum`. Other keywords (`pattern`, `format`, `oneOf`, etc.) are ignored. See `building-apps.md` for the contract.
+
+Hugging Face / external dataset auth:
+- Never persist auth tokens in row payloads, dataset metadata, exports, or logs.
+- Store only non-secret credential references (e.g. `huggingface.token_ref`) in source metadata.
+
+Worker assignment reads are self-only:
+- Regular members cannot see other assignees' queues or response payloads.
+- Use `tasks status` and `tasks export` for operator-side reporting.
