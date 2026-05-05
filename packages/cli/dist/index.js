@@ -24,6 +24,9 @@ function getArg(name) {
     }
     return cliArgs[index + 1];
 }
+function normalizeSlugInput(slug) {
+    return slug.trim().toLowerCase();
+}
 function isInteractiveTerminal() {
     return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
@@ -124,7 +127,8 @@ async function fetchTeams() {
     return data.teams;
 }
 async function fetchProjects(teamSlug) {
-    const query = teamSlug ? `?teamSlug=${encodeURIComponent(teamSlug)}` : '';
+    const normalizedTeamSlug = teamSlug ? normalizeSlugInput(teamSlug) : undefined;
+    const query = normalizedTeamSlug ? `?teamSlug=${encodeURIComponent(normalizedTeamSlug)}` : '';
     const response = await authedFetch(`/api/cli/projects${query}`);
     if (!response.ok) {
         throw new Error(`Failed to fetch projects: ${await response.text()}`);
@@ -180,7 +184,7 @@ async function resolveProjectSlug(projectArg) {
     if (segments.length !== 2 || !segments[0] || !segments[1]) {
         throw new Error('Project must be in format teamSlug/projectSlug');
     }
-    const [teamSlug, projectSlug] = segments;
+    const [teamSlug, projectSlug] = segments.map(normalizeSlugInput);
     const matchedTeam = teams.find(team => team.slug === teamSlug);
     if (!matchedTeam) {
         console.error(`Team '${teamSlug}' not found in your accessible teams.`);
@@ -189,14 +193,14 @@ async function resolveProjectSlug(projectArg) {
         const selectedProject = await promptSelect(`Select a project in ${selectedTeam.slug}`, projects, project => `${project.name} (${project.teamSlug}/${project.slug})`);
         return `${selectedProject.teamSlug}/${selectedProject.slug}`;
     }
-    const projects = await fetchProjects(teamSlug);
+    const projects = await fetchProjects(matchedTeam.slug);
     const matchedProject = projects.find(project => project.slug === projectSlug);
     if (!matchedProject) {
-        console.error(`Project '${projectSlug}' not found in team '${teamSlug}'.`);
-        const selectedProject = await promptSelect(`Select a project in ${teamSlug}`, projects, project => `${project.name} (${project.teamSlug}/${project.slug})`);
+        console.error(`Project '${projectSlug}' not found in team '${matchedTeam.slug}'.`);
+        const selectedProject = await promptSelect(`Select a project in ${matchedTeam.slug}`, projects, project => `${project.name} (${project.teamSlug}/${project.slug})`);
         return `${selectedProject.teamSlug}/${selectedProject.slug}`;
     }
-    return `${teamSlug}/${projectSlug}`;
+    return `${matchedTeam.slug}/${matchedProject.slug}`;
 }
 async function selectTaskIdInteractively() {
     const team = await promptSelect('Select a team', await fetchTeams(), item => `${item.name} (${item.slug})`, { forcePrompt: true });
@@ -460,7 +464,7 @@ async function listTeams() {
 }
 async function resolveTeamSlug(teamSlugArg) {
     if (teamSlugArg) {
-        return teamSlugArg;
+        return normalizeSlugInput(teamSlugArg);
     }
     const team = await promptSelect('Select a team', await fetchTeams(), item => `${item.name} (${item.slug})`, { forcePrompt: true });
     return team.slug;
@@ -491,12 +495,14 @@ async function createTeam() {
     console.log(`Created team: ${data.team.name} (${data.team.slug})`);
 }
 async function listProjects() {
-    const teamSlug = getArg('--team');
+    const teamSlugArg = getArg('--team');
+    const teamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null;
     printProjects(await fetchProjects(teamSlug || undefined));
 }
 async function createProject() {
     const name = getArg('--name');
-    let teamSlug = getArg('--team');
+    const teamSlugArg = getArg('--team');
+    let teamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null;
     if (!name) {
         throw new Error('Usage: orizu projects create --name <name> [--team <teamSlug>]');
     }
@@ -885,7 +891,8 @@ async function removeTeamMember() {
     console.log(`Removed team member ${member.email}`);
 }
 async function changeTeamMemberRole() {
-    const teamSlug = getArg('--team');
+    const teamSlugArg = getArg('--team');
+    const teamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null;
     const email = getArg('--email');
     const role = getArg('--role');
     if (!teamSlug || !email || !role) {
