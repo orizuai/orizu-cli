@@ -1,38 +1,71 @@
-# Building Apps
+# Orizu apps — agent reference
 
-How to author a labeler app for Orizu — the custom UI annotators use to label dataset rows. The output of a labeling task is only as good as the interface that produced it; treat the app as a real product, not a form.
+You are reading the canonical reference for coding agents producing Orizu apps. Orizu apps are React/TSX components that render inside Orizu's task and preview screens to collect feedback from human reviewers: ratings, comments, comparisons, annotations, rankings, corrections, and agent-transcript review. This document covers everything needed to author a working app — runtime contract, conventions, design principles, the import registry, the per-component reference, recipes, and common pitfalls. Read top-to-bottom on first encounter; jump to specific sections by anchor afterwards.
 
-## Contract
+If you are an external coding agent that found this via `orizu.ai/docs/llms.txt`, treat this document as the source of truth for both the runtime contract and the available primitives.
 
-Apps are React components compiled and served by the Orizu platform. Three things define the contract.
+---
 
-### 1. Default export, named
+## TL;DR
 
-The file must have a single default export that's a **named** function or class:
+You are writing a single TSX file. It must:
+
+1. Use **named imports only**, and only from the paths in the **Imports** section below. There is no `npm install`; any other path fails at runtime with `Module not found`.
+2. Export a **named** default function whose props are exactly `{ inputData, onComplete, initialValues }`.
+3. Read the row to label from `inputData`. Pre-populate from `initialValues` if present.
+4. When the reviewer finishes, call `onComplete(value)`. The value you pass is recorded as the response.
+
+A complete, valid app:
 
 ```tsx
-export default function SupportLabeler({ inputData, onComplete, initialValues }) { ... }
+import { useState } from 'react';
+import { StarRating } from '@/components/base/input/StarRating';
+import { CommentBox } from '@/components/base/input/CommentBox';
+import { Button } from '@/components/ui/button';
+
+export default function Component({ inputData, onComplete, initialValues }) {
+  const [rating, setRating] = useState(initialValues?.rating ?? 0);
+  const [note, setNote] = useState(initialValues?.note ?? '');
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <p className="text-sm">{inputData.text}</p>
+      <StarRating value={rating} onChange={setRating} />
+      <CommentBox value={note} onChange={setNote} label="Why?" />
+      <Button
+        onClick={() => onComplete({ rating, note })}
+        disabled={rating === 0}
+      >
+        Submit
+      </Button>
+    </div>
+  );
+}
 ```
 
-Anonymous wrappers (`export default () => ...`, `export default memo(...)`) are not supported.
+---
 
-### 2. Three props, exact names
+## Runtime contract
 
-The component receives **exactly** these props:
+Your default export receives three props from the Orizu runtime:
 
 | Prop            | Type                | Meaning                                            |
 |-----------------|---------------------|----------------------------------------------------|
 | `inputData`     | object              | The current dataset row's payload (matches `input_json_schema`). |
 | `onComplete`    | `(payload) => void` | Submit the annotation. Payload must match `output_json_schema`. |
-| `initialValues` | object \| undefined | Previous response if the annotator resumed; otherwise undefined. |
+| `initialValues` | object \| undefined | Previous response if the reviewer resumed; otherwise undefined. |
 
-Deprecated names that **fail validation**: `data`, `onSubmit`. Don't use them.
+The validator rejects:
 
-### 3. Output validates against `output_json_schema`
+- **Anonymous default exports** such as `export default () => ...` or `export default memo(...)`. The default export must be a named function or class.
+- **Default exports that destructure `data`** instead of `inputData`, or `onSubmit` instead of `onComplete`. The deprecated names fail validation at the app boundary.
+- **Components that don't accept these props at all.**
 
-`onComplete(payload)` is validated server-side against the pinned app version's output schema.
+You may use any other props internally (`useState`, `useReducer`, and so on); just keep the default export's signature exact.
 
-The validation surface is a **subset** of JSON Schema:
+### Output schema
+
+`onComplete(payload)` is validated server-side against the pinned app version's `output_json_schema`. The validation surface is intentionally a **subset** of JSON Schema:
 
 - `type` (`object`, `string`, `number`, `boolean`, `array`)
 - `required`
@@ -40,9 +73,7 @@ The validation surface is a **subset** of JSON Schema:
 - `items`
 - `enum`
 
-Anything else (`pattern`, `oneOf`, `format`, `minLength`, …) will be ignored or rejected. Keep schemas in this subset.
-
-### Schemas
+Anything else (`pattern`, `format`, `oneOf`, `anyOf`, `minLength`, …) is ignored or rejected. Keep schemas in this subset and have the component construct the payload literally — don't compute it at submit time from scattered state.
 
 Both `input.json` and `output.json` are JSON Schema objects:
 
@@ -58,29 +89,133 @@ Both `input.json` and `output.json` are JSON Schema objects:
 }
 ```
 
-### Allowed runtime surface
-
-The platform exposes a curated set of UI primitives (shadcn-style components, common form controls, layout helpers, code/text rendering blocks, comparison and ranking templates) plus Tailwind utility classes. **No external npm imports.** Use what's exposed; if you need something that isn't, request it as a platform addition rather than working around it.
-
 ---
 
-## What the app owns vs what the container owns
+## App vs container ownership
 
 The app component renders **one row at a time**. It does not navigate between rows, track queue position, persist drafts, or own session state. Those concerns belong to the platform's labeling container, which hydrates the app with a row's `inputData` (and any `initialValues` from a prior partial submission), then collects the response when the app calls `onComplete`.
 
-| Concern                                  | Owned by                |
-|------------------------------------------|-------------------------|
-| Rendering the current row                | **App**                 |
-| Collecting and structuring the response  | **App**                 |
-| Internal UI state for the row (selections, drafts, validation) | **App** |
-| Calling `onComplete(payload)` when ready | **App**                 |
-| Queue position / "3 of 200"              | Container               |
-| "Saved" / submission status              | Container               |
-| Navigation between rows (next / back)    | Container               |
-| Draft persistence across sessions        | Container (via `initialValues`) |
-| Auth, layout chrome, top/side bars       | Container               |
+| Concern                                                        | Owned by                |
+|----------------------------------------------------------------|-------------------------|
+| Rendering the current row                                      | **App**                 |
+| Collecting and structuring the response                        | **App**                 |
+| Internal UI state for the row (selections, drafts, validation) | **App**                 |
+| Calling `onComplete(payload)` when ready                       | **App**                 |
+| Queue position / "3 of 200"                                    | Container               |
+| Submission confirmation / "saved!" toast                       | Container               |
+| Navigation between rows (next / back)                          | Container               |
+| Draft persistence across sessions                              | Container (via `initialValues`) |
+| Auth, layout chrome, top/side bars                             | Container               |
 
-When designing, keep the app's job tight: show the row, collect the response, hand it back. Don't reimplement queue UI or session state — the container provides them.
+Keep the app's job tight: show the row, collect the response, hand it back. Do not reimplement queue UI, custom saved toasts, or session state. In-row progress hints such as "3 of 5 questions answered" *are* fine — those describe the current row's state, not the container's.
+
+---
+
+## Compile & resolution model
+
+- Your TSX is compiled server-side with **esbuild** to a CommonJS bundle. JSX is transformed to the automatic React runtime.
+- Imports are resolved at runtime via a **fixed registry** (see Imports below). There is no `npm install`, no third-party packages, no deep paths beyond what is listed.
+- An import path that isn't in the registry throws `Module not found: Cannot find module '<path>'` at render time. Always copy paths verbatim from the Imports section.
+- React itself is auto-injected — `import React from 'react'` is allowed but not required. Hook imports like `import { useState } from 'react'` are fine.
+
+---
+
+## Use as-is, or inline a fork
+
+When you reach for a component, you have exactly two paths. Make this decision deliberately for every primitive you use.
+
+1. **Use as-is.** Import the registered component by name and pass the documented props. This is the default and the right answer for the vast majority of tasks. Wrapping the component in your own layout `div` for spacing, headings, or surrounding logic is still "use as-is" — the component itself is unchanged.
+
+2. **Inline a private fork.** If the registered component's prop set or internal behaviour genuinely doesn't fit your task, fetch its source from the URL in the Component reference (every section has a `**Source:**` link), copy the implementation into your TSX file as a private component (e.g. `MyStarRating`), and adapt it. The runtime resolves imports against a fixed registry — you **cannot import a forked version** from any path the registry doesn't already expose, so any fork must live inline in the same file alongside your default export.
+
+Read the source whenever a primitive almost-but-not-quite fits — it shows you the structure, the styling tokens, and the accessibility hooks already worked out, so your fork stays faithful to the design language. Inlining is a real, supported option, not a fallback to apologise for; just don't reach for it before checking whether composition or wrapping covers the case.
+
+---
+
+## Custom components
+
+You aren't limited to the registered primitives. The TSX file can also declare any number of helper or composite components inline — standard React, no special framework requirements. Useful when the listed components don't cover your task or when you want a small, named abstraction for repeated structure.
+
+### The default export contract is the only contract
+
+Only one component in the file is bound by Orizu's contract: the default export. It must be a **named** function and accept exactly `{ inputData, onComplete, initialValues }`. Helper components defined alongside it have **no contract** — name them whatever you want, give them any prop shape, and call them from your default export like normal React.
+
+```tsx
+function QuestionRow({ id, label, value, onChange }) {
+  // any prop shape, any name; not bound by the Orizu contract.
+  return (
+    <label className="flex items-center justify-between py-2">
+      <span className="text-sm">{label}</span>
+      <ThumbsRating value={value} onChange={(v) => onChange(id, v)} />
+    </label>
+  );
+}
+
+export default function Component({ inputData, onComplete, initialValues }) {
+  // ...uses QuestionRow internally
+}
+```
+
+### Building from scratch vs. forking a primitive
+
+Two paths, both supported:
+
+- **From scratch.** Write standard React, style with Tailwind utilities, keep imports inside the registry. No `npm install`, no third-party packages, no global CSS. Hooks like `useState`, `useReducer`, `useEffect` are available; pull them from `'react'`.
+- **Forking a primitive.** Open the relevant component in the **Component reference** below, follow the `**Source:**` link to read the underlying TSX, copy the implementation into your file as a private component (e.g. `MyStarRating`), rename it, and adapt the internals. The runtime can't resolve a forked import path — any fork must live inline in the same file.
+
+Either way, the rules below apply.
+
+### What custom components must respect
+
+- **Imports come from the registry only.** No deep paths beyond what is listed in the **Imports** section.
+- **Style with Tailwind utilities and design tokens** (`text-foreground`, `text-muted-foreground`, `text-primary`, `text-destructive`). Don't override `app/globals.css` or rely on arbitrary Tailwind colors (`text-red-500`).
+- **Stay accessible**: visible focus, semantic elements, labels above inputs, color isn't the only state signal.
+- **The whole app ships in one TSX file** — no multi-file imports, no separate CSS modules, no asset imports.
+
+If a helper grows large enough that you'd reach for a separate file, that's a signal to either (a) compose existing primitives differently, (b) inline-fork a primitive that's closer to what you want, or (c) request a new platform-level primitive rather than smuggling a multi-file pattern into a single file.
+
+---
+
+## Conventions
+
+### Naming
+- Components are PascalCase, named after what they ARE not what they DO. Prefer `StarRating` to `RateWithStars`.
+- Boolean props: `isX` / `hasX`.
+- Event handlers: `onX`.
+- When a callback fires for a specific item, the id comes BEFORE the value: `onChange(id, value)`.
+
+### Controlled inputs
+Every input component is fully controlled. There are no `defaultValue` props. Always pass `value` and `onChange`. `readOnly` flattens visuals AND disables pointer/keyboard interaction.
+
+### Reserved props
+- `id` — required where listed; must be unique per render. Used by analytics and a11y helpers.
+- `readOnly` — boolean. Used by interaction-disable helpers.
+
+Do not repurpose these names for unrelated values.
+
+### Styling
+- Components are token-driven via Tailwind + CSS variables. Do not re-style components themselves — wrap them in a layout div if you need spacing or alignment.
+- Use the standard Tailwind utility set inside your component. Custom CSS modules are not supported.
+- Use design tokens (`text-foreground`, `text-muted-foreground`, `text-primary`, `text-destructive`) rather than arbitrary Tailwind colors (`text-red-500`).
+
+### Never invent imports
+Never invent a new import path; never rely on third-party packages. If a registered component doesn't fit, your two real options are spelled out under **Use as-is, or inline a fork** above — wrap, or copy the source inline.
+
+---
+
+## Mental model: components × behaviors
+
+Pick a content component, pick a behavior, fill the slot. Examples:
+
+- A `ConversationView` turn (content) wrapped in `Reactable` (behavior) whose `renderForm` slot holds a `CommentBox` (input) → per-turn thumbs with a reason field.
+- A `TextContent` (content) wrapped in `Annotatable` (behavior) whose `renderAnnotation` slot holds a `TagPicker` (input) → span-level tagging.
+
+The four roles:
+
+- **Typography (`Prose`, `Prose.Body`, `Prose.H1`, etc.)** — what *you* write to frame the task: instructions, headings, helper copy. Lives outside the box.
+- **Content (`TextContent`, `CodeBlock`, `ConversationView`, `ContentRenderer`)** — what the model produced or what's under review. Lives inside a box.
+- **Behaviors (`Annotatable`, `Reactable`)** — wrap any content component to make it reviewable. They don't render content; they add affordances and slot in your input surface.
+- **Input (`CommentBox`, `TagPicker`, `StarRating`, etc.)** — the surfaces you slot inside a behavior, or use directly to capture feedback.
 
 ---
 
@@ -116,12 +251,10 @@ A muted, restrained palette beats a vibrant one for any tool people use professi
 - **One accent color.** Pick one and use it for selection, focus rings, primary actions, and links. Resist the urge to introduce more.
 - **Semantic colors only for state.** Green = pass / success. Red = fail / destructive. Amber = warn (use sparingly — most things are pass or fail). Don't use these as decoration or as the accent.
 - **No category palettes.** If you need to distinguish many tags, roles, or types, use one color with text labels — not 8 distinct hues. Color is for state, not categorization.
-- **Test in light and dark mode.** A design that only works on one is fragile. Run the labeler in both before shipping; check that the accent stays legible on both surfaces.
+- **Test in light and dark mode.** A design that only works on one is fragile.
 - **Avoid opacity-as-color.** `text-black/40` for disabled or muted is fine; building a whole palette out of opacities falls apart on tinted backgrounds.
 
 ### Buttons & action hierarchy
-
-Annotators have many things they *could* do on each screen. Clear hierarchy makes the right next action obvious.
 
 - **One primary button per screen** (ideally per region). Filled, accent color, the single most-likely action — usually "Submit & next" or "Save."
 - **Secondary actions are outlined or ghost.** "Skip," "back," "open notes." Visually quieter than primary; same height, different weight.
@@ -207,7 +340,7 @@ The container shows queue position and submission status — don't duplicate the
 
 ### Avoid dead controls
 
-- If a Likert slider rarely moves off the middle, you have a Likert problem (see `primer.md` Step 2). Replace with binary toggles.
+- If a Likert slider rarely moves off the middle, you have a Likert problem. Replace with binary toggles.
 - Free-text fields that nobody fills in should be removed or made obviously optional.
 - Buttons that are usually disabled either need a clearer condition or shouldn't be there.
 
@@ -319,7 +452,749 @@ Annotator verifies an agent called the right tool with valid args.
 
 ---
 
-## Offline smoke test
+## Imports
+
+The complete set of allowed imports. Paths and exports are auto-generated from the runtime registry — every entry below resolves; nothing else does.
+
+<!-- BEGIN ORIZU_AUTO_IMPORT_MAP -->
+```tsx
+// React hooks
+import { useState, useRef, useEffect } from 'react';
+
+// UI primitives (shadcn)
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Carousel } from '@/components/ui/carousel';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Form } from '@/components/ui/form';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption, TableFooter } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
+import { Toggle } from '@/components/ui/toggle';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+
+// Content
+import { TextContent } from '@/components/base/content/TextContent';
+import { CodeBlock } from '@/components/base/content/CodeBlock';
+import { ConversationView } from '@/components/base/content/ConversationView';
+import { ContentRenderer } from '@/components/base/content/ContentRenderer';
+import { Prose } from '@/components/base/content/Prose';
+
+// Behaviors
+import { Annotatable } from '@/components/base/behaviors/Annotatable';
+import { Reactable } from '@/components/base/behaviors/Reactable';
+
+// Input
+import { CommentBox } from '@/components/base/input/CommentBox';
+import { CriterionRating } from '@/components/base/input/CriterionRating';
+import { LikertScale } from '@/components/base/input/LikertScale';
+import { NumericRating } from '@/components/base/input/NumericRating';
+import { RatingSelector } from '@/components/base/input/RatingSelector';
+import { StarRating } from '@/components/base/input/StarRating';
+import { TagPicker } from '@/components/base/input/TagPicker';
+import { ThumbsRating } from '@/components/base/input/ThumbsRating';
+
+// Base UI
+import { ComparisonPanel } from '@/components/base/ui/ComparisonPanel';
+import { DraggableItem } from '@/components/base/ui/DraggableItem';
+
+// Templates
+import { TagSelector } from '@/components/templates/classification/TagSelector';
+import { SideBySideComparison } from '@/components/templates/comparison/SideBySideComparison';
+import { CorrectionTask } from '@/components/templates/correction/CorrectionTask';
+import { CodeComparison } from '@/components/templates/code/CodeComparison';
+import { ContextualQA } from '@/components/templates/qa/ContextualQA';
+import { RankingList } from '@/components/templates/ranking/RankingList';
+import { SingleItemRater } from '@/components/templates/rating/SingleItemRater';
+
+// Live code (recursive rendering)
+import { LiveCodeRenderer } from '@/components/live-code-renderer';
+```
+<!-- END ORIZU_AUTO_IMPORT_MAP -->
+
+Use **named imports** for everything. Some registry entries support default imports for backwards compatibility, but named imports are the documented, portable form.
+
+---
+
+## Component reference
+
+Each component below lists its source URL, import path, props, and a minimal usage example. Components flagged with a "**Source:**" link expose the underlying TSX at a stable URL — fetch that URL if you need to inline a private variant.
+
+<!-- BEGIN ORIZU_AUTO_COMPONENT_REFERENCE -->
+### Typography
+
+Anything the coding agent writes themselves — instructions, headings, body copy. Lives outside the under-review box.
+
+#### Prose {#prose}
+
+Typography for anything the coding agent writes themselves — instructions, headings, body copy. Use this outside the under-review box; use TextContent inside it.
+
+**Source:** [components/base/content/Prose.tsx](https://orizu.ai/docs/components/Prose/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { Prose } from "@/components/base/content/Prose"`
+
+**Block primitives:**
+- `Prose.Eyebrow` — Small mono uppercase label. Sits above an H1/H2.
+- `Prose.H1 / H2 / H3` — Headings. Tight tracking, sans by default.
+- `Prose.Lead` — Single deck-line under a heading. Larger than Body, lighter weight.
+- `Prose.Body` — Standard paragraph. 14px / 1.6 line-height.
+- `Prose.Small` — Helper / footnote. 12.5px.
+- `Prose.Caption` — Mono caption under a figure or table. 11.5px.
+- `Prose.Code` — Inline mono. Use inside a sentence, not as a block.
+- `Prose.Link` — Documentary blue, underline preserved on hover.
+
+**Props:**
+- `children` * — `ReactNode` — <Prose> applies the type ramp to its children. Use the block primitives directly when you don’t want a wrapper.
+- `className` — `string`
+
+**Minimal usage:**
+
+```jsx
+<Prose
+  children={<span />}
+/>
+```
+
+### Content
+
+The under-review primitives. What the model produced — text, code, conversation, media — framed inside a box. Wrap in behaviors to make reviewable.
+
+#### TextContent {#textcontent}
+
+The in-a-box content-under-review primitive. Plain text inside a frame. For prose the agent writes themselves, reach for Prose instead.
+
+**Source:** [components/base/content/TextContent.tsx](https://orizu.ai/docs/components/TextContent/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { TextContent } from "@/components/base/content/TextContent"`
+
+**Props:**
+- `content` * — `string` — The text content to display.
+- `maxHeight` — `string` (default: `"auto"`) — When set, content scrolls within this height.
+- `isMonospace` — `boolean` (default: `false`) — Render in mono. Use for raw payloads, IDs, model output.
+- `preformatted` — `boolean` (default: `false`) — Preserve whitespace (whitespace-pre-wrap).
+- `variant` — `"default" | "mono" | "scrollable"` (default: `"default"`)
+- `className` — `string` — Extra classes.
+
+**Minimal usage:**
+
+```jsx
+<TextContent
+  content={"..."}
+/>
+```
+
+#### CodeBlock {#codeblock}
+
+Numbered, scrollable code with optional line highlights and click handlers — the substrate for line-by-line review.
+
+**Source:** [components/base/content/CodeBlock.tsx](https://orizu.ai/docs/components/CodeBlock/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { CodeBlock } from "@/components/base/content/CodeBlock"`
+
+**Props:**
+- `code` * — `string | CodeLine[]` — The code to display.
+- `maxHeight` — `string` (default: `"400px"`) — Container height.
+- `showLineNumbers` — `boolean` (default: `true`)
+- `highlightedLines` — `number[]` (default: `[]`) — 1-indexed line numbers to highlight.
+- `highlightClass` — `string` — Class applied to highlighted lines.
+- `onLineClick` — `(n: number) => void` — Fires when a line is clicked.
+- `onLineMouseDown` — `(n: number) => void` — For drag-select line ranges.
+- `onLineMouseMove` — `(n: number) => void`
+- `filename` — `string` — Optional chrome-strip filename.
+- `language` — `string` — Optional chrome-strip language tag.
+
+**Minimal usage:**
+
+```jsx
+<CodeBlock
+  code={[]}
+/>
+```
+
+#### ConversationView {#conversationview}
+
+Agentic transcript. Beyond user/assistant/system: reasoning (italic serif, default-collapsed), tool_call (mono, default-open, collapsible), tool_result (paired beneath, connecting left rule, collapsible), context (RAG card with source badge). Optional per-turn metadata — avatar, label, timestamp, duration, badge — all stripable.
+
+**Source:** [components/base/content/ConversationView.tsx](https://orizu.ai/docs/components/ConversationView/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ConversationView } from "@/components/base/content/ConversationView"`
+
+**Props:**
+- `messages` * — `Message[]` — Each turn: { id, role, content, tool?, args?, result?, source?, timestamp?, duration?, avatar?, label?, badge?, defaultOpen? }. Roles: 'user' | 'assistant' | 'system' | 'reasoning' | 'tool_call' | 'tool_result' | 'context'.
+- `density` — `"comfortable" | "compact"` (default: `"comfortable"`) — Compact halves the gap and tightens padding — use for long agentic traces.
+- `showTimestamps` — `boolean` (default: `true`)
+- `maxHeight` — `string` (default: `"300px"`)
+- `scrollToBottom` — `boolean` (default: `true`)
+
+**Minimal usage:**
+
+```jsx
+<ConversationView
+  messages={[]}
+/>
+```
+
+#### ContentRenderer {#contentrenderer}
+
+For media (images, videos) and custom content types only. Don't use it for text — TextContent / CodeBlock / ConversationView do that better.
+
+**Source:** [components/base/content/ContentRenderer.tsx](https://orizu.ai/docs/components/ContentRenderer/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ContentRenderer } from "@/components/base/content/ContentRenderer"`
+
+**Props:**
+- `contentType` * — `"image" | "video" | "custom"`
+- `content` * — `string | unknown` — URL for image/video, anything for custom.
+- `maxHeight` — `string` (default: `"400px"`)
+- `customRenderer` — `({ content }) => ReactNode` — Required when contentType="custom".
+
+**Minimal usage:**
+
+```jsx
+<ContentRenderer
+  contentType={"image"}
+  content={"..."}
+/>
+```
+
+### Behaviors
+
+Wrap any content component to make it interactive. Behaviors don’t render content themselves — they add affordances and slot in whatever surface you compose.
+
+#### Annotatable {#annotatable}
+
+Wraps any child. Selection inside produces a span; renderAnnotation({span, save, cancel}) slot populates an anchored popover. The annotation surface is whatever you compose — CommentBox, TagPicker, RatingSelector, etc. Wraps TextContent, a ConversationView turn, or a CodeBlock the same way.
+
+**Source:** [components/base/behaviors/Annotatable.tsx](https://orizu.ai/docs/components/Annotatable/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { Annotatable } from "@/components/base/behaviors/Annotatable"`
+
+**Props:**
+- `children` * — `ReactNode` — The component to make annotatable. Selection is captured inside its DOM subtree.
+- `target` — `string` — Identifier for what is annotated (e.g. "msg:42").
+- `annotations` — `AnnotationRecord<TData>[]` (default: `[]`) — Persisted annotations to render as highlights.
+- `renderAnnotation` — `({ span, save, cancel }) => ReactNode` — Slot. Render the annotation surface; call save(payload) to commit, cancel() to discard.
+- `onAnnotationCreate` — `({ target, span, data }) => void`
+- `hideRail` — `boolean` (default: `false`) — Hide the inset guide rail.
+
+**Minimal usage:**
+
+```jsx
+<Annotatable
+  children={<span />}
+/>
+```
+
+#### Reactable {#reactable}
+
+Wraps any child. Adds an on-hover affordance rail (thumbs, flag, configurable). Optional renderForm captures context inline when a reaction is active.
+
+**Source:** [components/base/behaviors/Reactable.tsx](https://orizu.ai/docs/components/Reactable/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { Reactable } from "@/components/base/behaviors/Reactable"`
+
+**Props:**
+- `children` * — `ReactNode`
+- `target` — `string` — Identifier for what is reacted to.
+- `types` — `("thumbs" | "flag")[]` (default: `["thumbs", "flag"]`) — The affordances on the rail.
+- `value` — `ReactableValue | null` — The active reaction, if any.
+- `renderForm` — `({ type, save, cancel }) => ReactNode` — Inline form opened when a reaction is selected. Slot in CommentBox, TagPicker, etc.
+- `onReact` — `({ target, type, context }) => void`
+- `onClear` — `(target?) => void`
+
+**Minimal usage:**
+
+```jsx
+<Reactable
+  children={<span />}
+/>
+```
+
+### Input
+
+Capture feedback. Rating selectors, comments, criterion ratings, tags. These are the surfaces you slot inside a behavior.
+
+#### RatingSelector {#ratingselector}
+
+One component, five rating mechanisms. Switch via the ratingType prop. Use this when you want the rating type to be configurable per task.
+
+**Source:** [components/base/input/RatingSelector.tsx](https://orizu.ai/docs/components/RatingSelector/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { RatingSelector } from "@/components/base/input/RatingSelector"`
+
+**Props:**
+- `ratingType` * — `"numeric" | "likert" | "thumbs" | "stars" | "slider"`
+- `value` * — `number | string | null`
+- `onChange` * — `(value) => void`
+- `minRating` — `number` (default: `1`)
+- `maxRating` — `number` (default: `5`)
+- `likertLabels` — `string[]` (default: `["Strongly Disagree", … "Strongly Agree"]`)
+
+**Minimal usage:**
+
+```jsx
+<RatingSelector
+  ratingType={"numeric"}
+  value={0}
+  onChange={() => {}}
+/>
+```
+
+#### StarRating {#starrating}
+
+Hover-previewed star rating with configurable scale and active color.
+
+**Source:** [components/base/input/StarRating.tsx](https://orizu.ai/docs/components/StarRating/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { StarRating } from "@/components/base/input/StarRating"`
+
+**Props:**
+- `value` * — `number`
+- `maxRating` — `number` (default: `5`)
+- `minRating` — `number` (default: `1`)
+- `readOnly` — `boolean` (default: `false`)
+- `size` — `string | number` (default: `"1.5rem"`)
+- `activeColor` — `string` (default: `"text-primary"`)
+- `inactiveColor` — `string` (default: `"text-border"`)
+- `onChange` — `(rating: number) => void`
+
+**Minimal usage:**
+
+```jsx
+<StarRating
+  value={0}
+/>
+```
+
+#### NumericRating {#numericrating}
+
+Row of numbered buttons. The most legible scale at a glance — pick this when accuracy matters more than speed.
+
+**Source:** [components/base/input/NumericRating.tsx](https://orizu.ai/docs/components/NumericRating/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { NumericRating } from "@/components/base/input/NumericRating"`
+
+**Props:**
+- `value` * — `number | null`
+- `minRating` — `number` (default: `1`)
+- `maxRating` — `number` (default: `5`)
+- `size` — `"sm" | "md" | "lg"` (default: `"md"`)
+- `readOnly` — `boolean` (default: `false`)
+- `onChange` — `(rating: number) => void`
+
+**Minimal usage:**
+
+```jsx
+<NumericRating
+  value={0}
+/>
+```
+
+#### ThumbsRating {#thumbsrating}
+
+Binary feedback. Three visual styles (filled / outline / icon) and an optional minimal mode for compact UIs.
+
+**Source:** [components/base/input/ThumbsRating.tsx](https://orizu.ai/docs/components/ThumbsRating/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ThumbsRating } from "@/components/base/input/ThumbsRating"`
+
+**Props:**
+- `value` * — `"up" | "down" | null`
+- `onChange` — `(value: "up" | "down") => void`
+- `size` — `"sm" | "md" | "lg"` (default: `"md"`)
+- `selectedStyle` — `"filled" | "outline" | "icon"` (default: `"filled"`)
+- `minimal` — `boolean` (default: `false`) — No button background, just colored icons.
+- `showLabels` — `boolean` (default: `false`)
+- `upText` — `string` (default: `"Like"`)
+- `downText` — `string` (default: `"Dislike"`)
+- `readOnly` — `boolean` (default: `false`)
+
+**Minimal usage:**
+
+```jsx
+<ThumbsRating
+  value={"up"}
+/>
+```
+
+#### LikertScale {#likertscale}
+
+Ordered radio scale with custom labels. Horizontal by default; verticalize for long labels.
+
+**Source:** [components/base/input/LikertScale.tsx](https://orizu.ai/docs/components/LikertScale/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { LikertScale } from "@/components/base/input/LikertScale"`
+
+**Props:**
+- `value` * — `string | null`
+- `labels` * — `string[]`
+- `horizontal` — `boolean` (default: `true`)
+- `readOnly` — `boolean` (default: `false`)
+- `onChange` — `(value: string) => void`
+
+**Minimal usage:**
+
+```jsx
+<LikertScale
+  value={"..."}
+  labels={[]}
+/>
+```
+
+#### CriterionRating {#criterionrating}
+
+A single bordered criterion (label + optional collapsible description) with a horizontal radio group. Stack several inside a comparison panel.
+
+**Source:** [components/base/input/CriterionRating.tsx](https://orizu.ai/docs/components/CriterionRating/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { CriterionRating } from "@/components/base/input/CriterionRating"`
+
+**Props:**
+- `id` * — `string`
+- `label` * — `string`
+- `description` — `string` — Shown when expanded; collapses behind a chevron.
+- `value` * — `string | null`
+- `options` * — `{ value, label }[]` — Typically [{value:"left"}, {value:"right"}, {value:"tie"}].
+- `initiallyExpanded` — `boolean` (default: `false`)
+- `readOnly` — `boolean` (default: `false`)
+- `onChange` — `(id, value) => void`
+
+**Minimal usage:**
+
+```jsx
+<CriterionRating
+  id={"..."}
+  label={"..."}
+  value={"..."}
+  options={[]}
+/>
+```
+
+#### CommentBox {#commentbox}
+
+Multiline text input with label, instructions, validation (min/max length), and optional character count.
+
+**Source:** [components/base/input/CommentBox.tsx](https://orizu.ai/docs/components/CommentBox/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { CommentBox } from "@/components/base/input/CommentBox"`
+
+**Props:**
+- `value` * — `string`
+- `onChange` — `(value: string) => void`
+- `label` — `string`
+- `instructions` — `string` — Helper paragraph under the label.
+- `placeholder` — `string` (default: `"Enter your comment here..."`)
+- `rows` — `number` (default: `3`)
+- `maxLength` — `number` (default: `0`) — 0 disables the cap.
+- `minLength` — `number` (default: `0`) — Validation triggers on blur.
+- `showCharCount` — `boolean` (default: `false`)
+- `error` — `string` — Shown after blur.
+- `readOnly` — `boolean` (default: `false`)
+
+**Minimal usage:**
+
+```jsx
+<CommentBox
+  value={"..."}
+/>
+```
+
+#### TagPicker {#tagpicker}
+
+Pill-shaped tag selector. Single or multi-select, optional category grouping, optional custom-tag input.
+
+**Source:** [components/base/input/TagPicker.tsx](https://orizu.ai/docs/components/TagPicker/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { TagPicker } from "@/components/base/input/TagPicker"`
+
+**Props:**
+- `availableTags` * — `Tag[]` — { id, label, category?, description?, color? }
+- `selectedTagIds` * — `string[]`
+- `multiSelect` — `boolean` (default: `true`)
+- `allowCustomTags` — `boolean` (default: `false`)
+- `groupByCategory` — `boolean` (default: `false`)
+- `customTagPlaceholder` — `string` (default: `"Add a custom tag..."`)
+- `readOnly` — `boolean` (default: `false`)
+- `onTagsChange` — `(ids: string[]) => void`
+- `onCustomTagAdd` — `(label: string) => void`
+
+**Minimal usage:**
+
+```jsx
+<TagPicker
+  availableTags={[]}
+  selectedTagIds={[]}
+/>
+```
+
+### UI
+
+Layout pieces used by templates.
+
+#### ComparisonPanel {#comparisonpanel}
+
+Card with a labeled header bar — the left/right wells of any side-by-side comparison.
+
+**Source:** [components/base/ui/ComparisonPanel.tsx](https://orizu.ai/docs/components/ComparisonPanel/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ComparisonPanel } from "@/components/base/ui/ComparisonPanel"`
+
+**Props:**
+- `label` * — `string`
+- `children` * — `ReactNode`
+- `description` — `string`
+- `isSelected` — `boolean` (default: `false`) — Applies highlightClass.
+- `highlightClass` — `string` — Override selection class.
+- `badge` — `ReactNode` — Top-right pill (e.g. comment count).
+- `height` — `string` (default: `"auto"`)
+- `onClick` — `() => void`
+
+**Minimal usage:**
+
+```jsx
+<ComparisonPanel
+  label={"..."}
+  children={<span />}
+/>
+```
+
+#### DraggableItem {#draggableitem}
+
+A row that supports both native drag-and-drop and explicit up/down buttons. The atom of a RankingList.
+
+**Source:** [components/base/ui/DraggableItem.tsx](https://orizu.ai/docs/components/DraggableItem/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { DraggableItem } from "@/components/base/ui/DraggableItem"`
+
+**Props:**
+- `id` * — `string`
+- `children` * — `ReactNode`
+- `rank` — `number` (default: `0`)
+- `maxRank` — `number` (default: `0`)
+- `isDragging` — `boolean` (default: `false`)
+- `isDraggedOver` — `boolean` (default: `false`)
+- `showControls` — `boolean` (default: `true`)
+- `disableControls` — `boolean` (default: `false`)
+- `onDragStart` — `(id) => void`
+- `onDragOver` — `(id) => void`
+- `onDrop` — `(id) => void`
+- `onDragEnd` — `() => void`
+- `onMoveUp` — `(id) => void`
+- `onMoveDown` — `(id) => void`
+
+**Minimal usage:**
+
+```jsx
+<DraggableItem
+  id={"..."}
+  children={<span />}
+/>
+```
+
+### Recipes
+
+Worked component + behavior compositions. Read these before building — the mental model is pick a component, pick a behavior, fill the slot.
+
+#### Composition recipes {#composition-recipes}
+
+Three worked behavior × component patterns. The mental model: pick a component, pick a behavior, fill the slot.
+
+**Recipe 1 — Flag a tool call before it executes**
+Why: Reactable wraps the tool_call turn; the rail offers ‘flag’; the form captures why before letting the agent run.
+
+```jsx
+const [flagReason, setFlagReason] = useState("")
+
+<Reactable
+  types={["flag"]}
+  renderForm={({ save, cancel }) => (
+    <div className="space-y-2">
+      <CommentBox
+        label="Why is this call wrong?"
+        value={flagReason}
+        onChange={setFlagReason}
+      />
+      <div className="flex gap-2">
+        <Button onClick={() => save(flagReason)} disabled={!flagReason.trim()}>
+          Save
+        </Button>
+        <Button variant="outline" onClick={cancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  )}
+  onReact={recordReaction}
+>
+  <ConversationView messages={[
+    { id: "1", role: "tool_call", tool: "send_email", content: "..." }
+  ]}/>
+</Reactable>
+```
+
+**Recipe 2 — Per-turn thumbs with optional note**
+Why: Reactable on each assistant turn. Thumbs are the rail; renderForm only opens for thumbs-down to capture a reason.
+
+```jsx
+const [note, setNote] = useState("")
+
+<Reactable
+  types={["thumbs"]}
+  renderForm={({ type, save, cancel }) =>
+    type === "thumbs_down" ? (
+      <div className="space-y-2">
+        <CommentBox
+          label="What was wrong?"
+          value={note}
+          onChange={setNote}
+        />
+        <div className="flex gap-2">
+          <Button onClick={() => save(note)} disabled={!note.trim()}>
+            Save
+          </Button>
+          <Button variant="outline" onClick={cancel}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    ) : null
+  }
+  onReact={saveReaction}
+>
+  <ConversationView messages={[
+    { id: "1", role: "assistant", content: "..." }
+  ]}/>
+</Reactable>
+```
+
+**Recipe 3 — Annotate spans inside a reasoning trace**
+Why: Annotatable wraps the reasoning turn; selection inside captures a span; the slot is a CommentBox so reviewers can call out a wrong inference at the exact phrase.
+
+```jsx
+const [annotationText, setAnnotationText] = useState("")
+
+<Annotatable
+  annotations={existing}
+  renderAnnotation={({ span, save, cancel }) => (
+    <div className="space-y-2">
+      <CommentBox
+        label={`On "${span.text}"`}
+        value={annotationText}
+        onChange={setAnnotationText}
+      />
+      <div className="flex gap-2">
+        <Button
+          onClick={() => save({ comment: annotationText })}
+          disabled={!annotationText.trim()}
+        >
+          Save
+        </Button>
+        <Button variant="outline" onClick={cancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  )}
+  onAnnotationCreate={appendAnnotation}
+>
+  <ConversationView messages={[
+    { id: "1", role: "reasoning", content: "..." }
+  ]}/>
+</Annotatable>
+```
+<!-- END ORIZU_AUTO_COMPONENT_REFERENCE -->
+
+---
+
+## Core type shapes
+
+These are the shapes most agents need when composing the primitives. The runtime does not require you to declare these interfaces, but matching them avoids bad callback names and invalid reaction values.
+
+```ts
+type MessageRole =
+  | 'user'
+  | 'assistant'
+  | 'system'
+  | 'reasoning'
+  | 'tool_call'
+  | 'tool_result'
+  | 'context';
+
+interface Message {
+  id: string;
+  role: MessageRole;
+  content: string;
+  tool?: string;
+  args?: unknown;
+  result?: unknown;
+  source?: string;
+  timestamp?: string | Date;
+  duration?: string;
+  avatar?: React.ReactNode;
+  label?: string;
+  badge?: React.ReactNode;
+  defaultOpen?: boolean;
+}
+
+type ReactionType = 'thumbs_up' | 'thumbs_down' | 'flag';
+
+interface AnnotationSpan {
+  startOffset: number;
+  endOffset: number;
+  text: string;
+}
+
+interface AnnotationRecord<TData = unknown> {
+  id: string;
+  span: AnnotationSpan;
+  data: TData;
+  createdAt: Date | string;
+  updatedAt?: Date | string;
+  hoverContent?: React.ReactNode;
+}
+
+interface Tag {
+  id: string;
+  label: string;
+  category?: string;
+  description?: string;
+  color?: string;
+}
+```
+
+---
+
+## Common pitfalls (do NOT do these)
+
+- ❌ `import StarRating from '@/components/base/input/StarRating'` — default imports are not consistently available. Use `{ StarRating }`.
+- ❌ `import { Heart } from 'lucide-react'` — third-party packages aren't in the registry. If you need an icon, use one already imported by a component you're rendering, or use Unicode (★, ✓, ↗).
+- ❌ `import { Foo } from '@/components/base/content/Foo'` for any `Foo` not in the Imports section — runtime throws `Module not found`.
+- ❌ Using `data` or `onSubmit` as the root component prop names — must be `inputData` and `onComplete`.
+- ❌ Anonymous default exports (`export default () => …`, `export default memo(…)`). Use a named function.
+- ❌ Calling `onComplete` more than once per row, or never calling it.
+- ❌ Mutating `inputData` or `initialValues`. Treat them as immutable.
+- ❌ Adding global CSS or modifying `app/globals.css`. Style with Tailwind utilities inside your component only.
+- ❌ `<TextContent>{children}</TextContent>` — TextContent takes a `content` string prop, not children.
+- ❌ Re-styling primitives' colors with arbitrary Tailwind values (`text-red-500`). Use the design tokens (`text-foreground`, `text-muted-foreground`, `text-primary`, `text-destructive`).
+- ❌ Schema features beyond the supported subset (`pattern`, `format`, `oneOf`, `anyOf`, `minLength`). They will be ignored or rejected.
+- ❌ Multi-point Likert scales for binary judgments — annotators on Likert collapse to the middle. Use multiple binary fields.
+
+---
+
+## Validating before publish
+
+Customers can validate a generated file before publishing it via the CLI app publish endpoints, including `POST /api/cli/apps/create-from-file` and `POST /api/cli/apps/[id]/update-from-file`. These endpoints run the same validator and esbuild pipeline used at render time. If validation fails, errors describe exactly which rule was violated. Use this in your agent's CI step if you have one.
+
+### Offline smoke test
 
 Before `orizu apps create`, run the smoke test that ships with this skill:
 
@@ -343,18 +1218,7 @@ What it doesn't check:
 
 ---
 
-## Common pitfalls
-
-- **Wrong prop names.** `data` and `onSubmit` are deprecated and fail validation. Use `inputData` and `onComplete`.
-- **Schema features that won't validate.** Sticking to `type / required / properties / items / enum` keeps you safe; `pattern`, `format`, `oneOf`, etc. won't be enforced.
-- **Submitting payloads that don't match the schema.** Keep `output_json_schema` simple, and have the component construct its payload literally — don't compute it at submit time from scattered state.
-- **Heavy chrome that hides the data.** Strip cards, shadows, and padding until the trace is the loudest thing on the screen.
-- **No keyboard shortcuts.** Single biggest throughput multiplier; ship them from the first version.
-- **Multiple ratings per question.** Annotators on Likert collapse to the middle. Prefer binary; use multiple binary questions for multidimensional judgments.
-
----
-
-## Checklist
+## Pre-publish checklist
 
 Before `orizu apps create`:
 
