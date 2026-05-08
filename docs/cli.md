@@ -81,6 +81,26 @@ orizu whoami
 orizu logout
 ```
 
+### Auth Rate Limits
+
+CLI auth endpoints apply fixed-window abuse controls per route and actor. Normal
+`orizu login`, token refresh, and `orizu logout` flows are below these limits.
+Repeated requests from the same IP/client, or with the same token-like auth
+material, return HTTP `429` with:
+
+```json
+{
+  "error": "Too many requests",
+  "code": "RATE_LIMITED",
+  "retryAfterSeconds": 60
+}
+```
+
+The response also includes a `Retry-After` header. Current production behavior
+uses in-process memory, so limits are deterministic per running server instance.
+Multi-instance deployments should move the same policies to shared storage
+before relying on them as a global edge-wide limit.
+
 ## Command Reference
 
 ## Teams
