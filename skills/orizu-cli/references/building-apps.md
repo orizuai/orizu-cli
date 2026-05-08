@@ -485,7 +485,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 // Content
 import { TextContent } from '@/components/base/content/TextContent';
 import { CodeBlock } from '@/components/base/content/CodeBlock';
-import { ConversationView } from '@/components/base/content/ConversationView';
+import { AssistantMessageBlock, ContextMessageBlock, ConversationMessageBlock, ConversationView, ReasoningMessageBlock, SystemMessageBlock, ToolCallBlock, ToolResultBlock, UserMessageBlock } from '@/components/base/content/ConversationView';
 import { ContentRenderer } from '@/components/base/content/ContentRenderer';
 import { Prose } from '@/components/base/content/Prose';
 
@@ -620,16 +620,162 @@ Numbered, scrollable code with optional line highlights and click handlers — t
 />
 ```
 
+#### SystemMessageBlock {#systemmessageblock}
+
+Standalone system instruction renderer. Use it at the top of custom conversation layouts to show the governing prompt or policy context without taking the full transcript template. Wrap directly with Reactable or Annotatable for review.
+
+**Source:** [components/base/content/ConversationBlocks.tsx](https://orizu.ai/docs/components/SystemMessageBlock/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { SystemMessageBlock } from "@/components/base/content/ConversationView"`
+
+**Props:**
+- `message` * — `Message & { role: "system" }` — A single system instruction message.
+- `density` — `"comfortable" | "compact"` (default: `"comfortable"`)
+- `showTimestamp` — `boolean` (default: `true`)
+- `hideAvatar` — `boolean` (default: `false`)
+- `className` — `string`
+
+**Minimal usage:**
+
+```jsx
+<SystemMessageBlock
+  message={{ id: "1", role: "system", content: "..." }}
+/>
+```
+
+#### UserMessageBlock {#usermessageblock}
+
+Standalone user turn renderer from the conversation system. Use it when an agent surface needs to place the user message outside the full transcript template.
+
+**Source:** [components/base/content/ConversationBlocks.tsx](https://orizu.ai/docs/components/UserMessageBlock/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { UserMessageBlock } from "@/components/base/content/ConversationView"`
+
+**Props:**
+- `message` * — `Message & { role: "user" }` — A single user message.
+- `density` — `"comfortable" | "compact"` (default: `"comfortable"`)
+- `showTimestamp` — `boolean` (default: `true`)
+- `hideAvatar` — `boolean` (default: `false`)
+- `className` — `string`
+
+**Minimal usage:**
+
+```jsx
+<UserMessageBlock
+  message={{ id: "1", role: "user", content: "..." }}
+/>
+```
+
+#### AssistantMessageBlock {#assistantmessageblock}
+
+Standalone assistant turn renderer. Compose it with reactions, annotations, generated previews, or custom agent layouts without taking the full ConversationView.
+
+**Source:** [components/base/content/ConversationBlocks.tsx](https://orizu.ai/docs/components/AssistantMessageBlock/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { AssistantMessageBlock } from "@/components/base/content/ConversationView"`
+
+**Props:**
+- `message` * — `Message & { role: "assistant" }` — A single assistant message.
+- `density` — `"comfortable" | "compact"` (default: `"comfortable"`)
+- `showTimestamp` — `boolean` (default: `true`)
+- `hideAvatar` — `boolean` (default: `false`)
+- `className` — `string`
+
+**Minimal usage:**
+
+```jsx
+<AssistantMessageBlock
+  message={{ id: "1", role: "assistant", content: "..." }}
+/>
+```
+
+#### ReasoningMessageBlock {#reasoningmessageblock}
+
+Standalone reasoning trace renderer. It keeps the existing default-collapsed details shell while letting agent UIs position reasoning independently. Wrap the block directly when reviewers need to react to or annotate the trace.
+
+**Source:** [components/base/content/ConversationBlocks.tsx](https://orizu.ai/docs/components/ReasoningMessageBlock/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ReasoningMessageBlock } from "@/components/base/content/ConversationView"`
+
+**Props:**
+- `message` * — `Message & { role: "reasoning" }` — A single reasoning trace. defaultOpen controls the details shell.
+- `density` — `"comfortable" | "compact"` (default: `"comfortable"`)
+- `showTimestamp` — `boolean` (default: `true`)
+- `hideAvatar` — `boolean` (default: `false`)
+- `className` — `string`
+
+**Minimal usage:**
+
+```jsx
+<ReasoningMessageBlock
+  message={{ id: "1", role: "reasoning", content: "..." }}
+/>
+```
+
+#### ToolCallBlock {#toolcallblock}
+
+Standalone tool-call renderer. It renders the tool name, optional badge, and collapsible args payload for trace panels and custom agent timelines. Wrap directly with Reactable or Annotatable before execution review.
+
+**Source:** [components/base/content/ConversationBlocks.tsx](https://orizu.ai/docs/components/ToolCallBlock/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ToolCallBlock } from "@/components/base/content/ConversationView"`
+
+**Props:**
+- `message` * — `Message & { role: "tool_call" }` — A single tool call. args is rendered before content when present.
+- `density` — `"comfortable" | "compact"` (default: `"comfortable"`)
+- `showTimestamp` — `boolean` (default: `true`)
+- `hideAvatar` — `boolean` (default: `false`)
+- `className` — `string`
+
+**Minimal usage:**
+
+```jsx
+<ToolCallBlock
+  message={{ id: "1", role: "tool_call", content: "..." }}
+/>
+```
+
+#### ToolResultBlock {#toolresultblock}
+
+Standalone tool-result renderer. It preserves the paired-result visual treatment while allowing callers to group, filter, react to, or annotate results themselves.
+
+**Source:** [components/base/content/ConversationBlocks.tsx](https://orizu.ai/docs/components/ToolResultBlock/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ToolResultBlock } from "@/components/base/content/ConversationView"`
+
+**Props:**
+- `message` * — `Message & { role: "tool_result" }` — A single tool result. result is rendered before content when present.
+- `density` — `"comfortable" | "compact"` (default: `"comfortable"`)
+- `showTimestamp` — `boolean` (default: `true`)
+- `hideAvatar` — `boolean` (default: `false`)
+- `className` — `string`
+
+**Minimal usage:**
+
+```jsx
+<ToolResultBlock
+  message={{ id: "1", role: "tool_result", content: "..." }}
+/>
+```
+
 #### ConversationView {#conversationview}
 
-Agentic transcript. Beyond user/assistant/system: reasoning (italic serif, default-collapsed), tool_call (mono, default-open, collapsible), tool_result (paired beneath, connecting left rule, collapsible), context (RAG card with source badge). Optional per-turn metadata — avatar, label, timestamp, duration, badge — all stripable.
+Composed agentic transcript template built from SystemMessageBlock, UserMessageBlock, AssistantMessageBlock, ReasoningMessageBlock, ToolCallBlock, ToolResultBlock, and companion context blocks.
 
 **Source:** [components/base/content/ConversationView.tsx](https://orizu.ai/docs/components/ConversationView/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
 
 **Import:** `import { ConversationView } from "@/components/base/content/ConversationView"`
 
+**Block primitives:**
+- `SystemMessageBlock` — Top-of-transcript system instruction bubble for governing prompt or policy context.
+- `UserMessageBlock` — Right-aligned user message bubble with avatar, label, and optional timestamp.
+- `AssistantMessageBlock` — Assistant message bubble for direct composition with feedback and generated-output surfaces.
+- `ReasoningMessageBlock` — Default-collapsed reasoning shell that can be mounted independently.
+- `ToolCallBlock` — Collapsible tool-call payload with tool name and optional badge.
+- `ToolResultBlock` — Collapsible tool-result payload with the paired result styling.
+
 **Props:**
-- `messages` * — `Message[]` — Each turn: { id, role, content, tool?, args?, result?, source?, timestamp?, duration?, avatar?, label?, badge?, defaultOpen? }. Roles: 'user' | 'assistant' | 'system' | 'reasoning' | 'tool_call' | 'tool_result' | 'context'.
+- `messages` * — `Message[]` — Each turn: { id, role, content, tool?, args?, result?, source?, timestamp?, duration?, avatar?, label?, badge?, defaultOpen? }. timestamp is an optional display string rendered verbatim. Roles: 'user' | 'assistant' | 'system' | 'reasoning' | 'tool_call' | 'tool_result' | 'context'.
 - `density` — `"comfortable" | "compact"` (default: `"comfortable"`) — Compact halves the gap and tightens padding — use for long agentic traces.
 - `showTimestamps` — `boolean` (default: `true`)
 - `maxHeight` — `string` (default: `"300px"`)
@@ -1006,7 +1152,7 @@ Worked component + behavior compositions. Read these before building — the men
 
 #### Composition recipes {#composition-recipes}
 
-Three worked behavior × component patterns. The mental model: pick a component, pick a behavior, fill the slot.
+Worked behavior × component patterns. The mental model: pick an individual content block, pick a behavior, fill the slot.
 
 **Recipe 1 — Flag a tool call before it executes**
 Why: Reactable wraps the tool_call turn; the rail offers ‘flag’; the form captures why before letting the agent run.
@@ -1035,13 +1181,49 @@ const [flagReason, setFlagReason] = useState("")
   )}
   onReact={recordReaction}
 >
-  <ConversationView messages={[
-    { id: "1", role: "tool_call", tool: "send_email", content: "..." }
-  ]}/>
+  <ToolCallBlock
+    message={{ id: "1", role: "tool_call", tool: "send_email", content: "..." }}
+  />
 </Reactable>
 ```
 
-**Recipe 2 — Per-turn thumbs with optional note**
+**Recipe 2 — Annotate a system instruction**
+Why: Annotatable wraps the standalone system block at the top of a custom conversation layout, so reviewers can mark the exact policy phrase that made the run too constrained.
+
+```jsx
+const [annotationText, setAnnotationText] = useState("")
+
+<Annotatable
+  annotations={existing}
+  renderAnnotation={({ span, save, cancel }) => (
+    <div className="space-y-2">
+      <CommentBox
+        label={`On "${span.text}"`}
+        value={annotationText}
+        onChange={setAnnotationText}
+      />
+      <div className="flex gap-2">
+        <Button
+          onClick={() => save({ comment: annotationText })}
+          disabled={!annotationText.trim()}
+        >
+          Save
+        </Button>
+        <Button variant="outline" onClick={cancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  )}
+  onAnnotationCreate={appendAnnotation}
+>
+  <SystemMessageBlock
+    message={{ id: "1", role: "system", content: "Use only verified context." }}
+  />
+</Annotatable>
+```
+
+**Recipe 3 — Per-turn thumbs with optional note**
 Why: Reactable on each assistant turn. Thumbs are the rail; renderForm only opens for thumbs-down to capture a reason.
 
 ```jsx
@@ -1070,13 +1252,13 @@ const [note, setNote] = useState("")
   }
   onReact={saveReaction}
 >
-  <ConversationView messages={[
-    { id: "1", role: "assistant", content: "..." }
-  ]}/>
+  <AssistantMessageBlock
+    message={{ id: "1", role: "assistant", content: "..." }}
+  />
 </Reactable>
 ```
 
-**Recipe 3 — Annotate spans inside a reasoning trace**
+**Recipe 4 — Annotate spans inside a reasoning trace**
 Why: Annotatable wraps the reasoning turn; selection inside captures a span; the slot is a CommentBox so reviewers can call out a wrong inference at the exact phrase.
 
 ```jsx
@@ -1106,10 +1288,43 @@ const [annotationText, setAnnotationText] = useState("")
   )}
   onAnnotationCreate={appendAnnotation}
 >
-  <ConversationView messages={[
-    { id: "1", role: "reasoning", content: "..." }
-  ]}/>
+  <ReasoningMessageBlock
+    message={{ id: "1", role: "reasoning", content: "...", defaultOpen: true }}
+  />
 </Annotatable>
+```
+
+**Recipe 5 — React to a tool result**
+Why: Reactable wraps the standalone tool result, so reviewers can thumbs-down or flag bad evidence without reacting to the whole conversation.
+
+```jsx
+const [note, setNote] = useState("")
+
+<Reactable
+  types={["thumbs", "flag"]}
+  renderForm={({ save, cancel }) => (
+    <div className="space-y-2">
+      <CommentBox
+        label="What is wrong with this result?"
+        value={note}
+        onChange={setNote}
+      />
+      <div className="flex gap-2">
+        <Button onClick={() => save(note)} disabled={!note.trim()}>
+          Save
+        </Button>
+        <Button variant="outline" onClick={cancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  )}
+  onReact={recordReaction}
+>
+  <ToolResultBlock
+    message={{ id: "1", role: "tool_result", tool: "search_docs", content: "..." }}
+  />
+</Reactable>
 ```
 <!-- END ORIZU_AUTO_COMPONENT_REFERENCE -->
 
@@ -1137,7 +1352,7 @@ interface Message {
   args?: unknown;
   result?: unknown;
   source?: string;
-  timestamp?: string | Date;
+  timestamp?: string;
   duration?: string;
   avatar?: React.ReactNode;
   label?: string;
