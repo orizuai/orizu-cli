@@ -561,8 +561,10 @@ async function logout() {
     await fetch(`${baseUrl}/api/cli/auth/logout`, {
         method: 'POST',
         headers: {
+            'Content-Type': 'application/json',
             Authorization: `Bearer ${credentials.accessToken}`,
         },
+        body: JSON.stringify({ refreshToken: credentials.refreshToken }),
     }).catch(() => undefined);
     clearServerCredentials(baseUrl);
     console.log(`Logged out from ${baseUrl}.`);
