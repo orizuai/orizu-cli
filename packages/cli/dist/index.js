@@ -11,7 +11,7 @@ import { parseDatasetFile } from './file-parser.js';
 import { streamJsonlRowChunks } from './jsonl-stream.js';
 import { parseDatasetReference } from './dataset-download.js';
 import { parseGlobalFlags } from './global-flags.js';
-import { authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js';
+import { assertSecureTokenTransport, authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags, } from './http.js';
 import { formatTaskCreateError } from './task-create-error.js';
 function printUsage() {
     console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`);
@@ -46,47 +46,81 @@ function createCodeVerifier() {
 function createCodeChallenge(verifier) {
     return createHash('sha256').update(verifier).digest('base64url');
 }
+function sanitizeTerminalText(value) {
+    return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
+}
+function validateBrowserUrl(url, expectedOrigin) {
+    let parsed;
+    try {
+        parsed = new URL(url);
+    }
+    catch {
+        throw new Error('Server returned an invalid browser URL.');
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        throw new Error('Server returned an unsupported browser URL scheme.');
+    }
+    if (parsed.username || parsed.password) {
+        throw new Error('Server returned a browser URL containing credentials.');
+    }
+    if (expectedOrigin && parsed.origin !== expectedOrigin) {
+        throw new Error('Server returned a browser URL for an unexpected origin.');
+    }
+    return parsed;
+}
 function openInBrowser(url) {
+    const parsed = validateBrowserUrl(url);
     const platform = process.platform;
+    const href = parsed.href;
     if (platform === 'darwin') {
-        spawn('open', [url], {
+        spawn('open', [href], {
             detached: true,
             stdio: 'ignore',
         }).unref();
         return;
     }
     if (platform === 'win32') {
-        spawn('cmd', ['/c', 'start', '', url], {
+        spawn('rundll32.exe', ['url.dll,FileProtocolHandler', href], {
             detached: true,
             stdio: 'ignore',
             windowsHide: true,
         }).unref();
         return;
     }
-    spawn('xdg-open', [url], {
+    spawn('xdg-open', [href], {
         detached: true,
         stdio: 'ignore',
     }).unref();
 }
 function formatTerminalLink(url) {
-    if (!isInteractiveTerminal()) {
-        return url;
+    const safeUrl = sanitizeTerminalText(url);
+    try {
+        const parsed = validateBrowserUrl(safeUrl);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+            return safeUrl;
+        }
     }
-    return `\u001B]8;;${url}\u0007${url}\u001B]8;;\u0007`;
+    catch {
+        return safeUrl;
+    }
+    if (!isInteractiveTerminal()) {
+        return safeUrl;
+    }
+    return `\u001B]8;;${safeUrl}\u0007${safeUrl}\u001B]8;;\u0007`;
 }
 async function parseJsonResponse(response, context) {
     const contentType = response.headers.get('content-type') || '';
     const rawBody = await response.text();
     if (!contentType.includes('application/json')) {
         throw new Error(`${context} returned non-JSON response (status ${response.status}). ` +
-            `Body preview: ${rawBody.slice(0, 180)}`);
+            `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`);
     }
     try {
         return JSON.parse(rawBody);
     }
     catch {
         throw new Error(`${context} returned invalid JSON (status ${response.status}). ` +
-            `Body preview: ${rawBody.slice(0, 180)}`);
+            `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`);
     }
 }
 async function promptSelect(title, items, label, options) {
@@ -99,9 +133,9 @@ async function promptSelect(title, items, label, options) {
     if (items.length === 1 && !options?.forcePrompt) {
         return items[0];
     }
-    console.log(`\n${title}`);
+    console.log(`\n${sanitizeTerminalText(title)}`);
     items.forEach((item, index) => {
-        console.log(`  ${index + 1}. ${label(item, index)}`);
+        console.log(`  ${index + 1}. ${sanitizeTerminalText(label(item, index))}`);
     });
     const rl = createInterface({ input, output });
     try {
@@ -187,7 +221,7 @@ async function resolveProjectSlug(projectArg) {
     const [teamSlug, projectSlug] = segments.map(normalizeSlugInput);
     const matchedTeam = teams.find(team => team.slug === teamSlug);
     if (!matchedTeam) {
-        console.error(`Team '${teamSlug}' not found in your accessible teams.`);
+        console.error(`Team '${sanitizeTerminalText(teamSlug)}' not found in your accessible teams.`);
         const selectedTeam = await promptSelect('Select a team', teams, team => `${team.name} (${team.slug})`);
         const projects = await fetchProjects(selectedTeam.slug);
         const selectedProject = await promptSelect(`Select a project in ${selectedTeam.slug}`, projects, project => `${project.name} (${project.teamSlug}/${project.slug})`);
@@ -196,7 +230,7 @@ async function resolveProjectSlug(projectArg) {
     const projects = await fetchProjects(matchedTeam.slug);
     const matchedProject = projects.find(project => project.slug === projectSlug);
     if (!matchedProject) {
-        console.error(`Project '${projectSlug}' not found in team '${matchedTeam.slug}'.`);
+        console.error(`Project '${sanitizeTerminalText(projectSlug)}' not found in team '${sanitizeTerminalText(matchedTeam.slug)}'.`);
         const selectedProject = await promptSelect(`Select a project in ${matchedTeam.slug}`, projects, project => `${project.name} (${project.teamSlug}/${project.slug})`);
         return `${selectedProject.teamSlug}/${selectedProject.slug}`;
     }
@@ -239,9 +273,9 @@ function printTeams(teams) {
         return;
     }
     const rows = teams.map(team => ({
-        slug: team.slug,
-        name: team.name || '-',
-        role: team.role || '-',
+        slug: sanitizeTerminalText(team.slug),
+        name: sanitizeTerminalText(team.name || '-'),
+        role: sanitizeTerminalText(team.role || '-'),
     }));
     const slugWidth = Math.max('TEAM SLUG'.length, ...rows.map(row => row.slug.length));
     const nameWidth = Math.max('TEAM NAME'.length, ...rows.map(row => row.name.length));
@@ -258,9 +292,9 @@ function printProjects(projects) {
         return;
     }
     const rows = projects.map(project => ({
-        project: `${project.teamSlug}/${project.slug}`,
-        name: project.name || '-',
-        role: project.role || '-',
+        project: sanitizeTerminalText(`${project.teamSlug}/${project.slug}`),
+        name: sanitizeTerminalText(project.name || '-'),
+        role: sanitizeTerminalText(project.role || '-'),
     }));
     const projectWidth = Math.max('TEAM/PROJECT'.length, ...rows.map(row => row.project.length));
     const nameWidth = Math.max('PROJECT NAME'.length, ...rows.map(row => row.name.length));
@@ -277,11 +311,11 @@ function printTasks(tasks) {
         return;
     }
     const rows = tasks.map(task => ({
-        id: task.id,
-        name: task.title || '-',
-        status: task.status || '-',
+        id: sanitizeTerminalText(task.id),
+        name: sanitizeTerminalText(task.title || '-'),
+        status: sanitizeTerminalText(task.status || '-'),
         project: task.teamSlug && task.projectSlug
-            ? `${task.teamSlug}/${task.projectSlug}`
+            ? sanitizeTerminalText(`${task.teamSlug}/${task.projectSlug}`)
             : 'unknown-project',
     }));
     const idWidth = Math.max('TASK ID'.length, ...rows.map(row => row.id.length));
@@ -299,8 +333,8 @@ function printApps(apps) {
         return;
     }
     const rows = apps.map(app => ({
-        id: app.id,
-        name: app.name || '-',
+        id: sanitizeTerminalText(app.id),
+        name: sanitizeTerminalText(app.name || '-'),
         version: `v${app.currentVersionNum || 1}`,
     }));
     const idWidth = Math.max('APP ID'.length, ...rows.map(row => row.id.length));
@@ -318,10 +352,10 @@ function printTeamMembers(members) {
         return;
     }
     const rows = members.map(member => ({
-        id: member.id,
-        userId: member.user_id || '-',
-        email: member.email || '-',
-        role: member.role || '-',
+        id: sanitizeTerminalText(member.id),
+        userId: sanitizeTerminalText(member.user_id || '-'),
+        email: sanitizeTerminalText(member.email || '-'),
+        role: sanitizeTerminalText(member.role || '-'),
     }));
     const idWidth = Math.max('MEMBER ID'.length, ...rows.map(row => row.id.length));
     const userIdWidth = Math.max('USER ID'.length, ...rows.map(row => row.userId.length));
@@ -335,16 +369,16 @@ function printTeamMembers(members) {
 }
 function printTaskStatusSummary(data) {
     const task = data.task;
-    console.log(`Task: ${task.title} (${task.id})`);
-    console.log(`Status: ${task.status}`);
-    console.log(`Project: ${task.teamSlug}/${task.projectSlug}`);
+    console.log(`Task: ${sanitizeTerminalText(task.title)} (${sanitizeTerminalText(task.id)})`);
+    console.log(`Status: ${sanitizeTerminalText(task.status)}`);
+    console.log(`Project: ${sanitizeTerminalText(`${task.teamSlug}/${task.projectSlug}`)}`);
     console.log(`Progress: ${task.progressPercentage}%`);
     console.log(`Counts: completed=${task.counts.completed}, in_progress=${task.counts.inProgress}, pending=${task.counts.pending}, skipped=${task.counts.skipped}`);
     console.log(`Required assignments: ${task.totalRequiredAssignments} (${task.datasetRowCount} rows x ${task.requiredAssignmentsPerRow})`);
     if (task.assignees.length > 0) {
         console.log('\nAssignees');
         task.assignees.forEach(assignee => {
-            console.log(`  ${assignee.email}: total=${assignee.total}, completed=${assignee.completed}, in_progress=${assignee.inProgress}, pending=${assignee.pending}, skipped=${assignee.skipped}`);
+            console.log(`  ${sanitizeTerminalText(assignee.email)}: total=${assignee.total}, completed=${assignee.completed}, in_progress=${assignee.inProgress}, pending=${assignee.pending}, skipped=${assignee.skipped}`);
         });
     }
 }
@@ -469,6 +503,7 @@ function renderCliAuthBrowserPage(status) {
 }
 async function login() {
     const baseUrl = resolveLoginBaseUrl();
+    assertSecureTokenTransport(baseUrl);
     const codeVerifier = createCodeVerifier();
     const codeChallenge = createCodeChallenge(codeVerifier);
     const callbackPort = resolveAuthCallbackPort();
@@ -517,8 +552,9 @@ async function login() {
                     return;
                 }
                 const { authorizeUrl } = await parseJsonResponse(response, 'CLI auth start');
-                console.log(`Opening browser for login: ${authorizeUrl}`);
-                openInBrowser(authorizeUrl);
+                const safeAuthorizeUrl = validateBrowserUrl(authorizeUrl, baseUrl).href;
+                console.log(`Opening browser for login: ${sanitizeTerminalText(safeAuthorizeUrl)}`);
+                openInBrowser(safeAuthorizeUrl);
             }
             catch (error) {
                 server.close();
@@ -541,7 +577,7 @@ async function login() {
         refreshToken: loginData.refreshToken,
         expiresAt: loginData.expiresAt,
     });
-    console.log(`Logged in as ${loginData.user.email ?? loginData.user.id}`);
+    console.log(`Logged in as ${sanitizeTerminalText(loginData.user.email ?? loginData.user.id)}`);
 }
 async function whoami() {
     const response = await authedFetch('/api/cli/auth/whoami');
@@ -549,25 +585,39 @@ async function whoami() {
         throw new Error(`whoami failed: ${await response.text()}`);
     }
     const data = await response.json();
-    console.log(data.user.email ?? data.user.id);
+    console.log(sanitizeTerminalText(data.user.email ?? data.user.id));
 }
 async function logout() {
     const baseUrl = getBaseUrl();
     const credentials = getServerCredentials(baseUrl);
     if (!credentials) {
-        console.log(`Already logged out for ${baseUrl}.`);
+        console.log(`Already logged out for ${sanitizeTerminalText(baseUrl)}.`);
         return;
     }
-    await fetch(`${baseUrl}/api/cli/auth/logout`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${credentials.accessToken}`,
-        },
-        body: JSON.stringify({ refreshToken: credentials.refreshToken }),
-    }).catch(() => undefined);
+    let remoteLogoutError = null;
+    try {
+        assertSecureTokenTransport(baseUrl);
+        const response = await fetch(`${baseUrl}/api/cli/auth/logout`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${credentials.accessToken}`,
+            },
+            body: JSON.stringify({ refreshToken: credentials.refreshToken }),
+        });
+        if (!response.ok) {
+            remoteLogoutError = sanitizeTerminalText(await response.text()).slice(0, 180);
+        }
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        remoteLogoutError = sanitizeTerminalText(message).slice(0, 180);
+    }
     clearServerCredentials(baseUrl);
-    console.log(`Logged out from ${baseUrl}.`);
+    if (remoteLogoutError) {
+        console.warn(`Warning: remote logout failed: ${remoteLogoutError}`);
+    }
+    console.log(`Logged out from ${sanitizeTerminalText(baseUrl)}.`);
 }
 async function listTeams() {
     printTeams(await fetchTeams());
@@ -602,7 +652,7 @@ async function createTeam() {
         throw new Error(`Failed to create team: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'Team create');
-    console.log(`Created team: ${data.team.name} (${data.team.slug})`);
+    console.log(`Created team: ${sanitizeTerminalText(data.team.name)} (${sanitizeTerminalText(data.team.slug)})`);
 }
 async function listProjects() {
     const teamSlugArg = getArg('--team');
@@ -629,7 +679,7 @@ async function createProject() {
         throw new Error(`Failed to create project: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'Project create');
-    console.log(`Created project ${data.project.teamSlug}/${data.project.slug}`);
+    console.log(`Created project ${sanitizeTerminalText(`${data.project.teamSlug}/${data.project.slug}`)}`);
 }
 async function listTasks() {
     const project = getArg('--project');
@@ -695,9 +745,9 @@ async function createAppFromFile() {
         throw new Error(`Failed to create app: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'App create');
-    console.log(`Created app ${data.app.name} (${data.app.id}) v${data.app.versionNum}`);
+    console.log(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`);
     if (data.warnings?.length) {
-        console.log(`Warnings: ${data.warnings.join('; ')}`);
+        console.log(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`);
     }
 }
 async function updateAppFromFile() {
@@ -731,9 +781,9 @@ async function updateAppFromFile() {
         throw new Error(`Failed to update app: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'App update');
-    console.log(`Updated app ${data.app.name} (${data.app.id}) to v${data.app.versionNum}`);
+    console.log(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`);
     if (data.warnings?.length) {
-        console.log(`Warnings: ${data.warnings.join('; ')}`);
+        console.log(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`);
     }
 }
 async function linkAppDataset() {
@@ -765,7 +815,7 @@ async function linkAppDataset() {
         throw new Error(`Failed to link dataset: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'App link dataset');
-    console.log(`Linked dataset ${data.linkedDataset.name} (${data.linkedDataset.id}) to app ${data.app.name} (${data.app.id}) version ${data.versionNum}`);
+    console.log(`Linked dataset ${sanitizeTerminalText(data.linkedDataset.name)} (${sanitizeTerminalText(data.linkedDataset.id)}) to app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) version ${data.versionNum}`);
 }
 function parseCommaSeparated(value) {
     if (!value) {
@@ -838,14 +888,14 @@ async function createTask() {
     }
     const baseUrl = getBaseUrl();
     const taskUrl = `${baseUrl}/d/${projectSlug}/tasks/${data.task.id}`;
-    console.log(`Created task ${data.task.title} (${data.task.id}) [${data.task.status}]` +
-        `\n  Task ID:    ${data.task.id}` +
-        `\n  Dataset ID: ${datasetId}` +
-        `\n  Version:    v${data.task.versionNum} (${data.task.versionId})` +
+    console.log(`Created task ${sanitizeTerminalText(data.task.title)} (${sanitizeTerminalText(data.task.id)}) [${sanitizeTerminalText(data.task.status)}]` +
+        `\n  Task ID:    ${sanitizeTerminalText(data.task.id)}` +
+        `\n  Dataset ID: ${sanitizeTerminalText(datasetId)}` +
+        `\n  Version:    v${data.task.versionNum} (${sanitizeTerminalText(data.task.versionId)})` +
         `\n  Labels/row: ${data.task.requiredAssignmentsPerRow}` +
         `\n  Assignments: ${data.assignmentsCreated}` +
-        (data.warning ? `\n  Warning:    ${data.warning}` : '') +
-        `\n  URL:        ${taskUrl}`);
+        (data.warning ? `\n  Warning:    ${sanitizeTerminalText(data.warning)}` : '') +
+        `\n  URL:        ${sanitizeTerminalText(taskUrl)}`);
 }
 async function assignTask() {
     const taskId = getArg('--task');
@@ -922,7 +972,7 @@ async function updateTaskStatus(targetStatus) {
     }
     const data = await parseJsonResponse(response, 'Task status update');
     const action = targetStatus === 'paused' ? 'Paused' : 'Unpaused';
-    console.log(`${action} task ${data.task.id} [${data.task.status}]`);
+    console.log(`${action} task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]`);
 }
 async function appDetail() {
     const appId = getArg('--app');
@@ -945,10 +995,10 @@ async function appDetail() {
         console.log(JSON.stringify(detail, null, 2));
         return;
     }
-    console.log(`App: ${detail.name} (${detail.id})`);
-    console.log(`  Project: ${detail.teamSlug}/${detail.projectSlug}`);
+    console.log(`App: ${sanitizeTerminalText(detail.name)} (${sanitizeTerminalText(detail.id)})`);
+    console.log(`  Project: ${sanitizeTerminalText(`${detail.teamSlug}/${detail.projectSlug}`)}`);
     if (detail.currentVersion) {
-        console.log(`  Current version: v${detail.currentVersion.versionNum} (${detail.currentVersion.versionId})`);
+        console.log(`  Current version: v${detail.currentVersion.versionNum} (${sanitizeTerminalText(detail.currentVersion.versionId)})`);
         console.log(`  Input schema: ${detail.currentVersion.inputJsonSchema ? 'defined' : 'none'}`);
         console.log(`  Output schema: ${detail.currentVersion.outputJsonSchema ? 'defined' : 'none'}`);
     }
@@ -957,10 +1007,10 @@ async function appDetail() {
     }
     console.log(`  Compatible datasets: ${detail.compatibleDatasetsCount}/${detail.totalDatasetsCount}`);
     if (detail.createdByEmail) {
-        console.log(`  Created by: ${detail.createdByName || detail.createdByEmail}`);
+        console.log(`  Created by: ${sanitizeTerminalText(detail.createdByName || detail.createdByEmail)}`);
     }
-    console.log(`  Created: ${detail.createdAt}`);
-    console.log(`  Updated: ${detail.updatedAt}`);
+    console.log(`  Created: ${sanitizeTerminalText(detail.createdAt)}`);
+    console.log(`  Updated: ${sanitizeTerminalText(detail.updatedAt)}`);
 }
 async function listTeamMembers() {
     const teamSlug = await resolveTeamSlug(getArg('--team'));
@@ -981,7 +1031,7 @@ async function addTeamMember() {
         throw new Error(`Failed to add team member: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'Team member add');
-    console.log(`Added team member ${data.member.email} (${data.member.id})`);
+    console.log(`Added team member ${sanitizeTerminalText(data.member.email)} (${sanitizeTerminalText(data.member.id)})`);
 }
 async function removeTeamMember() {
     const teamSlug = await resolveTeamSlug(getArg('--team'));
@@ -998,7 +1048,7 @@ async function removeTeamMember() {
     if (!response.ok) {
         throw new Error(`Failed to remove team member: ${await response.text()}`);
     }
-    console.log(`Removed team member ${member.email}`);
+    console.log(`Removed team member ${sanitizeTerminalText(member.email)}`);
 }
 async function changeTeamMemberRole() {
     const teamSlugArg = getArg('--team');
@@ -1024,7 +1074,7 @@ async function changeTeamMemberRole() {
     if (!response.ok) {
         throw new Error(`Failed to update member role: ${await response.text()}`);
     }
-    console.log(`Updated ${member.email} role to ${role}`);
+    console.log(`Updated ${sanitizeTerminalText(member.email)} role to ${sanitizeTerminalText(role)}`);
 }
 async function createDatasetFromRows(project, name, sourceType, rows) {
     const response = await authedFetch('/api/cli/datasets/upload', {
@@ -1061,7 +1111,7 @@ async function uploadJsonlDatasetInChunks(file, project, datasetName) {
                 throw new Error(message);
             }
             throw new Error(`Upload stopped while reading the next JSONL chunk: ${message}\n` +
-                `Dataset ${dataset.name} (${dataset.id}) was created and ${totalUploaded} rows were uploaded. ` +
+                `Dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) was created and ${totalUploaded} rows were uploaded. ` +
                 `Fix the file, remove the first ${totalUploaded} rows, and run ` +
                 `orizu datasets append --dataset ${dataset.id} --file <remaining-file>.`);
         }
@@ -1099,7 +1149,7 @@ async function uploadJsonlDatasetInChunks(file, project, datasetName) {
     if (!dataset) {
         throw new Error('Dataset file contains no rows');
     }
-    console.log(`Uploaded dataset ${dataset.name} (${dataset.id}) with ${dataset.rowCount} rows.`);
+    console.log(`Uploaded dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) with ${dataset.rowCount} rows.`);
     if (dataset.url) {
         console.log(`View dataset: ${formatTerminalLink(dataset.url)}`);
     }
@@ -1120,7 +1170,7 @@ async function uploadDataset() {
     }
     const { rows, sourceType } = parseDatasetFile(file);
     const data = await createDatasetFromRows(project, datasetName, sourceType, rows);
-    console.log(`Uploaded dataset ${data.dataset.name} (${data.dataset.id}) with ${data.dataset.rowCount} rows.`);
+    console.log(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`);
     if (data.dataset.url) {
         console.log(`View dataset: ${formatTerminalLink(data.dataset.url)}`);
     }
@@ -1161,7 +1211,7 @@ async function downloadDataset() {
         : `${datasetId}.${format}`;
     const bytes = new Uint8Array(await response.arrayBuffer());
     writeFileSync(filename, bytes);
-    console.log(`Saved dataset ${datasetId} (${format.toUpperCase()}) to ${filename}`);
+    console.log(`Saved dataset ${sanitizeTerminalText(datasetId)} (${format.toUpperCase()}) to ${sanitizeTerminalText(filename)}`);
 }
 const MAX_INPUT_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 const APPEND_CHUNK_SIZE_ROWS = 500;
@@ -1213,7 +1263,7 @@ async function appendJsonlDatasetRowsInChunks(datasetId, file) {
     if (!lastResult) {
         throw new Error('Dataset append file must contain at least one row');
     }
-    console.log(`Appended ${totalAppended} rows to dataset ${lastResult.dataset.name} (${lastResult.dataset.id}). New row count: ${lastResult.dataset.rowCount}`);
+    console.log(`Appended ${totalAppended} rows to dataset ${sanitizeTerminalText(lastResult.dataset.name)} (${sanitizeTerminalText(lastResult.dataset.id)}). New row count: ${lastResult.dataset.rowCount}`);
 }
 async function appendDatasetRows() {
     const projectArg = getArg('--project');
@@ -1262,7 +1312,7 @@ async function appendDatasetRows() {
     }
     if (rows.length <= APPEND_CHUNK_SIZE_ROWS) {
         const data = await appendChunk(datasetId, rows);
-        console.log(`Appended ${data.appendedCount} rows to dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`);
+        console.log(`Appended ${data.appendedCount} rows to dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). New row count: ${data.dataset.rowCount}`);
         return;
     }
     // Chunked upload for large row counts (ALI-555: track partial progress)
@@ -1286,7 +1336,7 @@ async function appendDatasetRows() {
         }
     }
     if (lastResult) {
-        console.log(`Appended ${totalAppended} rows to dataset ${lastResult.dataset.name} (${lastResult.dataset.id}). New row count: ${lastResult.dataset.rowCount}`);
+        console.log(`Appended ${totalAppended} rows to dataset ${sanitizeTerminalText(lastResult.dataset.name)} (${sanitizeTerminalText(lastResult.dataset.id)}). New row count: ${lastResult.dataset.rowCount}`);
     }
 }
 async function editDatasetRows() {
@@ -1332,7 +1382,7 @@ async function editDatasetRows() {
         throw new Error(`Edit rows failed: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'Dataset edit rows');
-    console.log(`Updated ${data.updatedCount} rows in dataset ${data.dataset.name} (${data.dataset.id}). Current row count: ${data.dataset.rowCount}`);
+    console.log(`Updated ${data.updatedCount} rows in dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Current row count: ${data.dataset.rowCount}`);
 }
 async function deleteDatasetRows() {
     const projectArg = getArg('--project');
@@ -1360,7 +1410,7 @@ async function deleteDatasetRows() {
         throw new Error(`Delete rows failed: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'Dataset delete rows');
-    console.log(`Deleted ${data.deletedCount} rows from dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`);
+    console.log(`Deleted ${data.deletedCount} rows from dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). New row count: ${data.dataset.rowCount}`);
 }
 async function lockDataset() {
     const projectArg = getArg('--project');
@@ -1383,7 +1433,7 @@ async function lockDataset() {
         throw new Error(`Lock failed: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'Dataset lock');
-    console.log(`Locked dataset ${data.dataset.name} (${data.dataset.id}) at ${data.dataset.lockedAt}. Row count: ${data.dataset.rowCount}`);
+    console.log(`Locked dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) at ${sanitizeTerminalText(data.dataset.lockedAt)}. Row count: ${data.dataset.rowCount}`);
 }
 async function cloneDataset() {
     const projectArg = getArg('--project');
@@ -1406,7 +1456,7 @@ async function cloneDataset() {
         throw new Error(`Clone failed: ${await response.text()}`);
     }
     const data = await parseJsonResponse(response, 'Dataset clone');
-    console.log(`Cloned dataset ${data.dataset.parentDatasetId} -> ${data.dataset.name} (${data.dataset.id}). Row count: ${data.dataset.rowCount}`);
+    console.log(`Cloned dataset ${sanitizeTerminalText(data.dataset.parentDatasetId)} -> ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Row count: ${data.dataset.rowCount}`);
 }
 async function downloadAnnotations() {
     let taskId = getArg('--task');
@@ -1428,7 +1478,7 @@ async function downloadAnnotations() {
         : fallbackName;
     const bytes = new Uint8Array(await response.arrayBuffer());
     writeFileSync(filename, bytes);
-    console.log(`Saved ${format.toUpperCase()} export to ${filename}`);
+    console.log(`Saved ${format.toUpperCase()} export to ${sanitizeTerminalText(filename)}`);
 }
 async function main() {
     const parsed = parseGlobalFlags(process.argv.slice(2));
@@ -1565,6 +1615,6 @@ async function main() {
     process.exit(1);
 }
 main().catch(error => {
-    console.error(error instanceof Error ? error.message : 'Unknown error');
+    console.error(sanitizeTerminalText(error instanceof Error ? error.message : 'Unknown error'));
     process.exit(1);
 });

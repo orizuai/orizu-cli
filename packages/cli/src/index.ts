@@ -11,7 +11,13 @@ import { parseDatasetFile } from './file-parser.js'
 import { streamJsonlRowChunks } from './jsonl-stream.js'
 import { parseDatasetReference } from './dataset-download.js'
 import { parseGlobalFlags } from './global-flags.js'
-import { authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js'
+import {
+  assertSecureTokenTransport,
+  authedFetch,
+  getBaseUrl,
+  resolveLoginBaseUrl,
+  setGlobalFlags,
+} from './http.js'
 import { formatTaskCreateError } from './task-create-error.js'
 import { LoginResponse } from './types.js'
 
@@ -163,10 +169,39 @@ function createCodeChallenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url')
 }
 
+function sanitizeTerminalText(value: unknown): string {
+  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+}
+
+function validateBrowserUrl(url: string, expectedOrigin?: string): URL {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error('Server returned an invalid browser URL.')
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Server returned an unsupported browser URL scheme.')
+  }
+
+  if (parsed.username || parsed.password) {
+    throw new Error('Server returned a browser URL containing credentials.')
+  }
+
+  if (expectedOrigin && parsed.origin !== expectedOrigin) {
+    throw new Error('Server returned a browser URL for an unexpected origin.')
+  }
+
+  return parsed
+}
+
 function openInBrowser(url: string) {
+  const parsed = validateBrowserUrl(url)
   const platform = process.platform
+  const href = parsed.href
   if (platform === 'darwin') {
-    spawn('open', [url], {
+    spawn('open', [href], {
       detached: true,
       stdio: 'ignore',
     }).unref()
@@ -174,7 +209,7 @@ function openInBrowser(url: string) {
   }
 
   if (platform === 'win32') {
-    spawn('cmd', ['/c', 'start', '', url], {
+    spawn('rundll32.exe', ['url.dll,FileProtocolHandler', href], {
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
@@ -182,18 +217,28 @@ function openInBrowser(url: string) {
     return
   }
 
-  spawn('xdg-open', [url], {
+  spawn('xdg-open', [href], {
     detached: true,
     stdio: 'ignore',
   }).unref()
 }
 
 function formatTerminalLink(url: string): string {
-  if (!isInteractiveTerminal()) {
-    return url
+  const safeUrl = sanitizeTerminalText(url)
+  try {
+    const parsed = validateBrowserUrl(safeUrl)
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return safeUrl
+    }
+  } catch {
+    return safeUrl
   }
 
-  return `\u001B]8;;${url}\u0007${url}\u001B]8;;\u0007`
+  if (!isInteractiveTerminal()) {
+    return safeUrl
+  }
+
+  return `\u001B]8;;${safeUrl}\u0007${safeUrl}\u001B]8;;\u0007`
 }
 
 async function parseJsonResponse<T>(response: Response, context: string): Promise<T> {
@@ -203,7 +248,7 @@ async function parseJsonResponse<T>(response: Response, context: string): Promis
   if (!contentType.includes('application/json')) {
     throw new Error(
       `${context} returned non-JSON response (status ${response.status}). ` +
-      `Body preview: ${rawBody.slice(0, 180)}`
+      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
     )
   }
 
@@ -212,7 +257,7 @@ async function parseJsonResponse<T>(response: Response, context: string): Promis
   } catch {
     throw new Error(
       `${context} returned invalid JSON (status ${response.status}). ` +
-      `Body preview: ${rawBody.slice(0, 180)}`
+      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
     )
   }
 }
@@ -236,9 +281,9 @@ async function promptSelect<T>(
     return items[0]
   }
 
-  console.log(`\n${title}`)
+  console.log(`\n${sanitizeTerminalText(title)}`)
   items.forEach((item, index) => {
-    console.log(`  ${index + 1}. ${label(item, index)}`)
+    console.log(`  ${index + 1}. ${sanitizeTerminalText(label(item, index))}`)
   })
 
   const rl = createInterface({ input, output })
@@ -354,7 +399,7 @@ async function resolveProjectSlug(projectArg: string | null): Promise<string> {
 
   const matchedTeam = teams.find(team => team.slug === teamSlug)
   if (!matchedTeam) {
-    console.error(`Team '${teamSlug}' not found in your accessible teams.`)
+    console.error(`Team '${sanitizeTerminalText(teamSlug)}' not found in your accessible teams.`)
     const selectedTeam = await promptSelect(
       'Select a team',
       teams,
@@ -375,7 +420,7 @@ async function resolveProjectSlug(projectArg: string | null): Promise<string> {
   const matchedProject = projects.find(project => project.slug === projectSlug)
 
   if (!matchedProject) {
-    console.error(`Project '${projectSlug}' not found in team '${matchedTeam.slug}'.`)
+    console.error(`Project '${sanitizeTerminalText(projectSlug)}' not found in team '${sanitizeTerminalText(matchedTeam.slug)}'.`)
     const selectedProject = await promptSelect(
       `Select a project in ${matchedTeam.slug}`,
       projects,
@@ -461,9 +506,9 @@ function printTeams(teams: Team[]) {
   }
 
   const rows = teams.map(team => ({
-    slug: team.slug,
-    name: team.name || '-',
-    role: team.role || '-',
+    slug: sanitizeTerminalText(team.slug),
+    name: sanitizeTerminalText(team.name || '-'),
+    role: sanitizeTerminalText(team.role || '-'),
   }))
 
   const slugWidth = Math.max('TEAM SLUG'.length, ...rows.map(row => row.slug.length))
@@ -489,9 +534,9 @@ function printProjects(projects: Project[]) {
   }
 
   const rows = projects.map(project => ({
-    project: `${project.teamSlug}/${project.slug}`,
-    name: project.name || '-',
-    role: project.role || '-',
+    project: sanitizeTerminalText(`${project.teamSlug}/${project.slug}`),
+    name: sanitizeTerminalText(project.name || '-'),
+    role: sanitizeTerminalText(project.role || '-'),
   }))
 
   const projectWidth = Math.max('TEAM/PROJECT'.length, ...rows.map(row => row.project.length))
@@ -519,11 +564,11 @@ function printTasks(tasks: Task[]) {
   }
 
   const rows = tasks.map(task => ({
-    id: task.id,
-    name: task.title || '-',
-    status: task.status || '-',
+    id: sanitizeTerminalText(task.id),
+    name: sanitizeTerminalText(task.title || '-'),
+    status: sanitizeTerminalText(task.status || '-'),
     project: task.teamSlug && task.projectSlug
-      ? `${task.teamSlug}/${task.projectSlug}`
+      ? sanitizeTerminalText(`${task.teamSlug}/${task.projectSlug}`)
       : 'unknown-project',
   }))
 
@@ -552,8 +597,8 @@ function printApps(apps: AppSummary[]) {
   }
 
   const rows = apps.map(app => ({
-    id: app.id,
-    name: app.name || '-',
+    id: sanitizeTerminalText(app.id),
+    name: sanitizeTerminalText(app.name || '-'),
     version: `v${app.currentVersionNum || 1}`,
   }))
 
@@ -576,10 +621,10 @@ function printTeamMembers(members: TeamMember[]) {
   }
 
   const rows = members.map(member => ({
-    id: member.id,
-    userId: member.user_id || '-',
-    email: member.email || '-',
-    role: member.role || '-',
+    id: sanitizeTerminalText(member.id),
+    userId: sanitizeTerminalText(member.user_id || '-'),
+    email: sanitizeTerminalText(member.email || '-'),
+    role: sanitizeTerminalText(member.role || '-'),
   }))
 
   const idWidth = Math.max('MEMBER ID'.length, ...rows.map(row => row.id.length))
@@ -602,9 +647,9 @@ function printTeamMembers(members: TeamMember[]) {
 
 function printTaskStatusSummary(data: TaskStatusPayload) {
   const task = data.task
-  console.log(`Task: ${task.title} (${task.id})`)
-  console.log(`Status: ${task.status}`)
-  console.log(`Project: ${task.teamSlug}/${task.projectSlug}`)
+  console.log(`Task: ${sanitizeTerminalText(task.title)} (${sanitizeTerminalText(task.id)})`)
+  console.log(`Status: ${sanitizeTerminalText(task.status)}`)
+  console.log(`Project: ${sanitizeTerminalText(`${task.teamSlug}/${task.projectSlug}`)}`)
   console.log(`Progress: ${task.progressPercentage}%`)
   console.log(`Counts: completed=${task.counts.completed}, in_progress=${task.counts.inProgress}, pending=${task.counts.pending}, skipped=${task.counts.skipped}`)
   console.log(`Required assignments: ${task.totalRequiredAssignments} (${task.datasetRowCount} rows x ${task.requiredAssignmentsPerRow})`)
@@ -613,7 +658,7 @@ function printTaskStatusSummary(data: TaskStatusPayload) {
     console.log('\nAssignees')
     task.assignees.forEach(assignee => {
       console.log(
-        `  ${assignee.email}: total=${assignee.total}, completed=${assignee.completed}, in_progress=${assignee.inProgress}, pending=${assignee.pending}, skipped=${assignee.skipped}`
+        `  ${sanitizeTerminalText(assignee.email)}: total=${assignee.total}, completed=${assignee.completed}, in_progress=${assignee.inProgress}, pending=${assignee.pending}, skipped=${assignee.skipped}`
       )
     })
   }
@@ -748,6 +793,7 @@ function renderCliAuthBrowserPage(status: 'success' | 'error'): string {
 
 async function login() {
   const baseUrl = resolveLoginBaseUrl()
+  assertSecureTokenTransport(baseUrl)
   const codeVerifier = createCodeVerifier()
   const codeChallenge = createCodeChallenge(codeVerifier)
   const callbackPort = resolveAuthCallbackPort()
@@ -807,8 +853,9 @@ async function login() {
           response,
           'CLI auth start'
         )
-        console.log(`Opening browser for login: ${authorizeUrl}`)
-        openInBrowser(authorizeUrl)
+        const safeAuthorizeUrl = validateBrowserUrl(authorizeUrl, baseUrl).href
+        console.log(`Opening browser for login: ${sanitizeTerminalText(safeAuthorizeUrl)}`)
+        openInBrowser(safeAuthorizeUrl)
       } catch (error) {
         server.close()
         reject(error)
@@ -834,7 +881,7 @@ async function login() {
     expiresAt: loginData.expiresAt,
   })
 
-  console.log(`Logged in as ${loginData.user.email ?? loginData.user.id}`)
+  console.log(`Logged in as ${sanitizeTerminalText(loginData.user.email ?? loginData.user.id)}`)
 }
 
 async function whoami() {
@@ -844,28 +891,42 @@ async function whoami() {
   }
 
   const data = await response.json() as { user: { id: string; email: string | null } }
-  console.log(data.user.email ?? data.user.id)
+  console.log(sanitizeTerminalText(data.user.email ?? data.user.id))
 }
 
 async function logout() {
   const baseUrl = getBaseUrl()
   const credentials = getServerCredentials(baseUrl)
   if (!credentials) {
-    console.log(`Already logged out for ${baseUrl}.`)
+    console.log(`Already logged out for ${sanitizeTerminalText(baseUrl)}.`)
     return
   }
 
-  await fetch(`${baseUrl}/api/cli/auth/logout`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${credentials.accessToken}`,
-    },
-    body: JSON.stringify({ refreshToken: credentials.refreshToken }),
-  }).catch(() => undefined)
+  let remoteLogoutError: string | null = null
+  try {
+    assertSecureTokenTransport(baseUrl)
+    const response = await fetch(`${baseUrl}/api/cli/auth/logout`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${credentials.accessToken}`,
+      },
+      body: JSON.stringify({ refreshToken: credentials.refreshToken }),
+    })
+
+    if (!response.ok) {
+      remoteLogoutError = sanitizeTerminalText(await response.text()).slice(0, 180)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    remoteLogoutError = sanitizeTerminalText(message).slice(0, 180)
+  }
 
   clearServerCredentials(baseUrl)
-  console.log(`Logged out from ${baseUrl}.`)
+  if (remoteLogoutError) {
+    console.warn(`Warning: remote logout failed: ${remoteLogoutError}`)
+  }
+  console.log(`Logged out from ${sanitizeTerminalText(baseUrl)}.`)
 }
 
 async function listTeams() {
@@ -914,7 +975,7 @@ async function createTeam() {
   }
 
   const data = await parseJsonResponse<{ team: Team }>(response, 'Team create')
-  console.log(`Created team: ${data.team.name} (${data.team.slug})`)
+  console.log(`Created team: ${sanitizeTerminalText(data.team.name)} (${sanitizeTerminalText(data.team.slug)})`)
 }
 
 async function listProjects() {
@@ -955,7 +1016,7 @@ async function createProject() {
   const data = await parseJsonResponse<{
     project: { id: string; name: string; slug: string; teamSlug: string }
   }>(response, 'Project create')
-  console.log(`Created project ${data.project.teamSlug}/${data.project.slug}`)
+  console.log(`Created project ${sanitizeTerminalText(`${data.project.teamSlug}/${data.project.slug}`)}`)
 }
 
 async function listTasks() {
@@ -1032,9 +1093,9 @@ async function createAppFromFile() {
     app: { id: string; name: string; versionNum: number; componentName?: string }
     warnings?: string[]
   }>(response, 'App create')
-  console.log(`Created app ${data.app.name} (${data.app.id}) v${data.app.versionNum}`)
+  console.log(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`)
   if (data.warnings?.length) {
-    console.log(`Warnings: ${data.warnings.join('; ')}`)
+    console.log(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
   }
 }
 
@@ -1077,9 +1138,9 @@ async function updateAppFromFile() {
     app: { id: string; name: string; versionNum: number; componentName?: string }
     warnings?: string[]
   }>(response, 'App update')
-  console.log(`Updated app ${data.app.name} (${data.app.id}) to v${data.app.versionNum}`)
+  console.log(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`)
   if (data.warnings?.length) {
-    console.log(`Warnings: ${data.warnings.join('; ')}`)
+    console.log(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
   }
 }
 
@@ -1125,7 +1186,7 @@ async function linkAppDataset() {
   }>(response, 'App link dataset')
 
   console.log(
-    `Linked dataset ${data.linkedDataset.name} (${data.linkedDataset.id}) to app ${data.app.name} (${data.app.id}) version ${data.versionNum}`
+    `Linked dataset ${sanitizeTerminalText(data.linkedDataset.name)} (${sanitizeTerminalText(data.linkedDataset.id)}) to app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) version ${data.versionNum}`
   )
 }
 
@@ -1222,14 +1283,14 @@ async function createTask() {
   const baseUrl = getBaseUrl()
   const taskUrl = `${baseUrl}/d/${projectSlug}/tasks/${data.task.id}`
   console.log(
-    `Created task ${data.task.title} (${data.task.id}) [${data.task.status}]` +
-    `\n  Task ID:    ${data.task.id}` +
-    `\n  Dataset ID: ${datasetId}` +
-    `\n  Version:    v${data.task.versionNum} (${data.task.versionId})` +
+    `Created task ${sanitizeTerminalText(data.task.title)} (${sanitizeTerminalText(data.task.id)}) [${sanitizeTerminalText(data.task.status)}]` +
+    `\n  Task ID:    ${sanitizeTerminalText(data.task.id)}` +
+    `\n  Dataset ID: ${sanitizeTerminalText(datasetId)}` +
+    `\n  Version:    v${data.task.versionNum} (${sanitizeTerminalText(data.task.versionId)})` +
     `\n  Labels/row: ${data.task.requiredAssignmentsPerRow}` +
     `\n  Assignments: ${data.assignmentsCreated}` +
-    (data.warning ? `\n  Warning:    ${data.warning}` : '') +
-    `\n  URL:        ${taskUrl}`
+    (data.warning ? `\n  Warning:    ${sanitizeTerminalText(data.warning)}` : '') +
+    `\n  URL:        ${sanitizeTerminalText(taskUrl)}`
   )
 }
 
@@ -1319,7 +1380,7 @@ async function updateTaskStatus(targetStatus: 'paused' | 'active') {
 
   const data = await parseJsonResponse<{ task: { id: string; status: string } }>(response, 'Task status update')
   const action = targetStatus === 'paused' ? 'Paused' : 'Unpaused'
-  console.log(`${action} task ${data.task.id} [${data.task.status}]`)
+  console.log(`${action} task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]`)
 }
 
 interface AppDetailPayload {
@@ -1373,10 +1434,10 @@ async function appDetail() {
     return
   }
 
-  console.log(`App: ${detail.name} (${detail.id})`)
-  console.log(`  Project: ${detail.teamSlug}/${detail.projectSlug}`)
+  console.log(`App: ${sanitizeTerminalText(detail.name)} (${sanitizeTerminalText(detail.id)})`)
+  console.log(`  Project: ${sanitizeTerminalText(`${detail.teamSlug}/${detail.projectSlug}`)}`)
   if (detail.currentVersion) {
-    console.log(`  Current version: v${detail.currentVersion.versionNum} (${detail.currentVersion.versionId})`)
+    console.log(`  Current version: v${detail.currentVersion.versionNum} (${sanitizeTerminalText(detail.currentVersion.versionId)})`)
     console.log(`  Input schema: ${detail.currentVersion.inputJsonSchema ? 'defined' : 'none'}`)
     console.log(`  Output schema: ${detail.currentVersion.outputJsonSchema ? 'defined' : 'none'}`)
   } else {
@@ -1384,10 +1445,10 @@ async function appDetail() {
   }
   console.log(`  Compatible datasets: ${detail.compatibleDatasetsCount}/${detail.totalDatasetsCount}`)
   if (detail.createdByEmail) {
-    console.log(`  Created by: ${detail.createdByName || detail.createdByEmail}`)
+    console.log(`  Created by: ${sanitizeTerminalText(detail.createdByName || detail.createdByEmail)}`)
   }
-  console.log(`  Created: ${detail.createdAt}`)
-  console.log(`  Updated: ${detail.updatedAt}`)
+  console.log(`  Created: ${sanitizeTerminalText(detail.createdAt)}`)
+  console.log(`  Updated: ${sanitizeTerminalText(detail.updatedAt)}`)
 }
 
 async function listTeamMembers() {
@@ -1412,7 +1473,7 @@ async function addTeamMember() {
     throw new Error(`Failed to add team member: ${await response.text()}`)
   }
   const data = await parseJsonResponse<{ member: TeamMember }>(response, 'Team member add')
-  console.log(`Added team member ${data.member.email} (${data.member.id})`)
+  console.log(`Added team member ${sanitizeTerminalText(data.member.email)} (${sanitizeTerminalText(data.member.id)})`)
 }
 
 async function removeTeamMember() {
@@ -1435,7 +1496,7 @@ async function removeTeamMember() {
   if (!response.ok) {
     throw new Error(`Failed to remove team member: ${await response.text()}`)
   }
-  console.log(`Removed team member ${member.email}`)
+  console.log(`Removed team member ${sanitizeTerminalText(member.email)}`)
 }
 
 async function changeTeamMemberRole() {
@@ -1469,7 +1530,7 @@ async function changeTeamMemberRole() {
     throw new Error(`Failed to update member role: ${await response.text()}`)
   }
 
-  console.log(`Updated ${member.email} role to ${role}`)
+  console.log(`Updated ${sanitizeTerminalText(member.email)} role to ${sanitizeTerminalText(role)}`)
 }
 
 async function createDatasetFromRows(
@@ -1521,7 +1582,7 @@ async function uploadJsonlDatasetInChunks(
 
       throw new Error(
         `Upload stopped while reading the next JSONL chunk: ${message}\n` +
-        `Dataset ${dataset.name} (${dataset.id}) was created and ${totalUploaded} rows were uploaded. ` +
+        `Dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) was created and ${totalUploaded} rows were uploaded. ` +
         `Fix the file, remove the first ${totalUploaded} rows, and run ` +
         `orizu datasets append --dataset ${dataset.id} --file <remaining-file>.`
       )
@@ -1568,7 +1629,7 @@ async function uploadJsonlDatasetInChunks(
     throw new Error('Dataset file contains no rows')
   }
 
-  console.log(`Uploaded dataset ${dataset.name} (${dataset.id}) with ${dataset.rowCount} rows.`)
+  console.log(`Uploaded dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) with ${dataset.rowCount} rows.`)
   if (dataset.url) {
     console.log(`View dataset: ${formatTerminalLink(dataset.url)}`)
   }
@@ -1595,7 +1656,7 @@ async function uploadDataset() {
   const { rows, sourceType } = parseDatasetFile(file)
   const data = await createDatasetFromRows(project, datasetName, sourceType, rows)
 
-  console.log(`Uploaded dataset ${data.dataset.name} (${data.dataset.id}) with ${data.dataset.rowCount} rows.`)
+  console.log(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`)
   if (data.dataset.url) {
     console.log(`View dataset: ${formatTerminalLink(data.dataset.url)}`)
   }
@@ -1647,7 +1708,7 @@ async function downloadDataset() {
   const bytes = new Uint8Array(await response.arrayBuffer())
   writeFileSync(filename, bytes)
 
-  console.log(`Saved dataset ${datasetId} (${format.toUpperCase()}) to ${filename}`)
+  console.log(`Saved dataset ${sanitizeTerminalText(datasetId)} (${format.toUpperCase()}) to ${sanitizeTerminalText(filename)}`)
 }
 
 const MAX_INPUT_FILE_SIZE_BYTES = 50 * 1024 * 1024 // 50 MB
@@ -1719,7 +1780,7 @@ async function appendJsonlDatasetRowsInChunks(datasetId: string, file: string) {
   }
 
   console.log(
-    `Appended ${totalAppended} rows to dataset ${lastResult.dataset.name} (${lastResult.dataset.id}). New row count: ${lastResult.dataset.rowCount}`
+    `Appended ${totalAppended} rows to dataset ${sanitizeTerminalText(lastResult.dataset.name)} (${sanitizeTerminalText(lastResult.dataset.id)}). New row count: ${lastResult.dataset.rowCount}`
   )
 }
 
@@ -1782,7 +1843,7 @@ async function appendDatasetRows() {
   if (rows.length <= APPEND_CHUNK_SIZE_ROWS) {
     const data = await appendChunk(datasetId, rows)
     console.log(
-      `Appended ${data.appendedCount} rows to dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`
+      `Appended ${data.appendedCount} rows to dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). New row count: ${data.dataset.rowCount}`
     )
     return
   }
@@ -1813,7 +1874,7 @@ async function appendDatasetRows() {
 
   if (lastResult) {
     console.log(
-      `Appended ${totalAppended} rows to dataset ${lastResult.dataset.name} (${lastResult.dataset.id}). New row count: ${lastResult.dataset.rowCount}`
+      `Appended ${totalAppended} rows to dataset ${sanitizeTerminalText(lastResult.dataset.name)} (${sanitizeTerminalText(lastResult.dataset.id)}). New row count: ${lastResult.dataset.rowCount}`
     )
   }
 }
@@ -1874,7 +1935,7 @@ async function editDatasetRows() {
   }>(response, 'Dataset edit rows')
 
   console.log(
-    `Updated ${data.updatedCount} rows in dataset ${data.dataset.name} (${data.dataset.id}). Current row count: ${data.dataset.rowCount}`
+    `Updated ${data.updatedCount} rows in dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Current row count: ${data.dataset.rowCount}`
   )
 }
 
@@ -1913,7 +1974,7 @@ async function deleteDatasetRows() {
   }>(response, 'Dataset delete rows')
 
   console.log(
-    `Deleted ${data.deletedCount} rows from dataset ${data.dataset.name} (${data.dataset.id}). New row count: ${data.dataset.rowCount}`
+    `Deleted ${data.deletedCount} rows from dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). New row count: ${data.dataset.rowCount}`
   )
 }
 
@@ -1951,7 +2012,7 @@ async function lockDataset() {
   }>(response, 'Dataset lock')
 
   console.log(
-    `Locked dataset ${data.dataset.name} (${data.dataset.id}) at ${data.dataset.lockedAt}. Row count: ${data.dataset.rowCount}`
+    `Locked dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) at ${sanitizeTerminalText(data.dataset.lockedAt)}. Row count: ${data.dataset.rowCount}`
   )
 }
 
@@ -1988,7 +2049,7 @@ async function cloneDataset() {
   }>(response, 'Dataset clone')
 
   console.log(
-    `Cloned dataset ${data.dataset.parentDatasetId} -> ${data.dataset.name} (${data.dataset.id}). Row count: ${data.dataset.rowCount}`
+    `Cloned dataset ${sanitizeTerminalText(data.dataset.parentDatasetId)} -> ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Row count: ${data.dataset.rowCount}`
   )
 }
 
@@ -2018,7 +2079,7 @@ async function downloadAnnotations() {
   const bytes = new Uint8Array(await response.arrayBuffer())
   writeFileSync(filename, bytes)
 
-  console.log(`Saved ${format.toUpperCase()} export to ${filename}`)
+  console.log(`Saved ${format.toUpperCase()} export to ${sanitizeTerminalText(filename)}`)
 }
 
 async function main() {
@@ -2187,6 +2248,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error(error instanceof Error ? error.message : 'Unknown error')
+  console.error(sanitizeTerminalText(error instanceof Error ? error.message : 'Unknown error'))
   process.exit(1)
 })

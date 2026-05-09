@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from 'fs';
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { randomBytes } from 'crypto';
 function getConfigDir() {
     if (process.env.ORIZU_CONFIG_DIR) {
         return process.env.ORIZU_CONFIG_DIR;
@@ -42,9 +43,33 @@ function migrateToV2(stored) {
 }
 function writeCredentials(config) {
     const dir = getConfigDir();
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
     const path = getCredentialsPath();
-    writeFileSync(path, JSON.stringify(config, null, 2), 'utf-8');
+    const tempPath = join(dir, `.credentials.json.${process.pid}.${randomBytes(8).toString('hex')}.tmp`);
+    const payload = JSON.stringify(config, null, 2) + '\n';
+    const fd = openSync(tempPath, 'wx', 0o600);
+    try {
+        writeFileSync(fd, payload, 'utf-8');
+        fsyncSync(fd);
+    }
+    finally {
+        closeSync(fd);
+    }
+    chmodSync(tempPath, 0o600);
+    try {
+        renameSync(tempPath, path);
+    }
+    catch (error) {
+        if (process.platform === 'win32' && error?.code === 'EEXIST') {
+            rmSync(path, { force: true });
+            renameSync(tempPath, path);
+        }
+        else {
+            rmSync(tempPath, { force: true });
+            throw error;
+        }
+    }
     chmodSync(path, 0o600);
 }
 function createEmptyCredentialsConfig() {

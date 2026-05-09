@@ -45,12 +45,43 @@ export function getBaseUrl(): string {
   return resolveBaseUrl()
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase()
+  return (
+    normalized === 'localhost' ||
+    normalized === '[::1]' ||
+    /^127(?:\.\d{1,3}){3}$/.test(normalized)
+  )
+}
+
+export function assertSecureTokenTransport(baseUrl: string) {
+  let parsed: URL
+  try {
+    parsed = new URL(baseUrl)
+  } catch {
+    throw new Error(`Invalid server URL: '${baseUrl}'`)
+  }
+
+  if (parsed.protocol === 'https:') {
+    return
+  }
+
+  if (parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname)) {
+    return
+  }
+
+  throw new Error(
+    `Refusing to send CLI tokens to ${baseUrl}. Use HTTPS, or --local for loopback development.`
+  )
+}
+
 function isExpired(expiresAt: number): boolean {
   const nowUnix = Math.floor(Date.now() / 1000)
   return expiresAt <= nowUnix + 30
 }
 
 async function refreshCredentials(baseUrl: string, credentials: ServerCredentials): Promise<ServerCredentials> {
+  assertSecureTokenTransport(baseUrl)
   const response = await fetch(`${baseUrl}/api/cli/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -73,6 +104,7 @@ async function refreshCredentials(baseUrl: string, credentials: ServerCredential
 
 export async function authedFetch(path: string, init: RequestInit = {}) {
   const baseUrl = resolveBaseUrl()
+  assertSecureTokenTransport(baseUrl)
   const credentials = getServerCredentials(baseUrl)
   if (!credentials) {
     throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
