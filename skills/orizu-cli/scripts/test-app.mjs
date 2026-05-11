@@ -9,9 +9,10 @@
  *   1. App.tsx has a single named default export (function or class).
  *   2. Default export's first parameter destructures inputData, onComplete,
  *      initialValues (and not the deprecated data, onSubmit).
- *   3. input.json and output.json use only the supported JSON Schema subset:
+ *   3. Imports resolve against the platform-provided component registry.
+ *   4. input.json and output.json use only the supported JSON Schema subset:
  *      type, required, properties, items, enum.
- *   4. (Optional) sample-payload.json validates against output.json.
+ *   5. (Optional) sample-payload.json validates against output.json.
  *
  * Exits 0 on pass, 1 on any failure. Pure ES module — runs on node 18+
  * with no dependencies. Also runs under bun unchanged.
@@ -44,6 +45,65 @@ const ALLOWED_TYPES = new Set([
 const REQUIRED_PROPS = ["inputData", "onComplete"];
 const OPTIONAL_PROPS = ["initialValues"];
 const DEPRECATED_PROPS = ["data", "onSubmit"];
+
+// Generated from lib/available-components.ts by scripts/sync-agent-doc.mjs.
+// BEGIN ORIZU_AUTO_TEST_APP_IMPORTS
+const AVAILABLE_IMPORTS = Object.freeze({
+  "@/components/ui/button": ["Button"],
+  "@/components/ui/card": ["Card"],
+  "@/components/ui/carousel": ["Carousel"],
+  "@/components/ui/checkbox": ["Checkbox"],
+  "@/components/ui/form": ["Form"],
+  "@/components/ui/input": ["Input"],
+  "@/components/ui/label": ["Label"],
+  "@/components/ui/progress": ["Progress"],
+  "@/components/ui/radio-group": ["RadioGroup","RadioGroupItem"],
+  "@/components/ui/scroll-area": ["ScrollArea"],
+  "@/components/ui/select": ["Select","SelectContent","SelectItem","SelectTrigger","SelectValue"],
+  "@/components/ui/separator": ["Separator"],
+  "@/components/ui/switch": ["Switch"],
+  "@/components/ui/table": ["Table","TableBody","TableCell","TableHead","TableHeader","TableRow","TableCaption","TableFooter"],
+  "@/components/ui/tabs": ["Tabs","TabsContent","TabsList","TabsTrigger"],
+  "@/components/ui/textarea": ["Textarea"],
+  "@/components/ui/toggle": ["Toggle"],
+  "@/components/ui/toggle-group": ["ToggleGroup","ToggleGroupItem"],
+  "@/components/ui/tooltip": ["Tooltip","TooltipContent","TooltipProvider","TooltipTrigger"],
+  "@/components/base/content/TextContent": ["TextContent","default"],
+  "@/components/base/content/CodeBlock": ["CodeBlock","default"],
+  "@/components/base/content/ConversationView": ["AssistantMessageBlock","ContextMessageBlock","ConversationMessageBlock","ConversationView","ReasoningMessageBlock","SystemMessageBlock","ToolCallBlock","ToolResultBlock","UserMessageBlock","default"],
+  "@/components/base/content/ContentRenderer": ["ContentRenderer","default"],
+  "@/components/base/content/Prose": ["Prose","default"],
+  "@/components/base/behaviors/Annotatable": ["Annotatable","default"],
+  "@/components/base/behaviors/Reactable": ["Reactable","default"],
+  "@/components/base/input/CommentBox": ["CommentBox"],
+  "@/components/base/input/CriterionRating": ["CriterionRating"],
+  "@/components/base/input/LikertScale": ["LikertScale"],
+  "@/components/base/input/NumericRating": ["NumericRating"],
+  "@/components/base/input/RatingSelector": ["RatingSelector"],
+  "@/components/base/input/StarRating": ["StarRating"],
+  "@/components/base/input/TagPicker": ["TagPicker"],
+  "@/components/base/input/ThumbsRating": ["ThumbsRating"],
+  "@/components/base/ui/ComparisonPanel": ["ComparisonPanel"],
+  "@/components/base/ui/DraggableItem": ["DraggableItem"],
+  "@/components/templates/classification/TagSelector": ["TagSelector"],
+  "@/components/templates/comparison/SideBySideComparison": ["SideBySideComparison"],
+  "@/components/templates/correction/CorrectionTask": ["CorrectionTask"],
+  "@/components/templates/code/CodeComparison": ["CodeComparison"],
+  "@/components/templates/qa/ContextualQA": ["ContextualQA"],
+  "@/components/templates/ranking/RankingList": ["RankingList"],
+  "@/components/templates/rating/SingleItemRater": ["SingleItemRater"],
+});
+// END ORIZU_AUTO_TEST_APP_IMPORTS
+
+const LEGACY_IMPORT_SUGGESTIONS = {
+  "@/components/prose": "@/components/base/content/Prose",
+  "@/components/ui/text-content": "@/components/base/content/TextContent",
+  "@/components/ui/comment-box": "@/components/base/input/CommentBox",
+  "@/components/ui/tag-picker": "@/components/base/input/TagPicker",
+  "@/components/criterion-rating": "@/components/base/input/CriterionRating",
+  "@/components/annotation/annotatable":
+    "@/components/base/behaviors/Annotatable",
+};
 
 const issues = [];
 
@@ -164,22 +224,107 @@ function checkAppFile(path) {
     );
   }
 
-  // 4. Discourage external imports beyond relative ones.
-  const importLines = stripped.match(
-    /^\s*import\s+[^;]+from\s+["']([^"']+)["']/gm
-  ) || [];
-  for (const line of importLines) {
-    const sourceMatch = line.match(/from\s+["']([^"']+)["']/);
-    const source = (sourceMatch && sourceMatch[1]) || "";
-    if (
-      source &&
-      !source.startsWith(".") &&
-      !source.startsWith("react") &&
-      !source.startsWith("@/")
-    ) {
+  // 4. Validate imports against the same platform-provided registry used by
+  // server-side compile validation.
+  checkImports(stripped);
+}
+
+function extractImports(src) {
+  const imports = [];
+  const importRegex =
+    /import\s+(?:type\s+)?([\s\S]*?)\s+from\s+["']([^"']+)["']/g;
+  let match;
+
+  while ((match = importRegex.exec(src)) !== null) {
+    const specifier = match[1].trim();
+    const source = match[2];
+    const line = src.slice(0, match.index).split("\n").length;
+    const namedMatch = specifier.match(/\{([\s\S]*?)\}/);
+    const namedImports = namedMatch
+      ? namedMatch[1]
+          .split(",")
+          .map((part) =>
+            part
+              .trim()
+              .replace(/^type\s+/, "")
+              .replace(/\s+as\s+[A-Za-z_$][\w$]*/, "")
+          )
+          .filter(Boolean)
+      : [];
+    const defaultImport = specifier
+      .replace(/\{[\s\S]*?\}/, "")
+      .split(",")[0]
+      .trim()
+      .replace(/^type\s+/, "");
+
+    imports.push({
+      defaultImport: defaultImport || null,
+      namedImports,
+      source,
+      line,
+    });
+  }
+
+  return imports;
+}
+
+function suggestImportPath(source) {
+  if (LEGACY_IMPORT_SUGGESTIONS[source]) {
+    return LEGACY_IMPORT_SUGGESTIONS[source];
+  }
+
+  const tail = source.split("/").pop() || "";
+  const normalizedTail = tail.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return Object.keys(AVAILABLE_IMPORTS).find((candidate) => {
+    const candidateTail = candidate.split("/").pop() || "";
+    return (
+      candidateTail.toLowerCase().replace(/[^a-z0-9]/g, "") === normalizedTail
+    );
+  });
+}
+
+function checkImports(src) {
+  for (const imp of extractImports(src)) {
+    if (imp.source === "react") {
+      continue;
+    }
+
+    if (imp.source.startsWith(".")) {
       warn(
-        `Import from "${source}" — only the platform-provided component set is available; external npm imports are not supported.`
+        `Relative import from "${imp.source}" (line ${imp.line}) — make sure the referenced file is uploaded or inline.`
       );
+      continue;
+    }
+
+    const availableNames = AVAILABLE_IMPORTS[imp.source];
+    if (!availableNames) {
+      const suggestion = suggestImportPath(imp.source);
+      err(
+        suggestion
+          ? `Module "${imp.source}" not found (line ${imp.line}). Use "${suggestion}".`
+          : `Module "${imp.source}" not found (line ${imp.line}). Only platform-provided registry imports are supported.`
+      );
+      continue;
+    }
+
+    if (imp.defaultImport && !availableNames.includes("default")) {
+      if (availableNames.includes(imp.defaultImport)) {
+        err(
+          `Default import "${imp.defaultImport}" not available from "${imp.source}" (line ${imp.line}). Use: import { ${imp.defaultImport} } from "${imp.source}".`
+        );
+      } else {
+        err(
+          `Default import "${imp.defaultImport}" not available from "${imp.source}" (line ${imp.line}). Available named exports: ${availableNames.join(", ")}.`
+        );
+      }
+    }
+
+    for (const name of imp.namedImports) {
+      if (!availableNames.includes(name)) {
+        err(
+          `Named import "${name}" not available from "${imp.source}" (line ${imp.line}). Available exports: ${availableNames.join(", ")}.`
+        );
+      }
     }
   }
 }
@@ -336,7 +481,7 @@ function main() {
   }
 
   console.log(
-    `\nOK — ${warnings.length} warning(s). Smoke test does not guarantee server-side compile parity; keep the first label round small.`
+    `\nOK — ${warnings.length} warning(s). Smoke test matches the platform import registry; keep the first label round small.`
   );
 }
 
