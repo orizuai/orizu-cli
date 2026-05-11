@@ -515,9 +515,6 @@ import { CodeComparison } from '@/components/templates/code/CodeComparison';
 import { ContextualQA } from '@/components/templates/qa/ContextualQA';
 import { RankingList } from '@/components/templates/ranking/RankingList';
 import { SingleItemRater } from '@/components/templates/rating/SingleItemRater';
-
-// Live code (recursive rendering)
-import { LiveCodeRenderer } from '@/components/live-code-renderer';
 ```
 <!-- END ORIZU_AUTO_IMPORT_MAP -->
 
