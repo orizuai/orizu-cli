@@ -368,6 +368,20 @@ Contract note:
 Interactive fallback:
 - If `--dataset` is omitted, CLI prompts for team/project/dataset.
 
+### Delete dataset
+
+```bash
+orizu datasets delete --dataset <datasetId|datasetUrl>
+```
+
+Behavior:
+- Permanently deletes the dataset when project-manager/admin checks and dependency checks pass.
+- Requires an interactive terminal confirmation by typing the dataset id exactly.
+- There is no non-interactive confirmation flag.
+
+Interactive fallback:
+- If `--dataset` is omitted, CLI prompts for team/project/dataset before the confirmation prompt.
+
 ### Lock dataset
 
 ```bash
@@ -513,6 +527,7 @@ orizu datasets upload --project ops-eval/support-qa --file ./datasets/support.js
 orizu datasets append --dataset <datasetId> --file ./datasets/support-extra.jsonl
 orizu datasets edit-rows --dataset <datasetId> --file ./datasets/support-edits.jsonl
 orizu datasets delete-rows --dataset <datasetId> --row-ids row-10,row-11
+orizu datasets delete --dataset <datasetId>
 orizu datasets lock --dataset <datasetId> --reason "Finalize for labeling"
 orizu datasets clone --dataset <datasetId> --name "Support Batch 1 Copy"
 

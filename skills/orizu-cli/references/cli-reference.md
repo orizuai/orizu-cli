@@ -94,6 +94,7 @@ orizu datasets download --dataset <datasetId|datasetUrl> --format jsonl --out ./
 orizu datasets append --dataset <datasetId|datasetUrl> --file ./new-rows.jsonl
 orizu datasets edit-rows --dataset <datasetId|datasetUrl> --file ./edited-rows.jsonl
 orizu datasets delete-rows --dataset <datasetId|datasetUrl> --row-ids row-1,row-2
+orizu datasets delete --dataset <datasetId|datasetUrl>
 orizu datasets lock --dataset <datasetId|datasetUrl> --reason "Finalize for labeling"
 orizu datasets clone --dataset <datasetId|datasetUrl> --name "Batch 1 Copy"
 ```
@@ -105,6 +106,10 @@ Supported file types:
 
 Delete rows selectors:
 - `--row-ids <id1,id2>` (canonical selector)
+
+Delete dataset:
+- `datasets delete` permanently deletes the dataset and requires an interactive terminal confirmation.
+- There is no non-interactive confirmation flag.
 
 Edit rows requirements:
 - `--file` rows must include canonical `id` for each row being updated.
@@ -183,6 +188,7 @@ orizu datasets upload --project ops-eval/support-qa --file ./datasets/support.js
 orizu datasets append --dataset <datasetId> --file ./datasets/support-extra.jsonl
 orizu datasets edit-rows --dataset <datasetId> --file ./datasets/support-edits.jsonl
 orizu datasets delete-rows --dataset <datasetId> --row-ids row-10,row-11
+orizu datasets delete --dataset <datasetId>
 orizu datasets lock --dataset <datasetId> --reason "Freeze for labeling"
 orizu datasets clone --dataset <datasetId> --name "Support Batch 1 Copy"
 
@@ -226,6 +232,7 @@ Use these shortcuts only in TTY environments where prompts can run.
 - Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
 - Assignment completion payloads are validated against the pinned app-version `output_json_schema`.
 - `datasets delete-rows` requires `--row-ids`.
+- `datasets delete` requires interactive terminal confirmation and has no non-interactive confirmation flag.
 - `datasets edit-rows` requires row objects in `--file` to include canonical `id`.
 - `--row-ids` is the canonical row selection for delete operations.
 - Locked datasets reject append/edit/delete row mutations.

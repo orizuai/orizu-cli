@@ -140,6 +140,7 @@ Detailed walkthrough — DSPy program structure, metric wiring, GEPA invocation,
 - `tasks assign` takes user IDs, not emails.
 - `datasets edit-rows` requires a non-empty string `id` on each row in `--file`.
 - `datasets delete-rows` uses `--row-ids` as the canonical selector.
+- `datasets delete` requires interactive terminal confirmation; there is no non-interactive confirmation option.
 - Locked datasets reject append/edit/delete row mutations.
 - `--output-schema` JSON Schema validation surface is restricted to `type`, `required`, `properties`, `items`, `enum`.
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.

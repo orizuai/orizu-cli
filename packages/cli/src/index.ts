@@ -73,6 +73,12 @@ interface DatasetSummary {
   teamSlug: string
 }
 
+interface DatasetSelection {
+  datasetId: string
+  project?: string
+  name?: string
+}
+
 type DatasetUploadSourceType = 'csv' | 'json' | 'jsonl'
 
 interface DatasetUploadResponse {
@@ -142,7 +148,7 @@ function printVersion() {
 }
 
 function printUsage() {
-  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
 }
 
 let cliArgs = process.argv.slice(2)
@@ -495,7 +501,7 @@ async function selectAppIdInteractively(projectArg: string | null): Promise<{ ap
   }
 }
 
-async function selectDatasetInteractively(projectArg: string | null): Promise<{ datasetId: string; project: string }> {
+async function selectDatasetInteractively(projectArg: string | null): Promise<DatasetSelection> {
   let project = projectArg
   if (!project) {
     project = await resolveProjectSlug(null)
@@ -512,6 +518,7 @@ async function selectDatasetInteractively(projectArg: string | null): Promise<{ 
   return {
     datasetId: dataset.id,
     project,
+    name: dataset.name,
   }
 }
 
@@ -1994,6 +2001,58 @@ async function deleteDatasetRows() {
   )
 }
 
+async function confirmDatasetDeletion(dataset: DatasetSelection) {
+  if (!isInteractiveTerminal()) {
+    throw new Error(
+      'Dataset deletion requires an interactive terminal confirmation. There is no non-interactive delete option.'
+    )
+  }
+
+  const safeName = dataset.name ? ` (${sanitizeTerminalText(dataset.name)})` : ''
+  console.log(
+    `This will permanently delete dataset ${sanitizeTerminalText(dataset.datasetId)}${safeName}.`
+  )
+  console.log('Type the dataset id exactly to confirm.')
+
+  const rl = createInterface({ input, output })
+  try {
+    const answer = (await rl.question('Dataset id: ')).trim()
+    if (answer !== dataset.datasetId) {
+      throw new Error('Dataset deletion cancelled.')
+    }
+  } finally {
+    rl.close()
+  }
+}
+
+async function deleteDataset() {
+  const projectArg = getArg('--project')
+  const datasetInput = getDatasetReferenceInput()
+
+  let dataset: DatasetSelection
+  if (datasetInput) {
+    dataset = { datasetId: parseDatasetReference(datasetInput).datasetId }
+  } else {
+    dataset = await selectDatasetInteractively(projectArg)
+  }
+
+  await confirmDatasetDeletion(dataset)
+
+  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(dataset.datasetId)}`, {
+    method: 'DELETE',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Delete failed: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{
+    dataset: { id: string }
+  }>(response, 'Dataset delete')
+
+  console.log(`Deleted dataset ${sanitizeTerminalText(data.dataset.id)}.`)
+}
+
 async function lockDataset() {
   const projectArg = getArg('--project')
   const datasetInput = getDatasetReferenceInput()
@@ -2246,6 +2305,11 @@ async function main() {
 
   if (command === 'datasets' && subcommand === 'delete-rows') {
     await deleteDatasetRows()
+    return
+  }
+
+  if (command === 'datasets' && subcommand === 'delete') {
+    await deleteDataset()
     return
   }
 

@@ -121,6 +121,10 @@ orizu logout
     <td><code>orizu datasets append --dataset &lt;datasetId&gt; --file ./datasets/support-extra.jsonl</code></td>
   </tr>
   <tr>
+    <td>Delete a dataset</td>
+    <td><code>orizu datasets delete --dataset &lt;datasetId&gt;</code> (interactive confirmation required)</td>
+  </tr>
+  <tr>
     <td>Lock a dataset</td>
     <td><code>orizu datasets lock --dataset &lt;datasetId&gt; --reason "Finalize for labeling"</code></td>
   </tr>
