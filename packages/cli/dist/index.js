@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'crypto';
 import { basename, extname } from 'path';
+import { pathToFileURL } from 'url';
 import { createServer } from 'http';
 import { readFileSync, statSync, writeFileSync } from 'fs';
 import { spawn } from 'child_process';
@@ -34,7 +35,7 @@ function getArg(name) {
     }
     return cliArgs[index + 1];
 }
-function normalizeSlugInput(slug) {
+export function normalizeSlugInput(slug) {
     return slug.trim().toLowerCase();
 }
 function isInteractiveTerminal() {
@@ -43,7 +44,7 @@ function isInteractiveTerminal() {
 function hasArg(name) {
     return cliArgs.includes(name);
 }
-function expandHomePath(path) {
+export function expandHomePath(path) {
     if (path.startsWith('~/')) {
         const home = process.env.HOME || '';
         return `${home}/${path.slice(2)}`;
@@ -53,13 +54,13 @@ function expandHomePath(path) {
 function createCodeVerifier() {
     return randomBytes(32).toString('base64url');
 }
-function createCodeChallenge(verifier) {
+export function createCodeChallenge(verifier) {
     return createHash('sha256').update(verifier).digest('base64url');
 }
-function sanitizeTerminalText(value) {
+export function sanitizeTerminalText(value) {
     return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
 }
-function validateBrowserUrl(url, expectedOrigin) {
+export function validateBrowserUrl(url, expectedOrigin) {
     let parsed;
     try {
         parsed = new URL(url);
@@ -102,7 +103,7 @@ function openInBrowser(url) {
         stdio: 'ignore',
     }).unref();
 }
-function formatTerminalLink(url) {
+export function formatTerminalLink(url) {
     const safeUrl = sanitizeTerminalText(url);
     try {
         const parsed = validateBrowserUrl(safeUrl);
@@ -118,7 +119,7 @@ function formatTerminalLink(url) {
     }
     return `\u001B]8;;${safeUrl}\u0007${safeUrl}\u001B]8;;\u0007`;
 }
-async function parseJsonResponse(response, context) {
+export async function parseJsonResponse(response, context) {
     const contentType = response.headers.get('content-type') || '';
     const rawBody = await response.text();
     if (!contentType.includes('application/json')) {
@@ -1529,8 +1530,8 @@ async function downloadAnnotations() {
     writeFileSync(filename, bytes);
     console.log(`Saved ${format.toUpperCase()} export to ${sanitizeTerminalText(filename)}`);
 }
-async function main() {
-    const parsed = parseGlobalFlags(process.argv.slice(2));
+export async function main(rawArgs = process.argv.slice(2)) {
+    const parsed = parseGlobalFlags(rawArgs);
     setGlobalFlags(parsed.flags);
     cliArgs = parsed.args;
     const command = cliArgs[0];
@@ -1671,7 +1672,9 @@ async function main() {
     printUsage();
     process.exit(1);
 }
-main().catch(error => {
-    console.error(sanitizeTerminalText(error instanceof Error ? error.message : 'Unknown error'));
-    process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    main().catch(error => {
+        console.error(sanitizeTerminalText(error instanceof Error ? error.message : 'Unknown error'));
+        process.exit(1);
+    });
+}

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'crypto'
 import { basename, extname } from 'path'
+import { pathToFileURL } from 'url'
 import { createServer } from 'http'
 import { readFileSync, statSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
@@ -162,7 +163,7 @@ function getArg(name: string): string | null {
   return cliArgs[index + 1]
 }
 
-function normalizeSlugInput(slug: string): string {
+export function normalizeSlugInput(slug: string): string {
   return slug.trim().toLowerCase()
 }
 
@@ -174,7 +175,7 @@ function hasArg(name: string): boolean {
   return cliArgs.includes(name)
 }
 
-function expandHomePath(path: string): string {
+export function expandHomePath(path: string): string {
   if (path.startsWith('~/')) {
     const home = process.env.HOME || ''
     return `${home}/${path.slice(2)}`
@@ -187,15 +188,15 @@ function createCodeVerifier(): string {
   return randomBytes(32).toString('base64url')
 }
 
-function createCodeChallenge(verifier: string): string {
+export function createCodeChallenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url')
 }
 
-function sanitizeTerminalText(value: unknown): string {
+export function sanitizeTerminalText(value: unknown): string {
   return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
 }
 
-function validateBrowserUrl(url: string, expectedOrigin?: string): URL {
+export function validateBrowserUrl(url: string, expectedOrigin?: string): URL {
   let parsed: URL
   try {
     parsed = new URL(url)
@@ -245,7 +246,7 @@ function openInBrowser(url: string) {
   }).unref()
 }
 
-function formatTerminalLink(url: string): string {
+export function formatTerminalLink(url: string): string {
   const safeUrl = sanitizeTerminalText(url)
   try {
     const parsed = validateBrowserUrl(safeUrl)
@@ -263,7 +264,7 @@ function formatTerminalLink(url: string): string {
   return `\u001B]8;;${safeUrl}\u0007${safeUrl}\u001B]8;;\u0007`
 }
 
-async function parseJsonResponse<T>(response: Response, context: string): Promise<T> {
+export async function parseJsonResponse<T>(response: Response, context: string): Promise<T> {
   const contentType = response.headers.get('content-type') || ''
   const rawBody = await response.text()
 
@@ -2157,8 +2158,8 @@ async function downloadAnnotations() {
   console.log(`Saved ${format.toUpperCase()} export to ${sanitizeTerminalText(filename)}`)
 }
 
-async function main() {
-  const parsed = parseGlobalFlags(process.argv.slice(2))
+export async function main(rawArgs = process.argv.slice(2)) {
+  const parsed = parseGlobalFlags(rawArgs)
   setGlobalFlags(parsed.flags)
   cliArgs = parsed.args
 
@@ -2332,7 +2333,9 @@ async function main() {
   process.exit(1)
 }
 
-main().catch(error => {
-  console.error(sanitizeTerminalText(error instanceof Error ? error.message : 'Unknown error'))
-  process.exit(1)
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => {
+    console.error(sanitizeTerminalText(error instanceof Error ? error.message : 'Unknown error'))
+    process.exit(1)
+  })
+}
