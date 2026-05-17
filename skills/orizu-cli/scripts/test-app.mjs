@@ -21,6 +21,10 @@
 import { readFileSync, existsSync } from "node:fs";
 import process from "node:process";
 
+function printLine(message = "") {
+  process.stdout.write(`${message}\n`);
+}
+
 const ALLOWED_SCHEMA_KEYS = new Set([
   "type",
   "required",
@@ -441,17 +445,17 @@ function main() {
     process.exit(2);
   }
 
-  console.log(`Checking app:    ${appPath}`);
+  printLine(`Checking app:    ${appPath}`);
   checkAppFile(appPath);
 
-  console.log(`Checking input:  ${inputSchemaPath}`);
+  printLine(`Checking input:  ${inputSchemaPath}`);
   checkSchemaFile(inputSchemaPath, "Input");
 
-  console.log(`Checking output: ${outputSchemaPath}`);
+  printLine(`Checking output: ${outputSchemaPath}`);
   const outputSchema = checkSchemaFile(outputSchemaPath, "Output");
 
   if (payloadPath) {
-    console.log(`Validating payload: ${payloadPath}`);
+    printLine(`Validating payload: ${payloadPath}`);
     if (!existsSync(payloadPath)) {
       err(`Sample payload not found: ${payloadPath}`);
     } else {
@@ -468,19 +472,19 @@ function main() {
   const warnings = issues.filter((i) => i.level === "warn");
 
   if (warnings.length) {
-    console.log("");
-    for (const w of warnings) console.log(`warn:  ${w.message}`);
+    printLine("");
+    for (const w of warnings) printLine(`warn:  ${w.message}`);
   }
   if (errors.length) {
-    console.log("");
-    for (const e of errors) console.log(`error: ${e.message}`);
-    console.log(
+    printLine("");
+    for (const e of errors) printLine(`error: ${e.message}`);
+    printLine(
       `\n${errors.length} error(s), ${warnings.length} warning(s).`
     );
     process.exit(1);
   }
 
-  console.log(
+  printLine(
     `\nOK — ${warnings.length} warning(s). Smoke test matches the platform import registry; keep the first label round small.`
   );
 }

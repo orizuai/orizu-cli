@@ -144,12 +144,16 @@ function getCliVersion(): string {
   return packageJson.version
 }
 
+function printLine(message = '') {
+  output.write(`${message}\n`)
+}
+
 function printVersion() {
-  console.log(`orizu ${getCliVersion()}`)
+  printLine(`orizu ${getCliVersion()}`)
 }
 
 function printUsage() {
-  console.log(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login\n  orizu logout\n  orizu whoami\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
 }
 
 let cliArgs = process.argv.slice(2)
@@ -304,9 +308,9 @@ async function promptSelect<T>(
     return items[0]
   }
 
-  console.log(`\n${sanitizeTerminalText(title)}`)
+  printLine(`\n${sanitizeTerminalText(title)}`)
   items.forEach((item, index) => {
-    console.log(`  ${index + 1}. ${sanitizeTerminalText(label(item, index))}`)
+    printLine(`  ${index + 1}. ${sanitizeTerminalText(label(item, index))}`)
   })
 
   const rl = createInterface({ input, output })
@@ -318,7 +322,7 @@ async function promptSelect<T>(
         return items[chosenIndex - 1]
       }
 
-      console.log('Invalid selection. Enter a valid number from the list.')
+      printLine('Invalid selection. Enter a valid number from the list.')
     }
   } finally {
     rl.close()
@@ -525,7 +529,7 @@ async function selectDatasetInteractively(projectArg: string | null): Promise<Da
 
 function printTeams(teams: Team[]) {
   if (teams.length === 0) {
-    console.log('No teams found.')
+    printLine('No teams found.')
     return
   }
 
@@ -539,21 +543,21 @@ function printTeams(teams: Team[]) {
   const nameWidth = Math.max('TEAM NAME'.length, ...rows.map(row => row.name.length))
   const roleWidth = Math.max('ROLE'.length, ...rows.map(row => row.role.length))
 
-  console.log(
+  printLine(
     `${'TEAM SLUG'.padEnd(slugWidth)}  ${'TEAM NAME'.padEnd(nameWidth)}  ${'ROLE'.padEnd(roleWidth)}`
   )
-  console.log(
+  printLine(
     `${'-'.repeat(slugWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(roleWidth)}`
   )
 
   rows.forEach(row => {
-    console.log(`${row.slug.padEnd(slugWidth)}  ${row.name.padEnd(nameWidth)}  ${row.role.padEnd(roleWidth)}`)
+    printLine(`${row.slug.padEnd(slugWidth)}  ${row.name.padEnd(nameWidth)}  ${row.role.padEnd(roleWidth)}`)
   })
 }
 
 function printProjects(projects: Project[]) {
   if (projects.length === 0) {
-    console.log('No projects found.')
+    printLine('No projects found.')
     return
   }
 
@@ -567,15 +571,15 @@ function printProjects(projects: Project[]) {
   const nameWidth = Math.max('PROJECT NAME'.length, ...rows.map(row => row.name.length))
   const roleWidth = Math.max('ROLE'.length, ...rows.map(row => row.role.length))
 
-  console.log(
+  printLine(
     `${'TEAM/PROJECT'.padEnd(projectWidth)}  ${'PROJECT NAME'.padEnd(nameWidth)}  ${'ROLE'.padEnd(roleWidth)}`
   )
-  console.log(
+  printLine(
     `${'-'.repeat(projectWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(roleWidth)}`
   )
 
   rows.forEach(row => {
-    console.log(
+    printLine(
       `${row.project.padEnd(projectWidth)}  ${row.name.padEnd(nameWidth)}  ${row.role.padEnd(roleWidth)}`
     )
   })
@@ -583,7 +587,7 @@ function printProjects(projects: Project[]) {
 
 function printTasks(tasks: Task[]) {
   if (tasks.length === 0) {
-    console.log('No tasks found.')
+    printLine('No tasks found.')
     return
   }
 
@@ -600,15 +604,15 @@ function printTasks(tasks: Task[]) {
   const nameWidth = Math.max('TASK NAME'.length, ...rows.map(row => row.name.length))
   const statusWidth = Math.max('STATUS'.length, ...rows.map(row => row.status.length))
 
-  console.log(
+  printLine(
     `${'TASK ID'.padEnd(idWidth)}  ${'TASK NAME'.padEnd(nameWidth)}  ${'STATUS'.padEnd(statusWidth)}  TEAM/PROJECT`
   )
-  console.log(
+  printLine(
     `${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(statusWidth)}  ------------`
   )
 
   rows.forEach(row => {
-    console.log(
+    printLine(
       `${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.status.padEnd(statusWidth)}  ${row.project}`
     )
   })
@@ -616,7 +620,7 @@ function printTasks(tasks: Task[]) {
 
 function printApps(apps: AppSummary[]) {
   if (apps.length === 0) {
-    console.log('No apps found.')
+    printLine('No apps found.')
     return
   }
 
@@ -630,17 +634,17 @@ function printApps(apps: AppSummary[]) {
   const nameWidth = Math.max('APP NAME'.length, ...rows.map(row => row.name.length))
   const versionWidth = Math.max('VERSION'.length, ...rows.map(row => row.version.length))
 
-  console.log(`${'APP ID'.padEnd(idWidth)}  ${'APP NAME'.padEnd(nameWidth)}  ${'VERSION'.padEnd(versionWidth)}`)
-  console.log(`${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(versionWidth)}`)
+  printLine(`${'APP ID'.padEnd(idWidth)}  ${'APP NAME'.padEnd(nameWidth)}  ${'VERSION'.padEnd(versionWidth)}`)
+  printLine(`${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(versionWidth)}`)
 
   rows.forEach(row => {
-    console.log(`${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.version.padEnd(versionWidth)}`)
+    printLine(`${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.version.padEnd(versionWidth)}`)
   })
 }
 
 function printTeamMembers(members: TeamMember[]) {
   if (members.length === 0) {
-    console.log('No team members found.')
+    printLine('No team members found.')
     return
   }
 
@@ -656,14 +660,14 @@ function printTeamMembers(members: TeamMember[]) {
   const emailWidth = Math.max('EMAIL'.length, ...rows.map(row => row.email.length))
   const roleWidth = Math.max('ROLE'.length, ...rows.map(row => row.role.length))
 
-  console.log(
+  printLine(
     `${'MEMBER ID'.padEnd(idWidth)}  ${'USER ID'.padEnd(userIdWidth)}  ${'EMAIL'.padEnd(emailWidth)}  ${'ROLE'.padEnd(roleWidth)}`
   )
-  console.log(
+  printLine(
     `${'-'.repeat(idWidth)}  ${'-'.repeat(userIdWidth)}  ${'-'.repeat(emailWidth)}  ${'-'.repeat(roleWidth)}`
   )
   rows.forEach(row => {
-    console.log(
+    printLine(
       `${row.id.padEnd(idWidth)}  ${row.userId.padEnd(userIdWidth)}  ${row.email.padEnd(emailWidth)}  ${row.role.padEnd(roleWidth)}`
     )
   })
@@ -671,17 +675,17 @@ function printTeamMembers(members: TeamMember[]) {
 
 function printTaskStatusSummary(data: TaskStatusPayload) {
   const task = data.task
-  console.log(`Task: ${sanitizeTerminalText(task.title)} (${sanitizeTerminalText(task.id)})`)
-  console.log(`Status: ${sanitizeTerminalText(task.status)}`)
-  console.log(`Project: ${sanitizeTerminalText(`${task.teamSlug}/${task.projectSlug}`)}`)
-  console.log(`Progress: ${task.progressPercentage}%`)
-  console.log(`Counts: completed=${task.counts.completed}, in_progress=${task.counts.inProgress}, pending=${task.counts.pending}, skipped=${task.counts.skipped}`)
-  console.log(`Required assignments: ${task.totalRequiredAssignments} (${task.datasetRowCount} rows x ${task.requiredAssignmentsPerRow})`)
+  printLine(`Task: ${sanitizeTerminalText(task.title)} (${sanitizeTerminalText(task.id)})`)
+  printLine(`Status: ${sanitizeTerminalText(task.status)}`)
+  printLine(`Project: ${sanitizeTerminalText(`${task.teamSlug}/${task.projectSlug}`)}`)
+  printLine(`Progress: ${task.progressPercentage}%`)
+  printLine(`Counts: completed=${task.counts.completed}, in_progress=${task.counts.inProgress}, pending=${task.counts.pending}, skipped=${task.counts.skipped}`)
+  printLine(`Required assignments: ${task.totalRequiredAssignments} (${task.datasetRowCount} rows x ${task.requiredAssignmentsPerRow})`)
 
   if (task.assignees.length > 0) {
-    console.log('\nAssignees')
+    printLine('\nAssignees')
     task.assignees.forEach(assignee => {
-      console.log(
+      printLine(
         `  ${sanitizeTerminalText(assignee.email)}: total=${assignee.total}, completed=${assignee.completed}, in_progress=${assignee.inProgress}, pending=${assignee.pending}, skipped=${assignee.skipped}`
       )
     })
@@ -878,7 +882,7 @@ async function login() {
           'CLI auth start'
         )
         const safeAuthorizeUrl = validateBrowserUrl(authorizeUrl, baseUrl).href
-        console.log(`Opening browser for login: ${sanitizeTerminalText(safeAuthorizeUrl)}`)
+        printLine(`Opening browser for login: ${sanitizeTerminalText(safeAuthorizeUrl)}`)
         openInBrowser(safeAuthorizeUrl)
       } catch (error) {
         server.close()
@@ -905,7 +909,7 @@ async function login() {
     expiresAt: loginData.expiresAt,
   })
 
-  console.log(`Logged in as ${sanitizeTerminalText(loginData.user.email ?? loginData.user.id)}`)
+  printLine(`Logged in as ${sanitizeTerminalText(loginData.user.email ?? loginData.user.id)}`)
 }
 
 async function whoami() {
@@ -915,14 +919,14 @@ async function whoami() {
   }
 
   const data = await response.json() as { user: { id: string; email: string | null } }
-  console.log(sanitizeTerminalText(data.user.email ?? data.user.id))
+  printLine(sanitizeTerminalText(data.user.email ?? data.user.id))
 }
 
 async function logout() {
   const baseUrl = getBaseUrl()
   const credentials = getServerCredentials(baseUrl)
   if (!credentials) {
-    console.log(`Already logged out for ${sanitizeTerminalText(baseUrl)}.`)
+    printLine(`Already logged out for ${sanitizeTerminalText(baseUrl)}.`)
     return
   }
 
@@ -950,7 +954,7 @@ async function logout() {
   if (remoteLogoutError) {
     console.warn(`Warning: remote logout failed: ${remoteLogoutError}`)
   }
-  console.log(`Logged out from ${sanitizeTerminalText(baseUrl)}.`)
+  printLine(`Logged out from ${sanitizeTerminalText(baseUrl)}.`)
 }
 
 async function listTeams() {
@@ -999,7 +1003,7 @@ async function createTeam() {
   }
 
   const data = await parseJsonResponse<{ team: Team }>(response, 'Team create')
-  console.log(`Created team: ${sanitizeTerminalText(data.team.name)} (${sanitizeTerminalText(data.team.slug)})`)
+  printLine(`Created team: ${sanitizeTerminalText(data.team.name)} (${sanitizeTerminalText(data.team.slug)})`)
 }
 
 async function listProjects() {
@@ -1040,7 +1044,7 @@ async function createProject() {
   const data = await parseJsonResponse<{
     project: { id: string; name: string; slug: string; teamSlug: string }
   }>(response, 'Project create')
-  console.log(`Created project ${sanitizeTerminalText(`${data.project.teamSlug}/${data.project.slug}`)}`)
+  printLine(`Created project ${sanitizeTerminalText(`${data.project.teamSlug}/${data.project.slug}`)}`)
 }
 
 async function listTasks() {
@@ -1117,9 +1121,9 @@ async function createAppFromFile() {
     app: { id: string; name: string; versionNum: number; componentName?: string }
     warnings?: string[]
   }>(response, 'App create')
-  console.log(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`)
+  printLine(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`)
   if (data.warnings?.length) {
-    console.log(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
+    printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
   }
 }
 
@@ -1162,9 +1166,9 @@ async function updateAppFromFile() {
     app: { id: string; name: string; versionNum: number; componentName?: string }
     warnings?: string[]
   }>(response, 'App update')
-  console.log(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`)
+  printLine(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`)
   if (data.warnings?.length) {
-    console.log(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
+    printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
   }
 }
 
@@ -1209,7 +1213,7 @@ async function linkAppDataset() {
     versionNum: number
   }>(response, 'App link dataset')
 
-  console.log(
+  printLine(
     `Linked dataset ${sanitizeTerminalText(data.linkedDataset.name)} (${sanitizeTerminalText(data.linkedDataset.id)}) to app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) version ${data.versionNum}`
   )
 }
@@ -1265,7 +1269,7 @@ async function createTask() {
     const cliError = await formatTaskCreateError(response)
     if (hasArg('--json')) {
       const payload = cliError.structuredPayload ?? { error: cliError.message }
-      console.log(JSON.stringify({
+      printLine(JSON.stringify({
         ...payload,
         httpStatus: cliError.httpStatus,
       }, null, 2))
@@ -1288,7 +1292,7 @@ async function createTask() {
   }>(response, 'Task create')
 
   if (hasArg('--json')) {
-    console.log(JSON.stringify({
+    printLine(JSON.stringify({
       taskId: data.task.id,
       datasetId,
       versionId: data.task.versionId,
@@ -1306,7 +1310,7 @@ async function createTask() {
 
   const baseUrl = getBaseUrl()
   const taskUrl = `${baseUrl}/d/${projectSlug}/tasks/${data.task.id}`
-  console.log(
+  printLine(
     `Created task ${sanitizeTerminalText(data.task.title)} (${sanitizeTerminalText(data.task.id)}) [${sanitizeTerminalText(data.task.status)}]` +
     `\n  Task ID:    ${sanitizeTerminalText(data.task.id)}` +
     `\n  Dataset ID: ${sanitizeTerminalText(datasetId)}` +
@@ -1337,7 +1341,7 @@ async function assignTask() {
   }
 
   const data = await parseJsonResponse<{ assignmentsCreated: number }>(response, 'Task assign')
-  console.log(`Created ${data.assignmentsCreated} assignments.`)
+  printLine(`Created ${data.assignmentsCreated} assignments.`)
 }
 
 async function taskStatus() {
@@ -1359,7 +1363,7 @@ async function taskStatus() {
       } catch {
         // keep raw body as error
       }
-      console.log(JSON.stringify({
+      printLine(JSON.stringify({
         ...errorPayload,
         httpStatus: response.status,
       }, null, 2))
@@ -1377,7 +1381,7 @@ async function taskStatus() {
 
   const data = await parseJsonResponse<TaskStatusPayload>(response, 'Task status')
   if (hasArg('--json')) {
-    console.log(JSON.stringify(data, null, 2))
+    printLine(JSON.stringify(data, null, 2))
     return
   }
 
@@ -1404,7 +1408,7 @@ async function updateTaskStatus(targetStatus: 'paused' | 'active') {
 
   const data = await parseJsonResponse<{ task: { id: string; status: string } }>(response, 'Task status update')
   const action = targetStatus === 'paused' ? 'Paused' : 'Unpaused'
-  console.log(`${action} task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]`)
+  printLine(`${action} task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]`)
 }
 
 interface AppDetailPayload {
@@ -1454,25 +1458,25 @@ async function appDetail() {
   }
 
   if (hasArg('--json')) {
-    console.log(JSON.stringify(detail, null, 2))
+    printLine(JSON.stringify(detail, null, 2))
     return
   }
 
-  console.log(`App: ${sanitizeTerminalText(detail.name)} (${sanitizeTerminalText(detail.id)})`)
-  console.log(`  Project: ${sanitizeTerminalText(`${detail.teamSlug}/${detail.projectSlug}`)}`)
+  printLine(`App: ${sanitizeTerminalText(detail.name)} (${sanitizeTerminalText(detail.id)})`)
+  printLine(`  Project: ${sanitizeTerminalText(`${detail.teamSlug}/${detail.projectSlug}`)}`)
   if (detail.currentVersion) {
-    console.log(`  Current version: v${detail.currentVersion.versionNum} (${sanitizeTerminalText(detail.currentVersion.versionId)})`)
-    console.log(`  Input schema: ${detail.currentVersion.inputJsonSchema ? 'defined' : 'none'}`)
-    console.log(`  Output schema: ${detail.currentVersion.outputJsonSchema ? 'defined' : 'none'}`)
+    printLine(`  Current version: v${detail.currentVersion.versionNum} (${sanitizeTerminalText(detail.currentVersion.versionId)})`)
+    printLine(`  Input schema: ${detail.currentVersion.inputJsonSchema ? 'defined' : 'none'}`)
+    printLine(`  Output schema: ${detail.currentVersion.outputJsonSchema ? 'defined' : 'none'}`)
   } else {
-    console.log(`  Current version: none`)
+    printLine(`  Current version: none`)
   }
-  console.log(`  Compatible datasets: ${detail.compatibleDatasetsCount}/${detail.totalDatasetsCount}`)
+  printLine(`  Compatible datasets: ${detail.compatibleDatasetsCount}/${detail.totalDatasetsCount}`)
   if (detail.createdByEmail) {
-    console.log(`  Created by: ${sanitizeTerminalText(detail.createdByName || detail.createdByEmail)}`)
+    printLine(`  Created by: ${sanitizeTerminalText(detail.createdByName || detail.createdByEmail)}`)
   }
-  console.log(`  Created: ${sanitizeTerminalText(detail.createdAt)}`)
-  console.log(`  Updated: ${sanitizeTerminalText(detail.updatedAt)}`)
+  printLine(`  Created: ${sanitizeTerminalText(detail.createdAt)}`)
+  printLine(`  Updated: ${sanitizeTerminalText(detail.updatedAt)}`)
 }
 
 async function listTeamMembers() {
@@ -1497,7 +1501,7 @@ async function addTeamMember() {
     throw new Error(`Failed to add team member: ${await response.text()}`)
   }
   const data = await parseJsonResponse<{ member: TeamMember }>(response, 'Team member add')
-  console.log(`Added team member ${sanitizeTerminalText(data.member.email)} (${sanitizeTerminalText(data.member.id)})`)
+  printLine(`Added team member ${sanitizeTerminalText(data.member.email)} (${sanitizeTerminalText(data.member.id)})`)
 }
 
 async function removeTeamMember() {
@@ -1520,7 +1524,7 @@ async function removeTeamMember() {
   if (!response.ok) {
     throw new Error(`Failed to remove team member: ${await response.text()}`)
   }
-  console.log(`Removed team member ${sanitizeTerminalText(member.email)}`)
+  printLine(`Removed team member ${sanitizeTerminalText(member.email)}`)
 }
 
 async function changeTeamMemberRole() {
@@ -1554,7 +1558,7 @@ async function changeTeamMemberRole() {
     throw new Error(`Failed to update member role: ${await response.text()}`)
   }
 
-  console.log(`Updated ${sanitizeTerminalText(member.email)} role to ${sanitizeTerminalText(role)}`)
+  printLine(`Updated ${sanitizeTerminalText(member.email)} role to ${sanitizeTerminalText(role)}`)
 }
 
 async function createDatasetFromRows(
@@ -1618,7 +1622,7 @@ async function uploadJsonlDatasetInChunks(
 
     const chunk = nextChunk.value
     chunkIndex += 1
-    console.log(`Uploading chunk ${chunkIndex} (${chunk.length} rows)...`)
+    printLine(`Uploading chunk ${chunkIndex} (${chunk.length} rows)...`)
 
     try {
       if (!dataset) {
@@ -1653,9 +1657,9 @@ async function uploadJsonlDatasetInChunks(
     throw new Error('Dataset file contains no rows')
   }
 
-  console.log(`Uploaded dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) with ${dataset.rowCount} rows.`)
+  printLine(`Uploaded dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) with ${dataset.rowCount} rows.`)
   if (dataset.url) {
-    console.log(`View dataset: ${formatTerminalLink(dataset.url)}`)
+    printLine(`View dataset: ${formatTerminalLink(dataset.url)}`)
   }
 }
 
@@ -1680,9 +1684,9 @@ async function uploadDataset() {
   const { rows, sourceType } = parseDatasetFile(file)
   const data = await createDatasetFromRows(project, datasetName, sourceType, rows)
 
-  console.log(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`)
+  printLine(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`)
   if (data.dataset.url) {
-    console.log(`View dataset: ${formatTerminalLink(data.dataset.url)}`)
+    printLine(`View dataset: ${formatTerminalLink(data.dataset.url)}`)
   }
 }
 
@@ -1732,7 +1736,7 @@ async function downloadDataset() {
   const bytes = new Uint8Array(await response.arrayBuffer())
   writeFileSync(filename, bytes)
 
-  console.log(`Saved dataset ${sanitizeTerminalText(datasetId)} (${format.toUpperCase()}) to ${sanitizeTerminalText(filename)}`)
+  printLine(`Saved dataset ${sanitizeTerminalText(datasetId)} (${format.toUpperCase()}) to ${sanitizeTerminalText(filename)}`)
 }
 
 const MAX_INPUT_FILE_SIZE_BYTES = 50 * 1024 * 1024 // 50 MB
@@ -1783,7 +1787,7 @@ async function appendJsonlDatasetRowsInChunks(datasetId: string, file: string) {
 
     const chunk = nextChunk.value
     chunkIndex += 1
-    console.log(`Uploading chunk ${chunkIndex} (${chunk.length} rows)...`)
+    printLine(`Uploading chunk ${chunkIndex} (${chunk.length} rows)...`)
 
     try {
       const data = await appendChunk(datasetId, chunk)
@@ -1803,7 +1807,7 @@ async function appendJsonlDatasetRowsInChunks(datasetId: string, file: string) {
     throw new Error('Dataset append file must contain at least one row')
   }
 
-  console.log(
+  printLine(
     `Appended ${totalAppended} rows to dataset ${sanitizeTerminalText(lastResult.dataset.name)} (${sanitizeTerminalText(lastResult.dataset.id)}). New row count: ${lastResult.dataset.rowCount}`
   )
 }
@@ -1866,7 +1870,7 @@ async function appendDatasetRows() {
 
   if (rows.length <= APPEND_CHUNK_SIZE_ROWS) {
     const data = await appendChunk(datasetId, rows)
-    console.log(
+    printLine(
       `Appended ${data.appendedCount} rows to dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). New row count: ${data.dataset.rowCount}`
     )
     return
@@ -1881,7 +1885,7 @@ async function appendDatasetRows() {
     const chunk = rows.slice(offset, offset + APPEND_CHUNK_SIZE_ROWS)
     const chunkIndex = Math.floor(offset / APPEND_CHUNK_SIZE_ROWS) + 1
 
-    console.log(`Uploading chunk ${chunkIndex}/${totalChunks} (${chunk.length} rows)...`)
+    printLine(`Uploading chunk ${chunkIndex}/${totalChunks} (${chunk.length} rows)...`)
     try {
       const data = await appendChunk(datasetId, chunk)
       totalAppended += data.appendedCount
@@ -1897,7 +1901,7 @@ async function appendDatasetRows() {
   }
 
   if (lastResult) {
-    console.log(
+    printLine(
       `Appended ${totalAppended} rows to dataset ${sanitizeTerminalText(lastResult.dataset.name)} (${sanitizeTerminalText(lastResult.dataset.id)}). New row count: ${lastResult.dataset.rowCount}`
     )
   }
@@ -1958,7 +1962,7 @@ async function editDatasetRows() {
     updatedCount: number
   }>(response, 'Dataset edit rows')
 
-  console.log(
+  printLine(
     `Updated ${data.updatedCount} rows in dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Current row count: ${data.dataset.rowCount}`
   )
 }
@@ -1997,7 +2001,7 @@ async function deleteDatasetRows() {
     deletedCount: number
   }>(response, 'Dataset delete rows')
 
-  console.log(
+  printLine(
     `Deleted ${data.deletedCount} rows from dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). New row count: ${data.dataset.rowCount}`
   )
 }
@@ -2010,10 +2014,10 @@ async function confirmDatasetDeletion(dataset: DatasetSelection) {
   }
 
   const safeName = dataset.name ? ` (${sanitizeTerminalText(dataset.name)})` : ''
-  console.log(
+  printLine(
     `This will permanently delete dataset ${sanitizeTerminalText(dataset.datasetId)}${safeName}.`
   )
-  console.log('Type the dataset id exactly to confirm.')
+  printLine('Type the dataset id exactly to confirm.')
 
   const rl = createInterface({ input, output })
   try {
@@ -2051,7 +2055,7 @@ async function deleteDataset() {
     dataset: { id: string }
   }>(response, 'Dataset delete')
 
-  console.log(`Deleted dataset ${sanitizeTerminalText(data.dataset.id)}.`)
+  printLine(`Deleted dataset ${sanitizeTerminalText(data.dataset.id)}.`)
 }
 
 async function lockDataset() {
@@ -2087,7 +2091,7 @@ async function lockDataset() {
     }
   }>(response, 'Dataset lock')
 
-  console.log(
+  printLine(
     `Locked dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) at ${sanitizeTerminalText(data.dataset.lockedAt)}. Row count: ${data.dataset.rowCount}`
   )
 }
@@ -2124,7 +2128,7 @@ async function cloneDataset() {
     }
   }>(response, 'Dataset clone')
 
-  console.log(
+  printLine(
     `Cloned dataset ${sanitizeTerminalText(data.dataset.parentDatasetId)} -> ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Row count: ${data.dataset.rowCount}`
   )
 }
@@ -2155,7 +2159,7 @@ async function downloadAnnotations() {
   const bytes = new Uint8Array(await response.arrayBuffer())
   writeFileSync(filename, bytes)
 
-  console.log(`Saved ${format.toUpperCase()} export to ${sanitizeTerminalText(filename)}`)
+  printLine(`Saved ${format.toUpperCase()} export to ${sanitizeTerminalText(filename)}`)
 }
 
 export async function main(rawArgs = process.argv.slice(2)) {
