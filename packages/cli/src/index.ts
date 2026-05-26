@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'crypto'
 import { basename, extname } from 'path'
-import { pathToFileURL } from 'url'
+import { fileURLToPath } from 'url'
 import { createServer } from 'http'
-import { readFileSync, statSync, writeFileSync } from 'fs'
+import { readFileSync, realpathSync, statSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
 import { createInterface } from 'readline/promises'
 import { stdin as input, stdout as output } from 'process'
@@ -2342,7 +2342,20 @@ export async function main(rawArgs = process.argv.slice(2)) {
   process.exit(1)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+function isCliEntrypoint(): boolean {
+  const entry = process.argv[1]
+  if (!entry) {
+    return false
+  }
+
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (isCliEntrypoint()) {
   main().catch(error => {
     console.error(sanitizeTerminalText(error instanceof Error ? error.message : 'Unknown error'))
     process.exit(1)
