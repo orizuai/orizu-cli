@@ -1,6 +1,6 @@
 import { getActiveBaseUrl, getServerCredentials, updateServerCredentials } from './credentials.js'
 import { getFlagBaseUrl, GlobalFlags, normalizeBaseUrl } from './global-flags.js'
-import { LoginResponse, ServerCredentials } from './types.js'
+import { LoginResponse, ServerCredentials, SessionServerCredentials } from './types.js'
 
 let runtimeFlags: GlobalFlags = { local: false, server: null }
 
@@ -75,12 +75,24 @@ export function assertSecureTokenTransport(baseUrl: string) {
   )
 }
 
+function isSessionCredentials(credentials: ServerCredentials): credentials is SessionServerCredentials {
+  return 'accessToken' in credentials
+}
+
+function getAuthorizationToken(credentials: ServerCredentials): string {
+  return isSessionCredentials(credentials) ? credentials.accessToken : credentials.apiKey
+}
+
 function isExpired(expiresAt: number): boolean {
   const nowUnix = Math.floor(Date.now() / 1000)
   return expiresAt <= nowUnix + 30
 }
 
 async function refreshCredentials(baseUrl: string, credentials: ServerCredentials): Promise<ServerCredentials> {
+  if (!isSessionCredentials(credentials)) {
+    throw new Error('API key credentials do not refresh. Run `orizu login` again if access fails.')
+  }
+
   assertSecureTokenTransport(baseUrl)
   const response = await fetch(`${baseUrl}/api/cli/auth/refresh`, {
     method: 'POST',
@@ -93,7 +105,12 @@ async function refreshCredentials(baseUrl: string, credentials: ServerCredential
   }
 
   const data = await response.json() as LoginResponse
+  if (!data.accessToken || !data.refreshToken || !data.expiresAt) {
+    throw new Error('Server returned invalid refresh credentials. Run `orizu login` again.')
+  }
+
   const refreshed = {
+    credentialType: 'session' as const,
     accessToken: data.accessToken,
     refreshToken: data.refreshToken,
     expiresAt: data.expiresAt,
@@ -111,7 +128,7 @@ export async function authedFetch(path: string, init: RequestInit = {}) {
   }
 
   let activeCredentials = credentials
-  if (isExpired(activeCredentials.expiresAt)) {
+  if (isSessionCredentials(activeCredentials) && isExpired(activeCredentials.expiresAt)) {
     activeCredentials = await refreshCredentials(baseUrl, activeCredentials)
   }
 
@@ -119,17 +136,17 @@ export async function authedFetch(path: string, init: RequestInit = {}) {
     ...init,
     headers: {
       ...(init.headers || {}),
-      Authorization: `Bearer ${activeCredentials.accessToken}`,
+      Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
     },
   })
 
-  if (response.status === 401) {
+  if (response.status === 401 && isSessionCredentials(activeCredentials)) {
     activeCredentials = await refreshCredentials(baseUrl, activeCredentials)
     response = await fetch(`${baseUrl}${path}`, {
       ...init,
       headers: {
         ...(init.headers || {}),
-        Authorization: `Bearer ${activeCredentials.accessToken}`,
+        Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
       },
     })
   }

@@ -18,6 +18,13 @@ function isStoredCredentialsV2(value) {
     const typed = value;
     return typed.version === 2 && !!typed.servers && typeof typed.servers === 'object';
 }
+function isStoredCredentialsV3(value) {
+    if (!value || typeof value !== 'object') {
+        return false;
+    }
+    const typed = value;
+    return typed.version === 3 && !!typed.servers && typeof typed.servers === 'object';
+}
 function isStoredCredentialsV1(value) {
     if (!value || typeof value !== 'object') {
         return false;
@@ -74,7 +81,7 @@ function writeCredentials(config) {
 }
 function createEmptyCredentialsConfig() {
     return {
-        version: 2,
+        version: 3,
         activeBaseUrl: null,
         servers: {},
     };
@@ -101,6 +108,9 @@ export function loadCredentialsConfig() {
         console.warn('Warning: credentials file contains invalid JSON — please re-login with `orizu login`');
         return null;
     }
+    if (isStoredCredentialsV3(parsed)) {
+        return parsed;
+    }
     if (isStoredCredentialsV2(parsed)) {
         return parsed;
     }
@@ -121,13 +131,27 @@ export function getServerCredentials(baseUrl) {
     return config.servers[baseUrl] || null;
 }
 export function saveServerCredentials(baseUrl, credentials) {
-    const config = loadCredentialsConfigForWrite();
+    const loaded = loadCredentialsConfigForWrite();
+    const config = loaded.version === 3
+        ? loaded
+        : {
+            version: 3,
+            activeBaseUrl: loaded.activeBaseUrl,
+            servers: loaded.servers,
+        };
     config.servers[baseUrl] = credentials;
     config.activeBaseUrl = baseUrl;
     writeCredentials(config);
 }
 export function updateServerCredentials(baseUrl, credentials) {
-    const config = loadCredentialsConfigForWrite();
+    const loaded = loadCredentialsConfigForWrite();
+    const config = loaded.version === 3
+        ? loaded
+        : {
+            version: 3,
+            activeBaseUrl: loaded.activeBaseUrl,
+            servers: loaded.servers,
+        };
     config.servers[baseUrl] = credentials;
     writeCredentials(config);
 }

@@ -25,6 +25,14 @@ orizu whoami
 orizu logout
 ```
 
+Behavior:
+- `orizu login` opens browser approval and creates a user-owned personal access token for the CLI.
+- New logins store v3 API-key credentials in `~/.config/orizu/credentials.json`.
+- The CLI still reads older session credentials during rollout, but new logins replace them with PAT credentials.
+- `orizu logout` revokes the current PAT remotely when possible and then clears local credentials.
+- PATs can also be revoked from the Personal Tokens page in Orizu.
+- PAT authorization follows the owning user's current team/project roles, so demotion or removal takes effect without rotating the token.
+
 ### Teams
 
 ```bash
@@ -238,6 +246,7 @@ Use these shortcuts only in TTY environments where prompts can run.
 - Locked datasets reject append/edit/delete row mutations.
 - Row deletes are rejected when targeted rows are assignment-referenced.
 - Login currently requires callback availability on `127.0.0.1:43123`.
+- New CLI logins use personal access tokens rather than short-lived Supabase session credentials.
 - In non-interactive contexts, pass explicit selection flags.
 
 Output-schema validation surface:

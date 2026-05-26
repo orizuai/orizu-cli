@@ -55,11 +55,20 @@ export function assertSecureTokenTransport(baseUrl) {
     }
     throw new Error(`Refusing to send CLI tokens to ${baseUrl}. Use HTTPS, or --local for loopback development.`);
 }
+function isSessionCredentials(credentials) {
+    return 'accessToken' in credentials;
+}
+function getAuthorizationToken(credentials) {
+    return isSessionCredentials(credentials) ? credentials.accessToken : credentials.apiKey;
+}
 function isExpired(expiresAt) {
     const nowUnix = Math.floor(Date.now() / 1000);
     return expiresAt <= nowUnix + 30;
 }
 async function refreshCredentials(baseUrl, credentials) {
+    if (!isSessionCredentials(credentials)) {
+        throw new Error('API key credentials do not refresh. Run `orizu login` again if access fails.');
+    }
     assertSecureTokenTransport(baseUrl);
     const response = await fetch(`${baseUrl}/api/cli/auth/refresh`, {
         method: 'POST',
@@ -70,7 +79,11 @@ async function refreshCredentials(baseUrl, credentials) {
         throw new Error('Session expired. Run `orizu login` again.');
     }
     const data = await response.json();
+    if (!data.accessToken || !data.refreshToken || !data.expiresAt) {
+        throw new Error('Server returned invalid refresh credentials. Run `orizu login` again.');
+    }
     const refreshed = {
+        credentialType: 'session',
         accessToken: data.accessToken,
         refreshToken: data.refreshToken,
         expiresAt: data.expiresAt,
@@ -86,23 +99,23 @@ export async function authedFetch(path, init = {}) {
         throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`);
     }
     let activeCredentials = credentials;
-    if (isExpired(activeCredentials.expiresAt)) {
+    if (isSessionCredentials(activeCredentials) && isExpired(activeCredentials.expiresAt)) {
         activeCredentials = await refreshCredentials(baseUrl, activeCredentials);
     }
     let response = await fetch(`${baseUrl}${path}`, {
         ...init,
         headers: {
             ...(init.headers || {}),
-            Authorization: `Bearer ${activeCredentials.accessToken}`,
+            Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
         },
     });
-    if (response.status === 401) {
+    if (response.status === 401 && isSessionCredentials(activeCredentials)) {
         activeCredentials = await refreshCredentials(baseUrl, activeCredentials);
         response = await fetch(`${baseUrl}${path}`, {
             ...init,
             headers: {
                 ...(init.headers || {}),
-                Authorization: `Bearer ${activeCredentials.accessToken}`,
+                Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
             },
         });
     }

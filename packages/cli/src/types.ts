@@ -1,8 +1,16 @@
-export interface ServerCredentials {
+export interface SessionServerCredentials {
+  credentialType?: 'session'
   accessToken: string
   refreshToken: string
   expiresAt: number
 }
+
+export interface PatServerCredentials {
+  credentialType: 'pat'
+  apiKey: string
+}
+
+export type ServerCredentials = SessionServerCredentials | PatServerCredentials
 
 export interface StoredCredentialsV1 {
   baseUrl: string
@@ -14,6 +22,12 @@ export interface StoredCredentialsV1 {
 export interface StoredCredentialsV2 {
   version: 2
   activeBaseUrl: string | null
+  servers: Record<string, SessionServerCredentials>
+}
+
+export interface StoredCredentialsV3 {
+  version: 3
+  activeBaseUrl: string | null
   servers: Record<string, ServerCredentials>
 }
 
@@ -21,9 +35,10 @@ export interface StoredCredentialsV2 {
 export type StoredCredentials = StoredCredentialsV1
 
 export interface LoginResponse {
-  accessToken: string
-  refreshToken: string
-  expiresAt: number
+  apiKey?: string
+  accessToken?: string
+  refreshToken?: string
+  expiresAt?: number
   user: {
     id: string
     email: string | null

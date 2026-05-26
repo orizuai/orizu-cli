@@ -13,7 +13,12 @@ import {
 import { join } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
-import { ServerCredentials, StoredCredentialsV1, StoredCredentialsV2 } from './types.js'
+import {
+  ServerCredentials,
+  StoredCredentialsV1,
+  StoredCredentialsV2,
+  StoredCredentialsV3,
+} from './types.js'
 
 function getConfigDir(): string {
   if (process.env.ORIZU_CONFIG_DIR) {
@@ -33,6 +38,15 @@ function isStoredCredentialsV2(value: unknown): value is StoredCredentialsV2 {
 
   const typed = value as Partial<StoredCredentialsV2>
   return typed.version === 2 && !!typed.servers && typeof typed.servers === 'object'
+}
+
+function isStoredCredentialsV3(value: unknown): value is StoredCredentialsV3 {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const typed = value as Partial<StoredCredentialsV3>
+  return typed.version === 3 && !!typed.servers && typeof typed.servers === 'object'
 }
 
 function isStoredCredentialsV1(value: unknown): value is StoredCredentialsV1 {
@@ -63,7 +77,7 @@ function migrateToV2(stored: StoredCredentialsV1): StoredCredentialsV2 {
   }
 }
 
-function writeCredentials(config: StoredCredentialsV2) {
+function writeCredentials(config: StoredCredentialsV2 | StoredCredentialsV3) {
   const dir = getConfigDir()
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
@@ -98,15 +112,15 @@ function writeCredentials(config: StoredCredentialsV2) {
   chmodSync(path, 0o600)
 }
 
-function createEmptyCredentialsConfig(): StoredCredentialsV2 {
+function createEmptyCredentialsConfig(): StoredCredentialsV3 {
   return {
-    version: 2 as const,
+    version: 3 as const,
     activeBaseUrl: null,
     servers: {},
   }
 }
 
-function loadCredentialsConfigForWrite(): StoredCredentialsV2 {
+function loadCredentialsConfigForWrite(): StoredCredentialsV2 | StoredCredentialsV3 {
   try {
     return loadCredentialsConfig() || createEmptyCredentialsConfig()
   } catch {
@@ -114,7 +128,7 @@ function loadCredentialsConfigForWrite(): StoredCredentialsV2 {
   }
 }
 
-export function loadCredentialsConfig(): StoredCredentialsV2 | null {
+export function loadCredentialsConfig(): StoredCredentialsV2 | StoredCredentialsV3 | null {
   const path = getCredentialsPath()
   if (!existsSync(path)) {
     return null
@@ -128,6 +142,10 @@ export function loadCredentialsConfig(): StoredCredentialsV2 | null {
   } catch {
     console.warn('Warning: credentials file contains invalid JSON — please re-login with `orizu login`')
     return null
+  }
+
+  if (isStoredCredentialsV3(parsed)) {
+    return parsed
   }
 
   if (isStoredCredentialsV2(parsed)) {
@@ -156,7 +174,14 @@ export function getServerCredentials(baseUrl: string): ServerCredentials | null 
 }
 
 export function saveServerCredentials(baseUrl: string, credentials: ServerCredentials) {
-  const config = loadCredentialsConfigForWrite()
+  const loaded = loadCredentialsConfigForWrite()
+  const config: StoredCredentialsV3 = loaded.version === 3
+    ? loaded
+    : {
+      version: 3,
+      activeBaseUrl: loaded.activeBaseUrl,
+      servers: loaded.servers,
+    }
 
   config.servers[baseUrl] = credentials
   config.activeBaseUrl = baseUrl
@@ -164,7 +189,14 @@ export function saveServerCredentials(baseUrl: string, credentials: ServerCreden
 }
 
 export function updateServerCredentials(baseUrl: string, credentials: ServerCredentials) {
-  const config = loadCredentialsConfigForWrite()
+  const loaded = loadCredentialsConfigForWrite()
+  const config: StoredCredentialsV3 = loaded.version === 3
+    ? loaded
+    : {
+      version: 3,
+      activeBaseUrl: loaded.activeBaseUrl,
+      servers: loaded.servers,
+    }
   config.servers[baseUrl] = credentials
   writeCredentials(config)
 }

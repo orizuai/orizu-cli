@@ -50,6 +50,7 @@ orizu login
 ```
 
 This will open a browser tab for you to login with. You must either have an account on the [Orizu platform](https://orizu.ai) or it will help you create one.
+Approving the login creates a personal access token for the CLI and stores it in your local Orizu credentials file. You can revoke CLI tokens from the Personal Tokens page in Orizu.
 
 **Check the signed-in user**
 

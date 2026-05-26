@@ -24,12 +24,15 @@ Skip this skill when:
 - Install the CLI: `npm i -g orizu`.
 - Login callback requires `127.0.0.1:43123`.
 - Credentials are stored at `~/.config/orizu/credentials.json`.
+- Current `orizu login` creates a user-owned personal access token for the CLI and stores it as a v3 API-key credential. The raw token is not recoverable after creation.
 
 ## Login
 
 - Verify auth: `orizu whoami`.
 - Start the login flow: `orizu login` (opens a browser tab).
-- Clear session: `orizu logout`.
+- Approving login in the browser creates a personal access token for that Orizu user. The token inherits the user's current team/project access and loses access if the user's role or membership changes.
+- Clear local credentials and revoke the current CLI token: `orizu logout`.
+- Revoke other CLI tokens from the Personal Tokens page in Orizu.
 - Auth failure loop: `orizu login` → `orizu whoami` → rerun the original command.
 
 ## Teams and projects

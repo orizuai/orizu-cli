@@ -903,10 +903,13 @@ async function login() {
   }
 
   const loginData = await parseJsonResponse<LoginResponse>(exchangeResponse, 'CLI auth exchange')
+  if (!loginData.apiKey) {
+    throw new Error('Server did not return an API key. Upgrade the Orizu server and run `orizu login` again.')
+  }
+
   saveServerCredentials(baseUrl, {
-    accessToken: loginData.accessToken,
-    refreshToken: loginData.refreshToken,
-    expiresAt: loginData.expiresAt,
+    credentialType: 'pat',
+    apiKey: loginData.apiKey,
   })
 
   printLine(`Logged in as ${sanitizeTerminalText(loginData.user.email ?? loginData.user.id)}`)
@@ -937,9 +940,11 @@ async function logout() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${credentials.accessToken}`,
+        Authorization: `Bearer ${'accessToken' in credentials ? credentials.accessToken : credentials.apiKey}`,
       },
-      body: JSON.stringify({ refreshToken: credentials.refreshToken }),
+      body: 'refreshToken' in credentials
+        ? JSON.stringify({ refreshToken: credentials.refreshToken })
+        : undefined,
     })
 
     if (!response.ok) {

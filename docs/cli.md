@@ -65,9 +65,15 @@ What happens:
 
 1. CLI starts a localhost callback server on `127.0.0.1:43123` by default, or the port from `ORIZU_AUTH_PORT` if set.
 2. CLI opens browser for approval.
-3. After approval, CLI exchanges auth code for tokens.
-4. Credentials are stored at:
+3. After approval, Orizu creates a user-owned personal access token for the CLI and returns it once through the encrypted auth-code handoff.
+4. The CLI stores a v3 API-key credential at:
    - `~/.config/orizu/credentials.json`
+
+The raw personal access token cannot be shown again after creation. It authenticates
+as the owning user and inherits that user's current team/project access. Role
+changes, team removal, token expiry, or token revocation take effect on later CLI
+requests. Older session credentials are still read during rollout, but new
+`orizu login` runs replace them with PAT credentials.
 
 ### Who Am I
 
@@ -81,10 +87,14 @@ orizu whoami
 orizu logout
 ```
 
+For PAT credentials, logout attempts to revoke the current token remotely and then
+clears the local server credentials. Other CLI tokens can be revoked from the
+Personal Tokens page in Orizu.
+
 ### Auth Rate Limits
 
 CLI auth endpoints apply fixed-window abuse controls per route and actor. Normal
-`orizu login`, token refresh, and `orizu logout` flows are below these limits.
+`orizu login`, legacy token refresh, and `orizu logout` flows are below these limits.
 Repeated requests from the same IP/client, or with the same token-like auth
 material, return HTTP `429` with:
 
