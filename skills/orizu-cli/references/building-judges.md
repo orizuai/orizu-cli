@@ -1,6 +1,6 @@
-# Building Judges (Offline)
+# Building Judges And Scorers
 
-How to turn human-labeled annotations into automated evaluators today, in code. Orizu platform support for judge construction is coming; until then, follow this workflow per failure mode.
+How to turn human-labeled annotations into automated evaluators. Use this reference for authoring and validating the evaluator logic; use `prompt-control-plane.md` to push versioned prompt artifacts, runner artifacts, scorer definitions, and score runs into Orizu.
 
 ## Inputs
 
@@ -10,6 +10,11 @@ You should arrive here with:
 - The original dataset row each label refers to (the export includes `dataset_row_id` and the row payload).
 
 If you have Likert or "overall quality" labels, stop and re-annotate. Judges built on Likert data are unreliable. See `primer.md` Step 2.
+
+Terminology:
+- A **judge** is the evaluator itself, often an LLM prompt plus runner.
+- A **scorer** is the metric contract stored in Orizu. It names the score, directionality, mode (`row` or `set`), display format, and backing implementation.
+- Row scorers return per-row scores and feedback. Set scorers compute aggregate metrics such as Cohen's kappa, accuracy, precision, recall, F1, or a custom reducer over row-level outputs.
 
 ## Choosing the judge type
 
@@ -131,15 +136,16 @@ Run the judge once on the held-out test set. If TPR/TNR drops more than a few po
 Run the validated judge over future outputs to score them. Wire it into:
 - CI/CD on a curated test set (block merges that drop pass rate)
 - Online monitoring on sampled traffic (alert on regressions)
-- Optimization loop as a metric (`optimization-with-dspy-gepa.md`)
+- Optimization loop as a metric (`optimization-with-gepa.md`)
+- Orizu scorers and score runs (`prompt-control-plane.md`) so prompt detail, changelog, scorer detail, and optimization surfaces show comparable performance.
 
 ## Saturation check
 
 If your judge eventually reports 100% pass on a test set, the eval is **saturated** — it's no longer finding failures. That's not victory; it means you need harder cases. Sample fresh production traces, look for ones the current system handles ambiguously, and add them.
 
-## Storing judges alongside the dataset
+## Storing judges
 
-Treat each judge as code under version control:
+Treat each judge as code under version control, and push the runnable Orizu representation when using the control plane:
 
 ```
 evals/
@@ -151,7 +157,15 @@ evals/
       README.md                      # what failure mode, what the threshold story is
 ```
 
-When you re-export labels (e.g. after annotating more data), re-run validation. Judges drift as the system and the data drift; periodic revalidation catches it.
+For Orizu-managed workflows:
+
+1. Push the runner with `orizu runners push`.
+2. Push the LLM judge prompt with `orizu judges push` when applicable.
+3. Register the scorer with `orizu scorers register`.
+4. Execute with `orizu runners exec --scorer-version ...`.
+5. Submit results with `orizu scores submit`.
+
+When you re-export labels (e.g. after annotating more data), re-run validation. Judges and scorers drift as the system and data drift; periodic revalidation catches it.
 
 ## Checklist
 
@@ -163,3 +177,4 @@ Before declaring a judge production-ready:
 - [ ] Train / dev / test split (20 / 40 / 40)
 - [ ] TPR > 90% AND TNR > 90% on test
 - [ ] Stored in version control alongside the labels it was validated on
+- [ ] If using Orizu control plane, scorer registered with readable metric name, direction, mode, and dataset requirements

@@ -10,7 +10,7 @@ Upload → Annotate → Judge → Optimize
    └────────── new traces ──────────┘
 ```
 
-The CLI covers steps 1–2. Steps 3–4 are done offline today (judge construction in code; optimization with DSPy + GEPA). Each step depends on the output of the previous; don't skip ahead.
+The CLI covers the full operational loop. Human annotation still happens through apps/tasks, while judge/scorer logic and optimization execution run locally and report back through the prompt control plane. Each step depends on the output of the previous; don't skip ahead.
 
 ---
 
@@ -150,17 +150,17 @@ There are three **types** of automated evals:
 - **LLM-as-a-judge** — for subjective/nuanced criteria. Validate before trusting.
 - **Guardrails** — run in the request/response path to block failures before they reach users. Usually code-based or small classifiers, not LLMs.
 
-### In Orizu (today, offline)
+### In Orizu
 
-This work is done by the agent in code today (Orizu platform support coming):
+This work is still authored by the agent in code, but Orizu now stores the versioned evaluator artifacts and score results:
 
 1. Export labeled data: `orizu tasks export --task <id> --format jsonl --out labels.jsonl`
 2. For each failure mode, choose code assertion or LLM-judge.
 3. Build the judge.
 4. Validate against the labels (train/dev/test split, TPR/TNR).
-5. Run the validated judge over future outputs to score them.
+5. Push the judge prompt and runner when it is an LLM judge, register a scorer, then submit score runs for prompt versions or optimization candidates.
 
-Detailed walkthrough — code assertion patterns, LLM-judge prompt scaffold, train/dev/test split, TPR/TNR computation, saturation checks: `building-judges.md`.
+Control-plane commands: `prompt-control-plane.md`. Detailed authoring walkthrough — code assertion patterns, LLM-judge prompt scaffold, train/dev/test split, TPR/TNR computation, saturation checks: `building-judges.md`.
 
 ---
 
@@ -172,16 +172,17 @@ Detailed walkthrough — code assertion patterns, LLM-judge prompt scaffold, tra
 - Compare before/after on the **same eval suite** — don't trust vibes.
 - Improvements compound: new traces from the improved system feed back into Upload and reveal the next layer of failures.
 
-### In Orizu (today, offline)
+### In Orizu
 
-Done with **DSPy + GEPA** today (Orizu platform support coming):
+Done locally, reported to Orizu:
 
-1. Wrap the LLM application as a DSPy program.
-2. Wire each validated judge as a DSPy metric.
-3. Run GEPA against the metric set; keep the candidate prompt that scores highest.
-4. Diff before/after on the eval suite. Ship if it holds; new traces feed back to step 1.
+1. Package the candidate execution as a runner, or use the customer's existing local app wrapper.
+2. Register validated scorers.
+3. Run the bundled Orizu GEPA-style text optimizer, or a custom optimizer against the scorer set.
+4. Stream optimization events to Orizu, promote accepted candidates, and submit comparable scores.
+5. Diff before/after on the eval suite. Ship if it holds; new traces feed back to step 1.
 
-Detailed walkthrough — DSPy program structure, metric wiring, GEPA invocation, before/after comparison: `optimization-with-dspy-gepa.md`.
+Control-plane commands: `prompt-control-plane.md`. Detailed walkthrough — GEPA mechanics, optional DSPy context for customers already using it, and before/after comparison: `optimization-with-gepa.md`.
 
 ---
 
@@ -230,7 +231,7 @@ Production Traffic
       ↓                                         │
   Validate Judge (TPR > 90%, TNR > 90%)         │
       ↓                                         │
-  Optimize (DSPy + GEPA against the judge)      │
+  Optimize (GEPA-style search against scorers) │
       ↓                                         │
   Deploy (CI/CD + Online Monitoring + Guardrails)
       ↓                                         │

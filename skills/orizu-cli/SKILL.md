@@ -1,11 +1,11 @@
 ---
 name: orizu-cli
-description: Use when the user wants to improve an LLM application's performance in a measurable way, or mentions Orizu by name. Triggers include improving model or agent performance, collecting human feedback on model outputs, converting feedback into evals, building or crafting evals, running prompt optimization (including one-off prompt tweaks the user is willing to validate with evals), finetuning against evals, hill-climbing on metrics, or building "continually learning" agents. Orizu is a platform for building evals first, then improving LLM applications by optimizing against them. The CLI handles three workflows – gathering expert feedback, turning feedback into evals, and running optimizations (prompt optimization or finetuning). Do NOT use for prompt advice when the user has explicitly said they don't want to set up evals.
+description: Use when the user wants to improve an LLM application's performance in a measurable way, or mentions Orizu by name. Triggers include improving model or agent performance, collecting human feedback on model outputs, converting feedback into evals, building or crafting evals, running prompt optimization (including one-off prompt tweaks the user is willing to validate with evals), working with Orizu datasets, tasks, apps, prompts, judges, scorers, runners, score runs, or optimization runs, hill-climbing on metrics, or building "continually learning" agents. Orizu is a platform for building evals first, then improving LLM applications by optimizing against them. The CLI handles human feedback collection, eval creation, versioned prompt and scorer artifacts, local runner execution, score submission, and prompt optimization. Do NOT use for prompt advice when the user has explicitly said they don't want to set up evals.
 ---
 
 # Orizu
 
-Orizu improves LLM applications by building evals first, then optimizing against them. The end-to-end loop has four steps: **Upload → Annotate → Judge → Optimize**. The CLI covers steps 1–2; steps 3–4 are done offline today (judges in code, optimization with DSPy + GEPA), with platform support coming.
+Orizu improves LLM applications by building evals first, then optimizing against them. The end-to-end loop has four steps: **Upload → Annotate → Judge → Optimize**. The CLI covers human-eval collection plus the Phase 0 prompt control plane: prompts, judges, scorers, runners, local runner execution, score submission, packaged GEPA-style text optimization, and live optimization logging.
 
 For end-to-end methodology and rationale, read `references/primer.md`. The reference docs below cover specific stages in depth.
 
@@ -92,7 +92,11 @@ Deeper: `references/primer.md` (Step 2); `references/cli-reference.md` (apps + t
 
 ## 3. Judge — turn labels into automated evaluators
 
-Done in code today; Orizu platform support is coming.
+Use the Phase 0 prompt control plane when the user wants judges stored in Orizu as versioned prompt artifacts, runner zips, scorer definitions, and submitted score results. Read **`references/prompt-control-plane.md`** before using those commands.
+
+Judge construction details are still useful when authoring the evaluator itself.
+
+A judge is the evaluator prompt artifact. A scorer is the metric contract that names what score is being produced and how it should be displayed, compared, and used in optimizations. For UI-visible prompt performance, register a scorer and submit score runs; do not rely only on raw `runs submit`.
 
 Principles:
 - **Code assertions first.** If a failure is a rule (keyword present, tool called, format valid), write a code check. Fast, free, deterministic.
@@ -100,7 +104,7 @@ Principles:
 - **TPR > 90% and TNR > 90%** before trusting a judge. Track each separately — accuracy is misleading on imbalanced data.
 - **A 100% pass rate is a smell.** Your evals are saturated; add harder cases.
 
-Offline workflow:
+Authoring workflow:
 1. Export labels: `orizu tasks export --task <id> --format jsonl --out labels.jsonl`.
 2. For each failure mode, choose code assertion or LLM-judge.
 3. Build the judge.
@@ -111,7 +115,9 @@ Detailed walkthrough — code assertion patterns, LLM-judge prompt scaffold, tra
 
 ## 4. Optimize — hill-climb against validated judges
 
-Done in code today with DSPy + GEPA; Orizu platform support is coming.
+Use the Phase 0 prompt control plane when the user wants an optimizer run to appear in Orizu, stream live events, or promote accepted candidates into the prompt timeline. For text-candidate GEPA-style optimization, prefer the bundled `orizu optimizations run-gepa` flow. Read **`references/prompt-control-plane.md`** before wiring those endpoints.
+
+GEPA details below are still useful for local optimizer implementation. DSPy is only relevant when the customer already uses DSPy or asks for an external DSPy GEPA implementation.
 
 Principles:
 - Only optimize against judges you've validated. Otherwise you Goodhart your way to a worse system.
@@ -119,21 +125,22 @@ Principles:
 - Read **per-failure-mode metrics**, not just combined — averages hide regressions.
 - Improved-system traces feed back into step 1; the loop continues.
 
-Offline workflow:
-1. Wrap the LLM application as a `dspy.Module`.
-2. Wire each validated judge as a DSPy metric.
-3. Run GEPA against the metric set; keep the highest-scoring candidate.
+Local execution workflow:
+1. Package the candidate execution as an Orizu runner.
+2. Register validated row/set scorers.
+3. Run the bundled GEPA-style optimizer or a custom optimizer against the scorer set.
 4. Diff before/after on a held-out set; ship if it holds.
 
-Detailed walkthrough — DSPy program structure, metric wiring, GEPA invocation, before/after comparison: **`references/optimization-with-dspy-gepa.md`**.
+Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DSPy context for customers already using it, and before/after comparison: **`references/optimization-with-gepa.md`**.
 
 # Reference index
 
 - `references/primer.md` — methodology end-to-end (read first when in doubt about *why*).
 - `references/cli-reference.md` — full CLI command surface.
+- `references/prompt-control-plane.md` — Phase 0 prompts, judges, scorers, runners, score submission, optimizer event logging, bundled GEPA, and promotion endpoints.
 - `references/building-apps.md` — labeler app contract, design principles, common patterns, offline smoke test.
-- `references/building-judges.md` — offline judge construction + TPR/TNR validation.
-- `references/optimization-with-dspy-gepa.md` — DSPy + GEPA optimization loop.
+- `references/building-judges.md` — judge/scorer authoring + TPR/TNR validation.
+- `references/optimization-with-gepa.md` — GEPA optimization loop, with DSPy only as external context.
 - `scripts/test-app.mjs` — smoke test for `App.tsx` + schemas before `orizu apps create` (runs on plain `node`).
 
 # Execution rules
@@ -147,3 +154,4 @@ Detailed walkthrough — DSPy program structure, metric wiring, GEPA invocation,
 - Locked datasets reject append/edit/delete row mutations.
 - `--output-schema` JSON Schema validation surface is restricted to `type`, `required`, `properties`, `items`, `enum`.
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.
+- Prompt control-plane commands should use ids for dataset versions, split sets, prompt versions, scorer versions, runner versions, optimizer versions, and optimization runs.

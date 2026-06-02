@@ -1,0 +1,648 @@
+# Prompt Control Plane
+
+Use this reference for the Phase 0 prompt, judge, scorer, runner, score, run, and optimization event control plane. These commands are for coding agents that need to push local artifacts into Orizu, run them locally, submit scores, and stream optimization progress back to the platform.
+
+## Contents
+
+- [Default Command Strategy](#default-command-strategy)
+- [Artifact Contracts](#artifact-contracts)
+- [Command Matrix](#command-matrix)
+- [Optimization Event Logging](#optimization-event-logging)
+- [End-to-End Flow](#end-to-end-flow)
+- [Notes and Limits](#notes-and-limits)
+
+## Default Command Strategy
+
+1. Verify auth: `orizu --local whoami`.
+2. Export API context for scripts: `eval "$(orizu --local env --project <team>/<project>)"`.
+3. Create immutable dataset versions before creating splits.
+4. Push runners before prompts, judges, or prompt-runner scorers; prompt versions pin runner versions.
+5. Register scorers after their backing prompt/runner exists, then bind headline/tracked scorers to prompts when the UI should show those metrics.
+6. Use `runners exec` to prove the runner contract locally before submitting runs or score runs.
+7. For common text-candidate optimization, prefer `orizu optimizations run-gepa`; it starts the run and logs events for you.
+8. For custom optimizers, start an optimization run before local execution, then stream events into that run.
+9. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
+10. Promote only accepted candidates; rejected candidates stay in optimization events.
+
+Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. API keys to Orizu.
+
+Execution/privacy defaults:
+
+- Runner subprocesses receive only the file-contract paths plus a small allowlist of provider/runtime environment variables. Orizu API tokens are not passed into runner processes.
+- `orizu optimizations run-gepa` redacts dataset row payloads and reflection text in logged events by default. Use `--log-row-snapshots` only when the customer explicitly wants raw row and prompt text in the optimization event stream.
+- Runner artifacts, runner output, score result uploads, and optimization event payloads are size-capped. If a run needs larger observability payloads, store the large artifact separately and log a pointer.
+
+## Artifact Contracts
+
+### Runner Directory
+
+Required file: `manifest.json`.
+
+```json
+{
+  "name": "hip-note-judge-runner",
+  "description": "Scores one HIP note row with the judge prompt.",
+  "language": "python",
+  "command": ["python3", "runner.py"],
+  "supports_body_kinds": ["text"]
+}
+```
+
+For `runners exec`, the command must read input JSON from `ORIZU_RUNNER_INPUT_PATH` and write output JSON to `ORIZU_RUNNER_OUTPUT_PATH`.
+
+Input shape:
+
+```json
+{
+  "row": { "opaque": "dataset row object" },
+  "prompt": {
+    "body": "prompt body or null",
+    "body_kind": "text",
+    "provider_settings": {
+      "model": "claude-sonnet-4-6",
+      "temperature": 0,
+      "max_tokens": 4096
+    }
+  },
+  "prompt_version_id": "uuid",
+  "runner_version_id": "uuid",
+  "run_id": null
+}
+```
+
+Output shape:
+
+```json
+{
+  "model_response": "parsed response or structured JSON",
+  "raw_api_response": {},
+  "token_in": 1234,
+  "token_out": 567,
+  "latency_ms": 1890,
+  "cost_usd": 0.0123,
+  "score": 0.8,
+  "feedback": "optional judge rationale",
+  "error": null
+}
+```
+
+Exit non-zero only for infrastructure failures. Row-level model or parsing errors should usually be represented in the output JSON with `error`.
+
+### Prompt Or Judge Directory
+
+Required files: `orizu.prompt.json` plus the body file referenced by `body_file`.
+
+Generator prompt:
+
+```json
+{
+  "name": "hip-note-generator",
+  "role": "production_inference",
+  "description": "Generates a HIP note label.",
+  "body_file": "prompt.md",
+  "body_kind": "text",
+  "version_label": "v1",
+  "provider_settings": {
+    "model": "claude-sonnet-4-6",
+    "temperature": 0,
+    "max_tokens": 4096
+  },
+  "provenance": {
+    "kind": "coding-agent-edit"
+  }
+}
+```
+
+Judge prompt:
+
+```json
+{
+  "name": "hip-note-judge",
+  "role": "judge_per_row",
+  "description": "Scores generated HIP notes row by row.",
+  "body_file": "judge.md",
+  "body_kind": "text",
+  "version_label": "v1",
+  "provider_settings": {
+    "model": "claude-sonnet-4-6",
+    "temperature": 0,
+    "max_tokens": 4096
+  },
+  "provenance": {
+    "kind": "coding-agent-edit"
+  }
+}
+```
+
+Judges are prompts with `role: "judge_per_row"` or `role: "judge_per_run"`.
+
+### Scorer Manifest
+
+Scorers define metrics. The executable code still lives in a runner version, and LLM judge text still lives in a prompt version.
+
+Prompt-runner row scorer:
+
+```json
+{
+  "name": "hip-note-judge-score",
+  "description": "Scores HIP note candidates row by row.",
+  "mode": "row",
+  "implementation_kind": "prompt_runner",
+  "metric_key": "judge_score",
+  "metric_label": "Judge score",
+  "score_format": "percent",
+  "higher_is_better": true,
+  "requires_dataset": true,
+  "prompt_version_id": "judge-prompt-version-uuid",
+  "runner_version_id": "judge-runner-version-uuid"
+}
+```
+
+Set scorers aggregate over a set and can be used for selection or tracked reporting. They cannot be used as GEPA reflection scorers because reflection needs per-row feedback.
+
+### Optimizer Directory
+
+Required file: `manifest.json`.
+
+```json
+{
+  "name": "hip-gepa-optimizer",
+  "description": "Local GEPA-style optimizer for HIP judge prompt.",
+  "language": "python",
+  "entrypoint": "run_logged_optimization.py",
+  "optimizer_family": "gepa"
+}
+```
+
+The CLI stores optimizer zips and metadata. Phase 0 optimizer execution remains local.
+
+## Command Matrix
+
+### Environment
+
+```bash
+orizu --local login
+orizu --local whoami
+eval "$(orizu --local env --project <team>/<project>)"
+```
+
+`orizu env` exports `ORIZU_API_URL`, `ORIZU_TOKEN`, `ORIZU_PROJECT_ID`, and `ORIZU_PROJECT`.
+
+### Dataset Versions And Splits
+
+```bash
+orizu --local datasets versions create <dataset-id-or-name> \
+  --project <team>/<project> \
+  --label v1 \
+  --json
+```
+
+Returns `dataset_version_id`.
+
+Create ratio-based splits:
+
+```bash
+orizu --local datasets splits create <dataset-version-id> \
+  --name default \
+  --seed 42 \
+  --train 0.6 \
+  --validation 0.4 \
+  --test 0 \
+  --json
+```
+
+Create predefined, Hugging Face-style splits:
+
+```json
+{
+  "name": "default",
+  "strategy": "predefined",
+  "seed": 42,
+  "partitions": [
+    { "name": "train", "row_ids": ["row-1", "row-2"] },
+    { "name": "validation", "row_ids": ["row-3"] },
+    { "name": "test", "row_ids": [] }
+  ]
+}
+```
+
+```bash
+orizu --local datasets splits create <dataset-version-id> \
+  --from-file ./split.json \
+  --json
+```
+
+Returns `split_set_id`.
+
+### Runners
+
+```bash
+orizu --local runners push ./runner \
+  --project <team>/<project> \
+  --name hip-note-judge-runner \
+  --label default \
+  --json
+```
+
+Returns `runner_version_id`.
+
+Execute against a dataset split:
+
+```bash
+orizu --local runners exec \
+  --prompt-version <prompt-version-id> \
+  --runner-version <runner-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id-or-name> \
+  --split validation \
+  --runner-dir ./runner \
+  --out ./results.jsonl
+```
+
+Omit `--runner-dir` to download and materialize the pinned runner version from Orizu. `--out` may end in `.jsonl` or `.jsonl.gz`.
+
+### Prompts And Judges
+
+```bash
+orizu --local prompts push ./prompt \
+  --project <team>/<project> \
+  --runner-version <runner-version-id> \
+  --json
+
+orizu --local judges push ./judge \
+  --project <team>/<project> \
+  --runner-version <judge-runner-version-id> \
+  --json
+```
+
+Both commands return `prompt_version_id`.
+
+List:
+
+```bash
+orizu --local prompts list --project <team>/<project>
+orizu --local judges list --project <team>/<project>
+```
+
+Move a mutable label:
+
+```bash
+orizu --local prompts labels set hip-note-judge production \
+  --project <team>/<project> \
+  --version <prompt-version-id> \
+  --json
+```
+
+### Scorers And Scores
+
+Register a scorer after its backing prompt and runner versions exist:
+
+```bash
+orizu --local scorers register \
+  --project <team>/<project> \
+  --name hip-note-judge-score \
+  --manifest ./scorer.manifest.json \
+  --prompt-version <judge-prompt-version-id> \
+  --runner-version <judge-runner-version-id> \
+  --label production \
+  --json
+```
+
+Returns `scorer_version_id`.
+
+Inspect scorers:
+
+```bash
+orizu --local scorers list --project <team>/<project>
+orizu --local scorers detail <scorer-id-or-name> --project <team>/<project> --json
+orizu --local scorers labels set hip-note-judge-score production \
+  --project <team>/<project> \
+  --version <scorer-version-id> \
+  --json
+```
+
+Use scorer versions directly with the runner contract:
+
+```bash
+orizu --local runners exec \
+  --scorer-version <scorer-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id-or-name> \
+  --split validation \
+  --runner-dir ./scorer-runner \
+  --out ./scores.jsonl
+```
+
+Submit score results for a prompt version:
+
+```bash
+orizu --local scores submit ./scores.jsonl \
+  --project <team>/<project> \
+  --scorer-version <scorer-version-id> \
+  --subject-version <prompt-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation \
+  --json
+```
+
+Submit score results for an optimization candidate:
+
+```bash
+orizu --local scores submit ./candidate-scores.jsonl \
+  --project <team>/<project> \
+  --scorer-version <scorer-version-id> \
+  --optimization-run <optimization-run-id> \
+  --candidate <candidate-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation \
+  --json
+```
+
+Bind scorers to prompt UI surfaces:
+
+```bash
+orizu --local prompts scorers set-headline <prompt-id> \
+  --project <team>/<project> \
+  --scorer-version <scorer-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation \
+  --json
+
+orizu --local prompts scorers add <prompt-id> \
+  --project <team>/<project> \
+  --scorer-version <scorer-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation \
+  --json
+```
+
+### Runs
+
+Submit local runner output:
+
+```bash
+orizu --local runs submit ./results.jsonl \
+  --project <team>/<project> \
+  --prompt-version <prompt-version-id> \
+  --runner-version <runner-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation
+```
+
+For generator runs scored by a judge:
+
+```bash
+orizu --local runs submit ./generator-results.jsonl \
+  --project <team>/<project> \
+  --prompt-version <generator-version-id> \
+  --runner-version <generator-runner-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation \
+  --judge-version <judge-version-id> \
+  --judge-runner-version <judge-runner-version-id>
+```
+
+### Optimizers
+
+```bash
+orizu --local optimizers push ./optimizer \
+  --project <team>/<project> \
+  --name hip-gepa-optimizer \
+  --label gepa-v1 \
+  --json
+```
+
+Returns `optimizer_version_id`.
+
+Start a local optimization run before the optimizer process begins:
+
+```bash
+orizu --local optimizations start \
+  --project <team>/<project> \
+  --optimizer-version <optimizer-version-id> \
+  --prompt-version <prompt-version-id> \
+  --selection-scorer <scorer-version-id> \
+  --reflection-scorer <row-scorer-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --train-split train \
+  --validation-split validation \
+  --metadata '{"source":"local-gepa"}' \
+  --json
+```
+
+Returns `optimization_run_id`. Pass that ID to the local optimizer as `ORIZU_RUN_ID`.
+
+Optional tracked scorers:
+
+- `--pareto-scorer <scorer-version-id>` runs a scorer for Pareto candidates.
+- `--best-scorer <scorer-version-id>` runs a scorer for the current best candidate.
+
+For bundled text-candidate GEPA-style optimization, let the CLI manage start/event/finish wiring:
+
+```bash
+orizu --local optimizations run-gepa \
+  --project <team>/<project> \
+  --optimizer-version-id <optimizer-version-id> \
+  --candidate-version-id <prompt-version-id> \
+  --runner-version-id <runner-version-id> \
+  --candidate-runner-dir ./candidate-runner \
+  --scorer-version-id <row-scorer-version-id> \
+  --scorer-runner-version-id <scorer-runner-version-id> \
+  --scorer-runner-dir ./scorer-runner \
+  --dataset-version-id <dataset-version-id> \
+  --split-set-id <split-set-id> \
+  --train-split train \
+  --val-split validation \
+  --budget light \
+  --max-iterations 3 \
+  --minibatch-size 3
+```
+
+Useful GEPA flags:
+
+- `--budget auto|light|medium|high`, `--max-metric-calls <n>`, `--max-full-evals <n>`.
+- `--minibatch-size <n>` defaults to 3.
+- `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`.
+- `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
+- `--disable-evaluation-cache` turns off candidate/row/scorer cache reuse.
+- `--auto-promote --promotion-label <label>` promotes the best candidate at the end.
+- `--log-row-snapshots` includes raw row and reflection text in events; leave off by default.
+
+Lifecycle controls:
+
+```bash
+orizu --local optimizations pause <optimization-run-id> --reason "inspect candidate"
+orizu --local optimizations resume <optimization-run-id>
+orizu --local optimizations finish <optimization-run-id> \
+  --best-score 0.82 \
+  --best-candidate candidate-7 \
+  --result-prompt-version <prompt-version-id>
+orizu --local optimizations fail <optimization-run-id> --reason "provider outage"
+orizu --local optimizations cancel <optimization-run-id> --reason "user stopped"
+```
+
+`pause` and `cancel` store `metadata.reason`. `fail` stores `metadata.failure_reason`.
+`finish` marks the run `succeeded`; use it after accepted candidates have been promoted and the final prompt version is known.
+
+## Optimization Event Logging
+
+Custom optimizers use bare HTTP. Optimizer scripts should start a run through the CLI and POST each event as it happens:
+
+```bash
+curl -sS -X POST "$ORIZU_API_URL/api/cli/optimization-runs/$ORIZU_RUN_ID/events" \
+  -H "Authorization: Bearer $ORIZU_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @event.json
+```
+
+Event envelope:
+
+```json
+{
+  "eventId": "seed-completed-1",
+  "sequence": 3,
+  "eventType": "seed_val_set_completed",
+  "eventLayer": "extension",
+  "optimizerFamily": "gepa",
+  "iteration": null,
+  "candidateId": null,
+  "parentCandidateId": null,
+  "childCandidateId": null,
+  "occurredAt": "2026-05-26T16:00:00.000Z",
+  "payload": {
+    "mean_score": 0.35,
+    "per_row_scores": [
+      {
+        "row_id": "row-1",
+        "score": 0.4,
+        "feedback": "rationale"
+      }
+    ]
+  }
+}
+```
+
+Rules:
+
+- `sequence` is client-supplied, positive, and monotonic within one optimization run.
+- `eventId` must be stable and unique within one optimization run.
+- `eventLayer` is `core`, `extension`, or `system`.
+- Generic core events: `run_started`, `iteration_started`, `candidate_proposed`, `candidate_scored`, `candidate_recommended`, `iteration_completed`, `run_completed`, `run_failed`.
+- GEPA extension events: `seed_val_set_started`, `seed_val_set_completed`, `parent_minibatch_started`, `parent_minibatch_completed`, `reflection_started`, `reflection_completed`, `child_candidate_created`, `child_minibatch_started`, `child_minibatch_completed`, `acceptance_decision_made`, `merge_started`, `merge_completed`.
+- Do not send per-LM-call telemetry to this endpoint in Phase 0. Put aggregate call/token/cost stats in iteration or run payloads.
+
+Shell fallback:
+
+```bash
+orizu --local log seed_val_set_completed \
+  --run-id "$ORIZU_RUN_ID" \
+  --sequence 3 \
+  --event-layer extension \
+  --optimizer-family gepa \
+  --payload @event-payload.json
+```
+
+`orizu log` creates an `eventId` unless `--event-id` is provided. `event-payload.json` is the payload object only, not the full envelope.
+
+### Candidate Promotion
+
+Promotion creates a new immutable `prompt_versions` row and appends a system event to the optimization run.
+
+```bash
+curl -sS -X POST "$ORIZU_API_URL/api/cli/optimization-runs/$ORIZU_RUN_ID/promote" \
+  -H "Authorization: Bearer $ORIZU_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @promotion.json
+```
+
+```json
+{
+  "candidateId": "candidate-7",
+  "promptId": "prompt-uuid",
+  "parentPromptVersionId": "parent-prompt-version-uuid",
+  "body": "new prompt body",
+  "bodyKind": "text",
+  "providerSettings": {
+    "model": "claude-sonnet-4-6",
+    "temperature": 0,
+    "max_tokens": 4096
+  },
+  "runnerVersionId": "runner-version-uuid",
+  "label": "production"
+}
+```
+
+Response:
+
+```json
+{
+  "promptVersionId": "new-prompt-version-uuid"
+}
+```
+
+## End-to-End Flow
+
+```bash
+eval "$(orizu --local env --project hip/judge-optimization)"
+
+DATASET_VERSION_ID="$(orizu --local datasets versions create hip-note-judge-labels --project hip/judge-optimization --label v1 --json | jq -r .dataset_version_id)"
+SPLIT_SET_ID="$(orizu --local datasets splits create "$DATASET_VERSION_ID" --name default --seed 42 --train 0.6 --validation 0.4 --test 0 --json | jq -r .split_set_id)"
+
+RUNNER_VERSION_ID="$(orizu --local runners push ./runner --project hip/judge-optimization --name hip-note-judge-runner --label default --json | jq -r .runner_version_id)"
+JUDGE_VERSION_ID="$(orizu --local judges push ./judge --project hip/judge-optimization --runner-version "$RUNNER_VERSION_ID" --json | jq -r .prompt_version_id)"
+SCORER_VERSION_ID="$(orizu --local scorers register --project hip/judge-optimization --name hip-note-judge-score --manifest ./scorer.manifest.json --prompt-version "$JUDGE_VERSION_ID" --runner-version "$RUNNER_VERSION_ID" --label production --json | jq -r .scorer_version_id)"
+OPTIMIZER_VERSION_ID="$(orizu --local optimizers push ./optimizer --project hip/judge-optimization --name hip-gepa-optimizer --label gepa-v1 --json | jq -r .optimizer_version_id)"
+OPTIMIZATION_RUN_ID="$(orizu --local optimizations start --project hip/judge-optimization --optimizer-version "$OPTIMIZER_VERSION_ID" --prompt-version "$JUDGE_VERSION_ID" --selection-scorer "$SCORER_VERSION_ID" --reflection-scorer "$SCORER_VERSION_ID" --dataset-version "$DATASET_VERSION_ID" --split-set "$SPLIT_SET_ID" --json | jq -r .optimization_run_id)"
+export ORIZU_RUN_ID="$OPTIMIZATION_RUN_ID"
+
+orizu --local runners exec \
+  --prompt-version "$JUDGE_VERSION_ID" \
+  --runner-version "$RUNNER_VERSION_ID" \
+  --dataset-version "$DATASET_VERSION_ID" \
+  --split-set "$SPLIT_SET_ID" \
+  --split validation \
+  --runner-dir ./runner \
+  --out ./judge-results.jsonl
+
+orizu --local runs submit ./judge-results.jsonl \
+  --project hip/judge-optimization \
+  --prompt-version "$JUDGE_VERSION_ID" \
+  --runner-version "$RUNNER_VERSION_ID" \
+  --dataset-version "$DATASET_VERSION_ID" \
+  --split-set "$SPLIT_SET_ID" \
+  --split validation
+
+orizu --local scores submit ./judge-results.jsonl \
+  --project hip/judge-optimization \
+  --scorer-version "$SCORER_VERSION_ID" \
+  --subject-version "$JUDGE_VERSION_ID" \
+  --dataset-version "$DATASET_VERSION_ID" \
+  --split-set "$SPLIT_SET_ID" \
+  --split validation
+
+# After the local optimizer has logged events and promoted its accepted candidate:
+orizu --local optimizations finish "$OPTIMIZATION_RUN_ID" \
+  --best-score 0.82 \
+  --best-candidate candidate-7 \
+  --result-prompt-version "$JUDGE_VERSION_ID"
+```
+
+## Notes And Limits
+
+- All HTTP endpoints require `Authorization: Bearer $ORIZU_TOKEN`.
+- Runner and optimizer zips are content-hashed. Re-uploading the same zip dedupes at the version layer.
+- Prompt and judge versions are immutable. Labels move; versions do not.
+- Scorers are first-class metric contracts. A score is meaningful as `(scorer version, subject or candidate, dataset version, split set, split)`.
+- GEPA reflection scorers must be row-mode scorers so reflection has per-row feedback.
+- Dataset splits are tied to a specific dataset version.
+- `runners exec` writes row results locally; `runs submit` uploads and aggregates them.
+- `scores submit` is the preferred path for UI-visible prompt and optimization candidate performance.
+- `optimizations start` creates the live run row up front so local scripts can stream events immediately.
+- Rejected optimizer candidates should remain in the event stream. Only accepted candidates should be promoted.

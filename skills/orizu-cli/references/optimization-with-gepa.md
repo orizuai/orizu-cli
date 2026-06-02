@@ -1,6 +1,6 @@
-# Optimization with DSPy + GEPA (Offline)
+# Optimization With GEPA
 
-How to optimize prompts against validated judges today, in code. Orizu platform support for optimization is coming; until then, follow this workflow once you have at least one validated judge from `building-judges.md`.
+How to optimize text candidates against validated judges/scorers. For Orizu-tracked runs, prefer `prompt-control-plane.md` and the bundled `orizu optimizations run-gepa` command when optimizing one text candidate. Use this reference for GEPA mechanics, custom optimizer implementations, and optional DSPy context for customers already using DSPy.
 
 ## Inputs
 
@@ -11,11 +11,11 @@ You should arrive here with:
 
 If you don't have a validated judge, stop. Optimizing against an unvalidated judge means you'll hill-climb on a noisy or biased signal — Goodhart's law in action.
 
-## Why DSPy + GEPA
+## Why GEPA-Style Optimization
 
-- **DSPy** lets you express LLM applications as composable, typed programs (Modules with Signatures), so prompts become parameters that an optimizer can search over.
 - **GEPA** is a gradient-free prompt optimizer that uses an LLM to propose prompt edits, scores candidates against your metric, and keeps the best. It's well-suited to prompt-level optimization where you can't backprop through the model.
-- Together: judges become metrics, prompts become parameters, optimization becomes a tight loop.
+- In Orizu, runners execute candidates, scorers produce metrics/feedback, and optimization events make the loop inspectable and promotable.
+- DSPy is not part of Orizu's bundled optimizer. Treat DSPy examples here as an external integration pattern only.
 
 ## Workflow at a glance
 
@@ -26,8 +26,8 @@ If you don't have a validated judge, stop. Optimizing against an unvalidated jud
            │
            ▼
 ┌─────────────────────────────┐     ┌─────────────────────┐
-│ DSPy Program (your LLM app) │ ◄── │ Validated Judges    │
-│ wrapped as a Module         │     │ as DSPy metrics     │
+│ Runner (your LLM app call)  │ ◄── │ Validated scorers   │
+│ file-contract execution     │     │ row/set metrics     │
 └──────────┬──────────────────┘     └──────────┬──────────┘
            │                                    │
            └───────────────┬────────────────────┘
@@ -43,7 +43,30 @@ If you don't have a validated judge, stop. Optimizing against an unvalidated jud
               └─────────────────────────┘
 ```
 
-## Step 1: Wrap your application as a DSPy program
+## Orizu-tracked optimization
+
+Use the prompt control plane when you want runs, candidates, score charts, Pareto/frontier views, and promotions in Orizu:
+
+1. Push the candidate runner and prompt/judge prompt.
+2. Register a row scorer. GEPA reflection requires row-level feedback.
+3. Snapshot a dataset version and create a train/validation split set.
+4. Use `orizu optimizations run-gepa` for the common text-candidate case, or `orizu optimizations start` plus event logging for a custom optimizer.
+5. Submit any additional tracked scorer results with `orizu scores submit`.
+6. Promote only candidates that passed validation.
+
+The bundled Orizu GEPA-style optimizer supports configurable budget, minibatch size (default 3), candidate selection strategy, reflection model/template, evaluation caching, and optional auto-promotion. It redacts row snapshots and reflection text by default; only pass `--log-row-snapshots` when raw data in event logs is intentional.
+
+Full command syntax and event contracts: `prompt-control-plane.md`.
+
+## Step 1: Wrap your application as an Orizu runner
+
+For Orizu-tracked optimization, the candidate runner receives one dataset row and one candidate text body through the file contract. The scorer runner receives the source row plus candidate output and returns a score and feedback. See `prompt-control-plane.md` for the exact runner I/O shape.
+
+Keep the runner close to the production inference path: same model family, temperature, tools, parsing, and output schema wherever possible.
+
+## Optional: DSPy program wrapper
+
+If a customer already uses DSPy, they can express their application as a `dspy.Module` and build a custom optimizer around it. This is not how Orizu's bundled `orizu-gepa` package runs.
 
 Express the LLM call as a `dspy.Module` with a `Signature`:
 
@@ -76,9 +99,11 @@ class SupportAgent(dspy.Module):
 
 If your real application is multi-step (retrieval + generation + tool use), build a multi-Module program. GEPA can optimize each step's prompt independently.
 
-## Step 2: Wire judges as DSPy metrics
+## Step 2: Register scorers
 
-A DSPy metric takes `(example, prediction, trace=None)` and returns a number. Wrap each validated judge:
+For Orizu, register scorers with readable names, directionality, row/set mode, and dataset requirements. Row scorers should return numeric `score` and textual `feedback`; feedback is what GEPA reflection consumes.
+
+If using DSPy externally, a metric takes `(example, prediction, trace=None)` and returns a number. Wrap each validated judge:
 
 ```python
 def escalation_metric(example, prediction, trace=None) -> float:
@@ -129,7 +154,11 @@ examples = load_examples("./labels.jsonl")
 trainset, devset = examples[:int(0.7 * len(examples))], examples[int(0.7 * len(examples)):]
 ```
 
-## Step 4: Run GEPA
+## Step 4: Run GEPA-Style Optimization
+
+For Orizu, use `orizu optimizations run-gepa` first. It starts the run, fetches candidate/scorer contexts, executes local runners, logs seed validation, minibatches, reflection, child candidates, validation, Pareto updates, and optionally promotes.
+
+DSPy GEPA example for customers already on DSPy:
 
 ```python
 from dspy.teleprompt import GEPA
@@ -159,6 +188,8 @@ GEPA will:
 2. Use `reflection_lm` to propose prompt edits based on failures.
 3. Score candidate prompts on the trainset, keep the best.
 4. Validate on `valset` to avoid overfitting.
+
+Orizu's bundled optimizer is intentionally narrower than DSPy GEPA today: text candidates only, local runner/scorer directories, and Orizu event logging built in.
 
 ## Step 5: Compare before / after on a held-out set
 
@@ -211,6 +242,7 @@ Each pass through the loop reveals the next layer.
 - **Hiding regressions in the average.** Track per-failure-mode metrics, not just combined.
 - **Over-budgeting GEPA.** Heavy budgets give diminishing returns and burn LM spend. Start with `auto="light"`, scale up only if needed.
 - **Ignoring temperature.** Run optimization with the same LM config (model, temperature) you use in production. Optimizing against gpt-4o at temp=0 doesn't transfer to gpt-4o-mini at temp=0.7.
+- **Recreating Orizu logging by hand for text prompts.** Use `orizu optimizations run-gepa` unless the optimizer is genuinely custom.
 
 ## Checklist
 

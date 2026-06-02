@@ -107,6 +107,8 @@ orizu datasets lock --dataset <datasetId|datasetUrl> --reason "Finalize for labe
 orizu datasets clone --dataset <datasetId|datasetUrl> --name "Batch 1 Copy"
 ```
 
+Dataset version and split-set commands used by prompt runs are covered in `prompt-control-plane.md`.
+
 Supported file types:
 - `.csv`
 - `.json` (array of objects)
@@ -182,6 +184,10 @@ Formats:
 Defaults:
 - format defaults to `jsonl`
 - output file defaults to `<taskId>.<format>`
+
+### Prompt Control Plane
+
+For prompts, judges, runners, run submission, optimizer artifacts, live event logging, and accepted-candidate promotion, read `prompt-control-plane.md`.
 
 ## End-to-End Flows
 
