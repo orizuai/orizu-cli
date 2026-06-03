@@ -471,6 +471,7 @@ Useful GEPA flags:
 - `--minibatch-size <n>` defaults to 3.
 - `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`.
 - `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
+- `--reflection-provider-settings <json|@file>` passes provider-native reflection settings separately from the prompt text. Anthropic example: `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`. OpenAI example: `{"reasoning":{"effort":"medium","summary":"auto"}}`.
 - `--disable-evaluation-cache` turns off candidate/row/scorer cache reuse.
 - `--auto-promote --promotion-label <label>` promotes the best candidate at the end.
 - `--log-row-snapshots` includes raw row and reflection text in events; leave off by default.

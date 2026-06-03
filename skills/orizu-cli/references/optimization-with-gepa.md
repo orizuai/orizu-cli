@@ -54,7 +54,12 @@ Use the prompt control plane when you want runs, candidates, score charts, Paret
 5. Submit any additional tracked scorer results with `orizu scores submit`.
 6. Promote only candidates that passed validation.
 
-The bundled Orizu GEPA-style optimizer supports configurable budget, minibatch size (default 3), candidate selection strategy, reflection model/template, evaluation caching, and optional auto-promotion. It redacts row snapshots and reflection text by default; only pass `--log-row-snapshots` when raw data in event logs is intentional.
+The bundled Orizu GEPA-style optimizer supports configurable budget, minibatch size (default 3), candidate selection strategy, reflection model/template, reflection provider settings, evaluation caching, and optional auto-promotion. It redacts row snapshots and reflection text by default; only pass `--log-row-snapshots` when raw data in event logs is intentional.
+
+Reflection output contract:
+- The reflective LM's final text is used verbatim as the next candidate prompt.
+- The default reflection prompt asks for only the complete updated prompt body. Do not ask the model to wrap the candidate in markdown fences or tags; real prompts often contain those characters.
+- Put provider-native reasoning controls in `--reflection-provider-settings <json|@file>`, not in the prompt body. For OpenAI reasoning models, use a shape such as `{"reasoning":{"effort":"medium","summary":"auto"}}`. For Anthropic Claude models with thinking controls, use a shape such as `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`.
 
 Full command syntax and event contracts: `prompt-control-plane.md`.
 

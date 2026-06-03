@@ -131,6 +131,12 @@ Local execution workflow:
 3. Run the bundled GEPA-style optimizer or a custom optimizer against the scorer set.
 4. Diff before/after on a held-out set; ship if it holds.
 
+Bundled `run-gepa` reflection behavior:
+- The reflective LM's final text is used verbatim as the next candidate prompt. It should return only the complete updated prompt body, not analysis, labels, XML tags, or markdown fences.
+- Keep provider-native reasoning controls separate from the prompt text with `--reflection-provider-settings <json|@file>`.
+- OpenAI example: `--reflection-model openai/gpt-5 --reflection-provider-settings '{"reasoning":{"effort":"medium","summary":"auto"}}'`.
+- Anthropic example: `--reflection-model anthropic/claude-opus-4-7 --reflection-provider-settings '{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}'`.
+
 Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DSPy context for customers already using it, and before/after comparison: **`references/optimization-with-gepa.md`**.
 
 # Reference index
