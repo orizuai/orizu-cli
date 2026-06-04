@@ -1485,8 +1485,11 @@ function removeFlagWithValue(args, flag) {
     return filtered;
 }
 function bundledOrizuGepaPythonPath() {
-    const candidate = fileURLToPath(new URL('../../orizu-gepa-python/src', import.meta.url));
-    return existsSync(candidate) ? candidate : null;
+    const candidates = [
+        fileURLToPath(new URL('../vendor/orizu-gepa-python/src', import.meta.url)),
+        fileURLToPath(new URL('../../orizu-gepa-python/src', import.meta.url)),
+    ];
+    return candidates.find(candidate => existsSync(candidate)) ?? null;
 }
 async function runGepaOptimization() {
     const project = getArg('--project') || await resolveProjectSlug(null);
@@ -2664,6 +2667,47 @@ function readRunnerManifest(runnerDir) {
         supports_body_kind: supportedBodyKinds,
     };
 }
+const RUNNER_TIMEOUT_MS = 120_000;
+const RUNNER_OUTPUT_MAX_BYTES = 2 * 1024 * 1024;
+const RUNNER_ARTIFACT_MAX_BYTES = 25 * 1024 * 1024;
+const RUNNER_ENV_ALLOWLIST = new Set([
+    'PATH',
+    'SystemRoot',
+    'WINDIR',
+    'HOME',
+    'TMPDIR',
+    'TEMP',
+    'TMP',
+    'LANG',
+    'LC_ALL',
+    'PYTHONPATH',
+    'NODE_PATH',
+    'ANTHROPIC_API_KEY',
+    'OPENAI_API_KEY',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+]);
+function runnerSubprocessEnv(inputPath, outputPath) {
+    const env = {};
+    for (const key of RUNNER_ENV_ALLOWLIST) {
+        const value = process.env[key];
+        if (value !== undefined) {
+            env[key] = value;
+        }
+    }
+    env.ORIZU_RUNNER_INPUT_PATH = inputPath;
+    env.ORIZU_RUNNER_OUTPUT_PATH = outputPath;
+    return env;
+}
+function boundedRunnerOutput(value) {
+    if (!value)
+        return '';
+    const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    if (buffer.byteLength <= RUNNER_OUTPUT_MAX_BYTES) {
+        return buffer.toString('utf8');
+    }
+    return `${buffer.subarray(0, RUNNER_OUTPUT_MAX_BYTES).toString('utf8')}\n[truncated]`;
+}
 async function materializeRunnerVersion(runnerVersionId) {
     const response = await authedFetch(`/api/cli/runner-versions/${encodeURIComponent(runnerVersionId)}/download`);
     if (!response.ok) {
@@ -2672,7 +2716,12 @@ async function materializeRunnerVersion(runnerVersionId) {
     const tempDir = mkdtempSync(join(tmpdir(), 'orizu-runner-version-'));
     const zipPath = join(tempDir, 'runner.zip');
     const runnerDir = join(tempDir, 'runner');
-    writeFileSync(zipPath, new Uint8Array(await response.arrayBuffer()));
+    const zipBytes = new Uint8Array(await response.arrayBuffer());
+    if (zipBytes.byteLength > RUNNER_ARTIFACT_MAX_BYTES) {
+        rmSync(tempDir, { recursive: true, force: true });
+        throw new Error(`Runner artifact exceeds ${RUNNER_ARTIFACT_MAX_BYTES} bytes`);
+    }
+    writeFileSync(zipPath, zipBytes);
     const result = spawnSync('unzip', ['-q', zipPath, '-d', runnerDir], {
         encoding: 'utf8',
     });
@@ -2778,18 +2827,16 @@ async function runnersExec() {
                 }));
                 const result = spawnSync(manifest.command[0], manifest.command.slice(1), {
                     cwd: runnerDir,
-                    env: {
-                        ...process.env,
-                        ORIZU_RUNNER_INPUT_PATH: inputPath,
-                        ORIZU_RUNNER_OUTPUT_PATH: outputPath,
-                    },
+                    env: runnerSubprocessEnv(inputPath, outputPath),
                     encoding: 'utf8',
+                    maxBuffer: RUNNER_OUTPUT_MAX_BYTES,
+                    timeout: RUNNER_TIMEOUT_MS,
                 });
                 if (result.error) {
                     throw result.error;
                 }
                 if (result.status !== 0) {
-                    throw new Error(`Runner failed for row ${row.id} with exit code ${result.status}: ${sanitizeTerminalText(result.stderr || result.stdout || '')}`);
+                    throw new Error(`Runner failed for row ${row.id} with exit code ${result.status}: ${sanitizeTerminalText(boundedRunnerOutput(result.stderr || result.stdout))}`);
                 }
                 const runnerOutput = JSON.parse(readFileSync(outputPath, 'utf8'));
                 resultLines.push(JSON.stringify({

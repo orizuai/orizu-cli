@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orizu-gepa"
+version = "0.1.0"
+description = "Orizu-owned text prompt optimizer with GEPA-style reflection and mandatory live logging."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+orizu-gepa = "orizu_gepa.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

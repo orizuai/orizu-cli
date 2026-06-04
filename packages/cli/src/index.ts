@@ -2083,8 +2083,12 @@ function removeFlagWithValue(args: string[], flag: string): string[] {
 }
 
 function bundledOrizuGepaPythonPath(): string | null {
-  const candidate = fileURLToPath(new URL('../../orizu-gepa-python/src', import.meta.url))
-  return existsSync(candidate) ? candidate : null
+  const candidates = [
+    fileURLToPath(new URL('../vendor/orizu-gepa-python/src', import.meta.url)),
+    fileURLToPath(new URL('../../orizu-gepa-python/src', import.meta.url)),
+  ]
+
+  return candidates.find(candidate => existsSync(candidate)) ?? null
 }
 
 async function runGepaOptimization() {

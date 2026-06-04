@@ -6,7 +6,17 @@
   "bin": {
     "orizu": "dist/index.js"
   },
+  "files": [
+    "README.md",
+    "dist",
+    "scripts",
+    "src",
+    "tsconfig.json",
+    "vendor"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "prepack": "node scripts/vendor-gepa-python.mjs",
+    "postpack": "node scripts/vendor-gepa-python.mjs --clean"
   }
 }

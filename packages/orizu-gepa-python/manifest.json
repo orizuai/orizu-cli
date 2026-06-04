@@ -1,0 +1,9 @@
+{
+  "schema_version": "orizu.optimizer.v1",
+  "name": "orizu-gepa-text",
+  "description": "Orizu-owned text candidate optimizer with GEPA-style reflection and mandatory live event logging.",
+  "language": "python",
+  "command": ["python3", "-m", "orizu_gepa.cli"],
+  "optimizer_family": "gepa",
+  "candidate_kind": "text"
+}

@@ -1,0 +1,591 @@
+from __future__ import annotations
+
+import unittest
+
+from orizu_gepa.client import OrizuClient, OrizuEventSink
+from orizu_gepa.optimizer import (
+    Budget,
+    DatasetRow,
+    EvaluationCache,
+    PromptContext,
+    ReflectionResult,
+    RowEvaluation,
+    RunnerCallResult,
+    TextGepaConfig,
+    build_reflection_prompt,
+    extract_candidate_text,
+    optimize_loaded_text_candidate,
+    _sample_minibatch,
+    _score_from_scorer,
+    _select_parent_candidate_id,
+)
+from orizu_gepa.reflection import build_anthropic_reflection_payload, build_openai_reflection_payload
+
+
+class FakeSink:
+    def __init__(self):
+        self.events = []
+        self.finished = None
+        self.promotions = []
+
+    def log_event(self, event_type, payload=None, **kwargs):
+        self.events.append({"event_type": event_type, "payload": payload or {}, **kwargs})
+
+    def promote_candidate(self, **kwargs):
+        self.promotions.append(kwargs)
+        return "promoted-version-1"
+
+    def finish_run(self, **kwargs):
+        self.finished = kwargs
+
+
+class OptimizerTests(unittest.TestCase):
+    def setUp(self):
+        self.prompt = PromptContext(
+            body="initial text",
+            body_kind="text",
+            provider_settings={"model": "anthropic/claude-haiku-4"},
+            prompt_version_id="prompt-version-1",
+            runner_version_id="runner-version-1",
+            prompt_id="prompt-1",
+        )
+        self.scorer = PromptContext(
+            body="score it",
+            body_kind="text",
+            provider_settings={"model": "anthropic/claude-haiku-4"},
+            prompt_version_id="scorer-prompt-version-1",
+            runner_version_id="scorer-runner-version-1",
+            prompt_id="scorer-1",
+            scorer_version_id="scorer-version-1",
+            metric_key="accuracy",
+            higher_is_better=True,
+        )
+        self.trainset = [
+            DatasetRow("train-1", {"expected": "improved"}),
+            DatasetRow("train-2", {"expected": "improved"}),
+        ]
+        self.valset = [
+            DatasetRow("val-1", {"expected": "improved"}),
+            DatasetRow("val-2", {"expected": "improved"}),
+        ]
+
+    def test_logs_required_gepa_lifecycle_and_promotes_best_child(self):
+        sink = FakeSink()
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == row.row["expected"] else 0.2
+            return RunnerCallResult(model_response={"score": score, "feedback": f"score={score}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="improved",
+                candidate_text="improved",
+            )
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2, auto_promote=True, log_row_snapshots=True),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        run_started = next(event for event in sink.events if event["event_type"] == "run_started")
+        self.assertEqual(run_started["payload"]["inference_lm"], "anthropic/claude-haiku-4")
+        self.assertEqual(run_started["payload"]["scorer_lm"], "anthropic/claude-haiku-4")
+        self.assertEqual(run_started["payload"]["reflection_lm"], TextGepaConfig.reflection_model)
+        self.assertEqual(run_started["payload"]["scorer_version_id"], "scorer-version-1")
+        self.assertEqual(run_started["payload"]["scorer_prompt_version_id"], "scorer-prompt-version-1")
+        self.assertEqual(run_started["payload"]["metric_key"], "accuracy")
+        self.assertTrue(run_started["payload"]["higher_is_better"])
+        self.assertIn("seed_val_set_completed", event_types)
+        self.assertIn("iteration_started", event_types)
+        self.assertIn("parent_minibatch_completed", event_types)
+        self.assertIn("reflection_completed", event_types)
+        self.assertIn("child_minibatch_completed", event_types)
+        self.assertIn("acceptance_decision_made", event_types)
+        self.assertIn("child_val_set_completed", event_types)
+        self.assertIn("pareto_front_updated", event_types)
+        self.assertIn("budget_updated", event_types)
+        self.assertIn("run_completed", event_types)
+        decision = next(event for event in sink.events if event["event_type"] == "acceptance_decision_made")
+        self.assertTrue(decision["payload"]["proceed_to_full_eval"])
+        reflection = next(event for event in sink.events if event["event_type"] == "reflection_completed")
+        self.assertEqual(reflection["payload"]["prompt"], "reflection prompt")
+        self.assertEqual(reflection["payload"]["response"], "improved")
+        child_val = next(event for event in sink.events if event["event_type"] == "child_val_set_completed")
+        self.assertEqual(child_val["payload"]["score_mean"], 1.0)
+        self.assertEqual(child_val["payload"]["metric_key"], "accuracy")
+        self.assertEqual(len(child_val["payload"]["row_results"]), 2)
+        pareto = [event for event in sink.events if event["event_type"] == "pareto_front_updated"][-1]
+        self.assertEqual(pareto["payload"]["best_candidate_id"], result.best_candidate_id)
+        self.assertEqual(result.best_score, 1.0)
+        self.assertEqual(result.promoted_prompt_version_id, "promoted-version-1")
+        self.assertEqual(sink.finished["status"], "succeeded")
+
+    def test_redacts_row_snapshots_and_reflection_io_by_default(self):
+        sink = FakeSink()
+        trainset = [DatasetRow("train-1", {"secret": "customer-input", "expected": "improved"})]
+        valset = [DatasetRow("val-1", {"secret": "validation-input", "expected": "initial text"})]
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == row.row["expected"] else 0.0
+            return RunnerCallResult(model_response={"score": score, "feedback": f"secret={row.row['secret']}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt includes customer-input",
+                response="improved because customer-input",
+                candidate_text="improved",
+            )
+
+        optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=trainset,
+            valset=valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=1),
+        )
+
+        parent = next(event for event in sink.events if event["event_type"] == "parent_minibatch_completed")
+        self.assertIsNone(parent["payload"]["row_results"][0]["row"])
+        self.assertTrue(parent["payload"]["row_results"][0]["row_redacted"])
+        self.assertIn("row_sha256", parent["payload"]["row_results"][0])
+
+        reflection = next(event for event in sink.events if event["event_type"] == "reflection_completed")
+        self.assertNotIn("prompt", reflection["payload"])
+        self.assertNotIn("response", reflection["payload"])
+        self.assertTrue(reflection["payload"]["prompt_redacted"])
+        self.assertTrue(reflection["payload"]["response_redacted"])
+        self.assertIn("prompt_sha256", reflection["payload"])
+
+    def test_lower_is_better_acceptance_and_frontier(self):
+        sink = FakeSink()
+        scorer = PromptContext(
+            body="score error",
+            body_kind="text",
+            provider_settings={"model": "anthropic/claude-haiku-4"},
+            prompt_version_id="scorer-prompt-version-1",
+            runner_version_id="scorer-runner-version-1",
+            scorer_version_id="error-rate-scorer",
+            metric_key="error_rate",
+            higher_is_better=False,
+        )
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 0.1 if candidate_result.model_response["answer"] == "improved" else 0.8
+            return RunnerCallResult(model_response={"score": score, "feedback": f"error={score}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="improved",
+                candidate_text="improved",
+            )
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2),
+        )
+
+        decision = next(event for event in sink.events if event["event_type"] == "acceptance_decision_made")
+        self.assertTrue(decision["payload"]["proceed_to_full_eval"])
+        self.assertFalse(decision["payload"]["higher_is_better"])
+        self.assertEqual(result.best_score, 0.1)
+        self.assertNotEqual(result.best_candidate_id, "seed")
+        completed = next(event for event in sink.events if event["event_type"] == "run_completed")
+        self.assertEqual(completed["payload"]["metric_key"], "error_rate")
+        self.assertAlmostEqual(completed["payload"]["improvement"], 0.7)
+
+    def test_rejects_child_without_full_val_eval_when_minibatch_does_not_improve(self):
+        sink = FakeSink()
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == "initial text" else 0.0
+            return RunnerCallResult(model_response={"score": score, "feedback": f"score={score}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="worse",
+                candidate_text="worse",
+            )
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2, auto_promote=True),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertIn("candidate_rejected", event_types)
+        self.assertNotIn("child_val_set_completed", event_types)
+        self.assertEqual(result.best_candidate_id, "seed")
+        self.assertEqual(sink.promotions, [])
+
+    def test_default_minibatch_size_is_three(self):
+        rows = [DatasetRow(f"train-{index}", {"index": index}) for index in range(5)]
+
+        minibatch = _sample_minibatch(rows, iteration=1, config=TextGepaConfig())
+
+        self.assertEqual(TextGepaConfig().minibatch_size, 3)
+        self.assertEqual(len(minibatch), 3)
+
+    def test_pareto_parent_selection_samples_frontier_instead_of_current_best(self):
+        config = TextGepaConfig(seed=4, candidate_selection_strategy="pareto")
+        val_scores = {
+            "seed": {"val-1": 1.0, "val-2": 0.0, "val-3": 0.0},
+            "candidate-a": {"val-1": 0.9, "val-2": 0.9, "val-3": 0.9},
+        }
+
+        selected = _select_parent_candidate_id(
+            val_scores_by_candidate=val_scores,
+            best_candidate_id="candidate-a",
+            config=config,
+            iteration=1,
+        )
+
+        self.assertEqual(selected, "seed")
+
+    def test_reuses_cached_parent_minibatch_evaluations(self):
+        sink = FakeSink()
+        trainset = [
+            DatasetRow("train-1", {"expected": "initial text"}),
+            DatasetRow("train-2", {"expected": "initial text"}),
+            DatasetRow("train-3", {"expected": "initial text"}),
+        ]
+        valset = [DatasetRow("val-1", {"expected": "initial text"})]
+        candidate_calls: dict[tuple[str, str], int] = {}
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            key = (candidate_id, row.id)
+            candidate_calls[key] = candidate_calls.get(key, 0) + 1
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == row.row["expected"] else 0.0
+            return RunnerCallResult(model_response={"score": score, "feedback": f"score={score}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="worse",
+                candidate_text="worse",
+            )
+
+        optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=trainset,
+            valset=valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=2, minibatch_size=3, auto_promote=True),
+        )
+
+        self.assertEqual(candidate_calls[("seed", "train-1")], 1)
+        self.assertEqual(candidate_calls[("seed", "train-2")], 1)
+        self.assertEqual(candidate_calls[("seed", "train-3")], 1)
+        parent_events = [
+            event for event in sink.events
+            if event["event_type"] == "parent_minibatch_completed"
+        ]
+        self.assertEqual(parent_events[0]["payload"]["cache_hits"], 0)
+        self.assertEqual(parent_events[1]["payload"]["cache_hits"], 3)
+
+    def test_pauses_without_materializing_partial_minibatch_when_budget_exhausts(self):
+        sink = FakeSink()
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 1.0, "feedback": "ok"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="new",
+                candidate_text="new",
+            )
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertIn("budget_exhausted", event_types)
+        self.assertIn("run_paused", event_types)
+        self.assertNotIn("parent_minibatch_completed", event_types)
+        self.assertEqual(sink.finished["status"], "paused")
+        self.assertEqual(result.best_candidate_id, "seed")
+
+    def test_scorer_cache_identity_uses_scorer_version_separately_from_prompt_version(self):
+        first_scorer = PromptContext(
+            body="score it",
+            body_kind="text",
+            provider_settings={"model": "anthropic/claude-haiku-4"},
+            prompt_version_id="scorer-prompt-version-1",
+            runner_version_id="scorer-runner-version-1",
+            scorer_version_id="scorer-version-1",
+        )
+        second_scorer = PromptContext(
+            body="score it",
+            body_kind="text",
+            provider_settings={"model": "anthropic/claude-haiku-4"},
+            prompt_version_id="scorer-prompt-version-1",
+            runner_version_id="scorer-runner-version-1",
+            scorer_version_id="scorer-version-2",
+        )
+        cache = EvaluationCache()
+        row = DatasetRow("row-1", {"expected": "ok"})
+
+        first_key = cache.key(
+            candidate_text="candidate",
+            row=row,
+            split="validation",
+            prompt_context=self.prompt,
+            scorer_context=first_scorer,
+        )
+        second_key = cache.key(
+            candidate_text="candidate",
+            row=row,
+            split="validation",
+            prompt_context=self.prompt,
+            scorer_context=second_scorer,
+        )
+
+        self.assertNotEqual(first_key, second_key)
+
+    def test_client_scorer_exec_context_preserves_backing_prompt_version_id(self):
+        class FakeClient(OrizuClient):
+            def __init__(self):
+                super().__init__("http://localhost:3000", "token", "team/project")
+
+            def _request(self, method, path, body=None):
+                self.request = {"method": method, "path": path, "body": body}
+                return {
+                    "prompt": {
+                        "body": "score it",
+                        "bodyKind": "text",
+                        "providerSettings": {"model": "anthropic/claude-haiku-4"},
+                        "promptId": "scorer-prompt-1",
+                        "promptVersionId": "scorer-prompt-version-1",
+                        "runnerVersionId": "scorer-runner-version-1",
+                    },
+                    "scorer": {
+                        "versionId": "scorer-version-1",
+                        "metricKey": "accuracy",
+                        "higherIsBetter": False,
+                    },
+                    "rows": [
+                        {"id": "row-1", "row": {"expected": "ok"}},
+                    ],
+                }
+
+        client = FakeClient()
+        context, rows = client.fetch_scorer_exec_context(
+            scorer_version_id="scorer-version-1",
+            runner_version_id=None,
+            dataset_version_id="dataset-version-1",
+            split_set_id="split-set-1",
+            split="validation",
+        )
+
+        self.assertEqual(context.prompt_version_id, "scorer-prompt-version-1")
+        self.assertEqual(context.scorer_version_id, "scorer-version-1")
+        self.assertEqual(context.metric_key, "accuracy")
+        self.assertFalse(context.higher_is_better)
+        self.assertEqual(rows[0].id, "row-1")
+
+    def test_event_sink_retries_log_events(self):
+        class FlakyClient:
+            def __init__(self):
+                self.calls = 0
+
+            def log_event(self, *args, **kwargs):
+                self.calls += 1
+                if self.calls < 2:
+                    raise RuntimeError("temporary")
+
+        client = FlakyClient()
+        sink = OrizuEventSink(client, "run-1", max_log_retries=2)
+
+        sink.log_event("run_started", {})
+
+        self.assertEqual(client.calls, 2)
+
+    def test_metric_call_budget_is_enforced_per_uncached_row(self):
+        calls = 0
+        rows = [
+            DatasetRow("row-1", {"expected": "ok"}),
+            DatasetRow("row-2", {"expected": "ok"}),
+            DatasetRow("row-3", {"expected": "ok"}),
+        ]
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            nonlocal calls
+            calls += 1
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 1.0})
+
+        from orizu_gepa.optimizer import evaluate_candidate
+
+        budget = Budget("max_metric_calls", 1)
+        results = evaluate_candidate(
+            candidate_text="candidate",
+            candidate_id="candidate-1",
+            rows=rows,
+            split="validation",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            budget=budget,
+        )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(budget.used_metric_calls, 1)
+
+    def test_invalid_scorer_scores_raise_instead_of_becoming_zero(self):
+        with self.assertRaisesRegex(ValueError, "numeric score"):
+            _score_from_scorer(RunnerCallResult(model_response={"feedback": "missing score"}))
+
+        with self.assertRaisesRegex(ValueError, "finite"):
+            _score_from_scorer(RunnerCallResult(model_response={"score": "nan"}))
+
+    def test_reflection_prompt_is_gepa_style_and_overrideable(self):
+        prompt = build_reflection_prompt(
+            "old text",
+            [RowEvaluation(
+                row_id="row-1",
+                row={"input": "hello"},
+                output={"answer": "bad"},
+                score=0.2,
+                feedback="Be more specific",
+            )],
+            TextGepaConfig(),
+        )
+        self.assertIn("old text", prompt)
+        self.assertIn("optimizing a text parameter", prompt)
+        self.assertIn("drop-in replacement", prompt)
+        self.assertIn("used verbatim as the next candidate", prompt)
+        self.assertIn("Be more specific", prompt)
+        custom = build_reflection_prompt(
+            "old text",
+            [],
+            TextGepaConfig(reflection_prompt_template="A <current_candidate> B <evaluation_data> C"),
+        )
+        self.assertEqual(custom, "A old text B {\n  \"objective\": \"Improve this text candidate to maximize evaluator score while preserving intended behavior.\",\n  \"examples\": []\n} C")
+        legacy_custom = build_reflection_prompt(
+            "old text",
+            [],
+            TextGepaConfig(reflection_prompt_template="A <curr_instructions> B <inputs_outputs_feedback> C"),
+        )
+        self.assertEqual(legacy_custom, custom)
+
+    def test_extract_candidate_text_uses_verbatim_response_by_default(self):
+        self.assertEqual(extract_candidate_text("```text\nnew text\n```"), "```text\nnew text\n```")
+        self.assertEqual(extract_candidate_text("<candidate>new text</candidate>"), "<candidate>new text</candidate>")
+        self.assertEqual(
+            extract_candidate_text("Analysis first\n```markdown\n# Exact prompt\nUse this."),
+            "Analysis first\n```markdown\n# Exact prompt\nUse this.",
+        )
+
+    def test_anthropic_reflection_payload_uses_provider_settings(self):
+        payload = build_anthropic_reflection_payload(
+            "claude-opus-4-7",
+            "prompt",
+            TextGepaConfig(
+                reflection_provider_settings={
+                    "thinking": {"type": "adaptive", "display": "omitted"},
+                    "output_config": {"effort": "medium"},
+                },
+            ),
+        )
+        self.assertEqual(payload["thinking"], {"type": "adaptive", "display": "omitted"})
+        self.assertEqual(payload["output_config"], {"effort": "medium"})
+        self.assertNotIn("temperature", payload)
+
+        with self.assertRaisesRegex(RuntimeError, "reflection_temperature"):
+            build_anthropic_reflection_payload(
+                "claude-opus-4-7",
+                "prompt",
+                TextGepaConfig(
+                    reflection_temperature=0.2,
+                    reflection_provider_settings={"thinking": {"type": "adaptive"}},
+                ),
+            )
+
+    def test_openai_reflection_payload_uses_reasoning_provider_settings(self):
+        payload = build_openai_reflection_payload(
+            "gpt-5",
+            "prompt",
+            TextGepaConfig(
+                reflection_provider_settings={
+                    "reasoning": {"effort": "medium", "summary": "auto"},
+                },
+            ),
+        )
+        self.assertEqual(payload["model"], "gpt-5")
+        self.assertEqual(payload["input"], [{"role": "user", "content": "prompt"}])
+        self.assertEqual(payload["max_output_tokens"], TextGepaConfig.reflection_max_tokens)
+        self.assertEqual(payload["reasoning"], {"effort": "medium", "summary": "auto"})
+
+
+if __name__ == "__main__":
+    unittest.main()

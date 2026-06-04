@@ -10,11 +10,13 @@ External users consume:
 - `.github/workflows/validate-skills.yml`
   - Validates each folder under `skills/` has a valid `SKILL.md` frontmatter.
 - `.github/workflows/sync-cli-and-skills.yml`
-  - Mirrors `packages/cli`, `skills`, and CLI docs to one mirror repo `main`.
+  - Mirrors `packages/cli`, `packages/orizu-gepa-python`, `skills`, and CLI docs to one mirror repo `main`.
 - `.github/workflows/publish-cli.yml`
   - Triggered by tags matching `cli-vX.Y.Z` (or manual dispatch).
   - Sets `packages/cli/package.json` version from the release tag at publish time.
-  - Builds and publishes `packages/cli` to npm.
+  - Verifies checked-in CLI build artifacts.
+  - Vendors `packages/orizu-gepa-python` into the CLI package during `npm publish`.
+  - Publishes `packages/cli` to npm.
   - Pushes `vX.Y.Z` tag to mirror repo.
 
 ## Required Repository Secrets
