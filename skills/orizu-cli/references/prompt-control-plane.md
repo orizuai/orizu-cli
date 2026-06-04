@@ -284,6 +284,17 @@ orizu --local prompts list --project <team>/<project>
 orizu --local judges list --project <team>/<project>
 ```
 
+List prompt comment threads for the latest version, or a specific label/version:
+
+```bash
+orizu --local prompts comments <prompt-id-or-name> \
+  --project <team>/<project> \
+  [--label production | --version <prompt-version-id>] \
+  [--json]
+```
+
+Human output shows the thread count, open/resolved counts, selected prompt text or source line, each top-level comment body, and replies. Use `--json` when an agent or script needs structured `summary` and `comments` data. Check unresolved comments before drafting or pushing the next prompt version.
+
 Move a mutable label:
 
 ```bash

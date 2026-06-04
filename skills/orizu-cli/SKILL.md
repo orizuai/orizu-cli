@@ -92,7 +92,7 @@ Deeper: `references/primer.md` (Step 2); `references/cli-reference.md` (apps + t
 
 ## 3. Judge — turn labels into automated evaluators
 
-Use the Phase 0 prompt control plane when the user wants judges stored in Orizu as versioned prompt artifacts, runner zips, scorer definitions, and submitted score results. Read **`references/prompt-control-plane.md`** before using those commands.
+Use the Phase 0 prompt control plane when the user wants judges stored in Orizu as versioned prompt artifacts, runner zips, scorer definitions, and submitted score results. Read **`references/prompt-control-plane.md`** before using those commands. When the user mentions prompt feedback, prompt comments, or asks what to focus on for the next prompt version, inspect comment threads with `orizu prompts comments <prompt-id-or-name> --project <team>/<project>` before editing or pushing.
 
 Judge construction details are still useful when authoring the evaluator itself.
 
@@ -161,3 +161,4 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - `--output-schema` JSON Schema validation surface is restricted to `type`, `required`, `properties`, `items`, `enum`.
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.
 - Prompt control-plane commands should use ids for dataset versions, split sets, prompt versions, scorer versions, runner versions, optimizer versions, and optimization runs.
+- Use `orizu prompts comments <prompt-id-or-name> --project <team>/<project> [--label <label> | --version <id>] [--json]` to list prompt-level discussion threads with open/resolved status, selected text/line context, and replies.

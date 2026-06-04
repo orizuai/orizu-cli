@@ -99,6 +99,62 @@ interface PromptSummary {
   description?: string | null
 }
 
+interface PromptCommentAuthor {
+  name: string
+  initials?: string
+  color?: string
+}
+
+interface PromptCommentAnchor {
+  text: string | null
+  startLine: number | null
+  endLine: number | null
+}
+
+interface PromptCommentReply {
+  id: string
+  body: string
+  author: PromptCommentAuthor
+  createdAt: string
+  updatedAt: string
+}
+
+interface PromptCommentThread {
+  id: string
+  status: 'open' | 'resolved'
+  body: string
+  anchor: PromptCommentAnchor | null
+  author: PromptCommentAuthor
+  createdAt: string
+  updatedAt: string
+  resolvedAt: string | null
+  resolvedByUserId: string | null
+  replyCount: number
+  replies: PromptCommentReply[]
+}
+
+interface PromptCommentsPayload {
+  prompt: {
+    id: string
+    name: string
+    role: string
+    description?: string | null
+  }
+  version: {
+    id: string
+    versionNumber?: number
+    versionLabel?: string | null
+    status?: string | null
+  }
+  summary: {
+    threadCount: number
+    openThreadCount: number
+    resolvedThreadCount: number
+    replyCount: number
+  }
+  comments: PromptCommentThread[]
+}
+
 interface ScorerSummary {
   id: string
   name: string
@@ -200,7 +256,7 @@ function printVersion() {
 }
 
 function printUsage() {
-  printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> --subject-version <prompt-version-id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> --subject-version <prompt-version-id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
 }
 
 function printOptimizationUsage() {
@@ -835,6 +891,78 @@ function printTaskStatusSummary(data: TaskStatusPayload) {
   }
 }
 
+function compactTerminalText(value: string, maxLength = 160): string {
+  const compact = sanitizeTerminalText(value).replace(/\s+/g, ' ').trim()
+  if (compact.length <= maxLength) {
+    return compact
+  }
+
+  return `${compact.slice(0, Math.max(0, maxLength - 1)).trim()}…`
+}
+
+function printIndentedBody(value: string, indent: string) {
+  const lines = sanitizeTerminalText(value || '').split(/\r?\n/)
+  for (const line of lines) {
+    printLine(`${indent}${line}`)
+  }
+}
+
+function formatPromptCommentAnchor(anchor: PromptCommentAnchor | null): string | null {
+  if (!anchor) {
+    return null
+  }
+
+  const lineLabel = anchor.startLine && anchor.endLine
+    ? anchor.startLine === anchor.endLine
+      ? `line ${anchor.startLine}`
+      : `lines ${anchor.startLine}-${anchor.endLine}`
+    : null
+  const selectedText = anchor.text ? `"${compactTerminalText(anchor.text, 180)}"` : null
+
+  if (lineLabel && selectedText) {
+    return `${lineLabel}: ${selectedText}`
+  }
+  return lineLabel || selectedText
+}
+
+function printPromptComments(data: PromptCommentsPayload) {
+  const versionLabel = data.version.versionLabel || (
+    data.version.versionNumber ? `v${data.version.versionNumber}` : data.version.id
+  )
+
+  printLine(`Prompt: ${sanitizeTerminalText(data.prompt.name)} (${sanitizeTerminalText(data.prompt.id)})`)
+  printLine(`Version: ${sanitizeTerminalText(String(versionLabel))} (${sanitizeTerminalText(data.version.id)})`)
+  printLine(
+    `Comments: ${data.summary.threadCount} thread${data.summary.threadCount === 1 ? '' : 's'} ` +
+    `(${data.summary.openThreadCount} open, ${data.summary.resolvedThreadCount} resolved, ${data.summary.replyCount} replies)`
+  )
+
+  if (data.comments.length === 0) {
+    printLine('\nNo comments found for this prompt version.')
+    return
+  }
+
+  for (const [index, thread] of data.comments.entries()) {
+    const authorName = thread.author?.name || 'Unknown'
+    const anchor = formatPromptCommentAnchor(thread.anchor)
+    printLine('')
+    printLine(`${index + 1}. [${thread.status}] ${sanitizeTerminalText(authorName)} · ${sanitizeTerminalText(thread.createdAt)}`)
+    if (anchor) {
+      printLine(`   Selection: ${anchor}`)
+    }
+    printIndentedBody(thread.body, '   ')
+
+    if (thread.replies.length > 0) {
+      printLine(`   Replies (${thread.replies.length})`)
+      for (const reply of thread.replies) {
+        const replyAuthor = reply.author?.name || 'Unknown'
+        printLine(`   - ${sanitizeTerminalText(replyAuthor)} · ${sanitizeTerminalText(reply.createdAt)}`)
+        printIndentedBody(reply.body, '     ')
+      }
+    }
+  }
+}
+
 const DEFAULT_AUTH_CALLBACK_PORT = 43123
 
 function resolveAuthCallbackPort(): number {
@@ -1183,6 +1311,37 @@ async function listJudges() {
 
   const data = await parseJsonResponse<{ judges: PromptSummary[] }>(response, 'Judges list')
   printPromptSummaries(data.judges, 'No judges found.')
+}
+
+async function listPromptComments() {
+  const promptRef = getPositionalArg(2)
+  const project = getArg('--project') || await resolveProjectSlug(null)
+  const label = getArg('--label')
+  const version = getArg('--version')
+
+  if (!promptRef) {
+    throw new Error('Usage: orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <version-id>] [--json]')
+  }
+  if (label && version) {
+    throw new Error('Use either --label or --version, not both')
+  }
+
+  const params = new URLSearchParams({ project })
+  if (label) params.set('label', label)
+  if (version) params.set('version', version)
+
+  const response = await authedFetch(`/api/cli/prompts/${encodeURIComponent(promptRef)}/comments?${params.toString()}`)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch prompt comments: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<PromptCommentsPayload>(response, 'Prompt comments')
+  if (hasJsonFlag()) {
+    printJson(data as unknown as Record<string, unknown>)
+    return
+  }
+
+  printPromptComments(data)
 }
 
 async function listScorers() {
@@ -3927,6 +4086,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'prompts' && subcommand === 'list') {
     await listPrompts()
+    return
+  }
+
+  if (command === 'prompts' && subcommand === 'comments') {
+    await listPromptComments()
     return
   }
 

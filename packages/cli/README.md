@@ -102,6 +102,17 @@ orizu logout
     <td><code>orizu projects create --name "Support QA" --team ops-eval</code></td>
   </tr>
   <tr>
+    <td colspan="2"><strong>Prompts</strong></td>
+  </tr>
+  <tr>
+    <td>List prompts</td>
+    <td><code>orizu prompts list --project ops-eval/support-qa</code></td>
+  </tr>
+  <tr>
+    <td>Show prompt comments</td>
+    <td><code>orizu prompts comments &lt;promptIdOrName&gt; --project ops-eval/support-qa</code></td>
+  </tr>
+  <tr>
     <td colspan="2"><strong>Datasets</strong></td>
   </tr>
   <tr>
