@@ -185,6 +185,8 @@ interface RunnerExecContext {
 
 type DatasetUploadSourceType = 'csv' | 'json' | 'jsonl'
 
+const MAX_README_LENGTH = 200_000
+
 interface DatasetUploadResponse {
   dataset: {
     id: string
@@ -193,6 +195,11 @@ interface DatasetUploadResponse {
     sourceType: string
     url?: string
   }
+  readmeVersion?: {
+    id: string
+    version_num: number
+    created_at: string
+  } | null
 }
 
 interface TeamMember {
@@ -256,7 +263,7 @@ function printVersion() {
 }
 
 function printUsage() {
-  printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> --subject-version <prompt-version-id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> --subject-version <prompt-version-id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets readme set <datasetId|dataset-name> [--project <team/project>] (--readme-file <README.md> | --readme-text <markdown>) [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
 }
 
 function printOptimizationUsage() {
@@ -293,6 +300,25 @@ export function expandHomePath(path: string): string {
   }
 
   return path
+}
+
+function readReadmeMarkdownFromArgs(usage: string): string | null {
+  const readmeFile = getArg('--readme-file')
+  const readmeText = getArg('--readme-text')
+
+  if (readmeFile !== null && readmeText !== null) {
+    throw new Error(`Use either --readme-file or --readme-text, not both.\n${usage}`)
+  }
+
+  const markdown = readmeFile !== null
+    ? readFileSync(expandHomePath(readmeFile), 'utf8')
+    : readmeText
+
+  if (markdown !== null && markdown.length > MAX_README_LENGTH) {
+    throw new Error(`README markdown is too large. Maximum size is ${MAX_README_LENGTH} characters.`)
+  }
+
+  return markdown
 }
 
 function createCodeVerifier(): string {
@@ -1807,16 +1833,21 @@ async function createDatasetVersion() {
   const datasetId = getPositionalArg(3) || getArg('--dataset')
   const versionLabel = getArg('--label') || getArg('--version-label') || null
   const project = getArg('--project')
+  const usage = 'Usage: orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--readme-file <README.md> | --readme-text <markdown>] [--json]'
 
   if (!datasetId) {
-    throw new Error('Usage: orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--json]')
+    throw new Error(usage)
   }
 
+  const readmeMarkdown = readReadmeMarkdownFromArgs(usage)
   const resolvedDatasetId = await resolveDatasetIdForProject(datasetId, project)
   const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(resolvedDatasetId)}/versions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ versionLabel }),
+    body: JSON.stringify({
+      versionLabel,
+      ...(readmeMarkdown !== null ? { readmeMarkdown } : {}),
+    }),
   })
 
   if (!response.ok) {
@@ -3154,7 +3185,8 @@ async function createDatasetFromRows(
   project: string,
   name: string,
   sourceType: DatasetUploadSourceType,
-  rows: Array<Record<string, unknown>>
+  rows: Array<Record<string, unknown>>,
+  readmeMarkdown: string | null = null
 ): Promise<DatasetUploadResponse> {
   const response = await authedFetch('/api/cli/datasets/upload', {
     method: 'POST',
@@ -3166,6 +3198,7 @@ async function createDatasetFromRows(
       name,
       rows,
       sourceType,
+      ...(readmeMarkdown !== null ? { readmeMarkdown } : {}),
     }),
   })
 
@@ -3180,7 +3213,8 @@ async function createDatasetFromRows(
 async function uploadJsonlDatasetInChunks(
   file: string,
   project: string,
-  datasetName: string
+  datasetName: string,
+  readmeMarkdown: string | null = null
 ) {
   let dataset: DatasetUploadResponse['dataset'] | null = null
   let totalUploaded = 0
@@ -3215,7 +3249,7 @@ async function uploadJsonlDatasetInChunks(
 
     try {
       if (!dataset) {
-        const data = await createDatasetFromRows(project, datasetName, 'jsonl', chunk)
+        const data = await createDatasetFromRows(project, datasetName, 'jsonl', chunk, readmeMarkdown)
         dataset = data.dataset
         totalUploaded = data.dataset.rowCount
         continue
@@ -3256,22 +3290,24 @@ async function uploadDataset() {
   const projectArg = getArg('--project')
   const fileArg = getArg('--file')
   const name = getArg('--name')
+  const usage = 'Usage: orizu datasets upload --file <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>]'
 
   if (!fileArg) {
-    throw new Error('Usage: orizu datasets upload --file <path> [--project <team/project>] [--name <name>]')
+    throw new Error(usage)
   }
 
+  const readmeMarkdown = readReadmeMarkdownFromArgs(usage)
   const file = expandHomePath(fileArg)
   const project = await resolveProjectSlug(projectArg)
   const datasetName = name || basename(file)
 
   if (extname(file).toLowerCase() === '.jsonl') {
-    await uploadJsonlDatasetInChunks(file, project, datasetName)
+    await uploadJsonlDatasetInChunks(file, project, datasetName, readmeMarkdown)
     return
   }
 
   const { rows, sourceType } = parseDatasetFile(file)
-  const data = await createDatasetFromRows(project, datasetName, sourceType, rows)
+  const data = await createDatasetFromRows(project, datasetName, sourceType, rows, readmeMarkdown)
 
   printLine(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`)
   if (data.dataset.url) {
@@ -3283,23 +3319,29 @@ async function pushDataset() {
   const projectArg = getArg('--project')
   const fileArg = getPositionalArg(2) || getArg('--file')
   const name = getArg('--name')
+  const usage = 'Usage: orizu datasets push <rows.csv|rows.json|rows.jsonl> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>] [--json]'
 
   if (!fileArg) {
-    throw new Error('Usage: orizu datasets push <rows.csv|rows.json|rows.jsonl> [--project <team/project>] [--name <name>] [--json]')
+    throw new Error(usage)
   }
 
+  const readmeMarkdown = readReadmeMarkdownFromArgs(usage)
   const file = expandHomePath(fileArg)
   const project = await resolveProjectSlug(projectArg)
   const datasetName = name || basename(file)
   const { rows, sourceType } = parseDatasetFile(file)
-  const data = await createDatasetFromRows(project, datasetName, sourceType, rows)
+  const data = await createDatasetFromRows(project, datasetName, sourceType, rows, readmeMarkdown)
 
   if (hasJsonFlag()) {
-    printJson({
+    const payload: Record<string, unknown> = {
       dataset_id: data.dataset.id,
       name: data.dataset.name,
       row_count: data.dataset.rowCount,
-    })
+    }
+    if (data.readmeVersion?.id) {
+      payload.readme_version_id = data.readmeVersion.id
+    }
+    printJson(payload)
     return
   }
 
@@ -3307,6 +3349,55 @@ async function pushDataset() {
   if (data.dataset.url) {
     printLine(`View dataset: ${formatTerminalLink(data.dataset.url)}`)
   }
+}
+
+async function setDatasetReadme() {
+  const datasetId = getPositionalArg(3) || getArg('--dataset')
+  const project = getArg('--project')
+  const usage = 'Usage: orizu datasets readme set <datasetId|dataset-name> [--project <team/project>] (--readme-file <README.md> | --readme-text <markdown>) [--json]'
+
+  if (!datasetId) {
+    throw new Error(usage)
+  }
+
+  const readmeMarkdown = readReadmeMarkdownFromArgs(usage)
+  if (readmeMarkdown === null) {
+    throw new Error(usage)
+  }
+
+  const resolvedDatasetId = await resolveDatasetIdForProject(datasetId, project)
+  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(resolvedDatasetId)}/readme`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ markdown: readmeMarkdown }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to save dataset README: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{
+    version: {
+      id: string
+      dataset_id: string
+      version_num: number
+      created_at: string
+    }
+  }>(response, 'Dataset README save')
+
+  if (hasJsonFlag()) {
+    printJson({
+      dataset_id: data.version.dataset_id,
+      readme_version_id: data.version.id,
+      readme_version_num: data.version.version_num,
+    })
+    return
+  }
+
+  printLine(
+    `Saved README v${data.version.version_num} for dataset ` +
+    `${sanitizeTerminalText(data.version.dataset_id)} (${sanitizeTerminalText(data.version.id)}).`
+  )
 }
 
 function getDatasetReferenceInput(): string | null {
@@ -4310,6 +4401,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   const datasetsAction = cliArgs[2]
+  if (command === 'datasets' && subcommand === 'readme' && datasetsAction === 'set') {
+    await setDatasetReadme()
+    return
+  }
+
   if (command === 'datasets' && subcommand === 'versions' && datasetsAction === 'create') {
     await createDatasetVersion()
     return
