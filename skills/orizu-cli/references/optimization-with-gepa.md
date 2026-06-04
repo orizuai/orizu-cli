@@ -53,6 +53,7 @@ Use the prompt control plane when you want runs, candidates, score charts, Paret
 4. Use `orizu optimizations run-gepa` for the common text-candidate case, or `orizu optimizations start` plus event logging for a custom optimizer.
 5. Submit any additional tracked scorer results with `orizu scores submit`.
 6. Promote only candidates that passed validation.
+7. Write and attach an optimization report from the local logs or export artifact; see `optimization-reports.md`.
 
 The bundled Orizu GEPA-style optimizer supports configurable budget, minibatch size (default 3), candidate selection strategy, reflection model/template, reflection provider settings, evaluation caching, and optional auto-promotion. It redacts row snapshots and reflection text by default; only pass `--log-row-snapshots` when raw data in event logs is intentional.
 
@@ -188,6 +189,8 @@ orizu optimizations export <optimization-run-id> --out ./optimization.json
 
 Export returns one JSON object with raw events plus derived seed-vs-best, Pareto frontier, candidates, score-over-time, iterations, minibatch rows, validation rows, scorer context, prompt versions, and dataset split information. It fetches all optimization events and rehydrates row inputs from dataset artifacts when possible. Server events redact row snapshots and reflection prompts by default, but bundled `run-gepa` includes reflection responses in the event stream.
 
+After the run ends, write a markdown report before the context is lost. Use `optimization-reports.md` for the report structure: headline score and confusion matrix, what changed, per-row fixed/regressed/persistent failures, optimizer health, recommendations, and what not to do next.
+
 DSPy GEPA example for customers already on DSPy:
 
 ```python
@@ -282,5 +285,6 @@ Before declaring an optimization run successful:
 - [ ] Train / val / held-out splits, and the held-out set is genuinely untouched during optimization
 - [ ] Per-metric numbers reviewed (not just combined)
 - [ ] Same LM/temperature in eval as in production
+- [ ] Optimization report written from logs/export and attached with `--report-file` when the run is finished, failed, or cancelled
 - [ ] Optimized program saved/version-controlled before shipping
 - [ ] Plan in place to sample new traces post-deploy and run the loop again

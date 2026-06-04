@@ -22,9 +22,10 @@ Use this reference for the Phase 0 prompt, judge, scorer, runner, score, run, an
 7. For common text-candidate optimization, prefer `orizu optimizations run-gepa`; it starts the run and logs events for you.
 8. After `run-gepa`, inspect `logs/<optimization_run_id>` first; it is the complete local trace for coding-agent analysis.
 9. Use `orizu optimizations export <run-id> --out <run-id>.optimization.json` when the local log is missing or the run happened elsewhere.
-10. For custom optimizers, start an optimization run before local execution, then stream events into that run.
-11. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
-12. Promote only accepted candidates; rejected candidates stay in optimization events.
+10. Write and attach a markdown report for finished, failed, or cancelled runs; use `optimization-reports.md` for structure and diagnostic guidance.
+11. For custom optimizers, start an optimization run before local execution, then stream events into that run.
+12. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
+13. Promote only accepted candidates; rejected candidates stay in optimization events.
 
 Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. API keys to Orizu.
 
@@ -529,13 +530,15 @@ orizu --local optimizations resume <optimization-run-id>
 orizu --local optimizations finish <optimization-run-id> \
   --best-score 0.82 \
   --best-candidate candidate-7 \
-  --result-prompt-version <prompt-version-id>
-orizu --local optimizations fail <optimization-run-id> --reason "provider outage"
-orizu --local optimizations cancel <optimization-run-id> --reason "user stopped"
+  --result-prompt-version <prompt-version-id> \
+  --report-file ./reports/<optimization-run-id>.md
+orizu --local optimizations fail <optimization-run-id> --reason "provider outage" --report-file ./reports/<optimization-run-id>.md
+orizu --local optimizations cancel <optimization-run-id> --reason "user stopped" --report "## Cancelled\n\nStopped after manual inspection."
 ```
 
 `pause` and `cancel` store `metadata.reason`. `fail` stores `metadata.failure_reason`.
 `finish` marks the run `succeeded`; use it after accepted candidates have been promoted and the final prompt version is known.
+Use `--report-file <path>` or `--report <markdown|@file>` on `finish`, `fail`, or `cancel` to attach the markdown report shown in the optimization detail Report tab. Prefer generating this from the local GEPA logs (`result.json`, `evaluations.jsonl`, `reflections.jsonl`, and `events.jsonl`) after the run ends. Report structure and interpretation rules: `optimization-reports.md`.
 
 ## Optimization Event Logging
 

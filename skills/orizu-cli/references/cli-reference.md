@@ -187,7 +187,7 @@ Defaults:
 
 ### Prompt Control Plane
 
-For prompts, judges, runners, run submission, optimizer artifacts, live event logging, and accepted-candidate promotion, read `prompt-control-plane.md`.
+For prompts, judges, runners, run submission, optimizer artifacts, live event logging, and accepted-candidate promotion, read `prompt-control-plane.md`. For markdown reports attached to optimization runs, read `optimization-reports.md`.
 
 Optimization trace commands:
 

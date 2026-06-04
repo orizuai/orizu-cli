@@ -131,7 +131,8 @@ Local execution workflow:
 3. Run the bundled GEPA-style optimizer or a custom optimizer against the scorer set.
 4. Inspect `logs/<optimization_run_id>` for full local optimization traces, especially `evaluations.jsonl`, `reflections.jsonl`, `events.jsonl`, and `result.json`.
 5. If the local log is unavailable or the run happened remotely, use `orizu optimizations export <run-id> --out <run-id>.optimization.json`.
-6. Diff before/after on a held-out set; ship if it holds.
+6. Write a markdown optimization report from the logs/export and attach it with `--report-file <path>` when finishing, failing, or cancelling the run.
+7. Diff before/after on a held-out set; ship if it holds.
 
 Bundled `run-gepa` reflection behavior:
 - The reflective LM's final text is used verbatim as the next candidate prompt. It should return only the complete updated prompt body, not analysis, labels, XML tags, or markdown fences.
@@ -141,7 +142,7 @@ Bundled `run-gepa` reflection behavior:
 - OpenAI example: `--reflection-model openai/gpt-5 --reflection-provider-settings '{"reasoning":{"effort":"medium","summary":"auto"}}'`.
 - Anthropic example: `--reflection-model anthropic/claude-opus-4-7 --reflection-provider-settings '{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}'`.
 
-Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DSPy context for customers already using it, and before/after comparison: **`references/optimization-with-gepa.md`**.
+Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DSPy context for customers already using it, and before/after comparison: **`references/optimization-with-gepa.md`**. Report-writing structure and interpretation guidance: **`references/optimization-reports.md`**.
 
 # Reference index
 
@@ -151,6 +152,7 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - `references/building-apps.md` — labeler app contract, design principles, common patterns, offline smoke test.
 - `references/building-judges.md` — judge/scorer authoring + TPR/TNR validation.
 - `references/optimization-with-gepa.md` — GEPA optimization loop, with DSPy only as external context.
+- `references/optimization-reports.md` — report template, GEPA diagnostics, kappa/confusion-matrix guidance, and next-step recommendations.
 - `scripts/test-app.mjs` — smoke test for `App.tsx` + schemas before `orizu apps create` (runs on plain `node`).
 
 # Execution rules
@@ -166,4 +168,5 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.
 - Prompt control-plane commands should use ids for dataset versions, split sets, prompt versions, scorer versions, runner versions, optimizer versions, and optimization runs.
 - Optimization exports default to `<run-id>.optimization.json`; prefer the existing `logs/<run-id>` directory from `run-gepa` when it is available because it contains the full local trace without needing server rehydration.
+- When ending an optimization run, attach a markdown report with `--report-file` when possible. Use `references/optimization-reports.md` for what to include.
 - Use `orizu prompts comments <prompt-id-or-name> --project <team>/<project> [--label <label> | --version <id>] [--json]` to list prompt-level discussion threads with open/resolved status, selected text/line context, and replies.

@@ -267,7 +267,7 @@ function printUsage() {
 }
 
 function printOptimizationUsage() {
-  printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--log-dir logs]\n  orizu optimizations export <run-id> [--out <path>] [--json]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--json]`)
+  printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--log-dir logs]\n  orizu optimizations export <run-id> [--out <path>] [--json]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--json]`)
 }
 
 let cliArgs = process.argv.slice(2)
@@ -2064,6 +2064,7 @@ function normalizeScoreResultsInput(sourcePath: string, raw: string): string {
 }
 
 type OptimizationLifecycleAction = 'pause' | 'resume' | 'finish' | 'fail' | 'cancel'
+const OPTIMIZATION_REPORT_MAX_BYTES = 2 * 1024 * 1024
 
 function parseOptionalNumberFlag(name: string): number | undefined {
   const value = getArg(name)
@@ -2081,6 +2082,46 @@ function parseOptionalNumberFlag(name: string): number | undefined {
 
 function hasObjectKeys(value: Record<string, unknown>): boolean {
   return Object.keys(value).length > 0
+}
+
+function readOptimizationReportInput(): { markdown: string; sourceName: string | null } | null {
+  const report = getArg('--report')
+  const reportFile = getArg('--report-file')
+
+  if (report && reportFile) {
+    throw new Error('Use either --report or --report-file, not both')
+  }
+
+  if (!report && !reportFile) {
+    return null
+  }
+
+  let markdown: string
+  let sourceName: string | null
+
+  if (reportFile) {
+    const expandedPath = expandHomePath(reportFile)
+    markdown = readSourceFile(reportFile)
+    sourceName = basename(expandedPath)
+  } else if (report?.startsWith('@')) {
+    const path = report.slice(1)
+    const expandedPath = expandHomePath(path)
+    markdown = readSourceFile(path)
+    sourceName = basename(expandedPath)
+  } else {
+    markdown = report || ''
+    sourceName = 'inline'
+  }
+
+  if (!markdown.trim()) {
+    throw new Error('Optimization report markdown must not be blank')
+  }
+
+  if (Buffer.byteLength(markdown, 'utf8') > OPTIMIZATION_REPORT_MAX_BYTES) {
+    throw new Error(`Optimization report exceeds ${OPTIMIZATION_REPORT_MAX_BYTES} bytes`)
+  }
+
+  return { markdown, sourceName }
 }
 
 async function startOptimizationRun() {
@@ -2187,6 +2228,11 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
   }
   const metadata = readJsonObjectArg(getArg('--metadata'), 'optimization metadata')
   const reason = getArg('--reason')
+  const report = readOptimizationReportInput()
+
+  if (report && (action === 'pause' || action === 'resume')) {
+    throw new Error(`orizu optimizations ${action} does not accept optimization reports`)
+  }
 
   if ((action === 'pause' || action === 'cancel') && reason) {
     metadata.reason = reason
@@ -2199,6 +2245,11 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
 
   if (hasObjectKeys(metadata)) {
     body.metadata = metadata
+  }
+
+  if (report) {
+    body.reportMarkdown = report.markdown
+    body.reportSourceName = report.sourceName
   }
 
   if (action === 'finish') {

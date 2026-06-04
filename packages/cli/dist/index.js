@@ -34,7 +34,7 @@ function printUsage() {
     printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> --subject-version <prompt-version-id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets readme set <datasetId|dataset-name> [--project <team/project>] (--readme-file <README.md> | --readme-text <markdown>) [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`);
 }
 function printOptimizationUsage() {
-    printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--log-dir logs]\n  orizu optimizations export <run-id> [--out <path>] [--json]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--json]`);
+    printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--log-dir logs]\n  orizu optimizations export <run-id> [--out <path>] [--json]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--json]`);
 }
 let cliArgs = process.argv.slice(2);
 function getArg(name) {
@@ -1433,6 +1433,7 @@ function normalizeScoreResultsInput(sourcePath, raw) {
         throw new Error(`Invalid score results JSON '${sourcePath}': ${message}`);
     }
 }
+const OPTIMIZATION_REPORT_MAX_BYTES = 2 * 1024 * 1024;
 function parseOptionalNumberFlag(name) {
     const value = getArg(name);
     if (!value) {
@@ -1446,6 +1447,40 @@ function parseOptionalNumberFlag(name) {
 }
 function hasObjectKeys(value) {
     return Object.keys(value).length > 0;
+}
+function readOptimizationReportInput() {
+    const report = getArg('--report');
+    const reportFile = getArg('--report-file');
+    if (report && reportFile) {
+        throw new Error('Use either --report or --report-file, not both');
+    }
+    if (!report && !reportFile) {
+        return null;
+    }
+    let markdown;
+    let sourceName;
+    if (reportFile) {
+        const expandedPath = expandHomePath(reportFile);
+        markdown = readSourceFile(reportFile);
+        sourceName = basename(expandedPath);
+    }
+    else if (report?.startsWith('@')) {
+        const path = report.slice(1);
+        const expandedPath = expandHomePath(path);
+        markdown = readSourceFile(path);
+        sourceName = basename(expandedPath);
+    }
+    else {
+        markdown = report || '';
+        sourceName = 'inline';
+    }
+    if (!markdown.trim()) {
+        throw new Error('Optimization report markdown must not be blank');
+    }
+    if (Buffer.byteLength(markdown, 'utf8') > OPTIMIZATION_REPORT_MAX_BYTES) {
+        throw new Error(`Optimization report exceeds ${OPTIMIZATION_REPORT_MAX_BYTES} bytes`);
+    }
+    return { markdown, sourceName };
 }
 async function startOptimizationRun() {
     const project = getArg('--project') || await resolveProjectSlug(null);
@@ -1523,6 +1558,10 @@ async function updateOptimizationRunLifecycle(action) {
     };
     const metadata = readJsonObjectArg(getArg('--metadata'), 'optimization metadata');
     const reason = getArg('--reason');
+    const report = readOptimizationReportInput();
+    if (report && (action === 'pause' || action === 'resume')) {
+        throw new Error(`orizu optimizations ${action} does not accept optimization reports`);
+    }
     if ((action === 'pause' || action === 'cancel') && reason) {
         metadata.reason = reason;
     }
@@ -1532,6 +1571,10 @@ async function updateOptimizationRunLifecycle(action) {
     }
     if (hasObjectKeys(metadata)) {
         body.metadata = metadata;
+    }
+    if (report) {
+        body.reportMarkdown = report.markdown;
+        body.reportSourceName = report.sourceName;
     }
     if (action === 'finish') {
         const bestScore = parseOptionalNumberFlag('--best-score');
