@@ -255,12 +255,14 @@ class OrizuEventSink:
         *,
         fail_on_log_error: bool = True,
         max_log_retries: int = 2,
+        local_logger: Any | None = None,
     ):
         self.client = client
         self.run_id = run_id
         self.sequence = 0
         self.fail_on_log_error = fail_on_log_error
         self.max_log_retries = max(0, max_log_retries)
+        self.local_logger = local_logger
 
     def log_event(
         self,
@@ -275,6 +277,20 @@ class OrizuEventSink:
         child_candidate_id: str | None = None,
     ) -> None:
         self.sequence += 1
+        local_event = {
+            "run_id": self.run_id,
+            "sequence": self.sequence,
+            "event_type": event_type,
+            "event_layer": event_layer,
+            "optimizer_family": optimizer_family,
+            "iteration": iteration,
+            "candidate_id": candidate_id,
+            "parent_candidate_id": parent_candidate_id,
+            "child_candidate_id": child_candidate_id,
+            "payload": payload or {},
+        }
+        if self.local_logger is not None:
+            self.local_logger.append_event(local_event)
         last_error: Exception | None = None
         for attempt in range(self.max_log_retries + 1):
             try:
@@ -308,7 +324,37 @@ class OrizuEventSink:
         prompt_version_id = self.client.promote_candidate(self.run_id, **kwargs)
         # Promotion writes a system event at max(sequence)+1 in Postgres.
         self.sequence += 1
+        if self.local_logger is not None:
+            self.local_logger.append_event({
+                "run_id": self.run_id,
+                "sequence": self.sequence,
+                "event_type": "candidate_promoted",
+                "event_layer": "system",
+                "optimizer_family": "gepa",
+                "iteration": None,
+                "candidate_id": kwargs.get("candidate_id"),
+                "parent_candidate_id": None,
+                "child_candidate_id": None,
+                "payload": {
+                    **kwargs,
+                    "prompt_version_id": prompt_version_id,
+                },
+            })
         return prompt_version_id
 
     def finish_run(self, **kwargs: Any) -> None:
+        if self.local_logger is not None:
+            self.sequence += 1
+            self.local_logger.append_event({
+                "run_id": self.run_id,
+                "sequence": self.sequence,
+                "event_type": "run_status_updated",
+                "event_layer": "system",
+                "optimizer_family": "gepa",
+                "iteration": None,
+                "candidate_id": kwargs.get("best_candidate_id"),
+                "parent_candidate_id": None,
+                "child_candidate_id": None,
+                "payload": kwargs,
+            })
         self.client.update_run(self.run_id, **kwargs)

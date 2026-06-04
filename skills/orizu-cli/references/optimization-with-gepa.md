@@ -163,6 +163,31 @@ trainset, devset = examples[:int(0.7 * len(examples))], examples[int(0.7 * len(e
 
 For Orizu, use `orizu optimizations run-gepa` first. It starts the run, fetches candidate/scorer contexts, executes local runners, logs seed validation, minibatches, reflection, child candidates, validation, Pareto updates, and optionally promotes.
 
+`run-gepa` also writes a local trace directory by default:
+
+```text
+logs/<optimization_run_id>/
+  run.json
+  prompt_context.json
+  scorer_context.json
+  trainset.json
+  valset.json
+  events.jsonl
+  evaluations.jsonl
+  reflections.jsonl
+  result.json
+```
+
+Use this directory as the primary artifact for coding-agent analysis. It contains the full row inputs, model outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, candidate text, and final result. Override the root with `--log-dir <dir>`; disable persistence with `--no-local-log` only when raw rows/reflection context must not be written to disk.
+
+If the local log is missing or the run happened elsewhere, export the server-side archive:
+
+```bash
+orizu optimizations export <optimization-run-id> --out ./optimization.json
+```
+
+Export returns one JSON object with raw events plus derived seed-vs-best, Pareto frontier, candidates, score-over-time, iterations, minibatch rows, validation rows, scorer context, prompt versions, and dataset split information. It fetches all optimization events and rehydrates row inputs from dataset artifacts when possible. Server events redact row snapshots and reflection prompts by default, but bundled `run-gepa` includes reflection responses in the event stream.
+
 DSPy GEPA example for customers already on DSPy:
 
 ```python

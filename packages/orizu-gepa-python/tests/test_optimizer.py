@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from orizu_gepa.client import OrizuClient, OrizuEventSink
+from orizu_gepa.local_log import LocalOptimizationLogger
 from orizu_gepa.optimizer import (
     Budget,
     DatasetRow,
@@ -172,10 +176,79 @@ class OptimizerTests(unittest.TestCase):
 
         reflection = next(event for event in sink.events if event["event_type"] == "reflection_completed")
         self.assertNotIn("prompt", reflection["payload"])
-        self.assertNotIn("response", reflection["payload"])
         self.assertTrue(reflection["payload"]["prompt_redacted"])
-        self.assertTrue(reflection["payload"]["response_redacted"])
         self.assertIn("prompt_sha256", reflection["payload"])
+        self.assertEqual(reflection["payload"]["response"], "improved because customer-input")
+
+    def test_writes_full_local_optimization_logs_when_requested(self):
+        sink = FakeSink()
+        trainset = [DatasetRow("train-1", {"secret": "customer-input", "expected": "improved"})]
+        valset = [DatasetRow("val-1", {"secret": "validation-input", "expected": "improved"})]
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == row.row["expected"] else 0.0
+            return RunnerCallResult(model_response={"score": score, "feedback": f"secret={row.row['secret']}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt includes customer-input",
+                response="improved because customer-input",
+                candidate_text="improved",
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger = LocalOptimizationLogger.create(temp_dir, "run-1")
+            logger.write_context(
+                project="core/evals",
+                run_id="run-1",
+                args={"max_iterations": 1},
+                prompt_context=self.prompt,
+                scorer_context=self.scorer,
+                trainset=trainset,
+                valset=valset,
+                metadata={"mode": "text-candidate"},
+            )
+
+            result = optimize_loaded_text_candidate(
+                run_id="run-1",
+                prompt_context=self.prompt,
+                scorer_context=self.scorer,
+                trainset=trainset,
+                valset=valset,
+                candidate_runner=candidate_runner,
+                scorer_runner=scorer_runner,
+                reflector=reflector,
+                event_sink=sink,
+                config=TextGepaConfig(max_iterations=1, minibatch_size=1),
+                local_logger=logger,
+            )
+            logger.write_result(result)
+
+            log_dir = Path(temp_dir) / "run-1"
+            reflections = [
+                json.loads(line)
+                for line in (log_dir / "reflections.jsonl").read_text().splitlines()
+            ]
+            evaluations = [
+                json.loads(line)
+                for line in (log_dir / "evaluations.jsonl").read_text().splitlines()
+            ]
+            result_json = json.loads((log_dir / "result.json").read_text())
+            train_rows = json.loads((log_dir / "trainset.json").read_text())["rows"]
+
+        self.assertEqual(reflections[0]["prompt"], "reflection prompt includes customer-input")
+        self.assertEqual(reflections[0]["response"], "improved because customer-input")
+        self.assertIn(
+            {"id": "train-1", "row": {"secret": "customer-input", "expected": "improved"}},
+            train_rows,
+        )
+        self.assertTrue(any(item["row"]["secret"] == "customer-input" for item in evaluations))
+        self.assertTrue(any(item["feedback"] == "secret=validation-input" for item in evaluations))
+        self.assertEqual(result_json["optimization_run_id"], "run-1")
+        self.assertEqual(result_json["best_candidate_id"], result.best_candidate_id)
 
     def test_lower_is_better_acceptance_and_frontier(self):
         sink = FakeSink()

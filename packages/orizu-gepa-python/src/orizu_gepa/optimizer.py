@@ -658,6 +658,7 @@ def optimize_loaded_text_candidate(
     reflector: Reflector,
     event_sink: EventSink,
     config: TextGepaConfig,
+    local_logger: Any | None = None,
 ) -> TextGepaResult:
     seed_text = prompt_context.body or ""
     budget = Budget.from_config(config)
@@ -709,6 +710,14 @@ def optimize_loaded_text_candidate(
             budget=budget,
             evaluation_cache=evaluation_cache,
         )
+        if local_logger is not None:
+            local_logger.append_evaluations(
+                stage="seed_val_set",
+                split="validation",
+                iteration=None,
+                candidate_id="seed",
+                results=seed_results,
+            )
         if not _completed_all_rows(seed_results, valset):
             raise RuntimeError("Budget exhausted before seed validation completed")
         budget.used_full_evals += 1
@@ -804,6 +813,14 @@ def optimize_loaded_text_candidate(
                 budget=budget,
                 evaluation_cache=evaluation_cache,
             )
+            if local_logger is not None:
+                local_logger.append_evaluations(
+                    stage="parent_minibatch",
+                    split="train",
+                    iteration=iteration,
+                    candidate_id=parent_candidate_id,
+                    results=parent_results,
+                )
             if not _completed_all_rows(parent_results, minibatch):
                 event_sink.log_event(
                     "budget_exhausted",
@@ -852,11 +869,21 @@ def optimize_loaded_text_candidate(
             child_text = reflection.candidate_text
             candidate_text_by_id[child_id] = child_text
             budget.used_candidate_proposals += 1
+            if local_logger is not None:
+                local_logger.append_reflection(
+                    iteration=iteration,
+                    parent_candidate_id=parent_candidate_id,
+                    child_candidate_id=child_id,
+                    row_ids=[row.id for row in minibatch],
+                    prompt=reflection.prompt,
+                    response=reflection.response,
+                    candidate_text=reflection.candidate_text,
+                )
             event_sink.log_event(
                 "reflection_completed",
                 {
                     **_text_log_fields("prompt", reflection.prompt, include_text=config.log_row_snapshots),
-                    **_text_log_fields("response", reflection.response, include_text=config.log_row_snapshots),
+                    "response": reflection.response,
                     "child_candidate_id": child_id,
                     "candidate_text": child_text,
                 },
@@ -908,6 +935,15 @@ def optimize_loaded_text_candidate(
                 budget=budget,
                 evaluation_cache=evaluation_cache,
             )
+            if local_logger is not None:
+                local_logger.append_evaluations(
+                    stage="child_minibatch",
+                    split="train",
+                    iteration=iteration,
+                    candidate_id=child_id,
+                    parent_candidate_id=parent_candidate_id,
+                    results=child_results,
+                )
             if not _completed_all_rows(child_results, minibatch):
                 event_sink.log_event(
                     "budget_exhausted",
@@ -981,6 +1017,15 @@ def optimize_loaded_text_candidate(
                     budget=budget,
                     evaluation_cache=evaluation_cache,
                 )
+                if local_logger is not None:
+                    local_logger.append_evaluations(
+                        stage="child_val_set",
+                        split="validation",
+                        iteration=iteration,
+                        candidate_id=child_id,
+                        parent_candidate_id=parent_candidate_id,
+                        results=child_val_results,
+                    )
                 if not _completed_all_rows(child_val_results, valset):
                     event_sink.log_event(
                         "budget_exhausted",

@@ -260,7 +260,7 @@ function printUsage() {
 }
 
 function printOptimizationUsage() {
-  printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--json]`)
+  printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--log-dir logs]\n  orizu optimizations export <run-id> [--out <path>] [--json]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--json]`)
 }
 
 let cliArgs = process.argv.slice(2)
@@ -2229,6 +2229,32 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
   }
 }
 
+async function exportOptimizationRun() {
+  const runId = getPositionalArg(2) || getArg('--run-id')
+  const outPathArg = getArg('--out')
+
+  if (!runId) {
+    throw new Error('Usage: orizu optimizations export <run-id> [--out <path>] [--json]')
+  }
+
+  const response = await authedFetch(`/api/cli/optimization-runs/${encodeURIComponent(runId)}/export`)
+  if (!response.ok) {
+    throw new Error(`Failed to export optimization run: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Optimization export')
+  if (hasJsonFlag() && !outPathArg) {
+    printJson(data)
+    return
+  }
+
+  const filename = outPathArg
+    ? expandHomePath(outPathArg)
+    : `${runId}.optimization.json`
+  writeTextFileEnsuringDir(filename, `${JSON.stringify(data, null, 2)}\n`)
+  printLine(`Saved optimization export to ${sanitizeTerminalText(filename)}`)
+}
+
 function removeFlagWithValue(args: string[], flag: string): string[] {
   const filtered: string[] = []
   for (let index = 0; index < args.length; index += 1) {
@@ -4186,6 +4212,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'optimizations' && subcommand === 'run-gepa') {
     await runGepaOptimization()
+    return
+  }
+
+  if (command === 'optimizations' && subcommand === 'export') {
+    await exportOptimizationRun()
     return
   }
 

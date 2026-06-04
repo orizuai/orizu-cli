@@ -129,11 +129,15 @@ Local execution workflow:
 1. Package the candidate execution as an Orizu runner.
 2. Register validated row/set scorers.
 3. Run the bundled GEPA-style optimizer or a custom optimizer against the scorer set.
-4. Diff before/after on a held-out set; ship if it holds.
+4. Inspect `logs/<optimization_run_id>` for full local optimization traces, especially `evaluations.jsonl`, `reflections.jsonl`, `events.jsonl`, and `result.json`.
+5. If the local log is unavailable or the run happened remotely, use `orizu optimizations export <run-id> --out <run-id>.optimization.json`.
+6. Diff before/after on a held-out set; ship if it holds.
 
 Bundled `run-gepa` reflection behavior:
 - The reflective LM's final text is used verbatim as the next candidate prompt. It should return only the complete updated prompt body, not analysis, labels, XML tags, or markdown fences.
 - Keep provider-native reasoning controls separate from the prompt text with `--reflection-provider-settings <json|@file>`.
+- `run-gepa` writes complete local logs by default under `logs/<optimization_run_id>`; override with `--log-dir <dir>` or disable with `--no-local-log`.
+- Server optimization events redact row snapshots and reflection prompts by default; the local log keeps full row inputs, outputs, scores, feedback, reflection prompts, and reflection responses for later agent analysis.
 - OpenAI example: `--reflection-model openai/gpt-5 --reflection-provider-settings '{"reasoning":{"effort":"medium","summary":"auto"}}'`.
 - Anthropic example: `--reflection-model anthropic/claude-opus-4-7 --reflection-provider-settings '{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}'`.
 
@@ -161,4 +165,5 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - `--output-schema` JSON Schema validation surface is restricted to `type`, `required`, `properties`, `items`, `enum`.
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.
 - Prompt control-plane commands should use ids for dataset versions, split sets, prompt versions, scorer versions, runner versions, optimizer versions, and optimization runs.
+- Optimization exports default to `<run-id>.optimization.json`; prefer the existing `logs/<run-id>` directory from `run-gepa` when it is available because it contains the full local trace without needing server rehydration.
 - Use `orizu prompts comments <prompt-id-or-name> --project <team>/<project> [--label <label> | --version <id>] [--json]` to list prompt-level discussion threads with open/resolved status, selected text/line context, and replies.

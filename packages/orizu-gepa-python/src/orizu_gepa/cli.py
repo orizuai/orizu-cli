@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import OrizuClient, OrizuEventSink
+from .local_log import LocalOptimizationLogger
 from .optimizer import TextGepaConfig, optimize_loaded_text_candidate
 from .reflection import reflect_with_provider
 from .runner import make_candidate_runner, make_scorer_runner
@@ -74,6 +75,8 @@ def main() -> None:
     parser.add_argument("--auto-promote", action="store_true")
     parser.add_argument("--promotion-label")
     parser.add_argument("--log-row-snapshots", action="store_true")
+    parser.add_argument("--log-dir", default="logs")
+    parser.add_argument("--no-local-log", action="store_true")
     parser.add_argument("--metadata", default="{}")
     args = parser.parse_args()
 
@@ -123,6 +126,19 @@ def main() -> None:
         split=args.val_split,
     )
 
+    run_metadata = {
+        **metadata,
+        "optimizer_package": "orizu-gepa-python",
+        "optimizer_family": "gepa",
+        "mode": "text-candidate",
+        "inference_lm": prompt_context.provider_settings.get("model"),
+        "reflection_lm": config.reflection_model,
+        "scorer_lm": scorer_context.provider_settings.get("model"),
+        "dataset_size": len(trainset) + len(valset),
+        "train_count": len(trainset),
+        "validation_count": len(valset),
+    }
+
     run_id = client.start_run(
         project=args.project,
         optimizer_version_id=args.optimizer_version_id,
@@ -132,20 +148,28 @@ def main() -> None:
         split_set_id=args.split_set_id,
         train_split=args.train_split,
         validation_split=args.val_split,
-        metadata={
-            **metadata,
-            "optimizer_package": "orizu-gepa-python",
-            "optimizer_family": "gepa",
-            "mode": "text-candidate",
-            "inference_lm": prompt_context.provider_settings.get("model"),
-            "reflection_lm": config.reflection_model,
-            "scorer_lm": scorer_context.provider_settings.get("model"),
-            "dataset_size": len(trainset) + len(valset),
-            "train_count": len(trainset),
-            "validation_count": len(valset),
-        },
+        metadata=run_metadata,
     )
     print(f"[orizu-gepa] started optimization run {run_id}", flush=True)
+
+    local_logger = None
+    if not args.no_local_log:
+        local_logger = LocalOptimizationLogger.create(args.log_dir, run_id)
+        local_logger.write_context(
+            project=args.project,
+            run_id=run_id,
+            args={
+                key: value
+                for key, value in vars(args).items()
+                if key not in {"metadata"}
+            },
+            prompt_context=prompt_context,
+            scorer_context=scorer_context,
+            trainset=trainset,
+            valset=valset,
+            metadata=run_metadata,
+        )
+        print(f"[orizu-gepa] local log: {local_logger.path}", flush=True)
 
     result = optimize_loaded_text_candidate(
         run_id=run_id,
@@ -156,9 +180,17 @@ def main() -> None:
         candidate_runner=make_candidate_runner(Path(args.candidate_runner_dir), run_id),
         scorer_runner=make_scorer_runner(Path(args.scorer_runner_dir), run_id),
         reflector=reflect_with_provider,
-        event_sink=OrizuEventSink(client, run_id, fail_on_log_error=config.fail_on_log_error),
+        event_sink=OrizuEventSink(
+            client,
+            run_id,
+            fail_on_log_error=config.fail_on_log_error,
+            local_logger=local_logger,
+        ),
         config=config,
+        local_logger=local_logger,
     )
+    if local_logger is not None:
+        local_logger.write_result(result)
     print(json.dumps({
         "optimization_run_id": result.run_id,
         "best_candidate_id": result.best_candidate_id,
@@ -166,6 +198,7 @@ def main() -> None:
         "seed_score": result.seed_score,
         "promoted_prompt_version_id": result.promoted_prompt_version_id,
         "budget": result.budget.to_payload(),
+        "local_log_dir": local_logger.path if local_logger is not None else None,
     }))
 
 

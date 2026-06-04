@@ -189,6 +189,20 @@ Defaults:
 
 For prompts, judges, runners, run submission, optimizer artifacts, live event logging, and accepted-candidate promotion, read `prompt-control-plane.md`.
 
+Optimization trace commands:
+
+```bash
+orizu optimizations run-gepa ... [--log-dir logs] [--no-local-log]
+orizu optimizations export <optimization-run-id> --out ./optimization.json
+orizu optimizations export <optimization-run-id> --json
+```
+
+Behavior:
+- `run-gepa` writes a complete local trace under `logs/<optimization_run_id>` by default.
+- The local trace is the best artifact for coding-agent analysis because it includes full rows, outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, candidate text, and `result.json`.
+- `optimizations export` writes a portable JSON artifact from server data when the local log is unavailable or the run happened elsewhere.
+- Server optimization events redact row snapshots and reflection prompts by default; export rehydrates row inputs from dataset artifacts when possible and includes bundled `run-gepa` reflection responses.
+
 ## End-to-End Flows
 
 ### New Team to Export

@@ -20,9 +20,11 @@ Use this reference for the Phase 0 prompt, judge, scorer, runner, score, run, an
 5. Register scorers after their backing prompt/runner exists, then bind headline/tracked scorers to prompts when the UI should show those metrics.
 6. Use `runners exec` to prove the runner contract locally before submitting runs or score runs.
 7. For common text-candidate optimization, prefer `orizu optimizations run-gepa`; it starts the run and logs events for you.
-8. For custom optimizers, start an optimization run before local execution, then stream events into that run.
-9. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
-10. Promote only accepted candidates; rejected candidates stay in optimization events.
+8. After `run-gepa`, inspect `logs/<optimization_run_id>` first; it is the complete local trace for coding-agent analysis.
+9. Use `orizu optimizations export <run-id> --out <run-id>.optimization.json` when the local log is missing or the run happened elsewhere.
+10. For custom optimizers, start an optimization run before local execution, then stream events into that run.
+11. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
+12. Promote only accepted candidates; rejected candidates stay in optimization events.
 
 Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. API keys to Orizu.
 
@@ -30,6 +32,7 @@ Execution/privacy defaults:
 
 - Runner subprocesses receive only the file-contract paths plus a small allowlist of provider/runtime environment variables. Orizu API tokens are not passed into runner processes.
 - `orizu optimizations run-gepa` redacts dataset row payloads and reflection text in logged events by default. Use `--log-row-snapshots` only when the customer explicitly wants raw row and prompt text in the optimization event stream.
+- `run-gepa` still writes complete local traces under `logs/<optimization_run_id>` by default. Treat those logs as sensitive: they include row inputs, model outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, and candidate text.
 - Runner artifacts, runner output, score result uploads, and optimization event payloads are size-capped. If a run needs larger observability payloads, store the large artifact separately and log a pointer.
 
 ## Artifact Contracts
@@ -471,6 +474,7 @@ orizu --local optimizations run-gepa \
   --split-set-id <split-set-id> \
   --train-split train \
   --val-split validation \
+  --log-dir ./logs \
   --budget light \
   --max-iterations 3 \
   --minibatch-size 3
@@ -486,6 +490,36 @@ Useful GEPA flags:
 - `--disable-evaluation-cache` turns off candidate/row/scorer cache reuse.
 - `--auto-promote --promotion-label <label>` promotes the best candidate at the end.
 - `--log-row-snapshots` includes raw row and reflection text in events; leave off by default.
+- `--log-dir <dir>` controls the local log root; default is `logs`.
+- `--no-local-log` disables local trace files. Use this only when the environment must not persist raw rows or reflection context.
+
+Local `run-gepa` logs:
+
+- The optimizer prints `[orizu-gepa] local log: <path>` after the run starts.
+- The default path is `logs/<optimization_run_id>`.
+- `run.json` stores run metadata, CLI args, and project/run ids.
+- `prompt_context.json` and `scorer_context.json` store the candidate and scorer prompt contexts.
+- `trainset.json` and `valset.json` store the full split row payloads.
+- `events.jsonl` mirrors the optimization event stream, including redacted server payload fields where applicable.
+- `evaluations.jsonl` stores each row evaluation with row input, output, score, feedback, raw/scorer responses, latency, tokens, cost, error, and cache status.
+- `reflections.jsonl` stores each reflection prompt, response, child candidate text, parent/child ids, and minibatch row ids.
+- `result.json` stores best candidate id/text, best score, seed score, promoted prompt version id, and final budget state.
+
+For coding-agent insight generation, prefer reading the local log files in this order:
+
+1. `result.json` for the final winner and aggregate outcome.
+2. `evaluations.jsonl` to cluster failures, improvements, regressions, and scorer feedback by row.
+3. `reflections.jsonl` to understand why each child candidate was proposed.
+4. `events.jsonl` to reconstruct iteration order, Pareto updates, decisions, pauses, and promotions.
+
+Optimization export:
+
+```bash
+orizu --local optimizations export <optimization-run-id> \
+  --out ./<optimization-run-id>.optimization.json
+```
+
+Use export when the local log is unavailable, the run happened on another machine, or a coding agent needs a portable single JSON artifact. The export fetches all optimization events, derives seed vs best, Pareto frontier, score-over-time, candidates, iterations, minibatch rows, and validation rows, and rehydrates row inputs from the dataset version artifact when possible. Server events may not contain row snapshots or reflection prompts unless the run used `--log-row-snapshots`; reflection responses are included for bundled `run-gepa` runs.
 
 Lifecycle controls:
 
