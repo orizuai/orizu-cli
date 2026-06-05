@@ -2020,6 +2020,9 @@ async function createAppFromFile() {
     }
     const data = await parseJsonResponse(response, 'App create');
     printLine(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`);
+    if (data.app.url) {
+        printLine(`View app: ${formatTerminalLink(data.app.url)}`);
+    }
     if (data.warnings?.length) {
         printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`);
     }
