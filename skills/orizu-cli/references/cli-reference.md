@@ -90,6 +90,13 @@ Link dataset:
 orizu apps link-dataset --app <appId> --dataset <datasetId>
 ```
 
+Export app source:
+
+```bash
+orizu apps export --app <appId> --project my-team/quality-eval --out ./apps/LabelingApp.tsx
+orizu apps export --app <appId> --version 2
+```
+
 ### Datasets
 
 Row identity contract:

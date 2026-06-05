@@ -174,6 +174,10 @@ orizu logout
     <td><code>orizu apps link-dataset --app &lt;appId&gt; --dataset &lt;datasetId&gt;</code></td>
   </tr>
   <tr>
+    <td>Export app source</td>
+    <td><code>orizu apps export --app &lt;appId&gt; --project ops-eval/support-qa --out ./apps/SupportLabeler.tsx</code></td>
+  </tr>
+  <tr>
     <td colspan="2"><strong>Tasks</strong></td>
   </tr>
   <tr>

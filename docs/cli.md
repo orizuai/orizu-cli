@@ -277,6 +277,15 @@ Notes:
 - `--json` returns the full app detail payload for automation or inspection.
 - If `--project` is omitted, the CLI resolves the app from the selected project context.
 
+### Export app source
+
+```bash
+orizu apps export --app <appId> --project my-team/quality-eval --out ./apps/LabelingApp.tsx
+orizu apps export --app <appId> --version 2
+```
+
+Exports the stored `.tsx` source for the app's current version by default. Use `--version <n>` to inspect an older implementation. When `--out` is omitted, the CLI writes `<app-name>.v<version>.tsx` in the current directory.
+
 ## Datasets
 
 Canonical contract reference:
