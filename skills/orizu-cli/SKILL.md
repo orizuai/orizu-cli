@@ -98,6 +98,8 @@ Judge construction details are still useful when authoring the evaluator itself.
 
 A judge is the evaluator prompt artifact. A scorer is the metric contract that names what score is being produced and how it should be displayed, compared, and used in optimizations. For UI-visible prompt performance, register a scorer and submit score runs; do not rely only on raw `runs submit`.
 
+Set scorers are aggregate metric contracts. Use `orizu scorers exec` for builtin set metrics such as Cohen's kappa, accuracy, precision, recall, and F1; it consumes subject results or dependency row-scorer results, computes one aggregate, stores row evidence, and submits a canonical score run by default. If you already computed an aggregate locally, use `orizu scores submit --aggregate` with explicit `scoreValue`, `diagnostics`, `feedbackSummary`, and optional `rowEvidence`. `runners exec --scorer-version` remains a low-level row-runner compatibility command. Use a row-mode scorer, not a set scorer, for GEPA reflection because reflection needs per-row feedback.
+
 Principles:
 - **Code assertions first.** If a failure is a rule (keyword present, tool called, format valid), write a code check. Fast, free, deterministic.
 - **LLM-as-a-judge for nuanced criteria only.** Always validate against your human labels.

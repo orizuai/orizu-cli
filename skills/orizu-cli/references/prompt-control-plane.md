@@ -162,7 +162,54 @@ Prompt-runner row scorer:
 }
 ```
 
-Set scorers aggregate over a set and can be used for selection or tracked reporting. They cannot be used as GEPA reflection scorers because reflection needs per-row feedback.
+Set scorers aggregate over a set and can be used for headline, selection, or tracked reporting. They cannot be used as GEPA reflection scorers because reflection needs per-row feedback.
+
+Use `orizu scorers exec` for scorer-level evaluation. Builtin set scorers run server-side over dataset rows plus subject results or dependency score-run evidence, then submit one canonical `score_runs` row by default. `runners exec --scorer-version` remains a low-level compatibility command that invokes a runner once per dataset row and writes JSONL row results.
+
+Set scorer example for judge-vs-gold Cohen's kappa:
+
+```json
+{
+  "name": "staged-actions-judge-kappa",
+  "description": "Measures batch-level agreement between the staged-actions judge and human labels.",
+  "mode": "set",
+  "implementation_kind": "builtin_metric",
+  "builtin_metric": "cohens_kappa",
+  "metric_key": "cohens_kappa",
+  "metric_label": "Cohen's kappa",
+  "score_format": "number",
+  "score_min": -1,
+  "score_max": 1,
+  "higher_is_better": true,
+  "requires_dataset": true,
+  "dependencies": [
+    {
+      "kind": "row_scorer",
+      "alias": "judge",
+      "scorer_version_id": "row-scorer-version-uuid"
+    }
+  ],
+  "input_mapping": {
+    "gold_label": "$row.gold_label",
+    "predicted_label": "$dependencies.judge.model_response.label"
+  },
+  "builtin_metric_config": {
+    "positive_class": "flag"
+  },
+  "dataset_requirements": {
+    "required_fields": ["gold_label"]
+  },
+  "diagnostics_schema": {
+    "sample_size": "number",
+    "accuracy": "number",
+    "confusion_matrix": "object",
+    "flag_recall": "number",
+    "flag_precision": "number",
+    "ok_recall": "number",
+    "ok_precision": "number"
+  }
+}
+```
 
 ### Optimizer Directory
 
@@ -360,6 +407,90 @@ orizu --local scores submit ./scores.jsonl \
   --split validation \
   --json
 ```
+
+For row scorer files, `.jsonl`, `.jsonl.gz`, or `.json` arrays are normalized into `resultsJsonl` and the server computes the mean unless the request body supplies an explicit score. Row objects may use `row_score`, `rowScore`, `score`, `judge_score`, or `passed`.
+
+```bash
+orizu --local scorers exec \
+  --project <team>/<project> \
+  --scorer-version <set-scorer-version-id> \
+  --subject-version <prompt-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation \
+  --dependency-score-run judge=<row-score-run-id> \
+  --out ./set-score.json
+```
+
+For builtin set scorers, `scorers exec` computes the aggregate and submits it by default. Use `--no-submit` to only write the aggregate object. Use `--dependency-results judge=./judge-results.jsonl` when the row-scorer evidence is local instead of already stored in a score run; use `--subject-results ./outputs.jsonl` for direct subject-output aggregation. Current builtin metrics are `cohens_kappa`, `accuracy`, `precision`, `recall`, and `f1`.
+
+If you already computed the aggregate locally, submit the aggregate object explicitly:
+
+```bash
+orizu --local scores submit ./set-score.json \
+  --aggregate \
+  --project <team>/<project> \
+  --scorer-version <set-scorer-version-id> \
+  --subject-version <prompt-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation
+```
+
+Aggregate JSON shape:
+
+```json
+{
+  "scorerVersionId": "set-scorer-version-uuid",
+  "subjectPromptVersionId": "prompt-version-uuid",
+  "datasetVersionId": "dataset-version-uuid",
+  "splitSetId": "split-set-uuid",
+  "splitName": "validation",
+  "scoreValue": 0.42,
+  "rowCount": 15,
+  "scoredRowCount": 15,
+  "diagnostics": {
+    "sample_size": 15,
+    "accuracy": 0.73,
+    "confusion_matrix": {
+      "tp": 5,
+      "fn": 1,
+      "fp": 3,
+      "tn": 6,
+      "positive_class": "flag"
+    },
+    "flag_recall": 0.83,
+    "flag_precision": 0.63,
+    "ok_recall": 0.67,
+    "ok_precision": 0.86
+  },
+  "feedbackSummary": "Kappa is positive but noisy on n=15; misses are concentrated in borderline staged-action rows.",
+  "rowEvidence": [
+    {
+      "row_id": "row-1",
+      "gold_label": "flag",
+      "predicted_label": "flag",
+      "row_score": 1
+    },
+    {
+      "row_id": "row-2",
+      "gold_label": "ok",
+      "predicted_label": "flag",
+      "row_score": 0
+    }
+  ],
+  "dependencyScoreRunIds": [
+    {
+      "alias": "judge",
+      "scoreRunId": "row-score-run-uuid"
+    }
+  ]
+}
+```
+
+For optimization candidate set scores, replace `subjectPromptVersionId` with `optimizationRunId` plus `candidateId`.
+
+When `--aggregate` is omitted, the CLI still detects aggregate-looking JSON objects and preserves them with a warning. Use `--aggregate` in automation so intent is unambiguous.
 
 Submit score results for an optimization candidate:
 
@@ -691,7 +822,8 @@ orizu --local optimizations finish "$OPTIMIZATION_RUN_ID" \
 - Scorers are first-class metric contracts. A score is meaningful as `(scorer version, subject or candidate, dataset version, split set, split)`.
 - GEPA reflection scorers must be row-mode scorers so reflection has per-row feedback.
 - Dataset splits are tied to a specific dataset version.
-- `runners exec` writes row results locally; `runs submit` uploads and aggregates them.
-- `scores submit` is the preferred path for UI-visible prompt and optimization candidate performance.
+- `runners exec` writes runner-level row results locally; `runs submit` uploads and aggregates prompt-run results.
+- `scorers exec` is the preferred path for scorer evaluation, especially builtin set scorers that aggregate dependency evidence.
+- `scores submit --aggregate` is the supported path for precomputed set-score objects; `scores submit` without `--aggregate` remains the row-result path.
 - `optimizations start` creates the live run row up front so local scripts can stream events immediately.
 - Rejected optimizer candidates should remain in the event stream. Only accepted candidates should be promoted.

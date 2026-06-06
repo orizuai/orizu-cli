@@ -48,10 +48,10 @@ If you don't have a validated judge, stop. Optimizing against an unvalidated jud
 Use the prompt control plane when you want runs, candidates, score charts, Pareto/frontier views, and promotions in Orizu:
 
 1. Push the candidate runner and prompt/judge prompt.
-2. Register a row scorer. GEPA reflection requires row-level feedback.
+2. Register a row scorer for reflection. GEPA reflection requires row-level feedback.
 3. Snapshot a dataset version and create a train/validation split set.
 4. Use `orizu optimizations run-gepa` for the common text-candidate case, or `orizu optimizations start` plus event logging for a custom optimizer.
-5. Submit any additional tracked scorer results with `orizu scores submit`.
+5. Use set scorers for selection/tracked reporting when the meaningful metric is batch-level; execute builtin set scorers with `orizu scorers exec` or submit precomputed aggregates with `orizu scores submit --aggregate`.
 6. Promote only candidates that passed validation.
 7. Write and attach an optimization report from the local logs or export artifact; see `optimization-reports.md`.
 
@@ -107,7 +107,7 @@ If your real application is multi-step (retrieval + generation + tool use), buil
 
 ## Step 2: Register scorers
 
-For Orizu, register scorers with readable names, directionality, row/set mode, and dataset requirements. Row scorers should return numeric `score` and textual `feedback`; feedback is what GEPA reflection consumes.
+For Orizu, register scorers with readable names, directionality, row/set mode, and dataset requirements. Row scorers should return numeric `score` and textual `feedback`; feedback is what GEPA reflection consumes. Set scorers can be selection or tracked scorers, but they should not be used as reflection scorers.
 
 If using DSPy externally, a metric takes `(example, prediction, trace=None)` and returns a number. Wrap each validated judge:
 

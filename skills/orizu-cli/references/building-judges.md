@@ -15,6 +15,7 @@ Terminology:
 - A **judge** is the evaluator itself, often an LLM prompt plus runner.
 - A **scorer** is the metric contract stored in Orizu. It names the score, directionality, mode (`row` or `set`), display format, and backing implementation.
 - Row scorers return per-row scores and feedback. Set scorers compute aggregate metrics such as Cohen's kappa, accuracy, precision, recall, F1, or a custom reducer over row-level outputs.
+- Use `orizu scorers exec` for scorer-level evaluation. Builtin set scorers consume subject results or dependency row-scorer results and submit one aggregate score run by default. `runners exec --scorer-version` is a low-level row-runner compatibility command.
 
 ## Choosing the judge type
 
@@ -139,6 +140,43 @@ Run the validated judge over future outputs to score them. Wire it into:
 - Optimization loop as a metric (`optimization-with-gepa.md`)
 - Orizu scorers and score runs (`prompt-control-plane.md`) so prompt detail, changelog, scorer detail, and optimization surfaces show comparable performance.
 
+## Set scorers for judge-vs-gold agreement
+
+Use a set scorer when the meaningful metric is only defined over a batch, not one row. Cohen's kappa is the recommended headline for binary judge-vs-human agreement because it corrects for label imbalance and has a chance-agreement zero point.
+
+For a binary `ok` / `flag` judge:
+- Register the headline scorer as `mode: "set"`, `metric_key: "cohens_kappa"`, `score_format: "number"`, and `higher_is_better: true`.
+- Set `implementation_kind: "builtin_metric"`, `builtin_metric: "cohens_kappa"`, an explicit `input_mapping`, and `builtin_metric_config.positive_class: "flag"`.
+- Execute with `orizu scorers exec` when row-scorer results are available as a stored score run or local JSONL.
+- Include `accuracy`, `sample_size`, a confusion matrix, and per-class precision/recall in diagnostics.
+- Treat `flag` as the positive class by default, so `tp` means human=`flag` and judge=`flag`, `fn` means human=`flag` and judge=`ok`, `fp` means human=`ok` and judge=`flag`, and `tn` means human=`ok` and judge=`ok`.
+- Include `flag_recall` prominently because it answers whether the judge catches the failures humans care about.
+- On small validation sets, call out uncertainty in `feedbackSummary` rather than over-interpreting a single kappa point estimate.
+
+Recommended diagnostics shape:
+
+```json
+{
+  "sample_size": 15,
+  "accuracy": 0.73,
+  "confusion_matrix": {
+    "tp": 5,
+    "fn": 1,
+    "fp": 3,
+    "tn": 6,
+    "positive_class": "flag"
+  },
+  "flag_recall": 0.83,
+  "flag_precision": 0.63,
+  "ok_recall": 0.67,
+  "ok_precision": 0.86,
+  "class_balance": {
+    "human_flag": 6,
+    "human_ok": 9
+  }
+}
+```
+
 ## Saturation check
 
 If your judge eventually reports 100% pass on a test set, the eval is **saturated** — it's no longer finding failures. That's not victory; it means you need harder cases. Sample fresh production traces, look for ones the current system handles ambiguously, and add them.
@@ -162,8 +200,8 @@ For Orizu-managed workflows:
 1. Push the runner with `orizu runners push`.
 2. Push the LLM judge prompt with `orizu judges push` when applicable.
 3. Register the scorer with `orizu scorers register`.
-4. Execute with `orizu runners exec --scorer-version ...`.
-5. Submit results with `orizu scores submit`.
+4. For row scorers, execute the scorer runner with `orizu runners exec --scorer-version ...` and submit row results with `orizu scores submit`.
+5. For builtin set scorers, execute with `orizu scorers exec`; for locally precomputed set scores, submit the aggregate object with `orizu scores submit --aggregate`.
 
 When you re-export labels (e.g. after annotating more data), re-run validation. Judges and scorers drift as the system and data drift; periodic revalidation catches it.
 

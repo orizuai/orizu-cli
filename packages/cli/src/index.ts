@@ -164,6 +164,12 @@ interface ScorerSummary {
   implementationKind: string
 }
 
+interface ScoreSubmitInput {
+  resultsJsonl?: string
+  aggregate?: Record<string, unknown>
+  aggregateWarning?: string
+}
+
 interface RunnerExecContext {
   prompt: {
     body: string | null
@@ -264,7 +270,7 @@ function printVersion() {
 }
 
 function printUsage() {
-  printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> --subject-version <prompt-version-id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu apps export [--app <appId>] [--project <team/project>] [--version <n>] [--out <path>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets readme set <datasetId|dataset-name> [--project <team/project>] (--readme-file <README.md> | --readme-text <markdown>) [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
+  printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scorers exec --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) --dataset-version <id> --split-set <id> --split <name> [--subject-results <jsonl>] [--dependency-score-run <alias=id>] [--dependency-results <alias=path>] [--no-submit] [--out <score.json>] [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) [--aggregate] [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu apps export [--app <appId>] [--project <team/project>] [--version <n>] [--out <path>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets readme set <datasetId|dataset-name> [--project <team/project>] (--readme-file <README.md> | --readme-text <markdown>) [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`)
   printPreviewUsage()
 }
 
@@ -2007,18 +2013,23 @@ async function submitScoreResults() {
   const candidateId = getArg('--candidate')
 
   if (!resultsPath || !scorerVersionId || (!subjectPromptVersionId && (!optimizationRunId || !candidateId))) {
-    throw new Error('Usage: orizu scores submit <results.jsonl|results.json> --project <team/project> --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) [--dataset-version <id> --split-set <id> --split <name>] [--json]')
+    throw new Error('Usage: orizu scores submit <results.jsonl|results.json> --project <team/project> --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) [--aggregate] [--dataset-version <id> --split-set <id> --split <name>] [--json]')
   }
 
   const resultBytes = readSourceBytes(resultsPath)
   const raw = resultsPath.endsWith('.gz')
     ? gunzipSync(resultBytes).toString('utf8')
     : resultBytes.toString('utf8')
-  const resultsJsonl = normalizeScoreResultsInput(resultsPath, raw)
+  const scoreInput = normalizeScoreResultsInput(resultsPath, raw, hasArg('--aggregate'))
+  if (scoreInput.aggregateWarning) {
+    console.warn(scoreInput.aggregateWarning)
+  }
+  const aggregatePayload = scoreInput.aggregate || {}
   const response = await authedFetch(`/api/cli/scores/submit?project=${encodeURIComponent(project)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      ...aggregatePayload,
       scorerVersionId,
       subjectPromptVersionId: subjectPromptVersionId || undefined,
       datasetVersionId: getArg('--dataset-version') || undefined,
@@ -2026,7 +2037,7 @@ async function submitScoreResults() {
       splitName: getArg('--split') || undefined,
       optimizationRunId: optimizationRunId || undefined,
       candidateId: candidateId || undefined,
-      resultsJsonl,
+      resultsJsonl: scoreInput.resultsJsonl,
     }),
   })
 
@@ -2052,20 +2063,156 @@ async function submitScoreResults() {
   )
 }
 
-function normalizeScoreResultsInput(sourcePath: string, raw: string): string {
+function looksLikeAggregateScoreObject(value: Record<string, unknown>): boolean {
+  return (
+    value.scoreValue !== undefined ||
+    value.score_value !== undefined ||
+    value.diagnostics !== undefined ||
+    value.feedbackSummary !== undefined ||
+    value.feedback_summary !== undefined ||
+    value.rowEvidence !== undefined ||
+    value.row_evidence !== undefined ||
+    value.dependencyScoreRunIds !== undefined ||
+    value.dependency_score_run_ids !== undefined
+  )
+}
+
+function numberFromUnknown(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  if (typeof value === 'boolean') return value ? 1 : 0
+  return null
+}
+
+function normalizeScoreResultsInput(sourcePath: string, raw: string, aggregateMode = false): ScoreSubmitInput {
   const logicalPath = sourcePath.endsWith('.gz') ? sourcePath.slice(0, -3) : sourcePath
-  if (!logicalPath.endsWith('.json')) return raw
+  if (!logicalPath.endsWith('.json')) return { resultsJsonl: raw }
 
   try {
     const parsed = JSON.parse(raw) as unknown
+    if (aggregateMode) {
+      if (!isRecord(parsed)) {
+        throw new Error('Aggregate score results JSON must be an object')
+      }
+      return { aggregate: parsed }
+    }
+    if (isRecord(parsed) && looksLikeAggregateScoreObject(parsed)) {
+      return {
+        aggregate: parsed,
+        aggregateWarning: 'Warning: aggregate score JSON detected. Pass --aggregate to make this explicit.',
+      }
+    }
     const rows = Array.isArray(parsed) ? parsed : [parsed]
     if (rows.some(row => !isRecord(row))) {
       throw new Error('JSON score results must be an object or an array of objects')
     }
-    return rows.map(row => JSON.stringify(row)).join('\n')
+    return { resultsJsonl: rows.map(row => JSON.stringify(row)).join('\n') }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     throw new Error(`Invalid score results JSON '${sourcePath}': ${message}`)
+  }
+}
+
+function readOptionalJsonlFile(pathArg: string | null): string | undefined {
+  if (!pathArg) return undefined
+  const bytes = readSourceBytes(pathArg)
+  return pathArg.endsWith('.gz')
+    ? gunzipSync(bytes).toString('utf8')
+    : bytes.toString('utf8')
+}
+
+function parseAliasAssignments(value: string | null): Record<string, string> {
+  const result: Record<string, string> = {}
+  if (!value) return result
+  for (const item of parseCommaSeparated(value)) {
+    const equalsIndex = item.indexOf('=')
+    if (equalsIndex <= 0 || equalsIndex === item.length - 1) {
+      throw new Error(`Expected alias assignment in form alias=value, got '${item}'`)
+    }
+    result[item.slice(0, equalsIndex)] = item.slice(equalsIndex + 1)
+  }
+  return result
+}
+
+function readDependencyResultAssignments(value: string | null): Record<string, string> | undefined {
+  const assignments = parseAliasAssignments(value)
+  const result: Record<string, string> = {}
+  for (const [alias, path] of Object.entries(assignments)) {
+    result[alias] = readOptionalJsonlFile(path) || ''
+  }
+  return Object.keys(result).length > 0 ? result : undefined
+}
+
+async function execScorer() {
+  const project = getArg('--project') || await resolveProjectSlug(null)
+  const scorerVersionId = getArg('--scorer-version')
+  const subjectPromptVersionId = getArg('--subject-version') || getArg('--prompt-version')
+  const optimizationRunId = getArg('--optimization-run')
+  const candidateId = getArg('--candidate')
+  const datasetVersionId = getArg('--dataset-version')
+  const splitSetId = getArg('--split-set')
+  const splitName = getArg('--split')
+  const outPath = getArg('--out')
+
+  if (
+    !scorerVersionId ||
+    (!subjectPromptVersionId && (!optimizationRunId || !candidateId)) ||
+    !datasetVersionId ||
+    !splitSetId ||
+    !splitName
+  ) {
+    throw new Error('Usage: orizu scorers exec --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) --dataset-version <id> --split-set <id> --split <name> [--subject-results <jsonl>] [--dependency-score-run <alias=id>] [--dependency-results <alias=path>] [--no-submit] [--out <score.json>] [--project <team/project>] [--json]')
+  }
+
+  const response = await authedFetch(`/api/cli/scorers/exec?project=${encodeURIComponent(project)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      scorerVersionId,
+      subjectPromptVersionId: subjectPromptVersionId || undefined,
+      optimizationRunId: optimizationRunId || undefined,
+      candidateId: candidateId || undefined,
+      datasetVersionId,
+      splitSetId,
+      splitName,
+      submit: !hasArg('--no-submit'),
+      reuseExisting: !hasArg('--no-reuse-existing'),
+      subjectResultsJsonl: readOptionalJsonlFile(getArg('--subject-results') || getArg('--outputs')),
+      dependencyScoreRunIds: parseAliasAssignments(getArg('--dependency-score-run') || getArg('--dependency-score-runs')),
+      dependencyResultsJsonl: readDependencyResultAssignments(getArg('--dependency-results')),
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to execute scorer: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Scorer exec')
+  if (outPath) {
+    writeFileSync(expandHomePath(outPath), `${JSON.stringify(data.scoreResult || data, null, 2)}\n`)
+  }
+  if (hasJsonFlag()) {
+    printJson(data)
+    return
+  }
+
+  const scoreRun = isRecord(data.scoreRun) ? data.scoreRun : null
+  const scoreResult = isRecord(data.scoreResult) ? data.scoreResult : null
+  const scoreValue = scoreRun
+    ? scoreRun.scoreValue
+    : scoreResult
+      ? scoreResult.scoreValue
+      : null
+  if (scoreRun && typeof scoreRun.id === 'string') {
+    printLine(`Executed scorer ${sanitizeTerminalText(scorerVersionId)} -> score ${sanitizeTerminalText(scoreRun.id)} (${formatPercent(numberFromUnknown(scoreValue))})`)
+  } else {
+    printLine(`Executed scorer ${sanitizeTerminalText(scorerVersionId)} (${formatPercent(numberFromUnknown(scoreValue))})`)
+  }
+  if (outPath) {
+    printLine(`Wrote scorer result to ${sanitizeTerminalText(outPath)}`)
   }
 }
 
@@ -4437,6 +4584,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'scorers' && subcommand === 'labels' && cliArgs[2] === 'set') {
     await setScorerLabel()
+    return
+  }
+
+  if (command === 'scorers' && subcommand === 'exec') {
+    await execScorer()
     return
   }
 

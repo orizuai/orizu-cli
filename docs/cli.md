@@ -551,6 +551,53 @@ Notes:
 - JSON exports return `{ metadata, responses }`
 - JSONL exports emit one canonical response record per line using the same response shape as JSON
 
+## Prompt Control Plane
+
+Prompt-control-plane commands use version ids for datasets, split sets, prompts, runners, scorers, optimizers, and score runs.
+
+### Scorers
+
+Register a scorer:
+
+```bash
+orizu scorers register \
+  --project my-team/quality-eval \
+  --name "Judge kappa" \
+  --manifest ./scorer.manifest.json \
+  --json
+```
+
+Execute a builtin set scorer such as Cohen's kappa:
+
+```bash
+orizu scorers exec \
+  --project my-team/quality-eval \
+  --scorer-version <set-scorer-version-id> \
+  --subject-version <prompt-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation \
+  --dependency-score-run judge=<row-score-run-id> \
+  --out ./set-score.json
+```
+
+`scorers exec` submits the score run by default. Add `--no-submit` to only write the aggregate object.
+
+Submit precomputed aggregate results:
+
+```bash
+orizu scores submit ./set-score.json \
+  --aggregate \
+  --project my-team/quality-eval \
+  --scorer-version <set-scorer-version-id> \
+  --subject-version <prompt-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation
+```
+
+Row-result files still use plain `scores submit <results.jsonl|results.json>`. `runners exec --scorer-version` remains available for low-level row scorer runner execution.
+
 ## End-to-End Examples
 
 ### Example 1: New Team -> Project -> Dataset -> App -> Task
