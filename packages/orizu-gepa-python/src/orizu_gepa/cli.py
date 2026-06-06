@@ -68,6 +68,7 @@ def main() -> None:
     parser.add_argument("--max-full-evals", type=positive_int)
     parser.add_argument("--reflection-model", default=TextGepaConfig.reflection_model)
     parser.add_argument("--reflection-temperature", type=float)
+    parser.add_argument("--reflection-max-tokens", type=positive_int)
     parser.add_argument("--reflection-prompt-template")
     parser.add_argument("--reflection-provider-settings")
     parser.add_argument("--objective", default=TextGepaConfig.objective)
@@ -94,6 +95,7 @@ def main() -> None:
         max_full_evals=args.max_full_evals,
         reflection_model=args.reflection_model,
         reflection_temperature=args.reflection_temperature,
+        reflection_max_tokens=args.reflection_max_tokens,
         reflection_prompt_template=read_text_arg(args.reflection_prompt_template),
         reflection_provider_settings=read_json_object_arg(args.reflection_provider_settings, "--reflection-provider-settings") or {},
         objective=args.objective,

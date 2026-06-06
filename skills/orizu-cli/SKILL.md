@@ -139,10 +139,12 @@ Local execution workflow:
 Bundled `run-gepa` reflection behavior:
 - The reflective LM's final text is used verbatim as the next candidate prompt. It should return only the complete updated prompt body, not analysis, labels, XML tags, or markdown fences.
 - Keep provider-native reasoning controls separate from the prompt text with `--reflection-provider-settings <json|@file>`.
+- Reflection max-token limits are explicit config, not implicit defaults. Use `--reflection-max-tokens <n>` when a provider requires an output cap; this maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`.
+- Anthropic native Messages reflection requires `max_tokens`, so `run-gepa` with an `anthropic/...` reflection model must receive `--reflection-max-tokens <n>` and should fail fast if it is omitted. OpenAI reflection may omit `max_output_tokens` unless the user explicitly wants a cap.
 - `run-gepa` writes complete local logs by default under `logs/<optimization_run_id>`; override with `--log-dir <dir>` or disable with `--no-local-log`.
 - Server optimization events redact row snapshots and reflection prompts by default; the local log keeps full row inputs, outputs, scores, feedback, reflection prompts, and reflection responses for later agent analysis.
 - OpenAI example: `--reflection-model openai/gpt-5 --reflection-provider-settings '{"reasoning":{"effort":"medium","summary":"auto"}}'`.
-- Anthropic example: `--reflection-model anthropic/claude-opus-4-7 --reflection-provider-settings '{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}'`.
+- Anthropic example: `--reflection-model anthropic/claude-opus-4-7 --reflection-max-tokens 4096 --reflection-provider-settings '{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}'`.
 
 Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DSPy context for customers already using it, and before/after comparison: **`references/optimization-with-gepa.md`**. Report-writing structure and interpretation guidance: **`references/optimization-reports.md`**.
 

@@ -62,12 +62,30 @@ def _add_temperature(payload: dict[str, Any], config: TextGepaConfig) -> dict[st
     return {**payload, "temperature": config.reflection_temperature}
 
 
+def _validate_reflection_max_tokens(value: int | None) -> None:
+    if value is not None and value <= 0:
+        raise RuntimeError("reflection_max_tokens must be positive")
+
+
+def _require_anthropic_reflection_max_tokens(value: int | None) -> int:
+    _validate_reflection_max_tokens(value)
+    if value is None:
+        raise RuntimeError("reflection_max_tokens is required for Anthropic reflection models")
+    return value
+
+
 def build_anthropic_reflection_payload(model: str, prompt: str, config: TextGepaConfig) -> dict[str, Any]:
-    payload = _merge_provider_settings({
+    max_tokens = _require_anthropic_reflection_max_tokens(config.reflection_max_tokens)
+    base_payload: dict[str, Any] = {
         "model": model,
-        "max_tokens": config.reflection_max_tokens,
+        "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": prompt}],
-    }, config.reflection_provider_settings, reserved_keys={"model", "max_tokens", "messages"})
+    }
+    payload = _merge_provider_settings(
+        base_payload,
+        config.reflection_provider_settings,
+        reserved_keys={"model", "max_tokens", "messages"},
+    )
     payload = _add_temperature(payload, config)
     if "temperature" in payload and "thinking" in payload:
         raise RuntimeError("reflection_temperature cannot be combined with Anthropic thinking")
@@ -75,11 +93,18 @@ def build_anthropic_reflection_payload(model: str, prompt: str, config: TextGepa
 
 
 def build_openai_reflection_payload(model: str, prompt: str, config: TextGepaConfig) -> dict[str, Any]:
-    payload = _merge_provider_settings({
+    _validate_reflection_max_tokens(config.reflection_max_tokens)
+    base_payload: dict[str, Any] = {
         "model": model,
         "input": [{"role": "user", "content": prompt}],
-        "max_output_tokens": config.reflection_max_tokens,
-    }, config.reflection_provider_settings, reserved_keys={"model", "input", "max_output_tokens"})
+    }
+    if config.reflection_max_tokens is not None:
+        base_payload["max_output_tokens"] = config.reflection_max_tokens
+    payload = _merge_provider_settings(
+        base_payload,
+        config.reflection_provider_settings,
+        reserved_keys={"model", "input", "max_output_tokens"},
+    )
     return _add_temperature(payload, config)
 
 

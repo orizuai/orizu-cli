@@ -179,7 +179,7 @@ class TextGepaConfig:
     max_candidate_proposals: int | None = None
     reflection_model: str = "anthropic/claude-opus-4-7"
     reflection_temperature: float | None = None
-    reflection_max_tokens: int = 4096
+    reflection_max_tokens: int | None = None
     reflection_prompt_template: str | None = None
     reflection_provider_settings: dict[str, Any] = field(default_factory=dict)
     objective: str = "Improve this text candidate to maximize evaluator score while preserving intended behavior."
@@ -420,37 +420,12 @@ def _aggregate_scores(
     }
 
 
-def _remove_dominated_frontier_candidates(
-    frontier_by_row_id: dict[str, set[str]],
-    aggregate_scores: dict[str, float],
-    higher_is_better: bool = True,
-) -> dict[str, set[str]]:
-    remaining = {
-        candidate_id
-        for candidate_ids in frontier_by_row_id.values()
-        for candidate_id in candidate_ids
-    }
-    for candidate_id in sorted(
-        remaining,
-        key=lambda value: aggregate_scores.get(value, 0.0),
-        reverse=not higher_is_better,
-    ):
-        owned_rows = [
-            row_id
-            for row_id, candidate_ids in frontier_by_row_id.items()
-            if candidate_id in candidate_ids
-        ]
-        if owned_rows and all(
-            any(other_id != candidate_id and other_id in remaining for other_id in frontier_by_row_id[row_id])
-            for row_id in owned_rows
-        ):
-            remaining.discard(candidate_id)
-
-    return {
-        row_id: {candidate_id for candidate_id in candidate_ids if candidate_id in remaining}
-        for row_id, candidate_ids in frontier_by_row_id.items()
-        if any(candidate_id in remaining for candidate_id in candidate_ids)
-    }
+def _frontier_counts(frontier_by_row_id: dict[str, set[str]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for candidate_ids in frontier_by_row_id.values():
+        for candidate_id in candidate_ids:
+            counts[candidate_id] = counts.get(candidate_id, 0) + 1
+    return counts
 
 
 def _select_parent_candidate_id(
@@ -479,15 +454,7 @@ def _select_parent_candidate_id(
             "candidate_selection_strategy must be one of: pareto, current_best, epsilon_greedy"
         )
 
-    frontier = _remove_dominated_frontier_candidates(
-        _frontier_by_row_id(val_scores_by_candidate, higher_is_better),
-        _aggregate_scores(val_scores_by_candidate),
-        higher_is_better,
-    )
-    frontier_counts: dict[str, int] = {}
-    for candidate_ids in frontier.values():
-        for candidate_id in candidate_ids:
-            frontier_counts[candidate_id] = frontier_counts.get(candidate_id, 0) + 1
+    frontier_counts = _frontier_counts(_frontier_by_row_id(val_scores_by_candidate, higher_is_better))
     sampling_list: list[str] = []
     for candidate_id, count in sorted(frontier_counts.items()):
         sampling_list.extend([candidate_id] * count)
@@ -505,15 +472,7 @@ def _parent_selection_payload(
     higher_is_better: bool = True,
 ) -> dict[str, Any]:
     aggregate_scores = _aggregate_scores(val_scores_by_candidate)
-    frontier = _remove_dominated_frontier_candidates(
-        _frontier_by_row_id(val_scores_by_candidate, higher_is_better),
-        aggregate_scores,
-        higher_is_better,
-    )
-    frontier_counts: dict[str, int] = {}
-    for candidate_ids in frontier.values():
-        for candidate_id in candidate_ids:
-            frontier_counts[candidate_id] = frontier_counts.get(candidate_id, 0) + 1
+    frontier_counts = _frontier_counts(_frontier_by_row_id(val_scores_by_candidate, higher_is_better))
     return {
         "strategy": config.candidate_selection_strategy,
         "selected_candidate_id": selected_candidate_id,
@@ -541,16 +500,23 @@ def _pareto_payload(
         }
 
     aggregate_scores = _aggregate_scores(val_scores_by_candidate)
-    best_candidate_id = max(aggregate_scores, key=aggregate_scores.get) if higher_is_better else min(aggregate_scores, key=aggregate_scores.get)
+    frontier_counts = _frontier_counts(raw_frontier)
+    if frontier_counts:
+        best_candidate_id = max(
+            sorted(frontier_counts),
+            key=lambda candidate_id: (
+                frontier_counts[candidate_id],
+                aggregate_scores.get(candidate_id, 0.0) if higher_is_better else -aggregate_scores.get(candidate_id, 0.0),
+            ),
+        )
+    else:
+        best_candidate_id = max(aggregate_scores, key=aggregate_scores.get) if higher_is_better else min(aggregate_scores, key=aggregate_scores.get)
     best_score = aggregate_scores[best_candidate_id]
     return best_candidate_id, best_score, {
         "frontier_by_row_id": frontier_by_row_id,
-        "frontier_candidate_ids": sorted({
-            candidate_id
-            for candidate_ids in raw_frontier.values()
-            for candidate_id in candidate_ids
-        }),
+        "frontier_candidate_ids": sorted(frontier_counts),
         "candidate_scores": aggregate_scores,
+        "frontier_counts": frontier_counts,
         "best_candidate_id": best_candidate_id,
         "best_score_mean": best_score,
         "best_candidate_preview": val_text_by_candidate[best_candidate_id][:1200],

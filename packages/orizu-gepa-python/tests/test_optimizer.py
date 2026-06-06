@@ -19,6 +19,8 @@ from orizu_gepa.optimizer import (
     build_reflection_prompt,
     extract_candidate_text,
     optimize_loaded_text_candidate,
+    _pareto_payload,
+    _parent_selection_payload,
     _sample_minibatch,
     _score_from_scorer,
     _select_parent_candidate_id,
@@ -343,7 +345,7 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(TextGepaConfig().minibatch_size, 3)
         self.assertEqual(len(minibatch), 3)
 
-    def test_pareto_parent_selection_samples_frontier_instead_of_current_best(self):
+    def test_pareto_parent_selection_samples_row_winners_instead_of_current_best(self):
         config = TextGepaConfig(seed=4, candidate_selection_strategy="pareto")
         val_scores = {
             "seed": {"val-1": 1.0, "val-2": 0.0, "val-3": 0.0},
@@ -358,6 +360,42 @@ class OptimizerTests(unittest.TestCase):
         )
 
         self.assertEqual(selected, "seed")
+
+    def test_pareto_parent_selection_reports_validation_row_win_weights(self):
+        val_scores = {
+            "seed": {"val-1": 1.0, "val-2": 0.0, "val-3": 0.0, "val-4": 0.0},
+            "candidate-a": {"val-1": 0.9, "val-2": 0.9, "val-3": 0.9, "val-4": 0.2},
+            "candidate-b": {"val-1": 0.1, "val-2": 0.1, "val-3": 0.1, "val-4": 0.8},
+            "candidate-no-wins": {"val-1": 0.0, "val-2": 0.0, "val-3": 0.0, "val-4": 0.0},
+        }
+        payload = _parent_selection_payload(
+            val_scores_by_candidate=val_scores,
+            selected_candidate_id="candidate-a",
+            best_candidate_id="candidate-a",
+            config=TextGepaConfig(candidate_selection_strategy="pareto"),
+        )
+
+        self.assertEqual(payload["frontier_counts"], {
+            "seed": 1,
+            "candidate-a": 2,
+            "candidate-b": 1,
+        })
+
+    def test_pareto_payload_reports_row_winners_and_best_by_most_rows(self):
+        val_scores = {
+            "seed": {"val-1": 1.0, "val-2": 0.6, "val-3": 0.6},
+            "candidate-a": {"val-1": 0.0, "val-2": 0.7, "val-3": 0.7},
+            "candidate-b": {"val-1": 0.5, "val-2": 0.5, "val-3": 0.5},
+        }
+        best_candidate_id, best_score, payload = _pareto_payload(
+            val_scores,
+            {candidate_id: candidate_id for candidate_id in val_scores},
+        )
+
+        self.assertEqual(best_candidate_id, "candidate-a")
+        self.assertEqual(best_score, sum(val_scores["candidate-a"].values()) / 3)
+        self.assertEqual(payload["frontier_candidate_ids"], ["candidate-a", "seed"])
+        self.assertEqual(payload["frontier_counts"], {"seed": 1, "candidate-a": 2})
 
     def test_reuses_cached_parent_minibatch_evaluations(self):
         sink = FakeSink()
@@ -624,12 +662,14 @@ class OptimizerTests(unittest.TestCase):
             "claude-opus-4-7",
             "prompt",
             TextGepaConfig(
+                reflection_max_tokens=2048,
                 reflection_provider_settings={
                     "thinking": {"type": "adaptive", "display": "omitted"},
                     "output_config": {"effort": "medium"},
                 },
             ),
         )
+        self.assertEqual(payload["max_tokens"], 2048)
         self.assertEqual(payload["thinking"], {"type": "adaptive", "display": "omitted"})
         self.assertEqual(payload["output_config"], {"effort": "medium"})
         self.assertNotIn("temperature", payload)
@@ -639,9 +679,32 @@ class OptimizerTests(unittest.TestCase):
                 "claude-opus-4-7",
                 "prompt",
                 TextGepaConfig(
+                    reflection_max_tokens=2048,
                     reflection_temperature=0.2,
                     reflection_provider_settings={"thinking": {"type": "adaptive"}},
                 ),
+            )
+
+    def test_anthropic_reflection_payload_requires_max_tokens(self):
+        with self.assertRaisesRegex(RuntimeError, "reflection_max_tokens is required"):
+            build_anthropic_reflection_payload(
+                "claude-opus-4-7",
+                "prompt",
+                TextGepaConfig(),
+            )
+
+    def test_reflection_payload_rejects_non_positive_max_tokens(self):
+        with self.assertRaisesRegex(RuntimeError, "reflection_max_tokens"):
+            build_anthropic_reflection_payload(
+                "claude-opus-4-7",
+                "prompt",
+                TextGepaConfig(reflection_max_tokens=0),
+            )
+        with self.assertRaisesRegex(RuntimeError, "reflection_max_tokens"):
+            build_openai_reflection_payload(
+                "gpt-5",
+                "prompt",
+                TextGepaConfig(reflection_max_tokens=-1),
             )
 
     def test_openai_reflection_payload_uses_reasoning_provider_settings(self):
@@ -656,8 +719,23 @@ class OptimizerTests(unittest.TestCase):
         )
         self.assertEqual(payload["model"], "gpt-5")
         self.assertEqual(payload["input"], [{"role": "user", "content": "prompt"}])
-        self.assertEqual(payload["max_output_tokens"], TextGepaConfig.reflection_max_tokens)
+        self.assertNotIn("max_output_tokens", payload)
         self.assertEqual(payload["reasoning"], {"effort": "medium", "summary": "auto"})
+
+    def test_reflection_payload_uses_explicit_max_tokens(self):
+        anthropic_payload = build_anthropic_reflection_payload(
+            "claude-opus-4-7",
+            "prompt",
+            TextGepaConfig(reflection_max_tokens=2048),
+        )
+        openai_payload = build_openai_reflection_payload(
+            "gpt-5",
+            "prompt",
+            TextGepaConfig(reflection_max_tokens=2048),
+        )
+
+        self.assertEqual(anthropic_payload["max_tokens"], 2048)
+        self.assertEqual(openai_payload["max_output_tokens"], 2048)
 
 
 if __name__ == "__main__":

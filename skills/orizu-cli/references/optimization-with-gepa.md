@@ -61,6 +61,7 @@ Reflection output contract:
 - The reflective LM's final text is used verbatim as the next candidate prompt.
 - The default reflection prompt asks for only the complete updated prompt body. Do not ask the model to wrap the candidate in markdown fences or tags; real prompts often contain those characters.
 - Put provider-native reasoning controls in `--reflection-provider-settings <json|@file>`, not in the prompt body. For OpenAI reasoning models, use a shape such as `{"reasoning":{"effort":"medium","summary":"auto"}}`. For Anthropic Claude models with thinking controls, use a shape such as `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`.
+- Reflection max-token limits are explicit. `--reflection-max-tokens <n>` maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI may omit it when no cap is desired.
 
 Full command syntax and event contracts: `prompt-control-plane.md`.
 
