@@ -74,6 +74,19 @@ orizu apps create \
   --output-schema ./schemas/output.json
 ```
 
+Preview locally before upload:
+
+```bash
+orizu apps preview \
+  --file ./apps/LabelingApp.tsx \
+  --input-schema ./schemas/input.json \
+  --output-schema ./schemas/output.json \
+  --sample-row ./fixtures/sample-row.json \
+  --screenshot ./preview.png
+```
+
+Use `--headed` for visible Chromium review and `--keep-open` to leave the browser running.
+
 Update from file:
 
 ```bash

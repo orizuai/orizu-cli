@@ -231,6 +231,24 @@ Requirements:
 - `input-schema` and `output-schema` are required JSON object files.
 - `--dataset` is required and must reference a dataset in the same project.
 
+### Preview app locally
+
+```bash
+orizu apps preview \
+  --file ./apps/LabelingApp.tsx \
+  --input-schema ./schemas/input.json \
+  --output-schema ./schemas/output.json \
+  --sample-row ./fixtures/sample-row.json \
+  --screenshot ./preview.png
+```
+
+Optional:
+- `--headed` launches Chromium visibly for human review.
+- `--keep-open` leaves the headed preview running until the command is stopped.
+- `--component <ComponentName>` enforces the expected default export name.
+
+The preview command validates the app contract, allowed imports, schema subset, and sample row before rendering. It serves a temporary local page with Orizu-style props: `inputData`, `initialValues`, and `onComplete`. When run from the web app checkout it uses the live Orizu component tree and global Tailwind CSS; when run from the mirrored/published CLI package it falls back to the bundled preview runtime snapshot so agents can still render and inspect local apps before upload.
+
 ### Update app from file (new version)
 
 ```bash

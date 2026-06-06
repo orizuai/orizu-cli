@@ -170,6 +170,21 @@ orizu logout
     </td>
   </tr>
   <tr>
+    <td>Preview an app locally</td>
+    <td>
+      <pre><code>orizu apps preview \
+  --file ./apps/SupportLabeler.tsx \
+  --input-schema ./schemas/support-input.json \
+  --output-schema ./schemas/support-output.json \
+  --sample-row ./fixtures/sample-row.json \
+  --screenshot ./preview.png</code></pre>
+    </td>
+  </tr>
+  <tr>
+    <td>Preview runtime</td>
+    <td>The CLI uses the live Orizu web checkout when it is nearby, otherwise it uses the bundled preview runtime snapshot shipped in this package.</td>
+  </tr>
+  <tr>
     <td>Link a dataset to an app</td>
     <td><code>orizu apps link-dataset --app &lt;appId&gt; --dataset &lt;datasetId&gt;</code></td>
   </tr>

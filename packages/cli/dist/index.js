@@ -14,6 +14,7 @@ import { parseDatasetFile } from './file-parser.js';
 import { streamJsonlRowChunks } from './jsonl-stream.js';
 import { parseDatasetReference } from './dataset-download.js';
 import { parseGlobalFlags } from './global-flags.js';
+import { runLocalAppPreview } from './preview-runtime.js';
 import { assertSecureTokenTransport, authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags, } from './http.js';
 import { formatTaskCreateError } from './task-create-error.js';
 const MAX_README_LENGTH = 200_000;
@@ -32,6 +33,10 @@ function printVersion() {
 }
 function printUsage() {
     printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> --subject-version <prompt-version-id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu apps export [--app <appId>] [--project <team/project>] [--version <n>] [--out <path>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets readme set <datasetId|dataset-name> [--project <team/project>] (--readme-file <README.md> | --readme-text <markdown>) [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`);
+    printPreviewUsage();
+}
+function printPreviewUsage() {
+    printLine(`\nLocal app preview:\n\n  orizu apps preview --file <path> --input-schema <json-path> --output-schema <json-path> --sample-row <json-path> [--screenshot <png-path>] [--headed] [--keep-open] [--component <name>]`);
 }
 function printOptimizationUsage() {
     printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--log-dir logs]\n  orizu optimizations export <run-id> [--out <path>] [--json]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--json]`);
@@ -2027,6 +2032,44 @@ async function createAppFromFile() {
         printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`);
     }
 }
+async function previewAppFromFile() {
+    const filePath = getArg('--file');
+    const inputSchemaPath = getArg('--input-schema');
+    const outputSchemaPath = getArg('--output-schema');
+    const sampleRowPath = getArg('--sample-row');
+    const screenshotPath = getArg('--screenshot');
+    const component = getArg('--component') || undefined;
+    const headed = hasArg('--headed');
+    const keepOpen = hasArg('--keep-open');
+    if (!filePath || !inputSchemaPath || !outputSchemaPath || !sampleRowPath) {
+        throw new Error('Usage: orizu apps preview --file <path> --input-schema <json-path> --output-schema <json-path> --sample-row <json-path> [--screenshot <png-path>] [--headed] [--keep-open] [--component <name>]');
+    }
+    const expandedFilePath = realpathSync(expandHomePath(filePath));
+    const inputJsonSchema = readJsonFile(inputSchemaPath);
+    const outputJsonSchema = readJsonFile(outputSchemaPath);
+    const sampleRow = readJsonFile(sampleRowPath);
+    const expandedScreenshotPath = screenshotPath ? expandHomePath(screenshotPath) : undefined;
+    const result = await runLocalAppPreview({
+        filePath: expandedFilePath,
+        inputSchema: inputJsonSchema,
+        outputSchema: outputJsonSchema,
+        sampleRow,
+        screenshotPath: expandedScreenshotPath,
+        componentName: component,
+        headed,
+        keepOpen,
+    });
+    printLine(`Preview rendered: ${formatTerminalLink(result.url)}`);
+    if (result.screenshotPath) {
+        printLine(`Screenshot: ${sanitizeTerminalText(result.screenshotPath)}`);
+    }
+    if (headed || keepOpen) {
+        printLine('Headed preview is running. Close Chromium or stop the command when you are done.');
+    }
+    if (result.warnings.length > 0) {
+        printLine(`Warnings: ${sanitizeTerminalText(result.warnings.join('; '))}`);
+    }
+}
 async function updateAppFromFile() {
     const filePath = getArg('--file');
     const inputSchemaPath = getArg('--input-schema');
@@ -3290,6 +3333,10 @@ export async function main(rawArgs = process.argv.slice(2)) {
     }
     if (command === 'apps' && subcommand === 'create') {
         await createAppFromFile();
+        return;
+    }
+    if (command === 'apps' && subcommand === 'preview') {
+        await previewAppFromFile();
         return;
     }
     if (command === 'apps' && subcommand === 'update') {

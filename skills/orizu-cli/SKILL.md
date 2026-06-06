@@ -86,7 +86,7 @@ orizu tasks status --task <taskId>
 orizu tasks export --task <taskId> --format jsonl --out ./labels.jsonl
 ```
 
-Authoring the labeler: **`references/building-apps.md`** covers the component contract, design principles, common patterns (trace exploration, side-by-side, text annotation, etc.), and the offline smoke test at `scripts/test-app.mjs` (runs on plain `node`). Run the smoke test before `orizu apps create`.
+Authoring the labeler: **`references/building-apps.md`** covers the component contract, design principles, common patterns (trace exploration, side-by-side, text annotation, etc.), the offline smoke test at `scripts/test-app.mjs` (runs on plain `node`), and `orizu apps preview`. When you generate or modify an app, run the preview command with a representative sample row, inspect the screenshot, and revise the app until the rendered workflow appears to match the user's intended review task before `orizu apps create`.
 
 Deeper: `references/primer.md` (Step 2); `references/cli-reference.md` (apps + tasks surface).
 

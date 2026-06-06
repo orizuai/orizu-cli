@@ -1425,8 +1425,24 @@ What it checks:
 - If a `sample-payload.json` is provided, it validates against `output.json`.
 
 What it doesn't check:
-- Server-side compilation parity. Some failures only surface after upload — keep your first label round small.
-- Runtime behavior. Mount the component in a sandbox if you want render-level testing.
+- Server-side persistence and project authorization. Those still happen during `orizu apps create`.
+
+### Local Playwright preview
+
+Before publishing, render the app with the local CLI preview:
+
+```bash
+orizu apps preview \
+  --file ./labeler/App.tsx \
+  --input-schema ./labeler/input.json \
+  --output-schema ./labeler/output.json \
+  --sample-row ./labeler/sample-row.json \
+  --screenshot ./labeler/preview.png
+```
+
+The command validates the same app contract and allowed import registry as upload, validates the sample row against `input.json`, serves a temporary static preview page, passes `inputData`, `initialValues`, and `onComplete`, then uses Playwright to render it. Add `--headed` for visible Chromium review, and `--keep-open` when you want to inspect the local page manually. In the Orizu web checkout, preview uses the live component tree and global Tailwind CSS; in the mirrored/published CLI package, it uses the bundled preview runtime snapshot so the workflow remains available without the site source tree.
+
+For coding agents: do not treat a passing contract check as enough. After generating or editing an app, run `orizu apps preview` with a representative row, inspect the screenshot, and compare the rendered workflow to the user's likely intent: are the right fields visible, is the primary judgment obvious, do controls fit, and would a human reviewer know what to do? If the screenshot looks wrong, revise the app and preview again before publishing.
 
 ---
 
@@ -1442,3 +1458,4 @@ Before `orizu apps create`:
 - [ ] App calls `onComplete` with the full response payload; no custom save state in the app
 - [ ] `?` shortcut overlay or visible cheat sheet
 - [ ] Smoke test passes (`node scripts/test-app.mjs ...`)
+- [ ] Local preview renders and screenshot is inspected against the user's intended workflow (`orizu apps preview ... --screenshot preview.png`)
