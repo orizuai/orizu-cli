@@ -110,20 +110,22 @@ orizu apps create \
   --input-schema ./labeler/input.json \
   --output-schema ./labeler/output.json
 
-# 2. Create the task — assignments fan out at create time
+# 2. Create the task draft
 orizu tasks create \
   --project <teamSlug>/<projectSlug> \
   --dataset <datasetId> \
   --app <appId> \
   --title "Support QA — Round 1" \
-  --assignees <userId1,userId2> \
   --instructions "Label per rubric v1" \
   --labels-per-item 2
 
-# 3. Track progress
+# 3. Open the returned task URL and test the draft manually before assigning.
+orizu tasks publish --task <taskId> --assignees <userId1,userId2>
+
+# 4. Track progress
 orizu tasks status --task <taskId>
 
-# 4. Export labels for downstream judge work
+# 5. Export labels for downstream judge work
 orizu tasks export --task <taskId> --format jsonl --out ./labels.jsonl
 ```
 

@@ -195,7 +195,7 @@ Output columns:
 
 Notes:
 - `tasks create --assignees` accepts `USER ID` values, emails, or a mix of both.
-- `tasks assign --assignees` still expects canonical `USER ID` values.
+- `tasks assign --assignees` and `tasks publish --assignees` still expect canonical `USER ID` values.
 
 Interactive fallback:
 - If `--team` is omitted, CLI prompts for team selection.
@@ -514,25 +514,38 @@ orizu tasks create \
   --app <appId> \
   --version 3 \
   --title "Round 1 labeling" \
-  --assignees <userIdOrEmail1,userIdOrEmail2> \
   --instructions "Follow rubric v1" \
   --labels-per-item 2 \
   --json
 ```
 
 Task creation behavior:
-- `--assignees` is required.
-- `--assignees` accepts canonical user IDs, emails, or a comma-separated mix.
+- Tasks are created as drafts by default.
+- Use `--publish --assignees <...>` to create, assign, and publish in one command.
+- Without `--publish`, the response includes a task URL and reminds operators to test the draft manually before assigning.
+- `--assignees` accepts canonical user IDs, emails, or a comma-separated mix during create.
 - `--version <n>` is optional and defaults to the app's current pinned version.
-- Assignments are created immediately during `tasks create`.
+- Assignments are only shipped immediately when `--publish` is present.
 - The backend resolves and pins either the requested app version or the app's current `version_id` at task-creation time.
 - Dataset compatibility is validated against that pinned app version before any task rows are inserted, including per-row input-schema checks.
 - Invalid assignee selectors return per-assignee validation output so operators can fix specific emails or user IDs.
 
 Output:
 - Plain text prints task ID, dataset ID, pinned version metadata, assignments created, and the task URL.
-- `--json` returns `taskId`, `datasetId`, `versionId`, `versionNum`, `taskUrl`, `status`, `assignmentsCreated`, and optional `assignmentShortfall` / `warning`.
+- Draft output states that the task should be tested manually before assigning and shows the publish command shape.
+- `--json` returns `taskId`, `datasetId`, `versionId`, `versionNum`, `taskUrl`, `status`, `assignmentsCreated`, `draft`, and optional `assignmentShortfall` / `warning`.
 - JSON failures preserve the structured API payload and append `httpStatus` for automation.
+
+### Publish task
+
+```bash
+orizu tasks publish --task <taskId> --assignees <userId1,userId2>
+orizu tasks create ... --publish --assignees <userIdOrEmail1,userIdOrEmail2>
+```
+
+Notes:
+- `tasks publish` replaces draft assignments with the provided user IDs, then activates the task through the draft-publish guardrails.
+- `tasks publish --assignees` currently expects user IDs.
 
 ### Assign task
 
@@ -683,9 +696,9 @@ orizu tasks create \
   --app <appId> \
   --version 1 \
   --title "Support QA Round 1" \
-  --assignees <userIdOrEmail1,userIdOrEmail2> \
   --labels-per-item 2
 
+orizu tasks publish --task <taskId> --assignees <userId1,userId2>
 orizu tasks status --task <taskId>
 orizu tasks export --task <taskId> --format csv --out ./support-round1.csv
 ```
@@ -710,12 +723,12 @@ The commands above will prompt for team/project/task selection where needed.
 - Validation errors:
   - App create/update rejects invalid component contract and invalid schema files.
   - App create requires `--dataset`.
-  - Task create requires `--assignees` and accepts user IDs or emails.
+  - Task create publishes only with `--publish --assignees`; draft creation does not require assignees.
   - `tasks create --json` and `tasks status --json` preserve structured error payloads for automation.
 
 ## Current Limitations
 
-- `tasks assign` accepts assignee user IDs, not emails.
+- `tasks assign` and `tasks publish` accept assignee user IDs, not emails.
 - Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
 - Assignment completion payloads are validated against the task's pinned app-version `output_json_schema`.
 - Login flow currently expects localhost callback availability on `127.0.0.1` using `ORIZU_AUTH_PORT` or the default port `43123`.

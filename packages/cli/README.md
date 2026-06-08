@@ -218,9 +218,12 @@ orizu logout
   --dataset &lt;datasetId&gt; \
   --app &lt;appId&gt; \
   --title "Support QA Round 1" \
-  --assignees &lt;userIdOrEmail1,userIdOrEmail2&gt; \
   --labels-per-item 2</code></pre>
     </td>
+  </tr>
+  <tr>
+    <td>Publish a draft task</td>
+    <td><code>orizu tasks publish --task &lt;taskId&gt; --assignees &lt;userId1,userId2&gt;</code></td>
   </tr>
   <tr>
     <td>Check task status</td>

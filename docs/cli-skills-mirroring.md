@@ -44,7 +44,8 @@ Set these in this source repo:
    ```
    Confirm the published help output includes:
    - `install-skill [--target <target>]`
-   - `tasks create --assignees <userIdOrEmail1,userIdOrEmail2>`
+   - `tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> [--assignees <userIdOrEmail1,userIdOrEmail2>] [--publish]`
+   - `tasks publish --task <taskId> --assignees <userId1,userId2>`
    - dataset mutation commands: `append`, `edit-rows`, `delete-rows`, `lock`, and `clone`
 
 ## Post-Publish Operator Checks
@@ -52,7 +53,9 @@ Set these in this source repo:
 - Run `npx orizu --help` and confirm the published package matches the repo command surface.
 - Run `npx orizu install-skill --target agent-user --dry-run` and confirm the bundled skill resolves from the npm package.
 - Run `orizu teams members list --team <team>` and confirm the table shows `MEMBER ID`, `USER ID`, `EMAIL`, and `ROLE`.
-- Run `orizu tasks create --assignees <email-or-user-id>` and confirm task creation still stores canonical user IDs server-side.
+- Run `orizu tasks create ...` without `--publish` and confirm it creates a draft with a task URL and manual-test guidance.
+- Run `orizu tasks create ... --publish --assignees <email-or-user-id>` and confirm immediate publish still stores canonical user IDs server-side.
+- Run `orizu tasks publish --task <taskId> --assignees <userId1,userId2>` and confirm an approved draft becomes active.
 
 ## External Consumption
 

@@ -23,6 +23,7 @@ import { clearServerCredentials, getServerCredentials, saveServerCredentials } f
 import { parseDatasetFile } from './file-parser.js'
 import { streamJsonlRowChunks } from './jsonl-stream.js'
 import { parseDatasetReference } from './dataset-download.js'
+import { extractErrorMessage } from './error-response.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
 import { runLocalAppPreview } from './preview-runtime.js'
@@ -3239,6 +3240,7 @@ async function createTask() {
   const appId = getArg('--app')
   const title = getArg('--title')
   const assignees = parseCommaSeparated(getArg('--assignees'))
+  const publish = hasArg('--publish')
   const versionArg = getArg('--version')
   const instructions = getArg('--instructions')
   const labelsPerItemArg = getArg('--labels-per-item')
@@ -3247,8 +3249,8 @@ async function createTask() {
   const versionNum =
     Number.isInteger(parsedVersionNum) && parsedVersionNum > 0 ? parsedVersionNum : null
 
-  if (!projectSlug || !datasetId || !appId || !title || assignees.length === 0) {
-    throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]')
+  if (!projectSlug || !datasetId || !appId || !title || (publish && assignees.length === 0)) {
+    throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> [--assignees <userIdOrEmail1,userIdOrEmail2>] [--publish] [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]')
   }
 
   if (versionArg && versionNum === null) {
@@ -3265,6 +3267,7 @@ async function createTask() {
       versionNum,
       title,
       memberIds: assignees,
+      publish,
       instructions,
       requiredAssignmentsPerRow: labelsPerItem,
     }),
@@ -3307,6 +3310,13 @@ async function createTask() {
       status: data.task.status,
       requiredAssignmentsPerRow: data.task.requiredAssignmentsPerRow,
       assignmentsCreated: data.assignmentsCreated,
+      draft: data.task.status === 'draft',
+      ...(data.task.status === 'draft'
+        ? {
+            message: 'Draft created. Test it manually before assigning.',
+            publishCommand: `orizu tasks publish --task ${data.task.id} --assignees <userId1,userId2>`,
+          }
+        : {}),
       ...(data.assignmentShortfall !== undefined ? { assignmentShortfall: data.assignmentShortfall } : {}),
       ...(data.warning ? { warning: data.warning } : {}),
     }, null, 2))
@@ -3315,15 +3325,76 @@ async function createTask() {
 
   const baseUrl = getBaseUrl()
   const taskUrl = `${baseUrl}/d/${projectSlug}/tasks/${data.task.id}`
+  const isDraft = data.task.status === 'draft'
   printLine(
-    `Created task ${sanitizeTerminalText(data.task.title)} (${sanitizeTerminalText(data.task.id)}) [${sanitizeTerminalText(data.task.status)}]` +
+    `Created ${isDraft ? 'draft ' : ''}task ${sanitizeTerminalText(data.task.title)} (${sanitizeTerminalText(data.task.id)}) [${sanitizeTerminalText(data.task.status)}]` +
     `\n  Task ID:    ${sanitizeTerminalText(data.task.id)}` +
     `\n  Dataset ID: ${sanitizeTerminalText(datasetId)}` +
     `\n  Version:    v${data.task.versionNum} (${sanitizeTerminalText(data.task.versionId)})` +
     `\n  Labels/row: ${data.task.requiredAssignmentsPerRow}` +
     `\n  Assignments: ${data.assignmentsCreated}` +
     (data.warning ? `\n  Warning:    ${sanitizeTerminalText(data.warning)}` : '') +
-    `\n  URL:        ${sanitizeTerminalText(taskUrl)}`
+    `\n  URL:        ${sanitizeTerminalText(taskUrl)}` +
+    (isDraft
+      ? `\n\nThis task is a draft. Test it manually before assigning.\nPublish after approval: orizu tasks publish --task ${sanitizeTerminalText(data.task.id)} --assignees <userId1,userId2>`
+      : '')
+  )
+}
+
+async function publishTask() {
+  const taskId = getArg('--task')
+  const assignees = parseCommaSeparated(getArg('--assignees'))
+
+  if (!taskId || assignees.length === 0) {
+    throw new Error('Usage: orizu tasks publish --task <taskId> --assignees <userId1,userId2> [--json]')
+  }
+
+  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/publish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ memberIds: assignees }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to publish task: ${await extractErrorMessage(response)}`)
+  }
+
+  const data = await parseJsonResponse<{
+    task: { id: string; status: string }
+    assignmentsProcessed: number
+    assignmentsCreated: number
+    assignmentsRemoved?: number
+    assignmentShortfall?: number
+    warning?: string
+  }>(
+    response,
+    'Task publish'
+  )
+
+  if (hasArg('--json')) {
+    printLine(JSON.stringify({
+      taskId: data.task.id,
+      status: data.task.status,
+      assignmentsCreated: data.assignmentsCreated,
+      assignmentsProcessed: data.assignmentsProcessed,
+      ...(data.assignmentsRemoved !== undefined
+        ? { assignmentsRemoved: data.assignmentsRemoved }
+        : {}),
+      ...(data.assignmentShortfall !== undefined
+        ? { assignmentShortfall: data.assignmentShortfall }
+        : {}),
+      ...(data.warning ? { warning: data.warning } : {}),
+    }, null, 2))
+    return
+  }
+
+  printLine(
+    `Published task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]` +
+    `\n  Assignments: ${data.assignmentsCreated}` +
+    (data.assignmentsRemoved !== undefined
+      ? `\n  Replaced:    ${data.assignmentsRemoved} old assignments removed`
+      : '') +
+    (data.warning ? `\n  Warning:     ${sanitizeTerminalText(data.warning)}` : '')
   )
 }
 
@@ -4871,6 +4942,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'tasks' && subcommand === 'create') {
     await createTask()
+    return
+  }
+
+  if (command === 'tasks' && subcommand === 'publish') {
+    await publishTask()
     return
   }
 

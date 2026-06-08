@@ -377,8 +377,14 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['tasks', 'create'],
-    usage: 'orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]',
-    summary: 'Create a review task and assignments.',
+    usage: 'orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> [--assignees <userIdOrEmail1,userIdOrEmail2>] [--publish] [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]',
+    summary: 'Create a draft review task by default, or publish immediately with --publish and assignees.',
+    group: 'Tasks',
+  },
+  {
+    path: ['tasks', 'publish'],
+    usage: 'orizu tasks publish --task <taskId> --assignees <userId1,userId2> [--json]',
+    summary: 'Publish an approved draft task and assign reviewers.',
     group: 'Tasks',
   },
   {
@@ -548,7 +554,8 @@ export function renderRootHelp(): string {
     'Examples:',
     '  orizu install-skill --target agent-user --yes',
     '  orizu apps preview --file ./App.tsx --input-schema ./input.json --output-schema ./output.json --sample-row ./row.json --screenshot ./preview.png',
-    '  orizu tasks create --project core/evals --dataset <datasetId> --app <appId> --title "Review" --assignees person@example.com',
+    '  orizu tasks create --project core/evals --dataset <datasetId> --app <appId> --title "Review"',
+    '  orizu tasks publish --task <taskId> --assignees <userId1,userId2>',
     '',
     'More:',
     '  orizu <group> --help',

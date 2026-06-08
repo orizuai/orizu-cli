@@ -159,17 +159,25 @@ orizu tasks create \
   --dataset <datasetId> \
   --app <appId> \
   --title "Round 1 labeling" \
-  --assignees <userId1,userId2> \
   --instructions "Follow rubric v1" \
   --labels-per-item 2
 ```
 
 Behavior:
+- task creation creates a draft by default and returns a task URL to test manually before assigning
+- use `--publish --assignees <userIdOrEmail1,userIdOrEmail2>` only when you intentionally want to create and ship immediately
+- after manually approving a draft, run `orizu tasks publish --task <taskId> --assignees <userId1,userId2>`
 - task creation resolves and stores the app's pinned current `version_id` at create time
 - downstream consumers (exports, judges, optimization) should trust the task's pinned `version_id`, not the app's current pointer
 - dataset compatibility is validated against that pinned app version before the task is inserted
 - malformed JSON and mixed-type assignee arrays fail with deterministic `400` responses
 - assignment fanout enforces unique `(assignee, row)` pairs; `--labels-per-item` cannot exceed the number of unique assignees, and the backend shortfalls instead of duplicating
+
+Publish:
+
+```bash
+orizu tasks publish --task <taskId> --assignees <userId1,userId2>
+```
 
 Assign:
 
@@ -255,8 +263,10 @@ orizu tasks create \
   --dataset <datasetId> \
   --app <appId> \
   --title "Support QA Round 1" \
-  --assignees <userId1,userId2> \
   --labels-per-item 2
+
+# Open the returned task URL and test the draft manually before assigning.
+orizu tasks publish --task <taskId> --assignees <userId1,userId2>
 
 orizu tasks status --task <taskId>
 orizu tasks export --task <taskId> --format csv --out ./support-round1.csv
@@ -275,8 +285,9 @@ Use these shortcuts only in TTY environments where prompts can run.
 
 ## Notes and Limits
 
-- `tasks assign` expects user IDs, not emails.
-- `tasks create` requires `--assignees`, creates assignments at creation time, and pins the app's current version when the task is created.
+- `tasks create` creates a draft by default, does not require `--assignees`, and pins the app's current version when the task is created.
+- `tasks create --publish --assignees <...>` intentionally creates and ships immediately.
+- `tasks assign` and `tasks publish` expect user IDs, not emails.
 - Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
 - Assignment completion payloads are validated against the pinned app-version `output_json_schema`.
 - `datasets delete-rows` requires `--row-ids`.

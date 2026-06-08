@@ -82,7 +82,10 @@ orizu apps create --project <teamSlug>/<projectSlug> --name "<labeler>" --datase
   --file <App.tsx> --input-schema <input.json> --output-schema <output.json>
 
 orizu tasks create --project <teamSlug>/<projectSlug> --dataset <datasetId> --app <appId> \
-  --title "<round>" --assignees <userId1,userId2> --labels-per-item 2
+  --title "<round>" --labels-per-item 2
+
+# Open the returned task URL and test the draft manually before assigning.
+orizu tasks publish --task <taskId> --assignees <userId1,userId2>
 
 orizu tasks status --task <taskId>
 orizu tasks export --task <taskId> --format jsonl --out ./labels.jsonl
@@ -166,7 +169,8 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 
 - Prefer explicit flags in non-TTY contexts; reserve interactive fallback for TTY.
 - Canonical selectors: `--team`, `--project`, `--app`, `--task`, `--dataset`, `--assignees`.
-- `tasks assign` takes user IDs, not emails.
+- `tasks create` creates drafts by default. Test the returned task URL manually, then use `tasks publish --task <taskId> --assignees <userId1,userId2>` after approval.
+- `tasks assign` and `tasks publish` take user IDs, not emails.
 - `datasets edit-rows` requires a non-empty string `id` on each row in `--file`.
 - `datasets delete-rows` uses `--row-ids` as the canonical selector.
 - `datasets delete` requires interactive terminal confirmation; there is no non-interactive confirmation option.
