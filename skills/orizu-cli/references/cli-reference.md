@@ -198,6 +198,18 @@ Includes:
 - per-assignee breakdown
 - paused assignments as a distinct count, not folded into pending
 
+Report:
+
+```bash
+orizu tasks report set --task <taskId> --report-file ./task-report.md
+orizu tasks report upload --task <taskId> --report @./task-report.md
+```
+
+Behavior:
+- replaces the current task report if one already exists
+- accepted only when the task is `paused` or `completed`
+- accepts the same `--report`, `--report @file`, and `--report-file` Markdown inputs as optimization reports
+
 Export:
 
 ```bash

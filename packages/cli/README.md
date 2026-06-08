@@ -234,6 +234,10 @@ orizu logout
     <td><code>orizu tasks pause --task &lt;taskId&gt;</code></td>
   </tr>
   <tr>
+    <td>Upload a task report</td>
+    <td><code>orizu tasks report set --task &lt;taskId&gt; --report-file ./report.md</code></td>
+  </tr>
+  <tr>
     <td>Resume a task</td>
     <td><code>orizu tasks unpause --task &lt;taskId&gt;</code></td>
   </tr>

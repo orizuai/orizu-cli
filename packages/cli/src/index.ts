@@ -322,6 +322,12 @@ function getArgs(name: string): string[] {
   return values
 }
 
+function rejectDashPrefixedOptionValue(name: string, value: string | null) {
+  if (value && value.startsWith('-')) {
+    throw new Error(`Invalid value for ${name}: option values cannot start with a dash`)
+  }
+}
+
 export function normalizeSlugInput(slug: string): string {
   return slug.trim().toLowerCase()
 }
@@ -2246,7 +2252,7 @@ async function execScorer() {
 }
 
 type OptimizationLifecycleAction = 'pause' | 'resume' | 'finish' | 'fail' | 'cancel'
-const OPTIMIZATION_REPORT_MAX_BYTES = 2 * 1024 * 1024
+const MARKDOWN_REPORT_MAX_BYTES = 2 * 1024 * 1024
 
 function parseOptionalNumberFlag(name: string): number | undefined {
   const value = getArg(name)
@@ -2266,9 +2272,14 @@ function hasObjectKeys(value: Record<string, unknown>): boolean {
   return Object.keys(value).length > 0
 }
 
-function readOptimizationReportInput(): { markdown: string; sourceName: string | null } | null {
+function readMarkdownReportInput(
+  reportLabel: 'Optimization' | 'Task'
+): { markdown: string; sourceName: string | null } | null {
   const report = getArg('--report')
   const reportFile = getArg('--report-file')
+
+  rejectDashPrefixedOptionValue('--report', report)
+  rejectDashPrefixedOptionValue('--report-file', reportFile)
 
   if (report && reportFile) {
     throw new Error('Use either --report or --report-file, not both')
@@ -2296,14 +2307,22 @@ function readOptimizationReportInput(): { markdown: string; sourceName: string |
   }
 
   if (!markdown.trim()) {
-    throw new Error('Optimization report markdown must not be blank')
+    throw new Error(`${reportLabel} report markdown must not be blank`)
   }
 
-  if (Buffer.byteLength(markdown, 'utf8') > OPTIMIZATION_REPORT_MAX_BYTES) {
-    throw new Error(`Optimization report exceeds ${OPTIMIZATION_REPORT_MAX_BYTES} bytes`)
+  if (Buffer.byteLength(markdown, 'utf8') > MARKDOWN_REPORT_MAX_BYTES) {
+    throw new Error(`${reportLabel} report exceeds ${MARKDOWN_REPORT_MAX_BYTES} bytes`)
   }
 
   return { markdown, sourceName }
+}
+
+function readOptimizationReportInput(): { markdown: string; sourceName: string | null } | null {
+  return readMarkdownReportInput('Optimization')
+}
+
+function readTaskReportInput(): { markdown: string; sourceName: string | null } | null {
+  return readMarkdownReportInput('Task')
 }
 
 async function startOptimizationRun() {
@@ -3485,6 +3504,58 @@ async function updateTaskStatus(targetStatus: 'paused' | 'active') {
   const data = await parseJsonResponse<{ task: { id: string; status: string } }>(response, 'Task status update')
   const action = targetStatus === 'paused' ? 'Paused' : 'Unpaused'
   printLine(`${action} task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]`)
+}
+
+async function setTaskReport() {
+  const taskId = getArg('--task')
+  rejectDashPrefixedOptionValue('--task', taskId)
+  if (!taskId) {
+    throw new Error(
+      'Usage: orizu tasks report set --task <taskId> (--report <markdown|@file> | --report-file <path>) [--json]'
+    )
+  }
+
+  const report = readTaskReportInput()
+  if (!report) {
+    throw new Error(
+      'Usage: orizu tasks report set --task <taskId> (--report <markdown|@file> | --report-file <path>) [--json]'
+    )
+  }
+
+  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/report`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      reportMarkdown: report.markdown,
+      reportSourceName: report.sourceName,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to update task report: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{
+    task: {
+      id: string
+      status: string
+      report: {
+        markdown: string
+        sourceName: string | null
+        createdAt: string | null
+      }
+    }
+  }>(response, 'Task report update')
+
+  if (hasJsonFlag()) {
+    printJson(data)
+    return
+  }
+
+  printLine(
+    `Uploaded task report for ${sanitizeTerminalText(data.task.id)} ` +
+    `[${sanitizeTerminalText(data.task.status)}]`
+  )
 }
 
 interface AppDetailPayload {
@@ -4957,6 +5028,15 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'tasks' && subcommand === 'status') {
     await taskStatus()
+    return
+  }
+
+  if (
+    command === 'tasks' &&
+    subcommand === 'report' &&
+    (cliArgs[2] === 'set' || cliArgs[2] === 'upload')
+  ) {
+    await setTaskReport()
     return
   }
 

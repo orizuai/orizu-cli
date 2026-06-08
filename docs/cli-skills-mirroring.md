@@ -46,6 +46,7 @@ Set these in this source repo:
    - `install-skill [--target <target>]`
    - `tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> [--assignees <userIdOrEmail1,userIdOrEmail2>] [--publish]`
    - `tasks publish --task <taskId> --assignees <userId1,userId2>`
+   - `tasks report set --task <taskId>`
    - dataset mutation commands: `append`, `edit-rows`, `delete-rows`, `lock`, and `clone`
 
 ## Post-Publish Operator Checks

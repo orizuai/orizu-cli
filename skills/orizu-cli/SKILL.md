@@ -88,6 +88,7 @@ orizu tasks create --project <teamSlug>/<projectSlug> --dataset <datasetId> --ap
 orizu tasks publish --task <taskId> --assignees <userId1,userId2>
 
 orizu tasks status --task <taskId>
+orizu tasks report set --task <taskId> --report-file ./task-report.md
 orizu tasks export --task <taskId> --format jsonl --out ./labels.jsonl
 ```
 
@@ -177,6 +178,7 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - Locked datasets reject append/edit/delete row mutations.
 - `--output-schema` JSON Schema validation surface is restricted to `type`, `required`, `properties`, `items`, `enum`.
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.
+- Task reports can be uploaded only after the task is `paused` or `completed`; rerun `tasks report set` or `tasks report upload` to replace the markdown report.
 - Prompt control-plane commands should use ids for dataset versions, split sets, prompt versions, scorer versions, runner versions, optimizer versions, and optimization runs.
 - Optimization exports default to `<run-id>.optimization.json`; prefer the existing `logs/<run-id>` directory from `run-gepa` when it is available because it contains the full local trace without needing server rehydration.
 - When ending an optimization run, attach a markdown report with `--report-file` when possible. Use `references/optimization-reports.md` for what to include.

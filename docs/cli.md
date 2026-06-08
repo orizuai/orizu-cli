@@ -10,7 +10,7 @@ The CLI supports:
 - Team management (list/create, members list/add/remove/role)
 - Project management (list/create)
 - App management (list/create/update/detail/link dataset)
-- Task management (list/create/assign/status/pause/unpause/export)
+- Task management (list/create/assign/status/report/pause/unpause/export)
 - Dataset management (upload/download/append/delete rows: `csv`, `json`, `jsonl`)
 
 ## Prerequisites
@@ -583,6 +583,19 @@ orizu tasks pause --task <taskId>
 Behavior:
 - pauses an active task through the manager-only task status mutation route
 - pauses in-flight assignments so operators can stop new work cleanly
+
+### Task report
+
+```bash
+orizu tasks report set --task <taskId> --report-file ./report.md
+orizu tasks report set --task <taskId> --report "## Findings"
+orizu tasks report upload --task <taskId> --report @./report.md
+```
+
+Behavior:
+- replaces the current task report if one already exists
+- accepts reports only when the task status is `paused` or `completed`
+- `--json` returns the updated report payload
 
 ### Unpause task
 

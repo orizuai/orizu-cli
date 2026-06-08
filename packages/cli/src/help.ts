@@ -400,6 +400,23 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Tasks',
   },
   {
+    path: ['tasks', 'report', 'set'],
+    usage: 'orizu tasks report set --task <taskId> (--report <markdown|@file> | --report-file <path>) [--json]',
+    summary: 'Upload or replace a Markdown report for a paused or completed task.',
+    group: 'Tasks',
+    aliases: [['tasks', 'report', 'upload']],
+    options: [
+      { name: '--task <taskId>', help: 'Task ID to attach the report to.', required: true },
+      { name: '--report <markdown|@file>', help: 'Inline Markdown or an @file reference.' },
+      { name: '--report-file <path>', help: 'Markdown file to upload.' },
+      { name: '--json', help: 'Emit the updated report payload.' },
+    ],
+    examples: [
+      'orizu tasks report set --task <taskId> --report-file ./report.md',
+      'orizu tasks report upload --task <taskId> --report @./report.md',
+    ],
+  },
+  {
     path: ['tasks', 'pause'],
     usage: 'orizu tasks pause --task <taskId>',
     summary: 'Pause a task.',
