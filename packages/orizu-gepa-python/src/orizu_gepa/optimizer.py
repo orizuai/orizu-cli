@@ -189,6 +189,7 @@ class TextGepaConfig:
     fail_on_log_error: bool = True
     log_row_snapshots: bool = False
     cache_evaluations: bool = True
+    skip_perfect_parent_reflection: bool = True
 
 
 @dataclass(frozen=True)
@@ -317,6 +318,14 @@ def _metric_key(scorer_context: PromptContext) -> str:
 
 def _is_better(challenger: float, incumbent: float, higher_is_better: bool) -> bool:
     return challenger > incumbent if higher_is_better else challenger < incumbent
+
+
+def _is_perfect_minibatch(results: list[RowEvaluation], higher_is_better: bool) -> bool:
+    if not results:
+        return False
+    if higher_is_better:
+        return all(result.score >= 1.0 for result in results)
+    return all(result.score <= 0.0 for result in results)
 
 
 class EvaluationCache:
@@ -818,6 +827,43 @@ def optimize_loaded_text_candidate(
                 iteration=iteration,
                 candidate_id=parent_candidate_id,
             )
+
+            parent_is_perfect = _is_perfect_minibatch(parent_results, higher_is_better)
+            if config.skip_perfect_parent_reflection and parent_is_perfect:
+                event_sink.log_event(
+                    "reflection_skipped",
+                    {
+                        "reason": "parent_minibatch_perfect",
+                        "parent_candidate_id": parent_candidate_id,
+                        "parent_score_total": parent_total,
+                        "parent_score_mean": _mean(parent_results),
+                        "row_ids": [row.id for row in minibatch],
+                        "higher_is_better": higher_is_better,
+                        "decision_rule": "skip reflection when every parent minibatch row is already perfect",
+                    },
+                    event_layer="extension",
+                    iteration=iteration,
+                    candidate_id=parent_candidate_id,
+                )
+                event_sink.log_event("budget_updated", budget.to_payload(), event_layer="extension", iteration=iteration)
+                event_sink.log_event(
+                    "iteration_completed",
+                    {
+                        "parent_candidate_id": parent_candidate_id,
+                        "child_candidate_id": None,
+                        "parent_train_score_total": parent_total,
+                        "child_train_score_total": None,
+                        "child_validation_score": None,
+                        "best_candidate_id": best_candidate_id,
+                        "best_validation_score": best_score,
+                        "skipped_reflection": True,
+                        "skip_reason": "parent_minibatch_perfect",
+                        "budget": budget.to_payload(),
+                    },
+                    iteration=iteration,
+                    candidate_id=best_candidate_id,
+                )
+                continue
 
             event_sink.log_event(
                 "reflection_started",

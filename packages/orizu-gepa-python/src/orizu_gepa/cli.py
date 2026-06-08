@@ -71,6 +71,19 @@ def main() -> None:
     parser.add_argument("--reflection-max-tokens", type=positive_int)
     parser.add_argument("--reflection-prompt-template")
     parser.add_argument("--reflection-provider-settings")
+    parser.add_argument(
+        "--skip-perfect-parent-reflection",
+        dest="skip_perfect_parent_reflection",
+        action="store_true",
+        default=TextGepaConfig.skip_perfect_parent_reflection,
+        help="Skip reflection and child creation when the parent scores perfectly on the minibatch (default).",
+    )
+    parser.add_argument(
+        "--no-skip-perfect-parent-reflection",
+        dest="skip_perfect_parent_reflection",
+        action="store_false",
+        help="Reflect and create a child even when the parent scores perfectly on the minibatch.",
+    )
     parser.add_argument("--objective", default=TextGepaConfig.objective)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--auto-promote", action="store_true")
@@ -98,6 +111,7 @@ def main() -> None:
         reflection_max_tokens=args.reflection_max_tokens,
         reflection_prompt_template=read_text_arg(args.reflection_prompt_template),
         reflection_provider_settings=read_json_object_arg(args.reflection_provider_settings, "--reflection-provider-settings") or {},
+        skip_perfect_parent_reflection=args.skip_perfect_parent_reflection,
         objective=args.objective,
         seed=args.seed,
         auto_promote=args.auto_promote,

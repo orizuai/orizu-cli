@@ -328,7 +328,12 @@ class OptimizerTests(unittest.TestCase):
             scorer_runner=scorer_runner,
             reflector=reflector,
             event_sink=sink,
-            config=TextGepaConfig(max_iterations=1, minibatch_size=2, auto_promote=True),
+            config=TextGepaConfig(
+                max_iterations=1,
+                minibatch_size=2,
+                auto_promote=True,
+                skip_perfect_parent_reflection=False,
+            ),
         )
 
         event_types = [event["event_type"] for event in sink.events]
@@ -336,6 +341,92 @@ class OptimizerTests(unittest.TestCase):
         self.assertNotIn("child_val_set_completed", event_types)
         self.assertEqual(result.best_candidate_id, "seed")
         self.assertEqual(sink.promotions, [])
+
+    def test_skips_reflection_by_default_when_parent_minibatch_is_perfect(self):
+        sink = FakeSink()
+        reflector_calls = 0
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 1.0, "feedback": "perfect"})
+
+        def reflector(parent_text, parent_results, config):
+            nonlocal reflector_calls
+            reflector_calls += 1
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="new",
+                candidate_text="new",
+            )
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertEqual(reflector_calls, 0)
+        self.assertIn("reflection_skipped", event_types)
+        self.assertNotIn("reflection_started", event_types)
+        self.assertNotIn("child_candidate_created", event_types)
+        self.assertEqual(result.budget.used_candidate_proposals, 0)
+        skipped = next(event for event in sink.events if event["event_type"] == "reflection_skipped")
+        self.assertEqual(skipped["payload"]["reason"], "parent_minibatch_perfect")
+        completed = next(event for event in sink.events if event["event_type"] == "iteration_completed")
+        self.assertTrue(completed["payload"]["skipped_reflection"])
+        self.assertIsNone(completed["payload"]["child_candidate_id"])
+
+    def test_can_reflect_when_perfect_parent_skip_is_disabled(self):
+        sink = FakeSink()
+        reflector_calls = 0
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 1.0, "feedback": "perfect"})
+
+        def reflector(parent_text, parent_results, config):
+            nonlocal reflector_calls
+            reflector_calls += 1
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="new",
+                candidate_text="new",
+            )
+
+        optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(
+                max_iterations=1,
+                minibatch_size=2,
+                skip_perfect_parent_reflection=False,
+            ),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertEqual(reflector_calls, 1)
+        self.assertIn("reflection_started", event_types)
+        self.assertIn("child_candidate_created", event_types)
+        self.assertNotIn("reflection_skipped", event_types)
 
     def test_default_minibatch_size_is_three(self):
         rows = [DatasetRow(f"train-{index}", {"index": index}) for index in range(5)]
@@ -433,7 +524,12 @@ class OptimizerTests(unittest.TestCase):
             scorer_runner=scorer_runner,
             reflector=reflector,
             event_sink=sink,
-            config=TextGepaConfig(max_iterations=2, minibatch_size=3, auto_promote=True),
+            config=TextGepaConfig(
+                max_iterations=2,
+                minibatch_size=3,
+                auto_promote=True,
+                skip_perfect_parent_reflection=False,
+            ),
         )
 
         self.assertEqual(candidate_calls[("seed", "train-1")], 1)
