@@ -16,8 +16,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepack": "node scripts/vendor-gepa-python.mjs",
-    "postpack": "node scripts/vendor-gepa-python.mjs --clean"
+    "prepack": "node scripts/vendor-gepa-python.mjs && node scripts/vendor-orizu-skill.mjs",
+    "postpack": "node scripts/vendor-gepa-python.mjs --clean && node scripts/vendor-orizu-skill.mjs --clean"
   },
   "dependencies": {
     "@playwright/test": "^1.60.0",

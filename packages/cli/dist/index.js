@@ -14,8 +14,10 @@ import { parseDatasetFile } from './file-parser.js';
 import { streamJsonlRowChunks } from './jsonl-stream.js';
 import { parseDatasetReference } from './dataset-download.js';
 import { parseGlobalFlags } from './global-flags.js';
+import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js';
 import { runLocalAppPreview } from './preview-runtime.js';
 import { assertSecureTokenTransport, authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags, } from './http.js';
+import { getSkillInstallPath, installSkillTarget, isSkillInstallTarget, SKILL_INSTALL_TARGETS, targetNeedsOverwrite, } from './skill-installer.js';
 import { formatTaskCreateError } from './task-create-error.js';
 const MAX_README_LENGTH = 200_000;
 function getCliVersion() {
@@ -32,8 +34,7 @@ function printVersion() {
     printLine(`orizu ${getCliVersion()}`);
 }
 function printUsage() {
-    printLine(`orizu global options:\n\n  --local                 Use http://localhost:3000\n  --server <url>          Use a specific server origin (for example: https://preview.example.com)\n  --version, -v           Print the orizu CLI version\n\norizu commands:\n\n  orizu login [--no-prompt-if-logged-in]\n  orizu logout\n  orizu whoami\n  orizu env [--project <team/project>] [--project-id <projectId>]\n  orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json\n  orizu teams list\n  orizu teams create [--name <name>]\n  orizu teams members list [--team <teamSlug>]\n  orizu teams members add --email <email> [--team <teamSlug>]\n  orizu teams members remove --email <email> [--team <teamSlug>]\n  orizu teams members role --team <teamSlug> --email <email> --role <admin|member>\n  orizu projects list [--team <teamSlug>]\n  orizu projects create --name <name> [--team <teamSlug>]\n  orizu prompts list --project <team/project>\n  orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]\n  orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]\n  orizu prompts scorers set-headline <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu prompts scorers add <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu scorers list --project <team/project>\n  orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]\n  orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]\n  orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]\n  orizu scorers exec --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) --dataset-version <id> --split-set <id> --split <name> [--subject-results <jsonl>] [--dependency-score-run <alias=id>] [--dependency-results <alias=path>] [--no-submit] [--out <score.json>] [--project <team/project>] [--json]\n  orizu scores submit <results.jsonl|results.json> --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) [--aggregate] [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]\n  orizu judges list --project <team/project>\n  orizu judges pull <judge-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]\n  orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]\n  orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>\n  orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]\n  orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]\n  orizu apps list [--project <team/project>]\n  orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps update [--app <appId>] [--project <team/project>] --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]\n  orizu apps link-dataset --dataset <datasetId> [--app <appId>] [--project <team/project>] [--version <n>]\n  orizu apps detail --app <appId> [--project <team/project>] [--json]\n  orizu apps export [--app <appId>] [--project <team/project>] [--version <n>] [--out <path>]\n  orizu tasks list [--project <team/project>]\n  orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> --assignees <userIdOrEmail1,userIdOrEmail2> [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]\n  orizu tasks assign --task <taskId> --assignees <userId1,userId2>\n  orizu tasks status --task <taskId> [--json]\n  orizu tasks pause --task <taskId>\n  orizu tasks unpause --task <taskId>\n  orizu datasets upload --file <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>]\n  orizu datasets push <path> [--project <team/project>] [--name <name>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets readme set <datasetId|dataset-name> [--project <team/project>] (--readme-file <README.md> | --readme-text <markdown>) [--json]\n  orizu datasets versions create <datasetId|dataset-name> [--project <team/project>] [--label <label>] [--readme-file <README.md> | --readme-text <markdown>] [--json]\n  orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]\n  orizu datasets download [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--format <csv|json|jsonl>] [--out <path>]\n  orizu datasets append [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets edit-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --file <path>\n  orizu datasets delete-rows [--dataset <datasetId|datasetUrl>] [--project <team/project>] --row-ids <id1,id2>\n  orizu datasets delete [--dataset <datasetId|datasetUrl>] [--project <team/project>]\n  orizu datasets lock [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--reason <text>]\n  orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]\n  orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]`);
-    printPreviewUsage();
+    printLine(renderRootHelp());
 }
 function printPreviewUsage() {
     printLine(`\nLocal app preview:\n\n  orizu apps preview --file <path> --input-schema <json-path> --output-schema <json-path> --sample-row <json-path> [--screenshot <png-path>] [--headed] [--keep-open] [--component <name>]`);
@@ -42,12 +43,28 @@ function printOptimizationUsage() {
     printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--log-dir logs] [--no-skip-perfect-parent-reflection]\n  orizu optimizations export <run-id> [--out <path>] [--json]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--json]`);
 }
 let cliArgs = process.argv.slice(2);
+let cliJsonOutput = false;
 function getArg(name) {
     const index = cliArgs.indexOf(name);
     if (index === -1 || index + 1 >= cliArgs.length) {
         return null;
     }
     return cliArgs[index + 1];
+}
+function getArgs(name) {
+    const values = [];
+    for (let index = 0; index < cliArgs.length; index += 1) {
+        if (cliArgs[index] !== name) {
+            continue;
+        }
+        const value = cliArgs[index + 1];
+        if (!value || value.startsWith('-')) {
+            throw new Error(`Usage: ${name} <value>`);
+        }
+        values.push(value);
+        index += 1;
+    }
+    return values;
 }
 export function normalizeSlugInput(slug) {
     return slug.trim().toLowerCase();
@@ -1922,10 +1939,105 @@ function readSourceBytes(pathArg) {
     }
 }
 function hasJsonFlag() {
-    return hasArg('--json');
+    return cliJsonOutput || hasArg('--json');
 }
 function printJson(value) {
     printLine(JSON.stringify(value));
+}
+function printCapabilities() {
+    const capabilities = getCapabilities(getCliVersion());
+    if (hasJsonFlag()) {
+        printLine(JSON.stringify(capabilities));
+        return;
+    }
+    printLine('orizu capabilities');
+    printLine('');
+    printLine('Run `orizu capabilities --json` for a machine-readable command manifest.');
+    printLine('');
+    for (const command of capabilities.commands) {
+        printLine(`  ${command.name.padEnd(34)} ${command.help}`);
+    }
+}
+async function askYesNo(question, defaultYes) {
+    const rl = createInterface({ input, output });
+    try {
+        const suffix = defaultYes ? 'Y/n' : 'y/N';
+        const answer = (await rl.question(`${question} (${suffix}) `)).trim().toLowerCase();
+        if (!answer) {
+            return defaultYes;
+        }
+        return answer === 'y' || answer === 'yes';
+    }
+    finally {
+        rl.close();
+    }
+}
+async function promptSkillInstallTargets() {
+    if (!isInteractiveTerminal()) {
+        throw new Error(`Usage: orizu install-skill --target <${SKILL_INSTALL_TARGETS.join('|')}> [--yes] [--dry-run]`);
+    }
+    printLine('Where should the Orizu CLI skill be installed?');
+    const targets = [];
+    for (const target of SKILL_INSTALL_TARGETS) {
+        const defaultYes = target === 'agent-user';
+        if (await askYesNo(`  Install to ${target}?`, defaultYes)) {
+            targets.push(target);
+        }
+    }
+    return targets;
+}
+function parseSkillInstallTargets() {
+    const rawTargets = getArgs('--target');
+    const targets = [];
+    for (const target of rawTargets) {
+        if (!isSkillInstallTarget(target)) {
+            throw new Error(`Unknown skill install target '${target}'. Available targets: ${SKILL_INSTALL_TARGETS.join(', ')}`);
+        }
+        if (!targets.includes(target)) {
+            targets.push(target);
+        }
+    }
+    return targets;
+}
+function formatSkillInstallAction(action) {
+    if (action === 'created')
+        return 'Wrote';
+    if (action === 'updated')
+        return 'Updated';
+    if (action === 'would-create')
+        return 'Would write';
+    return 'Would update';
+}
+async function installSkillCommand() {
+    const skipConfirm = hasArg('--yes');
+    const dryRun = hasArg('--dry-run');
+    let targets = parseSkillInstallTargets();
+    if (targets.length === 0) {
+        targets = await promptSkillInstallTargets();
+    }
+    if (targets.length === 0) {
+        printLine('No targets selected; nothing to do.');
+        return;
+    }
+    for (const target of targets) {
+        let overwrite = skipConfirm;
+        const installPath = getSkillInstallPath(target);
+        if (!dryRun && !overwrite && targetNeedsOverwrite(target)) {
+            if (!isInteractiveTerminal()) {
+                throw new Error(`${installPath} already exists. Pass --yes to replace it.`);
+            }
+            overwrite = await askYesNo(`Replace ${installPath}?`, true);
+            if (!overwrite) {
+                printLine(`Skipped ${installPath}`);
+                continue;
+            }
+        }
+        const result = installSkillTarget(target, {
+            overwrite,
+            dryRun,
+        });
+        printLine(`${formatSkillInstallAction(result.action)} ${result.path}`);
+    }
 }
 function readJsonFile(pathArg) {
     const raw = readSourceFile(pathArg);
@@ -3293,10 +3405,37 @@ async function runnersExec() {
         materializedRunner.cleanup();
     }
 }
+function isHelpToken(value) {
+    return value === '--help' || value === '-h';
+}
+function extractHelpTarget(args) {
+    if (args[0] === 'help') {
+        return helpTargetFromArgs(args.slice(1));
+    }
+    if (!args.some(isHelpToken)) {
+        return null;
+    }
+    return helpTargetFromArgs(args);
+}
+function helpTargetFromArgs(args) {
+    const targetArgs = args.filter(arg => !isHelpToken(arg) && arg !== '--json');
+    const optionIndex = targetArgs.findIndex(arg => arg.startsWith('-'));
+    return optionIndex === -1 ? targetArgs : targetArgs.slice(0, optionIndex);
+}
 export async function main(rawArgs = process.argv.slice(2)) {
     const parsed = parseGlobalFlags(rawArgs);
     setGlobalFlags(parsed.flags);
     cliArgs = parsed.args;
+    cliJsonOutput = false;
+    if (cliArgs[0] === '--json') {
+        cliJsonOutput = true;
+        cliArgs = cliArgs.slice(1);
+    }
+    const helpTarget = extractHelpTarget(cliArgs);
+    if (helpTarget !== null) {
+        printLine(renderHelpForArgs(helpTarget));
+        return;
+    }
     const command = cliArgs[0];
     const subcommand = cliArgs[1];
     if (command === '--version' || command === '-v') {
@@ -3305,8 +3444,19 @@ export async function main(rawArgs = process.argv.slice(2)) {
     }
     if (!command) {
         printUsage();
-        printOptimizationUsage();
         process.exit(1);
+    }
+    if (command === 'capabilities') {
+        printCapabilities();
+        return;
+    }
+    if (command === 'install-skill') {
+        await installSkillCommand();
+        return;
+    }
+    if (command === 'skills' && subcommand === 'install') {
+        await installSkillCommand();
+        return;
     }
     if (command === 'login') {
         await login();
@@ -3568,7 +3718,6 @@ export async function main(rawArgs = process.argv.slice(2)) {
         return;
     }
     printUsage();
-    printOptimizationUsage();
     process.exit(1);
 }
 function isCliEntrypoint() {

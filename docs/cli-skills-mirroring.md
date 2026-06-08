@@ -3,7 +3,7 @@
 This repo remains the source of truth.
 External users consume:
 - Single mirror repo (for CLI source, skills, and release tags)
-- npm package `orizu`
+- npm package `orizu`, which bundles the `orizu-cli` skill for local install
 
 ## Workflows
 
@@ -16,6 +16,7 @@ External users consume:
   - Sets `packages/cli/package.json` version from the release tag at publish time.
   - Verifies checked-in CLI build artifacts.
   - Vendors `packages/orizu-gepa-python` into the CLI package during `npm publish`.
+  - Vendors `skills/orizu-cli` into the CLI package during `npm publish`.
   - Publishes `packages/cli` to npm.
   - Pushes `vX.Y.Z` tag to mirror repo.
 
@@ -38,14 +39,18 @@ Set these in this source repo:
 4. Verify the published CLI surface:
    ```bash
    npx orizu --help
+   npx orizu install-skill --help
+   npx orizu capabilities --json
    ```
    Confirm the published help output includes:
+   - `install-skill [--target <target>]`
    - `tasks create --assignees <userIdOrEmail1,userIdOrEmail2>`
    - dataset mutation commands: `append`, `edit-rows`, `delete-rows`, `lock`, and `clone`
 
 ## Post-Publish Operator Checks
 
 - Run `npx orizu --help` and confirm the published package matches the repo command surface.
+- Run `npx orizu install-skill --target agent-user --dry-run` and confirm the bundled skill resolves from the npm package.
 - Run `orizu teams members list --team <team>` and confirm the table shows `MEMBER ID`, `USER ID`, `EMAIL`, and `ROLE`.
 - Run `orizu tasks create --assignees <email-or-user-id>` and confirm task creation still stores canonical user IDs server-side.
 
@@ -57,5 +62,9 @@ Set these in this source repo:
   ```
 - Skills:
   ```bash
-  npx skills add <owner>/<mirror-repo>
+  npx orizu install-skill --target agent-user --yes
   ```
+
+The mirror still publishes the raw `skills/` tree for users who want to inspect
+or install skills manually, but the first-party CLI install command is the
+primary supported path.

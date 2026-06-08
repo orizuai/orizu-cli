@@ -1,0 +1,4 @@
+# Transient vendored trees created by prepack (skills/, gepa-python) and
+# removed by postpack. Never commit them; npm's `files` allowlist still packs
+# them into the published tarball regardless of this ignore.
+vendor/

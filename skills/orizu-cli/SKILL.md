@@ -22,6 +22,8 @@ Skip this skill when:
 
 - Node.js 20+ installed.
 - Install the CLI: `npm i -g orizu`.
+- Install this skill from the CLI package: `orizu install-skill --target agent-user --yes`.
+- Rediscover the command surface any time with `orizu --help`, `orizu <group> --help`, or `orizu capabilities --json`.
 - Login callback requires `127.0.0.1:43123`.
 - Credentials are stored at `~/.config/orizu/credentials.json`.
 - Current `orizu login` creates a user-owned personal access token for the CLI and stores it as a v3 API-key credential. The raw token is not recoverable after creation.

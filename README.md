@@ -35,11 +35,15 @@ Install the CLI globally with your package manager:
 | pnpm | `pnpm add -g orizu` |
 | Bun | `bun add -g orizu` |
 
-Install the companion coding agent skill using [Skills.sh](https://skills.sh).
+Install the companion coding-agent skill from the CLI package:
 
 ```bash
-npx skills add raveeshbhalla/orizu-cli --skill orizu-cli
+orizu install-skill --target agent-user --yes
 ```
+
+The npm package ships the skill alongside the CLI. Use `orizu install-skill --help`
+to see all supported targets, including Codex project, Claude user/project, and
+`AGENTS.md` installs.
 
 ## Authentication
 
@@ -70,6 +74,17 @@ orizu logout
   <tr>
     <th>Task</th>
     <th>Command</th>
+  </tr>
+  <tr>
+    <td colspan="2"><strong>Agent setup</strong></td>
+  </tr>
+  <tr>
+    <td>Install the bundled agent skill</td>
+    <td><code>orizu install-skill --target agent-user --yes</code></td>
+  </tr>
+  <tr>
+    <td>Inspect CLI capabilities as JSON</td>
+    <td><code>orizu capabilities --json</code></td>
   </tr>
   <tr>
     <td colspan="2"><strong>Teams</strong></td>

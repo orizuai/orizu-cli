@@ -38,6 +38,24 @@ ORIZU_BASE_URL=https://<preview-domain> orizu login
 
 ## Install / Build
 
+From npm:
+
+```bash
+npm i -g orizu
+orizu install-skill --target agent-user --yes
+orizu --help
+```
+
+The npm package includes the `orizu-cli` coding-agent skill. The install command
+can write the skill to user-level agent paths, project-level Codex/Claude paths,
+or a managed `AGENTS.md` section:
+
+```bash
+orizu install-skill --help
+orizu install-skill --target codex-project --target agents-md
+orizu capabilities --json
+```
+
 From this repository:
 
 ```bash
@@ -112,6 +130,39 @@ Multi-instance deployments should move the same policies to shared storage
 before relying on them as a global edge-wide limit.
 
 ## Command Reference
+
+Use `orizu --help`, `orizu <group> --help`, or
+`orizu <group> <command> --help` for command-specific usage, options, and
+examples. Agents and scripts can run `orizu capabilities --json` for a structured
+command manifest.
+
+## Agent Setup
+
+### Install bundled skill
+
+```bash
+orizu install-skill --target agent-user --yes
+```
+
+Targets:
+
+- `agent-user`: `~/.agents/skills/orizu-cli`
+- `codex-project`: `./.codex/skills/orizu-cli`
+- `claude-user`: `~/.claude/skills/orizu-cli`
+- `claude-project`: `./.claude/skills/orizu-cli`
+- `agents-md`: managed Orizu CLI section in `./AGENTS.md`
+
+Options:
+
+- `--target <target>` can be repeated.
+- `--yes` replaces an existing managed install without prompting.
+- `--dry-run` prints planned writes without changing files.
+
+Alias:
+
+```bash
+orizu skills install --target agent-user --yes
+```
 
 ## Teams
 
