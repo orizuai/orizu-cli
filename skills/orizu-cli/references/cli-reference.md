@@ -232,12 +232,13 @@ For prompts, judges, runners, run submission, optimizer artifacts, live event lo
 Optimization trace commands:
 
 ```bash
-orizu optimizations run-gepa ... [--log-dir logs] [--no-local-log]
+orizu optimizations run-gepa ... [--num-threads auto|N] [--log-dir logs] [--no-local-log]
 orizu optimizations export <optimization-run-id> --out ./optimization.json
 orizu optimizations export <optimization-run-id> --json
 ```
 
 Behavior:
+- `run-gepa` defaults `--num-threads` to `auto`, resolving a conservative row-evaluation parallelism cap from mini-batch size, validation-set size, CPU count, memory estimate, file-descriptor limit, and an 8-thread hard cap.
 - `run-gepa` writes a complete local trace under `logs/<optimization_run_id>` by default.
 - The local trace is the best artifact for coding-agent analysis because it includes full rows, outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, candidate text, and `result.json`.
 - `optimizations export` writes a portable JSON artifact from server data when the local log is unavailable or the run happened elsewhere.

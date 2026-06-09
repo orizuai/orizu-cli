@@ -84,7 +84,7 @@ Report:
 - Acceptance rate by iteration. Many rejections suggest reflection is exploring but not finding hills; many acceptances suggest it is climbing a real signal.
 - Budget state. If budget was exhausted, the run paused before auto-promotion; manually decide whether to promote/finish. If max iterations was reached with budget remaining, the run likely converged under the configured search.
 - `scoreOverTime` / validation trajectory. Still climbing at the end suggests raising budget or iterations. Plateaued curves point toward scorer, feedback, or data work upstream.
-- Reflection model, inference model, scorer model, provider settings, minibatch size, budget preset/limit, candidate selection strategy, seed, and cache settings.
+- Reflection model, inference model, scorer model, provider settings, minibatch size, resolved thread count, budget preset/limit, candidate selection strategy, seed, and cache settings.
 
 ### 5. Recommendations
 

@@ -4,9 +4,13 @@ import dataclasses
 import hashlib
 import json
 import math
+import os
 import random
+import subprocess
+import sys
 import time
 import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -39,6 +43,31 @@ Based on your analysis, produce a new parameter value that addresses the identif
 Return only the complete updated parameter text, exactly as it should be used by the system.
 Do not include analysis, explanation, labels, XML tags, or a surrounding markdown code fence.
 Your response will be used verbatim as the next candidate."""
+
+AUTO_NUM_THREADS_HARD_CAP = 8
+AUTO_NUM_THREADS_WORKER_MEMORY_BYTES = 512 * 1024 * 1024
+AUTO_NUM_THREADS_MEMORY_RESERVE_BYTES = 1024 * 1024 * 1024
+AUTO_NUM_THREADS_FD_HEADROOM = 64
+AUTO_NUM_THREADS_FDS_PER_WORKER = 16
+
+
+@dataclass(frozen=True)
+class NumThreadsPlan:
+    requested: int | str
+    resolved: int
+    row_bound: int
+    cpu_bound: int
+    memory_bound: int | None
+    fd_bound: int | None
+    hard_cap: int
+    worker_memory_bytes: int
+    available_memory_bytes: int | None
+    total_memory_bytes: int | None
+    memory_reserve_bytes: int | None
+    limiting_factor: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
 
 
 @dataclass(frozen=True)
@@ -212,6 +241,7 @@ class TextGepaConfig:
     budget: str = "light"
     max_iterations: int = 3
     minibatch_size: int = 3
+    num_threads: int | str = "auto"
     candidate_selection_strategy: str = "pareto"
     epsilon: float = 0.1
     max_metric_calls: int | None = None
@@ -354,6 +384,229 @@ def _scorer_version_id(scorer_context: PromptContext) -> str:
 
 def _metric_key(scorer_context: PromptContext) -> str:
     return scorer_context.metric_key or "score"
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _proc_meminfo_bytes(key: str) -> int | None:
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.startswith(f"{key}:"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    return int(parts[1]) * 1024
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _sysconf_memory_bytes(pages_name: str) -> int | None:
+    try:
+        pages = os.sysconf(pages_name)
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return None
+    if not isinstance(pages, int) or not isinstance(page_size, int):
+        return None
+    if pages <= 0 or page_size <= 0:
+        return None
+    return pages * page_size
+
+
+def _darwin_available_memory_bytes() -> int | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        output = subprocess.check_output(["vm_stat"], text=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    lines = output.splitlines()
+    if not lines:
+        return None
+    page_size_marker = "page size of "
+    if page_size_marker not in lines[0]:
+        return None
+    try:
+        page_size = int(lines[0].split(page_size_marker, 1)[1].split()[0])
+    except (IndexError, ValueError):
+        return None
+
+    available_pages = 0
+    available_keys = {
+        "Pages free",
+        "Pages inactive",
+        "Pages speculative",
+        "Pages purgeable",
+    }
+    for line in lines[1:]:
+        key, separator, value = line.partition(":")
+        if separator != ":" or key not in available_keys:
+            continue
+        normalized_value = value.strip().rstrip(".").replace(",", "")
+        try:
+            available_pages += int(normalized_value)
+        except ValueError:
+            continue
+    return available_pages * page_size if available_pages > 0 else None
+
+
+def _available_memory_bytes() -> int | None:
+    return (
+        _proc_meminfo_bytes("MemAvailable")
+        or _darwin_available_memory_bytes()
+        or _sysconf_memory_bytes("SC_AVPHYS_PAGES")
+        or _total_memory_bytes()
+    )
+
+
+def _total_memory_bytes() -> int | None:
+    return _proc_meminfo_bytes("MemTotal") or _sysconf_memory_bytes("SC_PHYS_PAGES")
+
+
+def _open_file_soft_limit() -> int | None:
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return None
+    if soft_limit <= 0 or soft_limit == resource.RLIM_INFINITY:
+        return None
+    return int(soft_limit)
+
+
+def _parse_requested_num_threads(requested: int | str) -> int | str:
+    if isinstance(requested, int):
+        if requested <= 0:
+            raise ValueError("num_threads must be positive or 'auto'")
+        return requested
+    if isinstance(requested, str):
+        normalized = requested.strip().lower()
+        if normalized == "auto":
+            return "auto"
+        try:
+            parsed = int(normalized)
+        except ValueError as exc:
+            raise ValueError("num_threads must be positive or 'auto'") from exc
+        if parsed <= 0:
+            raise ValueError("num_threads must be positive or 'auto'")
+        return parsed
+    raise ValueError("num_threads must be positive or 'auto'")
+
+
+def resolve_num_threads(
+    requested: int | str,
+    *,
+    minibatch_size: int,
+    validation_count: int,
+    cpu_count: int | None = None,
+    available_memory_bytes: int | None = None,
+    total_memory_bytes: int | None = None,
+    fd_limit: int | None = None,
+    hard_cap: int | None = None,
+    worker_memory_bytes: int | None = None,
+) -> NumThreadsPlan:
+    """Resolve an explicit or automatic row-evaluation thread count for one GEPA run."""
+    parsed = _parse_requested_num_threads(requested)
+    row_bound = max(1, max(minibatch_size, validation_count))
+    detected_cpu_count = cpu_count if cpu_count is not None else os.cpu_count()
+    cpu_bound = max(1, detected_cpu_count or 1)
+    resolved_hard_cap = hard_cap or _positive_int_env(
+        "ORIZU_GEPA_AUTO_THREADS_MAX",
+        AUTO_NUM_THREADS_HARD_CAP,
+    )
+    resolved_worker_memory_bytes = worker_memory_bytes or (
+        _positive_int_env(
+            "ORIZU_GEPA_WORKER_MEMORY_MB",
+            AUTO_NUM_THREADS_WORKER_MEMORY_BYTES // (1024 * 1024),
+        ) * 1024 * 1024
+    )
+
+    detected_total_memory_bytes = (
+        total_memory_bytes if total_memory_bytes is not None else _total_memory_bytes()
+    )
+    detected_available_memory_bytes = (
+        available_memory_bytes
+        if available_memory_bytes is not None
+        else _available_memory_bytes()
+    )
+    memory_reserve_bytes = None
+    memory_bound = None
+    if detected_available_memory_bytes is not None:
+        total_reserve = (
+            detected_total_memory_bytes // 4
+            if detected_total_memory_bytes is not None
+            else 0
+        )
+        memory_reserve_bytes = max(AUTO_NUM_THREADS_MEMORY_RESERVE_BYTES, total_reserve)
+        usable_memory_bytes = max(0, detected_available_memory_bytes - memory_reserve_bytes)
+        memory_bound = max(1, usable_memory_bytes // max(1, resolved_worker_memory_bytes))
+
+    detected_fd_limit = fd_limit if fd_limit is not None else _open_file_soft_limit()
+    fd_bound = None
+    if detected_fd_limit is not None:
+        usable_fds = max(0, detected_fd_limit - AUTO_NUM_THREADS_FD_HEADROOM)
+        fd_bound = max(1, usable_fds // AUTO_NUM_THREADS_FDS_PER_WORKER)
+
+    if parsed != "auto":
+        return NumThreadsPlan(
+            requested=requested,
+            resolved=parsed,
+            row_bound=row_bound,
+            cpu_bound=cpu_bound,
+            memory_bound=memory_bound,
+            fd_bound=fd_bound,
+            hard_cap=resolved_hard_cap,
+            worker_memory_bytes=resolved_worker_memory_bytes,
+            available_memory_bytes=detected_available_memory_bytes,
+            total_memory_bytes=detected_total_memory_bytes,
+            memory_reserve_bytes=memory_reserve_bytes,
+            limiting_factor="explicit",
+        )
+
+    limits = {
+        "rows": row_bound,
+        "cpu": cpu_bound,
+        "hard_cap": resolved_hard_cap,
+    }
+    if memory_bound is not None:
+        limits["memory"] = memory_bound
+    if fd_bound is not None:
+        limits["file_descriptors"] = fd_bound
+    resolved = max(1, min(limits.values()))
+    limiting_factor = next(
+        name
+        for name in ("rows", "cpu", "memory", "file_descriptors", "hard_cap")
+        if limits.get(name) == resolved
+    )
+    return NumThreadsPlan(
+        requested=requested,
+        resolved=resolved,
+        row_bound=row_bound,
+        cpu_bound=cpu_bound,
+        memory_bound=memory_bound,
+        fd_bound=fd_bound,
+        hard_cap=resolved_hard_cap,
+        worker_memory_bytes=resolved_worker_memory_bytes,
+        available_memory_bytes=detected_available_memory_bytes,
+        total_memory_bytes=detected_total_memory_bytes,
+        memory_reserve_bytes=memory_reserve_bytes,
+        limiting_factor=limiting_factor,
+    )
 
 
 def _is_better(challenger: float, incumbent: float, higher_is_better: bool) -> bool:
@@ -604,9 +857,13 @@ def evaluate_candidate(
     scorer_runner: ScorerRunner,
     budget: Budget,
     evaluation_cache: EvaluationCache | None = None,
+    num_threads: int = 1,
 ) -> list[RowEvaluation]:
-    evaluations: list[RowEvaluation] = []
-    for row in rows:
+    """Evaluate one candidate over rows, preserving row order while parallelizing uncached calls."""
+    evaluations_by_index: dict[int, RowEvaluation] = {}
+    pending: list[tuple[int, DatasetRow, str | None]] = []
+
+    for index, row in enumerate(rows):
         cache_key = None
         if evaluation_cache is not None:
             cache_key = evaluation_cache.key(
@@ -618,9 +875,12 @@ def evaluate_candidate(
             )
             cached = evaluation_cache.get(cache_key)
             if cached is not None:
-                evaluations.append(cached)
+                evaluations_by_index[index] = cached
                 continue
 
+        pending.append((index, row, cache_key))
+
+    def run_uncached_row(index: int, row: DatasetRow, cache_key: str | None) -> tuple[int, str | None, RowEvaluation]:
         started = time.time()
         candidate_result = candidate_runner(candidate_text, row, prompt_context, candidate_id)
         scorer_result = scorer_runner(row, candidate_result, scorer_context, candidate_id)
@@ -647,11 +907,57 @@ def evaluate_candidate(
             if candidate_result.cost_usd is not None or scorer_result.cost_usd is not None else None,
             error=candidate_result.error or scorer_result.error,
         )
-        evaluations.append(evaluation)
+        return index, cache_key, evaluation
+
+    worker_count = max(1, min(max(1, num_threads), len(pending) or 1))
+    if worker_count == 1:
+        completed = [run_uncached_row(index, row, cache_key) for index, row, cache_key in pending]
+    else:
+        completed = []
+        next_pending_index = 0
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        futures = set()
+
+        def submit_next_pending() -> bool:
+            nonlocal next_pending_index
+            if next_pending_index >= len(pending):
+                return False
+            index, row, cache_key = pending[next_pending_index]
+            next_pending_index += 1
+            futures.add(executor.submit(run_uncached_row, index, row, cache_key))
+            return True
+
+        try:
+            for _ in range(worker_count):
+                if not submit_next_pending():
+                    break
+            while futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                batch = []
+                for future in done:
+                    futures.remove(future)
+                    batch.append(future.result())
+                completed.extend(batch)
+                for _ in batch:
+                    submit_next_pending()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=True)
+            raise
+        else:
+            executor.shutdown(wait=True)
+
+    for index, cache_key, evaluation in completed:
+        evaluations_by_index[index] = evaluation
         if evaluation_cache is not None and cache_key is not None:
             evaluation_cache.set(cache_key, evaluation)
         budget.used_metric_calls += 1
-    return evaluations
+
+    return [
+        evaluations_by_index[index]
+        for index in sorted(evaluations_by_index)
+    ]
 
 
 def _completed_all_rows(results: list[RowEvaluation], rows: list[DatasetRow]) -> bool:
@@ -678,6 +984,11 @@ def optimize_loaded_text_candidate(
         trainset_size=len(trainset),
         valset_size=len(valset),
         num_components=1,
+    )
+    num_threads_plan = resolve_num_threads(
+        config.num_threads,
+        minibatch_size=config.minibatch_size,
+        validation_count=len(valset),
     )
     evaluation_cache = EvaluationCache() if config.cache_evaluations else None
     candidate_text_by_id = {"seed": seed_text}
@@ -706,6 +1017,7 @@ def optimize_loaded_text_candidate(
             "train_count": len(trainset),
             "validation_count": len(valset),
             "config": dataclasses.asdict(config),
+            "num_threads": num_threads_plan.to_payload(),
             "budget": budget.to_payload(),
         })
 
@@ -726,6 +1038,7 @@ def optimize_loaded_text_candidate(
             scorer_runner=scorer_runner,
             budget=budget,
             evaluation_cache=evaluation_cache,
+            num_threads=num_threads_plan.resolved,
         )
         if local_logger is not None:
             local_logger.append_evaluations(
@@ -843,6 +1156,7 @@ def optimize_loaded_text_candidate(
                 scorer_runner=scorer_runner,
                 budget=budget,
                 evaluation_cache=evaluation_cache,
+                num_threads=num_threads_plan.resolved,
             )
             if local_logger is not None:
                 local_logger.append_evaluations(
@@ -1017,6 +1331,7 @@ def optimize_loaded_text_candidate(
                 scorer_runner=scorer_runner,
                 budget=budget,
                 evaluation_cache=evaluation_cache,
+                num_threads=num_threads_plan.resolved,
             )
             if local_logger is not None:
                 local_logger.append_evaluations(
@@ -1099,6 +1414,7 @@ def optimize_loaded_text_candidate(
                     scorer_runner=scorer_runner,
                     budget=budget,
                     evaluation_cache=evaluation_cache,
+                    num_threads=num_threads_plan.resolved,
                 )
                 if local_logger is not None:
                     local_logger.append_evaluations(

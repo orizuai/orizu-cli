@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from orizu_gepa.optimizer import (
     _sample_minibatch,
     _score_from_scorer,
     _select_parent_candidate_id,
+    resolve_num_threads,
 )
 from orizu_gepa.reflection import build_anthropic_reflection_payload, build_openai_reflection_payload
 
@@ -115,6 +117,8 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(run_started["payload"]["scorer_prompt_version_id"], "scorer-prompt-version-1")
         self.assertEqual(run_started["payload"]["metric_key"], "accuracy")
         self.assertTrue(run_started["payload"]["higher_is_better"])
+        self.assertEqual(run_started["payload"]["config"]["num_threads"], "auto")
+        self.assertGreaterEqual(run_started["payload"]["num_threads"]["resolved"], 1)
         self.assertIn("seed_val_set_completed", event_types)
         self.assertIn("iteration_started", event_types)
         self.assertIn("parent_minibatch_completed", event_types)
@@ -756,6 +760,108 @@ class OptimizerTests(unittest.TestCase):
 
         self.assertEqual(client.calls, 2)
 
+    def test_auto_num_threads_respects_rows_and_resources(self):
+        plan = resolve_num_threads(
+            "auto",
+            minibatch_size=8,
+            validation_count=50,
+            cpu_count=32,
+            available_memory_bytes=3 * 1024 * 1024 * 1024,
+            total_memory_bytes=8 * 1024 * 1024 * 1024,
+            fd_limit=256,
+            hard_cap=16,
+            worker_memory_bytes=512 * 1024 * 1024,
+        )
+
+        self.assertEqual(plan.resolved, 2)
+        self.assertEqual(plan.limiting_factor, "memory")
+        self.assertEqual(plan.row_bound, 50)
+        self.assertEqual(plan.cpu_bound, 32)
+        self.assertEqual(plan.fd_bound, 12)
+
+    def test_explicit_num_threads_is_preserved(self):
+        plan = resolve_num_threads(
+            12,
+            minibatch_size=2,
+            validation_count=3,
+            cpu_count=2,
+            available_memory_bytes=2 * 1024 * 1024 * 1024,
+            total_memory_bytes=8 * 1024 * 1024 * 1024,
+            fd_limit=128,
+            hard_cap=4,
+            worker_memory_bytes=1024 * 1024 * 1024,
+        )
+
+        self.assertEqual(plan.resolved, 12)
+        self.assertEqual(plan.limiting_factor, "explicit")
+
+    def test_parallel_evaluation_preserves_row_order(self):
+        from orizu_gepa.optimizer import evaluate_candidate
+
+        rows = [
+            DatasetRow("row-1", {"delay": 0.03}),
+            DatasetRow("row-2", {"delay": 0.01}),
+            DatasetRow("row-3", {"delay": 0.02}),
+        ]
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            time.sleep(row.row["delay"])
+            return RunnerCallResult(model_response={"row_id": row.id})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 1.0})
+
+        results = evaluate_candidate(
+            candidate_text="candidate",
+            candidate_id="candidate-1",
+            rows=rows,
+            split="validation",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            budget=Budget("max_metric_calls", 10),
+            num_threads=3,
+        )
+
+        self.assertEqual([result.row_id for result in results], ["row-1", "row-2", "row-3"])
+
+    def test_parallel_evaluation_does_not_submit_all_rows_after_failure(self):
+        from orizu_gepa.optimizer import evaluate_candidate
+
+        rows = [
+            DatasetRow(f"row-{index}", {})
+            for index in range(1, 8)
+        ]
+        calls = []
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            calls.append(row.id)
+            if row.id == "row-1":
+                raise RuntimeError("boom")
+            time.sleep(0.05)
+            return RunnerCallResult(model_response={"row_id": row.id})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 1.0})
+
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            evaluate_candidate(
+                candidate_text="candidate",
+                candidate_id="candidate-1",
+                rows=rows,
+                split="validation",
+                prompt_context=self.prompt,
+                scorer_context=self.scorer,
+                candidate_runner=candidate_runner,
+                scorer_runner=scorer_runner,
+                budget=Budget("max_metric_calls", 100),
+                num_threads=2,
+            )
+
+        self.assertLessEqual(len(calls), 2)
+        self.assertNotIn("row-3", calls)
+
     def test_metric_call_budget_counts_uncached_rows_without_truncating_batch(self):
         calls = 0
         rows = [
@@ -785,6 +891,7 @@ class OptimizerTests(unittest.TestCase):
             candidate_runner=candidate_runner,
             scorer_runner=scorer_runner,
             budget=budget,
+            num_threads=3,
         )
 
         self.assertEqual(calls, 3)

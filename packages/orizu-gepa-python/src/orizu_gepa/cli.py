@@ -19,6 +19,12 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def num_threads_arg(value: str) -> int | str:
+    if value.strip().lower() == "auto":
+        return "auto"
+    return positive_int(value)
+
+
 def read_text_arg(value: str | None) -> str | None:
     if value is None:
         return None
@@ -57,6 +63,7 @@ def main() -> None:
     parser.add_argument("--budget", default="light", choices=["auto", "light", "medium", "heavy"])
     parser.add_argument("--max-iterations", type=positive_int, default=3)
     parser.add_argument("--minibatch-size", type=positive_int, default=3)
+    parser.add_argument("--num-threads", type=num_threads_arg, default=TextGepaConfig.num_threads)
     parser.add_argument(
         "--candidate-selection-strategy",
         default=TextGepaConfig.candidate_selection_strategy,
@@ -102,6 +109,7 @@ def main() -> None:
         budget=args.budget,
         max_iterations=args.max_iterations,
         minibatch_size=args.minibatch_size,
+        num_threads=args.num_threads,
         candidate_selection_strategy=args.candidate_selection_strategy,
         epsilon=args.epsilon,
         max_metric_calls=args.max_metric_calls,
@@ -153,6 +161,7 @@ def main() -> None:
         "dataset_size": len(trainset) + len(valset),
         "train_count": len(trainset),
         "validation_count": len(valset),
+        "num_threads": args.num_threads,
     }
 
     run_id = client.start_run(

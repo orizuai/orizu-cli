@@ -609,13 +609,15 @@ orizu --local optimizations run-gepa \
   --log-dir ./logs \
   --budget light \
   --max-iterations 3 \
-  --minibatch-size 3
+  --minibatch-size 3 \
+  --num-threads auto
 ```
 
 Useful GEPA flags:
 
 - `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`.
 - `--minibatch-size <n>` defaults to 3.
+- `--num-threads auto|N` defaults to `auto`; auto caps row-evaluation concurrency from mini-batch size, validation-set size, CPU count, memory estimate, file-descriptor limit, and an 8-thread hard cap.
 - `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`.
 - `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
 - `--reflection-max-tokens <n>` is explicit provider config, not a global default. It maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI can omit it unless the user wants a cap.
