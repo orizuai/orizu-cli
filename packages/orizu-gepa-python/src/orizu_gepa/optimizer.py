@@ -113,6 +113,34 @@ class ReflectionResult:
     candidate_text: str
 
 
+def _dspy_auto_metric_budget(
+    *,
+    num_components: int,
+    num_candidates: int,
+    valset_size: int,
+    minibatch_size: int = 35,
+    full_eval_steps: int = 5,
+) -> int:
+    if num_candidates <= 0:
+        raise ValueError("num_candidates must be > 0.")
+    if num_components < 0 or valset_size < 0 or minibatch_size < 0:
+        raise ValueError("num_components, valset_size, and minibatch_size must be >= 0.")
+    if full_eval_steps < 1:
+        raise ValueError("full_eval_steps must be >= 1.")
+
+    num_trials = int(max(2 * (num_components * 2) * math.log2(num_candidates), 1.5 * num_candidates))
+    total = valset_size
+    total += num_candidates * 5
+    total += num_trials * minibatch_size
+    if num_trials == 0:
+        return total
+
+    periodic_fulls = (num_trials + 1) // full_eval_steps + 1
+    extra_final = 1 if num_trials < full_eval_steps else 0
+    total += (periodic_fulls + extra_final) * valset_size
+    return total
+
+
 @dataclass
 class Budget:
     budget_kind: str
@@ -122,20 +150,35 @@ class Budget:
     used_candidate_proposals: int = 0
 
     @classmethod
-    def from_config(cls, config: "TextGepaConfig") -> "Budget":
+    def from_config(
+        cls,
+        config: "TextGepaConfig",
+        *,
+        trainset_size: int = 0,
+        valset_size: int = 0,
+        num_components: int = 1,
+    ) -> "Budget":
         if config.max_metric_calls is not None:
             return cls("max_metric_calls", config.max_metric_calls)
         if config.max_full_evals is not None:
-            return cls("max_full_evals", config.max_full_evals)
+            return cls("max_metric_calls", config.max_full_evals * (trainset_size + valset_size))
         if config.max_candidate_proposals is not None:
             return cls("max_candidate_proposals", config.max_candidate_proposals)
-        preset_metric_calls = {
-            "auto": 64,
-            "light": 48,
-            "medium": 96,
-            "high": 192,
-        }.get(config.budget, 48)
-        return cls("max_metric_calls", preset_metric_calls)
+        preset = "medium" if config.budget == "auto" else config.budget
+        preset_candidates = {
+            "light": 6,
+            "medium": 12,
+            "heavy": 18,
+            "high": 18,
+        }.get(preset, 6)
+        return cls(
+            "max_metric_calls",
+            _dspy_auto_metric_budget(
+                num_components=num_components,
+                num_candidates=preset_candidates,
+                valset_size=valset_size,
+            ),
+        )
 
     @property
     def used(self) -> int:
@@ -151,9 +194,6 @@ class Budget:
 
     def allows_iteration(self) -> bool:
         return self.remaining > 0
-
-    def allows_metric_call(self) -> bool:
-        return self.budget_kind != "max_metric_calls" or self.remaining > 0
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -567,9 +607,6 @@ def evaluate_candidate(
 ) -> list[RowEvaluation]:
     evaluations: list[RowEvaluation] = []
     for row in rows:
-        if not budget.allows_metric_call():
-            break
-
         cache_key = None
         if evaluation_cache is not None:
             cache_key = evaluation_cache.key(
@@ -636,7 +673,12 @@ def optimize_loaded_text_candidate(
     local_logger: Any | None = None,
 ) -> TextGepaResult:
     seed_text = prompt_context.body or ""
-    budget = Budget.from_config(config)
+    budget = Budget.from_config(
+        config,
+        trainset_size=len(trainset),
+        valset_size=len(valset),
+        num_components=1,
+    )
     evaluation_cache = EvaluationCache() if config.cache_evaluations else None
     candidate_text_by_id = {"seed": seed_text}
     val_scores_by_candidate: dict[str, dict[str, float]] = {}
@@ -694,7 +736,7 @@ def optimize_loaded_text_candidate(
                 results=seed_results,
             )
         if not _completed_all_rows(seed_results, valset):
-            raise RuntimeError("Budget exhausted before seed validation completed")
+            raise RuntimeError("Seed validation did not complete all requested rows")
         budget.used_full_evals += 1
         seed_score = _mean(seed_results)
         val_scores_by_candidate["seed"] = {result.row_id: result.score for result in seed_results}
@@ -725,6 +767,20 @@ def optimize_loaded_text_candidate(
             candidate_id=best_candidate_id,
         )
         event_sink.log_event("budget_updated", budget.to_payload(), event_layer="extension")
+        if not budget.allows_iteration():
+            event_sink.log_event(
+                "budget_exhausted",
+                {
+                    "stage": "seed_val_set_completed",
+                    "requested_rows": len(valset),
+                    "completed_rows": len(seed_results),
+                    "budget": budget.to_payload(),
+                    "decision_rule": "budget is checked only after completing seed validation or a full iteration",
+                },
+                event_layer="extension",
+                candidate_id="seed",
+            )
+            budget_exhausted = True
 
         for iteration in range(1, config.max_iterations + 1):
             if not budget.allows_iteration():
@@ -863,6 +919,21 @@ def optimize_loaded_text_candidate(
                     iteration=iteration,
                     candidate_id=best_candidate_id,
                 )
+                if iteration < config.max_iterations and not budget.allows_iteration():
+                    event_sink.log_event(
+                        "budget_exhausted",
+                        {
+                            "stage": "iteration_completed",
+                            "completed_iteration": iteration,
+                            "budget": budget.to_payload(),
+                            "decision_rule": "budget is checked only between iterations",
+                        },
+                        event_layer="extension",
+                        iteration=iteration,
+                        candidate_id=best_candidate_id,
+                    )
+                    budget_exhausted = True
+                    break
                 continue
 
             event_sink.log_event(
@@ -1152,6 +1223,21 @@ def optimize_loaded_text_candidate(
                 iteration=iteration,
                 candidate_id=best_candidate_id,
             )
+            if iteration < config.max_iterations and not budget.allows_iteration():
+                event_sink.log_event(
+                    "budget_exhausted",
+                    {
+                        "stage": "iteration_completed",
+                        "completed_iteration": iteration,
+                        "budget": budget.to_payload(),
+                        "decision_rule": "budget is checked only between iterations",
+                    },
+                    event_layer="extension",
+                    iteration=iteration,
+                    candidate_id=best_candidate_id,
+                )
+                budget_exhausted = True
+                break
 
         if budget_exhausted:
             event_sink.log_event(

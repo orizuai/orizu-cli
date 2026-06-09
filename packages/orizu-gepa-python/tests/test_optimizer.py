@@ -19,6 +19,7 @@ from orizu_gepa.optimizer import (
     build_reflection_prompt,
     extract_candidate_text,
     optimize_loaded_text_candidate,
+    _dspy_auto_metric_budget,
     _pareto_payload,
     _parent_selection_payload,
     _sample_minibatch,
@@ -428,6 +429,44 @@ class OptimizerTests(unittest.TestCase):
         self.assertIn("child_candidate_created", event_types)
         self.assertNotIn("reflection_skipped", event_types)
 
+    def test_final_perfect_parent_skip_can_succeed_after_metric_budget_exhausts(self):
+        sink = FakeSink()
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 1.0, "feedback": "perfect"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="new",
+                candidate_text="new",
+            )
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertIn("reflection_skipped", event_types)
+        self.assertNotIn("budget_exhausted", event_types)
+        self.assertNotIn("run_paused", event_types)
+        self.assertIn("run_completed", event_types)
+        self.assertEqual(sink.finished["status"], "succeeded")
+        self.assertEqual(result.best_candidate_id, "seed")
+        self.assertGreater(result.budget.used_metric_calls, result.budget.limit)
+
     def test_default_minibatch_size_is_three(self):
         rows = [DatasetRow(f"train-{index}", {"index": index}) for index in range(5)]
 
@@ -542,14 +581,15 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(parent_events[0]["payload"]["cache_hits"], 0)
         self.assertEqual(parent_events[1]["payload"]["cache_hits"], 3)
 
-    def test_pauses_without_materializing_partial_minibatch_when_budget_exhausts(self):
+    def test_completes_started_iteration_even_when_metric_budget_exhausts(self):
         sink = FakeSink()
 
         def candidate_runner(candidate_text, row, prompt_context, candidate_id):
             return RunnerCallResult(model_response={"answer": candidate_text})
 
         def scorer_runner(row, candidate_result, scorer_context, candidate_id):
-            return RunnerCallResult(model_response={"score": 1.0, "feedback": "ok"})
+            score = 1.0 if candidate_result.model_response["answer"] == "new" else 0.0
+            return RunnerCallResult(model_response={"score": score, "feedback": f"score={score}"})
 
         def reflector(parent_text, parent_results, config):
             return ReflectionResult(
@@ -568,15 +608,58 @@ class OptimizerTests(unittest.TestCase):
             scorer_runner=scorer_runner,
             reflector=reflector,
             event_sink=sink,
-            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3),
+            config=TextGepaConfig(max_iterations=2, minibatch_size=2, max_metric_calls=3),
         )
 
         event_types = [event["event_type"] for event in sink.events]
         self.assertIn("budget_exhausted", event_types)
         self.assertIn("run_paused", event_types)
-        self.assertNotIn("parent_minibatch_completed", event_types)
+        self.assertIn("parent_minibatch_completed", event_types)
+        self.assertIn("child_minibatch_completed", event_types)
+        self.assertIn("child_val_set_completed", event_types)
         self.assertEqual(sink.finished["status"], "paused")
-        self.assertEqual(result.best_candidate_id, "seed")
+        self.assertNotEqual(result.best_candidate_id, "seed")
+        self.assertGreater(result.budget.used_metric_calls, result.budget.limit)
+        child_val = next(event for event in sink.events if event["event_type"] == "child_val_set_completed")
+        self.assertEqual(len(child_val["payload"]["row_results"]), len(self.valset))
+
+    def test_final_iteration_can_succeed_after_metric_budget_exhausts(self):
+        sink = FakeSink()
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == "new" else 0.0
+            return RunnerCallResult(model_response={"score": score, "feedback": f"score={score}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="new",
+                candidate_text="new",
+            )
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3, auto_promote=True),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertNotIn("budget_exhausted", event_types)
+        self.assertNotIn("run_paused", event_types)
+        self.assertIn("run_completed", event_types)
+        self.assertEqual(sink.finished["status"], "succeeded")
+        self.assertEqual(result.promoted_prompt_version_id, "promoted-version-1")
+        self.assertGreater(result.budget.used_metric_calls, result.budget.limit)
 
     def test_scorer_cache_identity_uses_scorer_version_separately_from_prompt_version(self):
         first_scorer = PromptContext(
@@ -673,7 +756,7 @@ class OptimizerTests(unittest.TestCase):
 
         self.assertEqual(client.calls, 2)
 
-    def test_metric_call_budget_is_enforced_per_uncached_row(self):
+    def test_metric_call_budget_counts_uncached_rows_without_truncating_batch(self):
         calls = 0
         rows = [
             DatasetRow("row-1", {"expected": "ok"}),
@@ -704,9 +787,44 @@ class OptimizerTests(unittest.TestCase):
             budget=budget,
         )
 
-        self.assertEqual(calls, 1)
-        self.assertEqual(len(results), 1)
-        self.assertEqual(budget.used_metric_calls, 1)
+        self.assertEqual(calls, 3)
+        self.assertEqual(len(results), 3)
+        self.assertEqual(budget.used_metric_calls, 3)
+        self.assertEqual(budget.remaining, 0)
+
+    def test_budget_presets_use_dspy_auto_scale(self):
+        self.assertEqual(
+            Budget.from_config(TextGepaConfig(budget="light"), trainset_size=100, valset_size=20).limit,
+            _dspy_auto_metric_budget(num_components=1, num_candidates=6, valset_size=20),
+        )
+        self.assertEqual(
+            Budget.from_config(TextGepaConfig(budget="medium"), trainset_size=100, valset_size=20).limit,
+            _dspy_auto_metric_budget(num_components=1, num_candidates=12, valset_size=20),
+        )
+        self.assertEqual(
+            Budget.from_config(TextGepaConfig(budget="heavy"), trainset_size=100, valset_size=20).limit,
+            _dspy_auto_metric_budget(num_components=1, num_candidates=18, valset_size=20),
+        )
+        self.assertEqual(
+            Budget.from_config(TextGepaConfig(budget="high"), trainset_size=100, valset_size=20).limit,
+            Budget.from_config(TextGepaConfig(budget="heavy"), trainset_size=100, valset_size=20).limit,
+        )
+
+    def test_max_full_evals_maps_to_metric_call_budget_like_dspy(self):
+        budget = Budget.from_config(
+            TextGepaConfig(max_full_evals=2),
+            trainset_size=7,
+            valset_size=3,
+        )
+
+        self.assertEqual(budget.budget_kind, "max_metric_calls")
+        self.assertEqual(budget.limit, 20)
+
+    def test_dspy_auto_metric_budget_validates_before_log_math(self):
+        with self.assertRaisesRegex(ValueError, "num_candidates must be > 0"):
+            _dspy_auto_metric_budget(num_components=1, num_candidates=0, valset_size=20)
+        with self.assertRaisesRegex(ValueError, "num_components, valset_size, and minibatch_size"):
+            _dspy_auto_metric_budget(num_components=-1, num_candidates=6, valset_size=20)
 
     def test_invalid_scorer_scores_raise_instead_of_becoming_zero(self):
         with self.assertRaisesRegex(ValueError, "numeric score"):

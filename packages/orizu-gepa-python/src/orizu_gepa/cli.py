@@ -54,7 +54,7 @@ def main() -> None:
     parser.add_argument("--split-set-id", required=True)
     parser.add_argument("--train-split", default="train")
     parser.add_argument("--val-split", default="validation")
-    parser.add_argument("--budget", default="light", choices=["auto", "light", "medium", "high"])
+    parser.add_argument("--budget", default="light", choices=["auto", "light", "medium", "heavy"])
     parser.add_argument("--max-iterations", type=positive_int, default=3)
     parser.add_argument("--minibatch-size", type=positive_int, default=3)
     parser.add_argument(

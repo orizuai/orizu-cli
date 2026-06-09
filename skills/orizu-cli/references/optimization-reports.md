@@ -130,9 +130,9 @@ Set an explicit expectation before the run: for example, "if best kappa does not
 
 ### Budget Versus Iteration Cap
 
-Default budget presets are metric-call budgets: `auto = 64`, `light = 48`, `medium = 96`, and `high = 192`, unless `--max-metric-calls`, `--max-full-evals`, or `--max-candidate-proposals` overrides them.
+Default budget presets are DSPy-style metric-call budgets. `light`, `medium`, and `heavy` map to DSPy's `auto="light"`, `auto="medium"`, and `auto="heavy"` scales; `auto` is treated as the balanced `medium` preset. The final metric-call limit scales with validation-set size, rather than using fixed tiny constants. `--max-metric-calls` overrides this directly, while `--max-full-evals` is converted to a metric-call budget over `train + validation` rows.
 
-Each iteration costs the minibatch evaluation plus full validation calls for accepted candidates, so medium budget can be exhausted well before a high `--max-iterations` target. If a run ends as `budget_exhausted`, it pauses and does not auto-promote. If auto-promotion matters, either increase budget to fit the iteration target or lower `--max-iterations` to fit the budget.
+Budget is checked only between iterations. Once an iteration starts, `run-gepa` completes the parent minibatch, child minibatch, and full validation eval for an accepted child even if that overshoots the nominal budget. If a run ends as `budget_exhausted`, it pauses and does not auto-promote. If auto-promotion matters, either increase budget to fit the iteration target or lower `--max-iterations` to fit the budget.
 
 ### Reflection Signal Quality
 

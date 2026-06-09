@@ -614,7 +614,7 @@ orizu --local optimizations run-gepa \
 
 Useful GEPA flags:
 
-- `--budget auto|light|medium|high`, `--max-metric-calls <n>`, `--max-full-evals <n>`.
+- `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`.
 - `--minibatch-size <n>` defaults to 3.
 - `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`.
 - `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
