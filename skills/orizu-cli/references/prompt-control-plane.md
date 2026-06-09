@@ -718,7 +718,8 @@ Rules:
 - `eventId` must be stable and unique within one optimization run.
 - `eventLayer` is `core`, `extension`, or `system`.
 - Generic core events: `run_started`, `iteration_started`, `candidate_proposed`, `candidate_scored`, `candidate_recommended`, `iteration_completed`, `run_completed`, `run_failed`.
-- GEPA extension events: `seed_val_set_started`, `seed_val_set_completed`, `parent_minibatch_started`, `parent_minibatch_completed`, `reflection_started`, `reflection_completed`, `child_candidate_created`, `child_minibatch_started`, `child_minibatch_completed`, `acceptance_decision_made`, `merge_started`, `merge_completed`.
+- GEPA extension events: `seed_val_set_started`, `seed_val_set_completed`, `parent_minibatch_started`, `parent_minibatch_completed`, `reflection_started`, `reflection_completed`, `child_candidate_created`, `child_minibatch_started`, `child_minibatch_completed`, `acceptance_decision_made`, `optimization_progress`, `merge_started`, `merge_completed`.
+- Emit `optimization_progress` after each completed iteration with `percent`, `metric_calls_used`, `metric_call_budget`, and `metric_calls_remaining`. Cap displayed `percent` at `100` and floor `metric_calls_remaining` at `0`; a started iteration may spend past the nominal metric-call budget before the optimizer pauses.
 - Do not send per-LM-call telemetry to this endpoint in Phase 0. Put aggregate call/token/cost stats in iteration or run payloads.
 
 Shell fallback:

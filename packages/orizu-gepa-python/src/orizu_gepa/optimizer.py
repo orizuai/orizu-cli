@@ -170,13 +170,35 @@ def _dspy_auto_metric_budget(
     return total
 
 
+def _approx_metric_calls_for_candidate_budget(
+    *,
+    candidate_proposals: int,
+    trainset_size: int,
+    valset_size: int,
+    minibatch_size: int,
+) -> int:
+    """Estimate row-level metric calls for proposal-count budgets."""
+    safe_proposals = max(0, candidate_proposals)
+    safe_valset_size = max(0, valset_size)
+    safe_trainset_size = max(0, trainset_size)
+    safe_minibatch_size = max(0, minibatch_size)
+    sampled_train_rows = min(safe_trainset_size, safe_minibatch_size)
+    per_iteration = (2 * sampled_train_rows) + safe_valset_size
+    return safe_valset_size + (safe_proposals * per_iteration)
+
+
 @dataclass
 class Budget:
     budget_kind: str
     limit: int
+    approx_metric_call_limit: int | None = None
     used_metric_calls: int = 0
     used_full_evals: int = 0
     used_candidate_proposals: int = 0
+
+    def __post_init__(self) -> None:
+        if self.approx_metric_call_limit is None and self.budget_kind == "max_metric_calls":
+            self.approx_metric_call_limit = self.limit
 
     @classmethod
     def from_config(
@@ -188,11 +210,29 @@ class Budget:
         num_components: int = 1,
     ) -> "Budget":
         if config.max_metric_calls is not None:
-            return cls("max_metric_calls", config.max_metric_calls)
+            return cls(
+                "max_metric_calls",
+                config.max_metric_calls,
+                approx_metric_call_limit=config.max_metric_calls,
+            )
         if config.max_full_evals is not None:
-            return cls("max_metric_calls", config.max_full_evals * (trainset_size + valset_size))
+            metric_limit = config.max_full_evals * (trainset_size + valset_size)
+            return cls(
+                "max_metric_calls",
+                metric_limit,
+                approx_metric_call_limit=metric_limit,
+            )
         if config.max_candidate_proposals is not None:
-            return cls("max_candidate_proposals", config.max_candidate_proposals)
+            return cls(
+                "max_candidate_proposals",
+                config.max_candidate_proposals,
+                approx_metric_call_limit=_approx_metric_calls_for_candidate_budget(
+                    candidate_proposals=config.max_candidate_proposals,
+                    trainset_size=trainset_size,
+                    valset_size=valset_size,
+                    minibatch_size=config.minibatch_size,
+                ),
+            )
         preset = "medium" if config.budget == "auto" else config.budget
         preset_candidates = {
             "light": 6,
@@ -200,13 +240,15 @@ class Budget:
             "heavy": 18,
             "high": 18,
         }.get(preset, 6)
+        metric_limit = _dspy_auto_metric_budget(
+            num_components=num_components,
+            num_candidates=preset_candidates,
+            valset_size=valset_size,
+        )
         return cls(
             "max_metric_calls",
-            _dspy_auto_metric_budget(
-                num_components=num_components,
-                num_candidates=preset_candidates,
-                valset_size=valset_size,
-            ),
+            metric_limit,
+            approx_metric_call_limit=metric_limit,
         )
 
     @property
@@ -221,6 +263,25 @@ class Budget:
     def remaining(self) -> int:
         return max(0, self.limit - self.used)
 
+    @property
+    def metric_calls_remaining(self) -> int:
+        if self.approx_metric_call_limit is None:
+            return 0
+        if self.remaining == 0:
+            return 0
+        return max(0, self.approx_metric_call_limit - self.used_metric_calls)
+
+    @property
+    def progress_percent(self) -> float:
+        if self.remaining == 0:
+            return 100.0
+        if self.approx_metric_call_limit is None:
+            return 0.0
+        if self.approx_metric_call_limit <= 0:
+            # A zero-sized budget with any recorded metric work should still read as complete.
+            return 100.0 if self.used_metric_calls > 0 else 0.0
+        return min(100.0, max(0.0, (self.used_metric_calls / self.approx_metric_call_limit) * 100.0))
+
     def allows_iteration(self) -> bool:
         return self.remaining > 0
 
@@ -230,9 +291,30 @@ class Budget:
             "limit": self.limit,
             "used": self.used,
             "remaining": self.remaining,
+            "approx_metric_call_limit": self.approx_metric_call_limit,
+            "metric_call_budget": self.approx_metric_call_limit,
+            "metric_calls_remaining": self.metric_calls_remaining,
             "used_metric_calls": self.used_metric_calls,
             "used_full_evals": self.used_full_evals,
             "used_candidate_proposals": self.used_candidate_proposals,
+        }
+
+    def progress_payload(self, *, stage: str, iteration: int | None) -> dict[str, Any]:
+        percent = round(self.progress_percent, 1)
+        return {
+            "stage": stage,
+            "iteration": iteration,
+            "percent": percent,
+            "progress_percent": percent,
+            "metric_calls_used": self.used_metric_calls,
+            "metric_call_budget": self.approx_metric_call_limit,
+            "approx_metric_call_budget": self.approx_metric_call_limit,
+            "metric_calls_remaining": self.metric_calls_remaining,
+            "is_over_budget": (
+                self.approx_metric_call_limit is not None and
+                self.used_metric_calls > self.approx_metric_call_limit
+            ),
+            "budget": self.to_payload(),
         }
 
 
@@ -961,6 +1043,22 @@ def evaluate_candidate(
     ]
 
 
+def _log_iteration_progress(
+    event_sink: EventSink,
+    *,
+    budget: Budget,
+    iteration: int,
+    candidate_id: str | None,
+) -> None:
+    event_sink.log_event(
+        "optimization_progress",
+        budget.progress_payload(stage="iteration_completed", iteration=iteration),
+        event_layer="extension",
+        iteration=iteration,
+        candidate_id=candidate_id,
+    )
+
+
 def _completed_all_rows(results: list[RowEvaluation], rows: list[DatasetRow]) -> bool:
     return len(results) == len(rows)
 
@@ -1231,6 +1329,12 @@ def optimize_loaded_text_candidate(
                         "skip_reason": "parent_minibatch_perfect",
                         "budget": budget.to_payload(),
                     },
+                    iteration=iteration,
+                    candidate_id=best_candidate_id,
+                )
+                _log_iteration_progress(
+                    event_sink,
+                    budget=budget,
                     iteration=iteration,
                     candidate_id=best_candidate_id,
                 )
@@ -1537,6 +1641,12 @@ def optimize_loaded_text_candidate(
                     "best_validation_score": best_score,
                     "budget": budget.to_payload(),
                 },
+                iteration=iteration,
+                candidate_id=best_candidate_id,
+            )
+            _log_iteration_progress(
+                event_sink,
+                budget=budget,
                 iteration=iteration,
                 candidate_id=best_candidate_id,
             )

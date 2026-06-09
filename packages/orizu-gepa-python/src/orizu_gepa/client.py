@@ -12,6 +12,39 @@ from typing import Any
 from .optimizer import DatasetRow, PromptContext
 
 
+def _format_number(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:g}"
+    return None
+
+
+def _progress_log_suffix(event_type: str, payload: dict[str, Any] | None) -> str:
+    if event_type != "optimization_progress" or not isinstance(payload, dict):
+        return ""
+
+    percent_value = payload.get("percent")
+    if percent_value is None:
+        percent_value = payload.get("progress_percent")
+    percent = _format_number(percent_value)
+    metric_calls_remaining = _format_number(payload.get("metric_calls_remaining"))
+    metric_call_budget_value = payload.get("metric_call_budget")
+    if metric_call_budget_value is None:
+        metric_call_budget_value = payload.get("approx_metric_call_budget")
+    metric_call_budget = _format_number(metric_call_budget_value)
+    parts: list[str] = []
+    if percent is not None:
+        parts.append(f"{percent}%")
+    if metric_calls_remaining is not None:
+        budget_suffix = f" / {metric_call_budget}" if metric_call_budget is not None else ""
+        parts.append(f"{metric_calls_remaining}{budget_suffix} metric calls left")
+
+    return f" {'; '.join(parts)}" if parts else ""
+
+
 @dataclass(frozen=True)
 class OrizuClient:
     api_url: str
@@ -306,7 +339,10 @@ class OrizuEventSink:
                     parent_candidate_id=parent_candidate_id,
                     child_candidate_id=child_candidate_id,
                 )
-                print(f"[orizu-gepa] {self.sequence:03d} {event_type}", flush=True)
+                print(
+                    f"[orizu-gepa] {self.sequence:03d} {event_type}{_progress_log_suffix(event_type, payload)}",
+                    flush=True,
+                )
                 return
             except Exception as exc:
                 last_error = exc

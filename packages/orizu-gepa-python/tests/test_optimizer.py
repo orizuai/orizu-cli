@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import time
@@ -143,6 +145,93 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(result.best_score, 1.0)
         self.assertEqual(result.promoted_prompt_version_id, "promoted-version-1")
         self.assertEqual(sink.finished["status"], "succeeded")
+
+    def test_logs_iteration_progress_with_capped_percent_and_metric_budget_left(self):
+        sink = FakeSink()
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == "new" else 0.0
+            return RunnerCallResult(model_response={"score": score, "feedback": f"score={score}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="new",
+                candidate_text="new",
+            )
+
+        optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        progress_index = event_types.index("optimization_progress")
+        self.assertGreater(progress_index, event_types.index("iteration_completed"))
+        progress = sink.events[progress_index]["payload"]
+        self.assertEqual(progress["stage"], "iteration_completed")
+        self.assertEqual(progress["iteration"], 1)
+        self.assertEqual(progress["percent"], 100.0)
+        self.assertEqual(progress["metric_calls_used"], 8)
+        self.assertEqual(progress["metric_call_budget"], 3)
+        self.assertEqual(progress["metric_calls_remaining"], 0)
+        self.assertTrue(progress["is_over_budget"])
+
+    def test_marks_candidate_proposal_progress_complete_when_proposals_exhausted(self):
+        sink = FakeSink()
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == "initial text" else 0.0
+            return RunnerCallResult(model_response={"score": score, "feedback": f"score={score}"})
+
+        def reflector(parent_text, parent_results, config):
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="worse",
+                candidate_text="worse",
+            )
+
+        optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(
+                max_iterations=2,
+                minibatch_size=2,
+                max_candidate_proposals=1,
+                skip_perfect_parent_reflection=False,
+            ),
+        )
+
+        progress = next(event for event in sink.events if event["event_type"] == "optimization_progress")["payload"]
+        self.assertEqual(progress["percent"], 100.0)
+        self.assertEqual(progress["metric_calls_used"], 6)
+        self.assertEqual(progress["metric_call_budget"], 8)
+        self.assertEqual(progress["metric_calls_remaining"], 0)
+        self.assertFalse(progress["is_over_budget"])
+        self.assertEqual(progress["budget"]["used_candidate_proposals"], 1)
+        self.assertEqual(progress["budget"]["remaining"], 0)
+        self.assertEqual(progress["budget"]["metric_calls_remaining"], 0)
 
     def test_redacts_row_snapshots_and_reflection_io_by_default(self):
         sink = FakeSink()
@@ -759,6 +848,23 @@ class OptimizerTests(unittest.TestCase):
         sink.log_event("run_started", {})
 
         self.assertEqual(client.calls, 2)
+
+    def test_event_sink_prints_progress_percent_and_budget_left(self):
+        class FakeClient:
+            def log_event(self, *args, **kwargs):
+                return None
+
+        sink = OrizuEventSink(FakeClient(), "run-1")
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            sink.log_event("optimization_progress", {
+                "percent": 100,
+                "metric_calls_remaining": 0,
+                "metric_call_budget": 3,
+            })
+
+        self.assertIn("optimization_progress 100%; 0 / 3 metric calls left", output.getvalue())
 
     def test_auto_num_threads_respects_rows_and_resources(self):
         plan = resolve_num_threads(
