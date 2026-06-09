@@ -195,6 +195,7 @@ class Budget:
     used_metric_calls: int = 0
     used_full_evals: int = 0
     used_candidate_proposals: int = 0
+    used_iterations: int = 0
 
     def __post_init__(self) -> None:
         if self.approx_metric_call_limit is None and self.budget_kind == "max_metric_calls":
@@ -233,6 +234,10 @@ class Budget:
                     minibatch_size=config.minibatch_size,
                 ),
             )
+        if config.max_iterations is not None:
+            return cls("max_iterations", config.max_iterations)
+        if not config.budget:
+            raise ValueError("No optimization budget configured.")
         preset = "medium" if config.budget == "auto" else config.budget
         preset_candidates = {
             "light": 6,
@@ -257,6 +262,8 @@ class Budget:
             return self.used_full_evals
         if self.budget_kind == "max_candidate_proposals":
             return self.used_candidate_proposals
+        if self.budget_kind == "max_iterations":
+            return self.used_iterations
         return self.used_metric_calls
 
     @property
@@ -276,7 +283,9 @@ class Budget:
         if self.remaining == 0:
             return 100.0
         if self.approx_metric_call_limit is None:
-            return 0.0
+            if self.limit <= 0:
+                return 100.0 if self.used > 0 else 0.0
+            return min(100.0, max(0.0, (self.used / self.limit) * 100.0))
         if self.approx_metric_call_limit <= 0:
             # A zero-sized budget with any recorded metric work should still read as complete.
             return 100.0 if self.used_metric_calls > 0 else 0.0
@@ -297,6 +306,9 @@ class Budget:
             "used_metric_calls": self.used_metric_calls,
             "used_full_evals": self.used_full_evals,
             "used_candidate_proposals": self.used_candidate_proposals,
+            "used_iterations": self.used_iterations,
+            "iteration_budget": self.limit if self.budget_kind == "max_iterations" else None,
+            "iterations_remaining": self.remaining if self.budget_kind == "max_iterations" else None,
         }
 
     def progress_payload(self, *, stage: str, iteration: int | None) -> dict[str, Any]:
@@ -320,8 +332,8 @@ class Budget:
 
 @dataclass(frozen=True)
 class TextGepaConfig:
-    budget: str = "light"
-    max_iterations: int = 3
+    budget: str | None = "auto"
+    max_iterations: int | None = None
     minibatch_size: int = 3
     num_threads: int | str = "auto"
     candidate_selection_strategy: str = "pareto"
@@ -1063,6 +1075,10 @@ def _completed_all_rows(results: list[RowEvaluation], rows: list[DatasetRow]) ->
     return len(results) == len(rows)
 
 
+def _has_future_iteration(config: TextGepaConfig, iteration: int) -> bool:
+    return config.max_iterations is None or iteration < config.max_iterations
+
+
 def optimize_loaded_text_candidate(
     *,
     run_id: str,
@@ -1194,7 +1210,8 @@ def optimize_loaded_text_candidate(
             )
             budget_exhausted = True
 
-        for iteration in range(1, config.max_iterations + 1):
+        iteration = 1
+        while config.max_iterations is None or iteration <= config.max_iterations:
             if not budget.allows_iteration():
                 break
 
@@ -1314,6 +1331,7 @@ def optimize_loaded_text_candidate(
                     iteration=iteration,
                     candidate_id=parent_candidate_id,
                 )
+                budget.used_iterations += 1
                 event_sink.log_event("budget_updated", budget.to_payload(), event_layer="extension", iteration=iteration)
                 event_sink.log_event(
                     "iteration_completed",
@@ -1338,7 +1356,7 @@ def optimize_loaded_text_candidate(
                     iteration=iteration,
                     candidate_id=best_candidate_id,
                 )
-                if iteration < config.max_iterations and not budget.allows_iteration():
+                if _has_future_iteration(config, iteration) and not budget.allows_iteration():
                     event_sink.log_event(
                         "budget_exhausted",
                         {
@@ -1353,6 +1371,7 @@ def optimize_loaded_text_candidate(
                     )
                     budget_exhausted = True
                     break
+                iteration += 1
                 continue
 
             event_sink.log_event(
@@ -1628,6 +1647,7 @@ def optimize_loaded_text_candidate(
                     parent_candidate_id=parent_candidate_id,
                 )
 
+            budget.used_iterations += 1
             event_sink.log_event("budget_updated", budget.to_payload(), event_layer="extension", iteration=iteration)
             event_sink.log_event(
                 "iteration_completed",
@@ -1650,7 +1670,7 @@ def optimize_loaded_text_candidate(
                 iteration=iteration,
                 candidate_id=best_candidate_id,
             )
-            if iteration < config.max_iterations and not budget.allows_iteration():
+            if _has_future_iteration(config, iteration) and not budget.allows_iteration():
                 event_sink.log_event(
                     "budget_exhausted",
                     {
@@ -1665,6 +1685,7 @@ def optimize_loaded_text_candidate(
                 )
                 budget_exhausted = True
                 break
+            iteration += 1
 
         if budget_exhausted:
             event_sink.log_event(

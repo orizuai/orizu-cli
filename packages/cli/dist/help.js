@@ -259,7 +259,7 @@ export const COMMAND_DOCS = [
     },
     {
         path: ['optimizations', 'run-gepa'],
-        usage: 'orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--num-threads auto|N] [--log-dir logs]',
+        usage: 'orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--budget auto|light|medium|heavy | --max-metric-calls <n> | --max-full-evals <n> | --max-iterations <n>] [--num-threads auto|N] [--log-dir logs]',
         summary: 'Run the bundled GEPA-style optimizer locally and stream events.',
         group: 'Optimizations',
     },

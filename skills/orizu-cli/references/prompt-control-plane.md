@@ -607,15 +607,13 @@ orizu --local optimizations run-gepa \
   --train-split train \
   --val-split validation \
   --log-dir ./logs \
-  --budget light \
-  --max-iterations 3 \
   --minibatch-size 3 \
   --num-threads auto
 ```
 
 Useful GEPA flags:
 
-- `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`.
+- Budget controls are mutually exclusive: choose at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, or `--max-iterations <n>`. With none provided, `run-gepa` defaults to `--budget auto`, the balanced medium preset.
 - `--minibatch-size <n>` defaults to 3.
 - `--num-threads auto|N` defaults to `auto`; auto caps row-evaluation concurrency from mini-batch size, validation-set size, 2x CPU count, memory estimate, file-descriptor limit, and a 64-thread default ceiling. Set `ORIZU_GEPA_AUTO_THREADS_MAX` or use `--num-threads <n>` only when the runner/provider capacity is known.
 - `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`.

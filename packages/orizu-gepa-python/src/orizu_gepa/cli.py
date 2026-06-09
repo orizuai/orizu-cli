@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,8 @@ from .local_log import LocalOptimizationLogger
 from .optimizer import TextGepaConfig, optimize_loaded_text_candidate
 from .reflection import reflect_with_provider
 from .runner import make_candidate_runner, make_scorer_runner
+
+BUDGET_OPTION_FLAGS = ("--budget", "--max-metric-calls", "--max-full-evals", "--max-iterations")
 
 
 def positive_int(value: str) -> int:
@@ -46,6 +49,38 @@ def read_json_object_arg(value: str | None, flag_name: str) -> dict[str, Any] | 
     return parsed
 
 
+def _flag_occurrences(raw_args: list[str], flag: str) -> int:
+    return sum(1 for arg in raw_args if arg == flag or arg.startswith(f"{flag}="))
+
+
+def _format_budget_option(flag: str, count: int) -> str:
+    return flag if count == 1 else f"{flag} ({count} times)"
+
+
+def apply_budget_defaults(args: argparse.Namespace, raw_args: list[str]) -> None:
+    occurrences = {
+        flag: _flag_occurrences(raw_args, flag)
+        for flag in BUDGET_OPTION_FLAGS
+    }
+    provided = [
+        _format_budget_option(flag, count)
+        for flag, count in occurrences.items()
+        if count > 0
+    ]
+    total = sum(occurrences.values())
+
+    if total > 1:
+        allowed = ", ".join(BUDGET_OPTION_FLAGS)
+        received = ", ".join(provided)
+        raise ValueError(
+            f"Budget options are mutually exclusive; choose at most one of {allowed}. "
+            f"Received: {received}."
+        )
+
+    if total == 0:
+        args.budget = TextGepaConfig.budget
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="orizu-gepa")
     parser.add_argument("--project", required=True)
@@ -60,8 +95,8 @@ def main() -> None:
     parser.add_argument("--split-set-id", required=True)
     parser.add_argument("--train-split", default="train")
     parser.add_argument("--val-split", default="validation")
-    parser.add_argument("--budget", default="light", choices=["auto", "light", "medium", "heavy"])
-    parser.add_argument("--max-iterations", type=positive_int, default=3)
+    parser.add_argument("--budget", choices=["auto", "light", "medium", "heavy"])
+    parser.add_argument("--max-iterations", type=positive_int)
     parser.add_argument("--minibatch-size", type=positive_int, default=3)
     parser.add_argument("--num-threads", type=num_threads_arg, default=TextGepaConfig.num_threads)
     parser.add_argument(
@@ -99,7 +134,12 @@ def main() -> None:
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--no-local-log", action="store_true")
     parser.add_argument("--metadata", default="{}")
-    args = parser.parse_args()
+    raw_args = sys.argv[1:]
+    args = parser.parse_args(raw_args)
+    try:
+        apply_budget_defaults(args, raw_args)
+    except ValueError as error:
+        parser.error(str(error))
 
     metadata = json.loads(args.metadata)
     if not isinstance(metadata, dict):

@@ -143,6 +143,7 @@ Local execution workflow:
 7. Diff before/after on a held-out set; ship if it holds.
 
 Bundled `run-gepa` reflection behavior:
+- Budget controls are mutually exclusive. Use at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, or `--max-iterations <n>`. If none is provided, `run-gepa` uses `--budget auto`, the balanced medium preset.
 - The reflective LM's final text is used verbatim as the next candidate prompt. It should return only the complete updated prompt body, not analysis, labels, XML tags, or markdown fences.
 - Keep provider-native reasoning controls separate from the prompt text with `--reflection-provider-settings <json|@file>`.
 - Reflection max-token limits are explicit config, not implicit defaults. Use `--reflection-max-tokens <n>` when a provider requires an output cap; this maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`.

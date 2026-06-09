@@ -110,6 +110,8 @@ class OptimizerTests(unittest.TestCase):
             config=TextGepaConfig(max_iterations=1, minibatch_size=2, auto_promote=True, log_row_snapshots=True),
         )
 
+        self.assertEqual(result.budget.budget_kind, "max_iterations")
+        self.assertEqual(result.budget.used_iterations, 1)
         event_types = [event["event_type"] for event in sink.events]
         run_started = next(event for event in sink.events if event["event_type"] == "run_started")
         self.assertEqual(run_started["payload"]["inference_lm"], "anthropic/claude-haiku-4")
@@ -1042,6 +1044,10 @@ class OptimizerTests(unittest.TestCase):
 
     def test_budget_presets_use_dspy_auto_scale(self):
         self.assertEqual(
+            Budget.from_config(TextGepaConfig(), trainset_size=100, valset_size=20).limit,
+            _dspy_auto_metric_budget(num_components=1, num_candidates=12, valset_size=20),
+        )
+        self.assertEqual(
             Budget.from_config(TextGepaConfig(budget="light"), trainset_size=100, valset_size=20).limit,
             _dspy_auto_metric_budget(num_components=1, num_candidates=6, valset_size=20),
         )
@@ -1067,6 +1073,22 @@ class OptimizerTests(unittest.TestCase):
 
         self.assertEqual(budget.budget_kind, "max_metric_calls")
         self.assertEqual(budget.limit, 20)
+
+    def test_max_iterations_can_be_the_only_budget(self):
+        budget = Budget.from_config(
+            TextGepaConfig(budget=None, max_iterations=4),
+            trainset_size=7,
+            valset_size=3,
+        )
+
+        self.assertEqual(budget.budget_kind, "max_iterations")
+        self.assertEqual(budget.limit, 4)
+        self.assertIsNone(budget.approx_metric_call_limit)
+        self.assertEqual(budget.remaining, 4)
+        budget.used_iterations = 1
+        self.assertEqual(budget.used, 1)
+        self.assertEqual(budget.remaining, 3)
+        self.assertEqual(budget.progress_percent, 25.0)
 
     def test_dspy_auto_metric_budget_validates_before_log_math(self):
         with self.assertRaisesRegex(ValueError, "num_candidates must be > 0"):
