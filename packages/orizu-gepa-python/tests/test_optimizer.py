@@ -776,8 +776,43 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(plan.resolved, 2)
         self.assertEqual(plan.limiting_factor, "memory")
         self.assertEqual(plan.row_bound, 50)
-        self.assertEqual(plan.cpu_bound, 32)
+        self.assertEqual(plan.cpu_bound, 64)
         self.assertEqual(plan.fd_bound, 12)
+
+    def test_auto_num_threads_default_cap_allows_large_runs_to_scale(self):
+        plan = resolve_num_threads(
+            "auto",
+            minibatch_size=100,
+            validation_count=200,
+            cpu_count=64,
+            available_memory_bytes=128 * 1024 * 1024 * 1024,
+            total_memory_bytes=256 * 1024 * 1024 * 1024,
+            fd_limit=4096,
+            worker_memory_bytes=512 * 1024 * 1024,
+        )
+
+        self.assertEqual(plan.resolved, 64)
+        self.assertEqual(plan.limiting_factor, "hard_cap")
+        self.assertEqual(plan.hard_cap, 64)
+        self.assertEqual(plan.cpu_bound, 128)
+
+    def test_auto_num_threads_normalizes_non_positive_cpu_counts(self):
+        for cpu_count in (0, -5):
+            with self.subTest(cpu_count=cpu_count):
+                plan = resolve_num_threads(
+                    "auto",
+                    minibatch_size=10,
+                    validation_count=10,
+                    cpu_count=cpu_count,
+                    available_memory_bytes=128 * 1024 * 1024 * 1024,
+                    total_memory_bytes=256 * 1024 * 1024 * 1024,
+                    fd_limit=4096,
+                    worker_memory_bytes=512 * 1024 * 1024,
+                )
+
+                self.assertEqual(plan.resolved, 2)
+                self.assertEqual(plan.limiting_factor, "cpu")
+                self.assertEqual(plan.cpu_bound, 2)
 
     def test_explicit_num_threads_is_preserved(self):
         plan = resolve_num_threads(

@@ -44,7 +44,7 @@ Return only the complete updated parameter text, exactly as it should be used by
 Do not include analysis, explanation, labels, XML tags, or a surrounding markdown code fence.
 Your response will be used verbatim as the next candidate."""
 
-AUTO_NUM_THREADS_HARD_CAP = 8
+AUTO_NUM_THREADS_HARD_CAP = 64
 AUTO_NUM_THREADS_WORKER_MEMORY_BYTES = 512 * 1024 * 1024
 AUTO_NUM_THREADS_MEMORY_RESERVE_BYTES = 1024 * 1024 * 1024
 AUTO_NUM_THREADS_FD_HEADROOM = 64
@@ -524,7 +524,8 @@ def resolve_num_threads(
     parsed = _parse_requested_num_threads(requested)
     row_bound = max(1, max(minibatch_size, validation_count))
     detected_cpu_count = cpu_count if cpu_count is not None else os.cpu_count()
-    cpu_bound = max(1, detected_cpu_count or 1)
+    normalized_cpu_count = max(1, detected_cpu_count or 1)
+    cpu_bound = normalized_cpu_count * 2
     resolved_hard_cap = hard_cap or _positive_int_env(
         "ORIZU_GEPA_AUTO_THREADS_MAX",
         AUTO_NUM_THREADS_HARD_CAP,
