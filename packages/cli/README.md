@@ -121,7 +121,11 @@ orizu logout
   </tr>
   <tr>
     <td>List prompts</td>
-    <td><code>orizu prompts list --project ops-eval/support-qa</code></td>
+    <td><code>orizu prompts list --project ops-eval/support-qa [--status active|archived|all]</code></td>
+  </tr>
+  <tr>
+    <td>Archive or restore a prompt</td>
+    <td><code>orizu prompts archive &lt;promptIdOrName&gt; --project ops-eval/support-qa</code><br><code>orizu prompts restore &lt;promptIdOrName&gt; --project ops-eval/support-qa</code></td>
   </tr>
   <tr>
     <td>Show prompt comments</td>

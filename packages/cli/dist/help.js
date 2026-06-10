@@ -133,8 +133,20 @@ export const COMMAND_DOCS = [
     },
     {
         path: ['prompts', 'list'],
-        usage: 'orizu prompts list --project <team/project>',
+        usage: 'orizu prompts list --project <team/project> [--status active|archived|all]',
         summary: 'List prompt artifacts in a project.',
+        group: 'Prompts and judges',
+    },
+    {
+        path: ['prompts', 'archive'],
+        usage: 'orizu prompts archive <prompt-id-or-name> --project <team/project> [--json]',
+        summary: 'Mark a prompt artifact as archived.',
+        group: 'Prompts and judges',
+    },
+    {
+        path: ['prompts', 'restore'],
+        usage: 'orizu prompts restore <prompt-id-or-name> --project <team/project> [--json]',
+        summary: 'Restore an archived prompt artifact to active status.',
         group: 'Prompts and judges',
     },
     {
@@ -175,7 +187,7 @@ export const COMMAND_DOCS = [
     },
     {
         path: ['judges', 'list'],
-        usage: 'orizu judges list --project <team/project>',
+        usage: 'orizu judges list --project <team/project> [--status active|archived|all]',
         summary: 'List judge prompt artifacts in a project.',
         group: 'Prompts and judges',
     },

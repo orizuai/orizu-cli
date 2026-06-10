@@ -107,6 +107,8 @@ interface PromptSummary {
   id: string
   name: string
   role: string
+  status?: string
+  archivedAt?: string | null
   description?: string | null
 }
 
@@ -492,15 +494,17 @@ function printPromptSummaries(items: PromptSummary[], emptyMessage: string) {
     id: sanitizeTerminalText(item.id),
     name: sanitizeTerminalText(item.name),
     role: sanitizeTerminalText(item.role),
+    status: sanitizeTerminalText(item.status || 'active'),
   }))
   const idWidth = Math.max('ID'.length, ...rows.map(row => row.id.length))
   const nameWidth = Math.max('NAME'.length, ...rows.map(row => row.name.length))
   const roleWidth = Math.max('ROLE'.length, ...rows.map(row => row.role.length))
+  const statusWidth = Math.max('STATUS'.length, ...rows.map(row => row.status.length))
 
-  printLine(`${'ID'.padEnd(idWidth)}  ${'NAME'.padEnd(nameWidth)}  ${'ROLE'.padEnd(roleWidth)}`)
-  printLine(`${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(roleWidth)}`)
+  printLine(`${'ID'.padEnd(idWidth)}  ${'NAME'.padEnd(nameWidth)}  ${'ROLE'.padEnd(roleWidth)}  ${'STATUS'.padEnd(statusWidth)}`)
+  printLine(`${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(roleWidth)}  ${'-'.repeat(statusWidth)}`)
   rows.forEach(row => {
-    printLine(`${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.role.padEnd(roleWidth)}`)
+    printLine(`${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.role.padEnd(roleWidth)}  ${row.status.padEnd(statusWidth)}`)
   })
 }
 
@@ -1366,7 +1370,13 @@ async function logOptimizationEvent() {
 
 async function listPrompts() {
   const project = getArg('--project') || await resolveProjectSlug(null)
-  const response = await authedFetch(`/api/cli/prompts?project=${encodeURIComponent(project)}`)
+  const status = getArg('--status') || 'active'
+  if (!['active', 'archived', 'all'].includes(status)) {
+    throw new Error('Usage: orizu prompts list --project <team/project> [--status active|archived|all]')
+  }
+
+  const params = new URLSearchParams({ project, status })
+  const response = await authedFetch(`/api/cli/prompts?${params.toString()}`)
   if (!response.ok) {
     throw new Error(`Failed to fetch prompts: ${await response.text()}`)
   }
@@ -1377,7 +1387,13 @@ async function listPrompts() {
 
 async function listJudges() {
   const project = getArg('--project') || await resolveProjectSlug(null)
-  const response = await authedFetch(`/api/cli/judges?project=${encodeURIComponent(project)}`)
+  const status = getArg('--status') || 'active'
+  if (!['active', 'archived', 'all'].includes(status)) {
+    throw new Error('Usage: orizu judges list --project <team/project> [--status active|archived|all]')
+  }
+
+  const params = new URLSearchParams({ project, status })
+  const response = await authedFetch(`/api/cli/judges?${params.toString()}`)
   if (!response.ok) {
     throw new Error(`Failed to fetch judges: ${await response.text()}`)
   }
@@ -1773,6 +1789,40 @@ async function setPromptLabel() {
   }
 
   printLine(`Moved ${sanitizeTerminalText(label)} to ${sanitizeTerminalText(promptVersionId)}`)
+}
+
+async function setPromptArchivedState(archived: boolean) {
+  const promptRef = getPositionalArg(2)
+  const project = getArg('--project') || await resolveProjectSlug(null)
+  const command = archived ? 'archive' : 'restore'
+
+  if (!promptRef) {
+    throw new Error(`Usage: orizu prompts ${command} <prompt-id-or-name> --project <team/project> [--json]`)
+  }
+
+  const response = await authedFetch(`/api/cli/prompts/${encodeURIComponent(promptRef)}?project=${encodeURIComponent(project)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to ${command} prompt: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{
+    prompt: {
+      id: string
+      name: string
+      status: string
+    }
+  }>(response, `Prompt ${command}`)
+  if (hasJsonFlag()) {
+    printJson(data)
+    return
+  }
+
+  printLine(`${archived ? 'Archived' : 'Restored'} prompt ${sanitizeTerminalText(data.prompt.name)} (${sanitizeTerminalText(data.prompt.id)})`)
 }
 
 async function bindPromptScorer(role: 'headline' | 'tracked') {
@@ -4859,6 +4909,16 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'prompts' && subcommand === 'push') {
     await pushPromptArtifact('prompt')
+    return
+  }
+
+  if (command === 'prompts' && subcommand === 'archive') {
+    await setPromptArchivedState(true)
+    return
+  }
+
+  if (command === 'prompts' && subcommand === 'restore') {
+    await setPromptArchivedState(false)
     return
   }
 

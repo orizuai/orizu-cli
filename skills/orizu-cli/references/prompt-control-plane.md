@@ -332,7 +332,19 @@ List:
 
 ```bash
 orizu --local prompts list --project <team>/<project>
+orizu --local prompts list --project <team>/<project> --status archived
+orizu --local prompts list --project <team>/<project> --status all
 orizu --local judges list --project <team>/<project>
+```
+
+Prompt and judge lists show active artifacts by default. Use `--status archived`
+or `--status all` when you need archived artifacts.
+
+Archive or restore a prompt:
+
+```bash
+orizu --local prompts archive <prompt-id-or-name> --project <team>/<project>
+orizu --local prompts restore <prompt-id-or-name> --project <team>/<project>
 ```
 
 List prompt comment threads for the latest version, or a specific label/version:
