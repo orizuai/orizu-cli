@@ -619,6 +619,7 @@ Useful GEPA flags:
 - `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`.
 - `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
 - `--reflection-max-tokens <n>` is explicit provider config, not a global default. It maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI can omit it unless the user wants a cap.
+- `--reflection-retry-attempts` and `--reflection-http-timeout-seconds` tune transient reflection-provider retries. Exhausted retryable failures log `reflection_failed`, count against candidate-proposal budget, and continue with the next iteration.
 - `--reflection-provider-settings <json|@file>` passes provider-native reflection settings separately from the prompt text. Anthropic example: `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`. OpenAI example: `{"reasoning":{"effort":"medium","summary":"auto"}}`.
 - `--disable-evaluation-cache` turns off candidate/row/scorer cache reuse.
 - `--auto-promote --promotion-label <label>` promotes the best candidate at the end.

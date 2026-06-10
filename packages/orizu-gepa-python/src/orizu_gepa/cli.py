@@ -111,6 +111,18 @@ def main() -> None:
     parser.add_argument("--reflection-model", default=TextGepaConfig.reflection_model)
     parser.add_argument("--reflection-temperature", type=float)
     parser.add_argument("--reflection-max-tokens", type=positive_int)
+    parser.add_argument(
+        "--reflection-retry-attempts",
+        type=positive_int,
+        default=TextGepaConfig.reflection_retry_attempts,
+        help="Total attempts for retryable reflection HTTP failures.",
+    )
+    parser.add_argument(
+        "--reflection-http-timeout-seconds",
+        type=positive_int,
+        default=TextGepaConfig.reflection_http_timeout_seconds,
+        help="Per-attempt timeout for reflection HTTP calls.",
+    )
     parser.add_argument("--reflection-prompt-template")
     parser.add_argument("--reflection-provider-settings")
     parser.add_argument(
@@ -157,6 +169,8 @@ def main() -> None:
         reflection_model=args.reflection_model,
         reflection_temperature=args.reflection_temperature,
         reflection_max_tokens=args.reflection_max_tokens,
+        reflection_retry_attempts=args.reflection_retry_attempts,
+        reflection_http_timeout_seconds=args.reflection_http_timeout_seconds,
         reflection_prompt_template=read_text_arg(args.reflection_prompt_template),
         reflection_provider_settings=read_json_object_arg(args.reflection_provider_settings, "--reflection-provider-settings") or {},
         skip_perfect_parent_reflection=args.skip_perfect_parent_reflection,

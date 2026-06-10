@@ -142,6 +142,10 @@ class ReflectionResult:
     candidate_text: str
 
 
+class RetryableReflectionError(RuntimeError):
+    """Raised when a transient reflection-provider failure remains after retries."""
+
+
 def _dspy_auto_metric_budget(
     *,
     num_components: int,
@@ -193,6 +197,7 @@ class Budget:
     limit: int
     approx_metric_call_limit: int | None = None
     used_metric_calls: int = 0
+    used_reflection_failure_metric_charges: int = 0
     used_full_evals: int = 0
     used_candidate_proposals: int = 0
     used_iterations: int = 0
@@ -257,6 +262,10 @@ class Budget:
         )
 
     @property
+    def metric_budget_used(self) -> int:
+        return self.used_metric_calls + self.used_reflection_failure_metric_charges
+
+    @property
     def used(self) -> int:
         if self.budget_kind == "max_full_evals":
             return self.used_full_evals
@@ -264,7 +273,7 @@ class Budget:
             return self.used_candidate_proposals
         if self.budget_kind == "max_iterations":
             return self.used_iterations
-        return self.used_metric_calls
+        return self.metric_budget_used
 
     @property
     def remaining(self) -> int:
@@ -276,7 +285,7 @@ class Budget:
             return 0
         if self.remaining == 0:
             return 0
-        return max(0, self.approx_metric_call_limit - self.used_metric_calls)
+        return max(0, self.approx_metric_call_limit - self.metric_budget_used)
 
     @property
     def progress_percent(self) -> float:
@@ -288,11 +297,15 @@ class Budget:
             return min(100.0, max(0.0, (self.used / self.limit) * 100.0))
         if self.approx_metric_call_limit <= 0:
             # A zero-sized budget with any recorded metric work should still read as complete.
-            return 100.0 if self.used_metric_calls > 0 else 0.0
-        return min(100.0, max(0.0, (self.used_metric_calls / self.approx_metric_call_limit) * 100.0))
+            return 100.0 if self.metric_budget_used > 0 else 0.0
+        return min(100.0, max(0.0, (self.metric_budget_used / self.approx_metric_call_limit) * 100.0))
 
     def allows_iteration(self) -> bool:
         return self.remaining > 0
+
+    def charge_retryable_reflection_failure(self) -> None:
+        if self.budget_kind == "max_metric_calls":
+            self.used_reflection_failure_metric_charges += 1
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -303,7 +316,9 @@ class Budget:
             "approx_metric_call_limit": self.approx_metric_call_limit,
             "metric_call_budget": self.approx_metric_call_limit,
             "metric_calls_remaining": self.metric_calls_remaining,
+            "metric_budget_used": self.metric_budget_used,
             "used_metric_calls": self.used_metric_calls,
+            "used_reflection_failure_metric_charges": self.used_reflection_failure_metric_charges,
             "used_full_evals": self.used_full_evals,
             "used_candidate_proposals": self.used_candidate_proposals,
             "used_iterations": self.used_iterations,
@@ -319,12 +334,13 @@ class Budget:
             "percent": percent,
             "progress_percent": percent,
             "metric_calls_used": self.used_metric_calls,
+            "metric_budget_used": self.metric_budget_used,
             "metric_call_budget": self.approx_metric_call_limit,
             "approx_metric_call_budget": self.approx_metric_call_limit,
             "metric_calls_remaining": self.metric_calls_remaining,
             "is_over_budget": (
                 self.approx_metric_call_limit is not None and
-                self.used_metric_calls > self.approx_metric_call_limit
+                self.metric_budget_used > self.approx_metric_call_limit
             ),
             "budget": self.to_payload(),
         }
@@ -344,6 +360,8 @@ class TextGepaConfig:
     reflection_model: str = "anthropic/claude-opus-4-7"
     reflection_temperature: float | None = None
     reflection_max_tokens: int | None = None
+    reflection_retry_attempts: int = 3
+    reflection_http_timeout_seconds: int = 180
     reflection_prompt_template: str | None = None
     reflection_provider_settings: dict[str, Any] = field(default_factory=dict)
     objective: str = "Improve this text candidate to maximize evaluator score while preserving intended behavior."
@@ -1113,6 +1131,7 @@ def optimize_loaded_text_candidate(
     metric_key = _metric_key(scorer_context)
     higher_is_better = scorer_context.higher_is_better
     budget_exhausted = False
+    failed_reflection_count = 0
 
     try:
         event_sink.log_event("run_started", {
@@ -1385,7 +1404,68 @@ def optimize_loaded_text_candidate(
                 iteration=iteration,
                 candidate_id=parent_candidate_id,
             )
-            reflection = reflector(parent_text, parent_results, config)
+            try:
+                reflection = reflector(parent_text, parent_results, config)
+            except RetryableReflectionError as error:
+                failed_reflection_count += 1
+                budget.used_candidate_proposals += 1
+                budget.used_iterations += 1
+                budget.charge_retryable_reflection_failure()
+                event_sink.log_event(
+                    "reflection_failed",
+                    {
+                        "parent_candidate_id": parent_candidate_id,
+                        "row_ids": [row.id for row in minibatch],
+                        "error": str(error),
+                        "error_type": type(error).__name__,
+                        "budget": budget.to_payload(),
+                    },
+                    event_layer="extension",
+                    iteration=iteration,
+                    candidate_id=parent_candidate_id,
+                )
+                event_sink.log_event("budget_updated", budget.to_payload(), event_layer="extension", iteration=iteration)
+                event_sink.log_event(
+                    "iteration_completed",
+                    {
+                        "parent_candidate_id": parent_candidate_id,
+                        "child_candidate_id": None,
+                        "parent_train_score_total": parent_total,
+                        "child_train_score_total": None,
+                        "child_validation_score": None,
+                        "best_candidate_id": best_candidate_id,
+                        "best_validation_score": best_score,
+                        "reflection_failed": True,
+                        "reflection_error": str(error),
+                        "reflection_error_type": type(error).__name__,
+                        "budget": budget.to_payload(),
+                    },
+                    iteration=iteration,
+                    candidate_id=best_candidate_id,
+                )
+                _log_iteration_progress(
+                    event_sink,
+                    budget=budget,
+                    iteration=iteration,
+                    candidate_id=best_candidate_id,
+                )
+                if _has_future_iteration(config, iteration) and not budget.allows_iteration():
+                    event_sink.log_event(
+                        "budget_exhausted",
+                        {
+                            "stage": "iteration_completed",
+                            "completed_iteration": iteration,
+                            "budget": budget.to_payload(),
+                            "decision_rule": "budget is checked only between iterations",
+                        },
+                        event_layer="extension",
+                        iteration=iteration,
+                        candidate_id=best_candidate_id,
+                    )
+                    budget_exhausted = True
+                    break
+                iteration += 1
+                continue
             child_id = _candidate_id(iteration, reflection.candidate_text)
             child_text = reflection.candidate_text
             candidate_text_by_id[child_id] = child_text
@@ -1697,6 +1777,7 @@ def optimize_loaded_text_candidate(
                     "seed_validation_score": seed_score,
                     "higher_is_better": higher_is_better,
                     "budget": budget.to_payload(),
+                    "failed_reflection_count": failed_reflection_count,
                 },
             )
             event_sink.finish_run(
@@ -1707,6 +1788,7 @@ def optimize_loaded_text_candidate(
                     "seed_score": seed_score,
                     "budget": budget.to_payload(),
                     "pause_reason": "budget_exhausted",
+                    "failed_reflection_count": failed_reflection_count,
                 },
             )
             return TextGepaResult(
@@ -1745,6 +1827,7 @@ def optimize_loaded_text_candidate(
                 "metric_key": metric_key,
                 "higher_is_better": higher_is_better,
                 "budget": budget.to_payload(),
+                "failed_reflection_count": failed_reflection_count,
             },
         )
         event_sink.finish_run(
@@ -1757,6 +1840,7 @@ def optimize_loaded_text_candidate(
                 "metric_key": metric_key,
                 "higher_is_better": higher_is_better,
                 "budget": budget.to_payload(),
+                "failed_reflection_count": failed_reflection_count,
             },
         )
         return TextGepaResult(

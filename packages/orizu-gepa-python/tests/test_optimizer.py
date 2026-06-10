@@ -5,8 +5,10 @@ import io
 import json
 import tempfile
 import time
+import urllib.error
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from orizu_gepa.client import OrizuClient, OrizuEventSink
 from orizu_gepa.local_log import LocalOptimizationLogger
@@ -16,6 +18,7 @@ from orizu_gepa.optimizer import (
     EvaluationCache,
     PromptContext,
     ReflectionResult,
+    RetryableReflectionError,
     RowEvaluation,
     RunnerCallResult,
     TextGepaConfig,
@@ -30,7 +33,11 @@ from orizu_gepa.optimizer import (
     _select_parent_candidate_id,
     resolve_num_threads,
 )
-from orizu_gepa.reflection import build_anthropic_reflection_payload, build_openai_reflection_payload
+from orizu_gepa.reflection import (
+    build_anthropic_reflection_payload,
+    build_openai_reflection_payload,
+    reflect_with_anthropic,
+)
 
 
 class FakeSink:
@@ -234,6 +241,149 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(progress["budget"]["used_candidate_proposals"], 1)
         self.assertEqual(progress["budget"]["remaining"], 0)
         self.assertEqual(progress["budget"]["metric_calls_remaining"], 0)
+
+    def test_retryable_reflection_failure_logs_and_continues_to_next_iteration(self):
+        sink = FakeSink()
+        reflector_calls = 0
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            score = 1.0 if candidate_result.model_response["answer"] == "improved" else 0.2
+            return RunnerCallResult(model_response={"score": score, "feedback": f"score={score}"})
+
+        def reflector(parent_text, parent_results, config):
+            nonlocal reflector_calls
+            reflector_calls += 1
+            if reflector_calls == 1:
+                raise RetryableReflectionError("transient Anthropic timeout")
+            return ReflectionResult(
+                prompt="reflection prompt",
+                response="improved",
+                candidate_text="improved",
+            )
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=2, minibatch_size=2),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertEqual(reflector_calls, 2)
+        self.assertIn("reflection_failed", event_types)
+        self.assertIn("reflection_completed", event_types)
+        self.assertLess(event_types.index("reflection_failed"), event_types.index("reflection_completed"))
+        self.assertEqual(result.best_score, 1.0)
+        self.assertEqual(result.budget.used_candidate_proposals, 2)
+        self.assertEqual(result.budget.used_iterations, 2)
+        failed = next(event for event in sink.events if event["event_type"] == "reflection_failed")
+        self.assertEqual(failed["payload"]["error_type"], "RetryableReflectionError")
+        self.assertEqual(failed["payload"]["parent_candidate_id"], "seed")
+        self.assertEqual(failed["payload"]["budget"]["used_iterations"], 1)
+        failed_iteration = next(
+            event
+            for event in sink.events
+            if event["event_type"] == "iteration_completed" and event["iteration"] == 1
+        )
+        self.assertTrue(failed_iteration["payload"]["reflection_failed"])
+        self.assertIsNone(failed_iteration["payload"]["child_candidate_id"])
+        completed = next(event for event in sink.events if event["event_type"] == "run_completed")
+        self.assertEqual(completed["payload"]["failed_reflection_count"], 1)
+
+    def test_retryable_reflection_failure_charges_max_iteration_budget(self):
+        sink = FakeSink()
+        reflector_calls = 0
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 0.2, "feedback": "score=0.2"})
+
+        def reflector(parent_text, parent_results, config):
+            nonlocal reflector_calls
+            reflector_calls += 1
+            raise RetryableReflectionError("transient Anthropic timeout")
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=self.trainset,
+            valset=self.valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertEqual(reflector_calls, 1)
+        self.assertEqual(result.budget.used_iterations, 1)
+        self.assertEqual(result.budget.remaining, 0)
+        self.assertIn("reflection_failed", event_types)
+        self.assertNotIn("reflection_completed", event_types)
+        failed_iteration = next(event for event in sink.events if event["event_type"] == "iteration_completed")
+        self.assertEqual(failed_iteration["payload"]["budget"]["used_reflection_failure_metric_charges"], 0)
+        self.assertEqual(failed_iteration["payload"]["budget"]["used_iterations"], 1)
+        self.assertEqual(failed_iteration["payload"]["budget"]["remaining"], 0)
+
+    def test_retryable_reflection_failure_charges_metric_budget(self):
+        sink = FakeSink()
+        reflector_calls = 0
+        trainset = [DatasetRow("train-1", {"expected": "improved"})]
+        valset = [DatasetRow("val-1", {"expected": "improved"})]
+
+        def candidate_runner(candidate_text, row, prompt_context, candidate_id):
+            return RunnerCallResult(model_response={"answer": candidate_text})
+
+        def scorer_runner(row, candidate_result, scorer_context, candidate_id):
+            return RunnerCallResult(model_response={"score": 0.2, "feedback": "score=0.2"})
+
+        def reflector(parent_text, parent_results, config):
+            nonlocal reflector_calls
+            reflector_calls += 1
+            if reflector_calls > 1:
+                raise AssertionError("retryable reflection failure did not exhaust metric budget")
+            raise RetryableReflectionError("transient Anthropic timeout")
+
+        result = optimize_loaded_text_candidate(
+            run_id="run-1",
+            prompt_context=self.prompt,
+            scorer_context=self.scorer,
+            trainset=trainset,
+            valset=valset,
+            candidate_runner=candidate_runner,
+            scorer_runner=scorer_runner,
+            reflector=reflector,
+            event_sink=sink,
+            config=TextGepaConfig(max_metric_calls=3, minibatch_size=1),
+        )
+
+        event_types = [event["event_type"] for event in sink.events]
+        self.assertEqual(reflector_calls, 1)
+        self.assertEqual(result.budget.used_metric_calls, 2)
+        self.assertEqual(result.budget.used_reflection_failure_metric_charges, 1)
+        self.assertEqual(result.budget.metric_budget_used, 3)
+        self.assertEqual(result.budget.remaining, 0)
+        self.assertIn("reflection_failed", event_types)
+        self.assertIn("budget_exhausted", event_types)
+        self.assertIn("run_paused", event_types)
+        failed = next(event for event in sink.events if event["event_type"] == "reflection_failed")
+        self.assertEqual(failed["payload"]["budget"]["used_metric_calls"], 2)
+        self.assertEqual(failed["payload"]["budget"]["used_reflection_failure_metric_charges"], 1)
+        self.assertEqual(failed["payload"]["budget"]["metric_budget_used"], 3)
+        self.assertEqual(failed["payload"]["budget"]["remaining"], 0)
 
     def test_redacts_row_snapshots_and_reflection_io_by_default(self):
         sink = FakeSink()
@@ -569,6 +719,9 @@ class OptimizerTests(unittest.TestCase):
 
         self.assertEqual(TextGepaConfig().minibatch_size, 3)
         self.assertEqual(len(minibatch), 3)
+
+    def test_default_reflection_timeout_preserves_previous_window(self):
+        self.assertEqual(TextGepaConfig().reflection_http_timeout_seconds, 180)
 
     def test_pareto_parent_selection_samples_row_winners_instead_of_current_best(self):
         config = TextGepaConfig(seed=4, candidate_selection_strategy="pareto")
@@ -1220,6 +1373,98 @@ class OptimizerTests(unittest.TestCase):
 
         self.assertEqual(anthropic_payload["max_tokens"], 2048)
         self.assertEqual(openai_payload["max_output_tokens"], 2048)
+
+    def test_anthropic_reflection_retries_timeout_then_succeeds(self):
+        response = _FakeHttpResponse({"content": [{"type": "text", "text": "improved"}]})
+
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            with mock.patch(
+                "orizu_gepa.reflection.urllib.request.urlopen",
+                side_effect=[TimeoutError("read timed out"), response],
+            ) as urlopen:
+                with mock.patch("orizu_gepa.reflection.time.sleep") as sleep:
+                    with mock.patch("orizu_gepa.reflection.random.uniform", return_value=0.0):
+                        result = reflect_with_anthropic(
+                            "initial",
+                            [],
+                            TextGepaConfig(
+                                reflection_max_tokens=128,
+                                reflection_retry_attempts=2,
+                                reflection_http_timeout_seconds=12,
+                            ),
+                        )
+
+        self.assertEqual(result.candidate_text, "improved")
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(urlopen.call_args_list[0].kwargs["timeout"], 12)
+        sleep.assert_called_once_with(5.0)
+
+    def test_anthropic_reflection_retries_429_then_succeeds(self):
+        too_many_requests = urllib.error.HTTPError(
+            "https://api.anthropic.com/v1/messages",
+            429,
+            "Too Many Requests",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":"busy"}'),
+        )
+        response = _FakeHttpResponse({"content": [{"type": "text", "text": "improved"}]})
+
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            with mock.patch(
+                "orizu_gepa.reflection.urllib.request.urlopen",
+                side_effect=[too_many_requests, response],
+            ) as urlopen:
+                with mock.patch("orizu_gepa.reflection.time.sleep") as sleep:
+                    with mock.patch("orizu_gepa.reflection.random.uniform", return_value=0.0):
+                        result = reflect_with_anthropic(
+                            "initial",
+                            [],
+                            TextGepaConfig(
+                                reflection_max_tokens=128,
+                                reflection_retry_attempts=2,
+                                reflection_http_timeout_seconds=12,
+                            ),
+                        )
+
+        self.assertEqual(result.candidate_text, "improved")
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(5.0)
+
+    def test_anthropic_reflection_raises_retryable_error_after_timeout_attempts(self):
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            with mock.patch(
+                "orizu_gepa.reflection.urllib.request.urlopen",
+                side_effect=TimeoutError("read timed out"),
+            ) as urlopen:
+                with mock.patch("orizu_gepa.reflection.time.sleep") as sleep:
+                    with mock.patch("orizu_gepa.reflection.random.uniform", return_value=0.0):
+                        with self.assertRaisesRegex(RetryableReflectionError, "timed out"):
+                            reflect_with_anthropic(
+                                "initial",
+                                [],
+                                TextGepaConfig(
+                                    reflection_max_tokens=128,
+                                    reflection_retry_attempts=2,
+                                    reflection_http_timeout_seconds=12,
+                                ),
+                            )
+
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(5.0)
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
 
 
 if __name__ == "__main__":

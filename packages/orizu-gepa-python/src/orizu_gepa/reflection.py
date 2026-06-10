@@ -2,14 +2,31 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import socket
 import ssl
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
-from .optimizer import ReflectionResult, RowEvaluation, TextGepaConfig, build_reflection_prompt, extract_candidate_text
+from .optimizer import (
+    ReflectionResult,
+    RetryableReflectionError,
+    RowEvaluation,
+    TextGepaConfig,
+    build_reflection_prompt,
+    extract_candidate_text,
+)
+
+
+RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504, 529}
+RETRY_BACKOFF_BASE_SECONDS = 5.0
+RETRY_BACKOFF_JITTER_SECONDS = 5.0
+RETRYABLE_DIRECT_ERRORS = (TimeoutError, socket.timeout, ConnectionResetError, ConnectionAbortedError)
 
 
 def _read_anthropic_response_with_curl(api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -38,6 +55,73 @@ def _read_anthropic_response_with_curl(api_key: str, payload: dict[str, Any]) ->
         detail = "\n".join(part for part in [result.stderr.strip(), result.stdout.strip()] if part)
         raise RuntimeError(f"Reflection LM failed via curl: {detail}")
     return json.loads(result.stdout)
+
+
+def _validate_positive_http_config(value: int, name: str) -> int:
+    if value <= 0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def _retry_backoff_seconds(attempt: int) -> float:
+    return (RETRY_BACKOFF_BASE_SECONDS * (2 ** attempt)) + random.uniform(0, RETRY_BACKOFF_JITTER_SECONDS)
+
+
+def _is_retryable_http_status(status_code: int) -> bool:
+    return status_code in RETRYABLE_HTTP_STATUS_CODES
+
+
+def _is_retryable_url_error(error: urllib.error.URLError) -> bool:
+    return isinstance(error.reason, RETRYABLE_DIRECT_ERRORS)
+
+
+def _read_json_response_with_retries(
+    request: urllib.request.Request,
+    *,
+    timeout_seconds: int,
+    retry_attempts: int,
+    failure_prefix: str,
+    ssl_fallback: Callable[[], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    timeout_seconds = _validate_positive_http_config(timeout_seconds, "reflection_http_timeout_seconds")
+    retry_attempts = _validate_positive_http_config(retry_attempts, "reflection_retry_attempts")
+
+    for attempt in range(retry_attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            if _is_retryable_http_status(error.code) and attempt < retry_attempts - 1:
+                time.sleep(_retry_backoff_seconds(attempt))
+                continue
+            detail = error.read().decode("utf-8", errors="replace")
+            if _is_retryable_http_status(error.code):
+                raise RetryableReflectionError(
+                    f"{failure_prefix} retryable HTTP failure after {retry_attempts} attempts: "
+                    f"{error.code} {detail}"
+                ) from error
+            raise RuntimeError(f"{failure_prefix}: {error.code} {detail}") from error
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, ssl.SSLCertVerificationError) and ssl_fallback is not None:
+                return ssl_fallback()
+            if _is_retryable_url_error(error):
+                if attempt < retry_attempts - 1:
+                    time.sleep(_retry_backoff_seconds(attempt))
+                    continue
+                raise RetryableReflectionError(
+                    f"{failure_prefix} retryable connection failure after {retry_attempts} attempts: "
+                    f"{error.reason}"
+                ) from error
+            raise
+        except RETRYABLE_DIRECT_ERRORS as error:
+            if attempt < retry_attempts - 1:
+                time.sleep(_retry_backoff_seconds(attempt))
+                continue
+            raise RetryableReflectionError(
+                f"{failure_prefix} timed out after {retry_attempts} attempts: {error}"
+            ) from error
+
+    raise RetryableReflectionError(f"{failure_prefix} failed after {retry_attempts} attempts")
 
 
 def _merge_provider_settings(
@@ -143,16 +227,13 @@ def reflect_with_anthropic(parent_text: str, parent_results: list[RowEvaluation]
             "content-type": "application/json",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Reflection LM failed: {error.code} {detail}") from error
-    except urllib.error.URLError as error:
-        if not isinstance(error.reason, ssl.SSLCertVerificationError):
-            raise
-        data = _read_anthropic_response_with_curl(api_key, payload)
+    data = _read_json_response_with_retries(
+        request,
+        timeout_seconds=config.reflection_http_timeout_seconds,
+        retry_attempts=config.reflection_retry_attempts,
+        failure_prefix="Reflection LM failed",
+        ssl_fallback=lambda: _read_anthropic_response_with_curl(api_key, payload),
+    )
     parts = data.get("content") or []
     text = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
     return ReflectionResult(
@@ -180,12 +261,12 @@ def reflect_with_openai(parent_text: str, parent_results: list[RowEvaluation], c
             "Content-Type": "application/json",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenAI reflection LM failed: {error.code} {detail}") from error
+    data = _read_json_response_with_retries(
+        request,
+        timeout_seconds=config.reflection_http_timeout_seconds,
+        retry_attempts=config.reflection_retry_attempts,
+        failure_prefix="OpenAI reflection LM failed",
+    )
     text = _extract_openai_output_text(data)
     if not text:
         raise RuntimeError("OpenAI reflection LM returned no output text")
