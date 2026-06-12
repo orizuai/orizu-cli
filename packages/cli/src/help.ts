@@ -22,6 +22,7 @@ interface CliGroupDoc {
 }
 
 const GLOBAL_OPTIONS = [
+  ['--json', 'Emit machine-readable JSON instead of human text. Available on every command, as a prefix (orizu --json <command>) or trailing flag.'],
   ['--local', 'Use http://localhost:3000.'],
   ['--server <url>', 'Use a specific server origin, for example https://preview.example.com.'],
   ['--version, -v', 'Print the orizu CLI version.'],
@@ -77,25 +78,110 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Optimizations',
   },
   {
+    path: ['setup'],
+    usage: 'orizu setup [--agent <claude|codex>]... [--scope global|project] [--mode auto|link|copy] [--workspace|--no-workspace] [--no-install] [--no-handoff] [--launch <claude|codex>] [--skip-login] [--yes] [--dry-run] [--no-input] [--json]',
+    summary: 'Guided onboarding: sign in, set up your coding agents, create a local workspace, and hand off to your agent.',
+    group: 'Agent setup',
+    options: [
+      { name: '--agent <agent>', help: 'Coding agent to set up. Repeat for multiple agents.', repeatable: true, choices: ['claude', 'codex'] },
+      { name: '--scope <scope>', help: 'global (default) installs for you across all projects; project installs into the current repo.', choices: ['global', 'project'] },
+      { name: '--mode <mode>', help: 'Skill install sync mode (auto, link, copy).', choices: ['auto', 'link', 'copy'] },
+      { name: '--workspace', help: 'Create the gitignored .orizu/ workspace without prompting.' },
+      { name: '--no-workspace', help: 'Skip workspace creation.' },
+      { name: '--no-install', help: 'Skip the agent integration phase.' },
+      { name: '--no-handoff', help: 'Skip printing the coding-agent setup prompt.' },
+      { name: '--launch <agent>', help: 'Launch a detected coding agent with the setup prompt (interactive terminals only).', choices: ['claude', 'codex'] },
+      { name: '--skip-login', help: 'Skip the authentication phase.' },
+      { name: '--yes', help: 'Apply changes without per-step confirmation prompts.' },
+      { name: '--dry-run', help: 'Preview every planned change without writing.' },
+      { name: '--no-input', help: 'Never prompt; behave as in a non-interactive terminal.' },
+      { name: '--json', help: 'Emit the setup summary as JSON.' },
+    ],
+    examples: [
+      'orizu setup',
+      'orizu setup --agent claude --agent codex --yes',
+      'orizu setup --skip-login --no-workspace --dry-run',
+    ],
+  },
+  {
+    path: ['setup', 'prompt'],
+    usage: 'orizu setup prompt',
+    summary: 'Print the coding-agent setup prompt for repo-specific Orizu adoption.',
+    group: 'Agent setup',
+    examples: ['orizu setup prompt', 'claude "$(orizu setup prompt)"'],
+  },
+  {
     path: ['install-skill'],
-    usage: 'orizu install-skill [--target <target>]... [--yes] [--dry-run]',
-    summary: 'Install the bundled Orizu CLI skill locally for coding agents.',
+    usage: 'orizu install-skill [--agent <claude|codex>]... [--scope global|project] [--mode auto|link|copy] [--target <target>]... [--yes] [--dry-run]',
+    summary: 'Set up the Orizu skill for your coding agents (Claude Code, Codex/Open Agent Skills, or project instructions).',
     group: 'Agent setup',
     aliases: [['skills', 'install']],
     options: [
       {
-        name: '--target <target>',
-        help: 'Install destination. Repeat for multiple targets.',
+        name: '--agent <agent>',
+        help: 'Coding agent to set up. Repeat for multiple agents.',
         repeatable: true,
-        choices: ['agent-user', 'codex-project', 'claude-user', 'claude-project', 'agents-md'],
+        choices: ['claude', 'codex'],
+      },
+      {
+        name: '--scope <scope>',
+        help: 'Where the install lives: global installs for you across all projects (default); project installs into the current repo.',
+        choices: ['global', 'project'],
+      },
+      {
+        name: '--mode <mode>',
+        help: 'How installs stay in sync with the CLI: auto (default) symlinks when the CLI install path is stable and copies otherwise; link forces a symlink; copy forces a full copy with sync metadata. Project-scope installs always copy.',
+        choices: ['auto', 'link', 'copy'],
+      },
+      {
+        name: '--target <target>',
+        help: 'Advanced: explicit install destination ID. Repeat for multiple targets.',
+        repeatable: true,
+        choices: ['agent-user', 'agents-project', 'codex-project', 'claude-user', 'claude-project', 'agents-md'],
       },
       { name: '--yes', help: 'Replace an existing managed skill or AGENTS.md section without prompting.' },
       { name: '--dry-run', help: 'Show planned writes without changing files.' },
     ],
     examples: [
-      'orizu install-skill --target agent-user --yes',
-      'orizu install-skill --target codex-project --target agents-md',
-      'orizu skills install --target claude-user --dry-run',
+      'orizu install-skill --agent claude --agent codex --yes',
+      'orizu install-skill --agent claude --scope project --yes',
+      'orizu install-skill --target agents-md --dry-run',
+    ],
+  },
+  {
+    path: ['skills', 'status'],
+    usage: 'orizu skills status [--json]',
+    summary: 'Report installed Orizu skill targets and whether each is in sync with the CLI.',
+    group: 'Agent setup',
+    options: [
+      { name: '--json', help: 'Emit machine-readable status for every known install target.' },
+    ],
+    examples: ['orizu skills status', 'orizu skills status --json'],
+  },
+  {
+    path: ['skills', 'update'],
+    usage: 'orizu skills update [--dry-run] [--json]',
+    summary: 'Refresh stale copied skill installs and repair broken symlinks.',
+    group: 'Agent setup',
+    options: [
+      { name: '--dry-run', help: 'Show which installs would be refreshed without changing files.' },
+      { name: '--json', help: 'Emit machine-readable update results.' },
+    ],
+    examples: ['orizu skills update', 'orizu skills update --dry-run'],
+  },
+  {
+    path: ['skills', 'path'],
+    usage: 'orizu skills path [--skill-md] [--json]',
+    summary: 'Print where the bundled Orizu skill lives so agents can read it without installing.',
+    group: 'Agent setup',
+    options: [
+      { name: '--skill-md', help: 'Print the full path to SKILL.md instead of the skill root directory.' },
+      { name: '--json', help: 'Emit machine-readable metadata: name, root, skillMd, source, cliVersion, skillHash.' },
+    ],
+    examples: [
+      'orizu skills path',
+      'orizu skills path --skill-md',
+      'orizu skills path --json',
     ],
   },
   {
@@ -670,6 +756,7 @@ export function getCapabilities(version: string) {
   return {
     name: 'orizu',
     version,
+    globalOptions: GLOBAL_OPTIONS.map(([name, help]) => ({ name, help })),
     commands: COMMAND_DOCS.map(doc => ({
       name: commandKey(doc.path),
       usage: doc.usage,

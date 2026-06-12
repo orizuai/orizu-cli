@@ -1,0 +1,11 @@
+{
+  "name": "orizu",
+  "version": "0.1.0",
+  "description": "Eval-first LLM optimization workflows powered by the Orizu CLI: collect human feedback, build evals, score runs, and optimize prompts.",
+  "author": {
+    "name": "Orizu",
+    "url": "https://orizu.ai"
+  },
+  "homepage": "https://orizu.ai",
+  "keywords": ["evals", "llm", "optimization", "prompts", "scoring"]
+}

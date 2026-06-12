@@ -1,0 +1,27 @@
+{
+  "name": "orizu",
+  "version": "0.1.0",
+  "description": "Eval-first LLM optimization workflows powered by the Orizu CLI: collect human feedback, build evals, score runs, and optimize prompts.",
+  "author": {
+    "name": "Orizu",
+    "url": "https://orizu.ai"
+  },
+  "homepage": "https://orizu.ai",
+  "keywords": ["evals", "llm", "optimization", "prompts", "scoring"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Orizu",
+    "shortDescription": "Eval-first LLM optimization with the Orizu CLI",
+    "longDescription": "Teaches your coding agent the Orizu workflow: upload datasets, collect human feedback, turn feedback into evals and LLM judges, score prompt versions, and run prompt optimization. The plugin is a thin distribution layer over the Orizu CLI runtime; install the CLI with `npm i -g orizu` and authenticate with `orizu login`.",
+    "developerName": "Orizu",
+    "category": "Developer tools",
+    "websiteURL": "https://orizu.ai",
+    "defaultPrompt": [
+      "Use Orizu to set up evals for this repo.",
+      "Use Orizu to optimize my prompt against our evals."
+    ],
+    "brandColor": "#BC2C3D",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png"
+  }
+}

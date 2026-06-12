@@ -35,15 +35,32 @@ import {
   setGlobalFlags,
 } from './http.js'
 import {
+  computeSkillContentHash,
   getSkillInstallPath,
+  getSkillTargetStatus,
+  getTargetForAgent,
   installSkillTarget,
+  isSkillInstallAgent,
   isSkillInstallTarget,
+  resolveSkillSource,
+  SKILL_INSTALL_AGENTS,
   SKILL_INSTALL_TARGETS,
+  SkillInstallMode,
+  SkillInstallScope,
   SkillInstallTarget,
+  SkillTargetStatus,
   targetNeedsOverwrite,
 } from './skill-installer.js'
+import { renderBanner } from './banner.js'
 import { formatTaskCreateError } from './task-create-error.js'
+import { renderAgentSetupPrompt } from './setup-prompt.js'
 import { LoginResponse } from './types.js'
+import {
+  getWorkspaceRoot,
+  initOrizuWorkspace,
+  WORKSPACE_DIR_NAME,
+  workspaceExists,
+} from './workspace.js'
 
 interface Team {
   id: string
@@ -281,7 +298,16 @@ function printVersion() {
   printLine(`orizu ${getCliVersion()}`)
 }
 
+function printBannerIfInteractive() {
+  if (!process.stdout.isTTY) {
+    return
+  }
+  printLine(renderBanner())
+  printLine('')
+}
+
 function printUsage() {
+  printBannerIfInteractive()
   printLine(renderRootHelp())
 }
 
@@ -1172,6 +1198,10 @@ async function login() {
   assertSecureTokenTransport(baseUrl)
 
   if (hasArg('--no-prompt-if-logged-in') && getServerCredentials(baseUrl)) {
+    if (hasJsonFlag()) {
+      printJson({ status: 'already-logged-in', server: baseUrl })
+      return
+    }
     printLine(`Already logged in to ${sanitizeTerminalText(baseUrl)}.`)
     return
   }
@@ -1266,6 +1296,14 @@ async function login() {
     apiKey: loginData.apiKey,
   })
 
+  if (hasJsonFlag()) {
+    printJson({
+      status: 'logged-in',
+      server: baseUrl,
+      user: { id: loginData.user.id, email: loginData.user.email ?? null },
+    })
+    return
+  }
   printLine(`Logged in as ${sanitizeTerminalText(loginData.user.email ?? loginData.user.id)}`)
 }
 
@@ -1276,6 +1314,10 @@ async function whoami() {
   }
 
   const data = await response.json() as { user: { id: string; email: string | null } }
+  if (hasJsonFlag()) {
+    printJson({ user: data.user, server: getBaseUrl() })
+    return
+  }
   printLine(sanitizeTerminalText(data.user.email ?? data.user.id))
 }
 
@@ -1283,6 +1325,10 @@ async function logout() {
   const baseUrl = getBaseUrl()
   const credentials = getServerCredentials(baseUrl)
   if (!credentials) {
+    if (hasJsonFlag()) {
+      printJson({ status: 'already-logged-out', server: baseUrl })
+      return
+    }
     printLine(`Already logged out for ${sanitizeTerminalText(baseUrl)}.`)
     return
   }
@@ -1310,6 +1356,10 @@ async function logout() {
   }
 
   clearServerCredentials(baseUrl)
+  if (hasJsonFlag()) {
+    printJson({ status: 'logged-out', server: baseUrl, remoteLogoutError })
+    return
+  }
   if (remoteLogoutError) {
     console.warn(`Warning: remote logout failed: ${remoteLogoutError}`)
   }
@@ -1324,6 +1374,15 @@ async function printEnv() {
   const projectId = project?.id || getArg('--project-id') || process.env.ORIZU_PROJECT_ID || ''
   const projectSlug = project ? `${project.teamSlug}/${project.slug}` : process.env.ORIZU_PROJECT || ''
 
+  if (hasJsonFlag()) {
+    printJson({
+      ORIZU_API_URL: baseUrl,
+      ORIZU_TOKEN: token,
+      ORIZU_PROJECT_ID: projectId,
+      ...(projectSlug ? { ORIZU_PROJECT: projectSlug } : {}),
+    })
+    return
+  }
   printLine(`export ORIZU_API_URL=${shellQuote(baseUrl)}`)
   printLine(`export ORIZU_TOKEN=${shellQuote(token)}`)
   printLine(`export ORIZU_PROJECT_ID=${shellQuote(projectId)}`)
@@ -1365,6 +1424,10 @@ async function logOptimizationEvent() {
   }
 
   const data = await parseJsonResponse<{ eventId: string }>(response, 'Optimization event log')
+  if (hasJsonFlag()) {
+    printJson({ eventId: data.eventId })
+    return
+  }
   printLine(`Logged event ${sanitizeTerminalText(data.eventId)}`)
 }
 
@@ -1382,6 +1445,10 @@ async function listPrompts() {
   }
 
   const data = await parseJsonResponse<{ prompts: PromptSummary[] }>(response, 'Prompts list')
+  if (hasJsonFlag()) {
+    printJson(data as unknown as Record<string, unknown>)
+    return
+  }
   printPromptSummaries(data.prompts, 'No prompts found.')
 }
 
@@ -1399,6 +1466,10 @@ async function listJudges() {
   }
 
   const data = await parseJsonResponse<{ judges: PromptSummary[] }>(response, 'Judges list')
+  if (hasJsonFlag()) {
+    printJson(data as unknown as Record<string, unknown>)
+    return
+  }
   printPromptSummaries(data.judges, 'No judges found.')
 }
 
@@ -1441,6 +1512,10 @@ async function listScorers() {
   }
 
   const data = await parseJsonResponse<{ scorers: ScorerSummary[] }>(response, 'Scorers list')
+  if (hasJsonFlag()) {
+    printJson(data as unknown as Record<string, unknown>)
+    return
+  }
   printScorerSummaries(data.scorers)
 }
 
@@ -2082,6 +2157,10 @@ async function submitRunResults() {
       perRowResultsStoragePath: string
     }
   }>(response, 'Run submit')
+  if (hasJsonFlag()) {
+    printJson({ run: data.run })
+    return
+  }
   printLine(
     `Submitted run ${sanitizeTerminalText(data.run.id)} ` +
     `(${formatPercent(data.run.aggregateScore)}) -> ` +
@@ -2645,10 +2724,19 @@ async function runGepaOptimization() {
   if (result.status !== 0) {
     throw new Error(`orizu-gepa failed with exit code ${result.status}`)
   }
+
+  if (hasJsonFlag()) {
+    printJson({ status: 'completed', exitCode: 0 })
+  }
 }
 
 async function listTeams() {
-  printTeams(await fetchTeams())
+  const teams = await fetchTeams()
+  if (hasJsonFlag()) {
+    printJson({ teams })
+    return
+  }
+  printTeams(teams)
 }
 
 async function resolveTeamSlug(teamSlugArg: string | null): Promise<string> {
@@ -2693,13 +2781,22 @@ async function createTeam() {
   }
 
   const data = await parseJsonResponse<{ team: Team }>(response, 'Team create')
+  if (hasJsonFlag()) {
+    printJson({ team: data.team })
+    return
+  }
   printLine(`Created team: ${sanitizeTerminalText(data.team.name)} (${sanitizeTerminalText(data.team.slug)})`)
 }
 
 async function listProjects() {
   const teamSlugArg = getArg('--team')
   const teamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null
-  printProjects(await fetchProjects(teamSlug || undefined))
+  const projects = await fetchProjects(teamSlug || undefined)
+  if (hasJsonFlag()) {
+    printJson({ projects })
+    return
+  }
+  printProjects(projects)
 }
 
 async function createProject() {
@@ -2734,17 +2831,31 @@ async function createProject() {
   const data = await parseJsonResponse<{
     project: { id: string; name: string; slug: string; teamSlug: string }
   }>(response, 'Project create')
+  if (hasJsonFlag()) {
+    printJson({ project: data.project })
+    return
+  }
   printLine(`Created project ${sanitizeTerminalText(`${data.project.teamSlug}/${data.project.slug}`)}`)
 }
 
 async function listTasks() {
   const project = getArg('--project')
-  printTasks(await fetchTasks(project || undefined))
+  const tasks = await fetchTasks(project || undefined)
+  if (hasJsonFlag()) {
+    printJson({ tasks })
+    return
+  }
+  printTasks(tasks)
 }
 
 async function listApps() {
   const project = getArg('--project') || await resolveProjectSlug(null)
-  printApps(await fetchApps(project))
+  const apps = await fetchApps(project)
+  if (hasJsonFlag()) {
+    printJson({ apps })
+    return
+  }
+  printApps(apps)
 }
 
 function readSourceFile(pathArg: string): string {
@@ -2809,29 +2920,97 @@ async function askYesNo(question: string, defaultYes: boolean): Promise<boolean>
   }
 }
 
-async function promptSkillInstallTargets(): Promise<SkillInstallTarget[]> {
+const SKILL_INSTALL_USAGE =
+  `Usage: orizu install-skill [--agent <${SKILL_INSTALL_AGENTS.join('|')}>]... [--scope global|project] [--mode auto|link|copy] [--target <${SKILL_INSTALL_TARGETS.join('|')}>]... [--yes] [--dry-run]`
+
+interface SkillInstallChoice {
+  label: string
+  target: SkillInstallTarget
+  defaultYes: boolean
+}
+
+function describeSkillTarget(target: SkillInstallTarget): string {
+  if (target === 'claude-user') return 'Claude Code, for you across all projects'
+  if (target === 'claude-project') return 'Claude Code, only for this project'
+  if (target === 'agent-user') return 'Codex / Open Agent Skills, for you across all projects'
+  if (target === 'agents-project') return 'Codex / Open Agent Skills, only for this project'
+  if (target === 'codex-project') return 'Codex legacy project folder (.codex/skills)'
+  return 'Project instructions, managed Orizu section in AGENTS.md'
+}
+
+async function promptSkillInstallTargets(scope: SkillInstallScope): Promise<SkillInstallTarget[]> {
   if (!isInteractiveTerminal()) {
-    throw new Error(
-      `Usage: orizu install-skill --target <${SKILL_INSTALL_TARGETS.join('|')}> [--yes] [--dry-run]`
-    )
+    throw new Error(SKILL_INSTALL_USAGE)
   }
 
-  printLine('Where should the Orizu CLI skill be installed?')
+  const choices: SkillInstallChoice[] = [
+    { label: describeSkillTarget(getTargetForAgent('claude', scope)), target: getTargetForAgent('claude', scope), defaultYes: true },
+    { label: describeSkillTarget(getTargetForAgent('codex', scope)), target: getTargetForAgent('codex', scope), defaultYes: true },
+    { label: describeSkillTarget('agents-md'), target: 'agents-md', defaultYes: false },
+  ]
+
+  printLine('Where should Orizu be available?')
   const targets: SkillInstallTarget[] = []
-  for (const target of SKILL_INSTALL_TARGETS) {
-    const defaultYes = target === 'agent-user'
-    if (await askYesNo(`  Install to ${target}?`, defaultYes)) {
-      targets.push(target)
+  for (const choice of choices) {
+    const installPath = getSkillInstallPath(choice.target)
+    if (await askYesNo(`  ${choice.label}\n    ${installPath}?`, choice.defaultYes)) {
+      targets.push(choice.target)
+    }
+  }
+
+  if (await askYesNo('  Show advanced targets?', false)) {
+    for (const target of SKILL_INSTALL_TARGETS) {
+      if (targets.includes(target)) {
+        continue
+      }
+      const installPath = getSkillInstallPath(target)
+      if (await askYesNo(`  ${describeSkillTarget(target)} [${target}]\n    ${installPath}?`, false)) {
+        targets.push(target)
+      }
     }
   }
 
   return targets
 }
 
-function parseSkillInstallTargets(): SkillInstallTarget[] {
-  const rawTargets = getArgs('--target')
+function parseSkillInstallScope(): SkillInstallScope {
+  const raw = getArg('--scope')
+  if (raw === null || raw === 'global') {
+    return 'global'
+  }
+  if (raw === 'project') {
+    return 'local'
+  }
+  throw new Error(`Unknown --scope '${raw}'. Choices: global, project.`)
+}
+
+function parseSkillInstallMode(): SkillInstallMode {
+  const raw = getArg('--mode')
+  if (raw === null) {
+    return 'auto'
+  }
+  if (raw !== 'auto' && raw !== 'link' && raw !== 'copy') {
+    throw new Error(`Unknown --mode '${raw}'. Choices: auto, link, copy.`)
+  }
+  return raw
+}
+
+function parseSkillInstallTargets(scope: SkillInstallScope): SkillInstallTarget[] {
   const targets: SkillInstallTarget[] = []
-  for (const target of rawTargets) {
+
+  for (const agent of getArgs('--agent')) {
+    if (!isSkillInstallAgent(agent)) {
+      throw new Error(
+        `Unknown agent '${agent}'. Available agents: ${SKILL_INSTALL_AGENTS.join(', ')}`
+      )
+    }
+    const target = getTargetForAgent(agent, scope)
+    if (!targets.includes(target)) {
+      targets.push(target)
+    }
+  }
+
+  for (const target of getArgs('--target')) {
     if (!isSkillInstallTarget(target)) {
       throw new Error(
         `Unknown skill install target '${target}'. Available targets: ${SKILL_INSTALL_TARGETS.join(', ')}`
@@ -2841,6 +3020,7 @@ function parseSkillInstallTargets(): SkillInstallTarget[] {
       targets.push(target)
     }
   }
+
   return targets
 }
 
@@ -2851,39 +3031,444 @@ function formatSkillInstallAction(action: string): string {
   return 'Would update'
 }
 
-async function installSkillCommand() {
-  const skipConfirm = hasArg('--yes')
-  const dryRun = hasArg('--dry-run')
-  let targets = parseSkillInstallTargets()
-  if (targets.length === 0) {
-    targets = await promptSkillInstallTargets()
+function describePlannedWrite(target: SkillInstallTarget, action: string, mode: string, path: string): string {
+  const verb = action.includes('create') || action === 'created' ? 'create' : 'replace'
+  if (target === 'agents-md') {
+    return `  ${path} (${verb} managed Orizu section)`
+  }
+  if (mode === 'link') {
+    return `  ${path} (${verb}, symlink to the CLI-managed skill)`
+  }
+  return `  ${path} (${verb}, full copy with sync metadata)`
+}
+
+interface SkillInstallOutcome {
+  target: SkillInstallTarget
+  path: string
+  action: 'created' | 'updated' | 'skipped' | 'failed'
+  mode: 'link' | 'copy' | 'section' | null
+  error?: string
+}
+
+async function applySkillInstallTargets(
+  targets: SkillInstallTarget[],
+  options: { mode: SkillInstallMode, skipConfirm: boolean, dryRun: boolean }
+): Promise<SkillInstallOutcome[]> {
+  const cliVersion = getCliVersion()
+  const jsonMode = hasJsonFlag()
+  const planned = targets.map(target =>
+    installSkillTarget(target, { dryRun: true, mode: options.mode, cliVersion })
+  )
+
+  if (!jsonMode) {
+    printLine('Planned writes:')
+    for (const plan of planned) {
+      printLine(describePlannedWrite(plan.target, plan.action, plan.mode, plan.path))
+    }
+    printLine('')
   }
 
-  if (targets.length === 0) {
-    printLine('No targets selected; nothing to do.')
-    return
+  if (options.dryRun) {
+    if (!jsonMode) {
+      printLine('Dry run: no files were changed.')
+    }
+    return planned.map(plan => ({
+      target: plan.target,
+      path: plan.path,
+      action: 'skipped',
+      mode: plan.mode,
+    }))
   }
 
+  const outcomes: SkillInstallOutcome[] = []
   for (const target of targets) {
-    let overwrite = skipConfirm
+    let overwrite = options.skipConfirm
     const installPath = getSkillInstallPath(target)
-    if (!dryRun && !overwrite && targetNeedsOverwrite(target)) {
+    if (!overwrite && targetNeedsOverwrite(target)) {
       if (!isInteractiveTerminal()) {
         throw new Error(`${installPath} already exists. Pass --yes to replace it.`)
       }
       overwrite = await askYesNo(`Replace ${installPath}?`, true)
       if (!overwrite) {
-        printLine(`Skipped ${installPath}`)
+        if (!jsonMode) {
+          printLine(`Skipped ${installPath}`)
+        }
+        outcomes.push({ target, path: installPath, action: 'skipped', mode: null })
         continue
       }
     }
 
-    const result = installSkillTarget(target, {
-      overwrite,
-      dryRun,
-    })
-    printLine(`${formatSkillInstallAction(result.action)} ${result.path}`)
+    try {
+      const result = installSkillTarget(target, {
+        overwrite,
+        mode: options.mode,
+        cliVersion,
+      })
+      if (!jsonMode) {
+        const suffix = result.mode === 'link' ? ' (symlink)' : ''
+        printLine(`${formatSkillInstallAction(result.action)} ${result.path}${suffix}`)
+      }
+      outcomes.push({
+        target,
+        path: result.path,
+        action: result.action as 'created' | 'updated',
+        mode: result.mode,
+      })
+    } catch (error: any) {
+      const message = error?.message || String(error)
+      if (!jsonMode) {
+        printLine(`Failed ${installPath}: ${message}`)
+      }
+      outcomes.push({ target, path: installPath, action: 'failed', mode: null, error: message })
+    }
   }
+
+  return outcomes
+}
+
+async function installSkillCommand() {
+  const skipConfirm = hasArg('--yes')
+  const dryRun = hasArg('--dry-run')
+  const scope = parseSkillInstallScope()
+  const mode = parseSkillInstallMode()
+  let targets = parseSkillInstallTargets(scope)
+  if (targets.length === 0) {
+    targets = await promptSkillInstallTargets(scope)
+  }
+
+  if (targets.length === 0) {
+    if (hasJsonFlag()) {
+      printJson({ installs: [] })
+      return
+    }
+    printLine('No targets selected; nothing to do.')
+    return
+  }
+
+  const outcomes = await applySkillInstallTargets(targets, { mode, skipConfirm, dryRun })
+  if (hasJsonFlag()) {
+    printJson({ dryRun, installs: outcomes })
+  }
+}
+
+function describeSkillTargetState(status: SkillTargetStatus): string {
+  if (status.state === 'current') return 'current'
+  if (status.state === 'stale') return 'stale (run `orizu skills update`)'
+  if (status.state === 'broken-link') return 'broken symlink (run `orizu skills update`)'
+  if (status.state === 'unmanaged') return 'exists without a managed Orizu section'
+  return 'not installed'
+}
+
+function skillsStatusCommand() {
+  const source = resolveSkillSource()
+  const statuses = SKILL_INSTALL_TARGETS.map(target => getSkillTargetStatus(target))
+
+  if (hasJsonFlag()) {
+    printJson({
+      name: source.name,
+      root: source.root,
+      source: source.source,
+      cliVersion: getCliVersion(),
+      sourceHash: computeSkillContentHash(source.root),
+      targets: statuses.map(status => ({
+        target: status.target,
+        path: status.path,
+        state: status.state,
+        mode: status.mode,
+        linkTarget: status.linkTarget,
+        installedHash: status.installedHash,
+        meta: status.meta,
+      })),
+    })
+    return
+  }
+
+  printLine(`Skill source: ${source.root} (${source.source})`)
+  printLine('')
+  for (const status of statuses) {
+    const mode = status.mode ? `, ${status.mode}` : ''
+    printLine(`  ${status.target.padEnd(16)} ${describeSkillTargetState(status)}${mode}`)
+    printLine(`  ${''.padEnd(16)} ${status.path}`)
+  }
+}
+
+async function skillsUpdateCommand() {
+  const dryRun = hasArg('--dry-run')
+  const cliVersion = getCliVersion()
+  const updates: Array<{ target: SkillInstallTarget, path: string, action: string }> = []
+
+  for (const target of SKILL_INSTALL_TARGETS) {
+    const status = getSkillTargetStatus(target)
+    if (status.state === 'missing' || status.state === 'unmanaged') {
+      continue
+    }
+
+    if (status.state === 'current') {
+      updates.push({ target, path: status.path, action: 'already-current' })
+      continue
+    }
+
+    if (dryRun) {
+      updates.push({ target, path: status.path, action: 'would-update' })
+      continue
+    }
+
+    const refreshMode: SkillInstallMode = status.mode === 'link' ? 'auto' : 'copy'
+    const result = installSkillTarget(target, {
+      overwrite: true,
+      mode: refreshMode,
+      cliVersion,
+    })
+    updates.push({
+      target,
+      path: status.path,
+      action: status.state === 'broken-link' ? 'relinked' : result.action,
+    })
+  }
+
+  if (hasJsonFlag()) {
+    printJson({ updates })
+    return
+  }
+
+  if (updates.length === 0) {
+    printLine('No Orizu skill installs found. Run `orizu install-skill` first.')
+    return
+  }
+
+  for (const update of updates) {
+    if (update.action === 'already-current') {
+      printLine(`Current ${update.path}`)
+    } else if (update.action === 'would-update') {
+      printLine(`Would update ${update.path}`)
+    } else if (update.action === 'relinked') {
+      printLine(`Relinked ${update.path}`)
+    } else {
+      printLine(`Updated ${update.path}`)
+    }
+  }
+}
+
+function skillsPathCommand() {
+  const source = resolveSkillSource()
+
+  if (hasJsonFlag()) {
+    printJson({
+      name: source.name,
+      root: source.root,
+      skillMd: source.skillMd,
+      source: source.source,
+      cliVersion: getCliVersion(),
+      skillHash: computeSkillContentHash(source.root),
+    })
+    return
+  }
+
+  printLine(hasArg('--skill-md') ? source.skillMd : source.root)
+}
+
+const LAUNCHABLE_AGENTS: Record<string, string> = {
+  claude: 'claude',
+  codex: 'codex',
+}
+
+function findExecutable(name: string): string | null {
+  const pathValue = process.env.PATH || ''
+  for (const dir of pathValue.split(delimiter)) {
+    if (!dir) {
+      continue
+    }
+    const candidate = join(dir, name)
+    if (existsSync(candidate)) {
+      return candidate
+    }
+  }
+  return null
+}
+
+function describeSetupAuthState(): { state: 'signed-in' | 'signed-out', baseUrl: string } {
+  const baseUrl = getBaseUrl()
+  return {
+    state: getServerCredentials(baseUrl) ? 'signed-in' : 'signed-out',
+    baseUrl,
+  }
+}
+
+async function setupCommand() {
+  const dryRun = hasArg('--dry-run')
+  const skipConfirm = hasArg('--yes')
+  const noInput = hasArg('--no-input') || !isInteractiveTerminal()
+
+  printBannerIfInteractive()
+  printLine('Orizu setup')
+  printLine('')
+
+  // Phase 1: login
+  printLine('1. Authentication')
+  let auth = describeSetupAuthState()
+  if (hasArg('--skip-login')) {
+    printLine('   Skipped (--skip-login).')
+  } else if (auth.state === 'signed-in') {
+    printLine(`   Already authenticated with ${sanitizeTerminalText(auth.baseUrl)}.`)
+  } else if (noInput || dryRun) {
+    printLine('   Not signed in. Run `orizu login` to authenticate.')
+  } else if (await askYesNo('   Sign in to Orizu now?', true)) {
+    await login()
+    auth = describeSetupAuthState()
+  } else {
+    printLine('   Skipped. Run `orizu login` when ready.')
+  }
+  printLine('')
+
+  // Phase 2: agent integration
+  printLine('2. Agent integration')
+  const scope = parseSkillInstallScope()
+  const mode = parseSkillInstallMode()
+  let targets = hasArg('--no-install') ? [] : parseSkillInstallTargets(scope)
+  if (targets.length === 0 && !hasArg('--no-install')) {
+    if (noInput) {
+      printLine('   No agents selected. Pass --agent claude and/or --agent codex, or rerun interactively.')
+    } else {
+      targets = await promptSkillInstallTargets(scope)
+    }
+  }
+
+  let installOutcomes: SkillInstallOutcome[] = []
+  if (targets.length > 0) {
+    installOutcomes = await applySkillInstallTargets(targets, { mode, skipConfirm, dryRun })
+  } else if (hasArg('--no-install')) {
+    printLine('   Skipped (--no-install).')
+  }
+  printLine('')
+
+  // Phase 3: local workspace
+  printLine('3. Local workspace')
+  let workspaceState: 'created' | 'exists' | 'skipped' | 'would-create' = 'skipped'
+  if (hasArg('--no-workspace')) {
+    printLine('   Skipped (--no-workspace).')
+  } else if (workspaceExists()) {
+    workspaceState = 'exists'
+    printLine(`   ${WORKSPACE_DIR_NAME}/ already initialized.`)
+  } else {
+    const wantsWorkspace = hasArg('--workspace') ||
+      (!noInput && await askYesNo(`   Create a gitignored ${WORKSPACE_DIR_NAME}/ workspace for local Orizu artifacts?`, true))
+    if (wantsWorkspace) {
+      const result = initOrizuWorkspace({
+        baseUrl: auth.baseUrl,
+        cliVersion: getCliVersion(),
+        dryRun,
+      })
+      workspaceState = result.state === 'would-create' ? 'would-create' : result.state
+      for (const action of result.actions) {
+        printLine(`   ${dryRun ? 'Would ' : 'Did '}${action}`)
+      }
+    } else {
+      printLine(`   Skipped. Rerun with --workspace to create ${WORKSPACE_DIR_NAME}/.`)
+    }
+  }
+  printLine('')
+
+  // Phase 4: coding-agent handoff
+  const handoffPrompt = renderAgentSetupPrompt({
+    workspacePath: workspaceState === 'created' || workspaceState === 'exists'
+      ? getWorkspaceRoot()
+      : null,
+  })
+  if (!hasArg('--no-handoff')) {
+    printLine('4. Coding-agent handoff')
+    printLine('   Give your coding agent this prompt to plan repo-specific Orizu adoption:')
+    printLine('')
+    printLine('--- prompt start ---')
+    printLine(handoffPrompt)
+    printLine('--- prompt end ---')
+    printLine('')
+
+    const detected = Object.keys(LAUNCHABLE_AGENTS).filter(agent => findExecutable(LAUNCHABLE_AGENTS[agent]))
+    if (detected.length > 0) {
+      printLine(`   Detected agents: ${detected.join(', ')}. Launch one with the prompt, e.g.:`)
+      for (const agent of detected) {
+        printLine(`     ${LAUNCHABLE_AGENTS[agent]} "$(orizu setup prompt)"`)
+      }
+    }
+
+    const launchAgent = getArg('--launch')
+    if (launchAgent) {
+      if (!(launchAgent in LAUNCHABLE_AGENTS)) {
+        throw new Error(`Unknown --launch agent '${launchAgent}'. Choices: ${Object.keys(LAUNCHABLE_AGENTS).join(', ')}.`)
+      }
+      const binary = findExecutable(LAUNCHABLE_AGENTS[launchAgent])
+      if (!isInteractiveTerminal()) {
+        printLine('   Not launching: --launch requires an interactive terminal.')
+      } else if (!binary) {
+        printLine(`   Not launching: '${LAUNCHABLE_AGENTS[launchAgent]}' was not found on PATH.`)
+      } else if (dryRun) {
+        printLine(`   Would launch ${binary} with the setup prompt.`)
+      } else if (skipConfirm || await askYesNo(`   Launch ${LAUNCHABLE_AGENTS[launchAgent]} with the setup prompt now?`, true)) {
+        printLine(`   Launching ${binary}…`)
+        spawnSync(binary, [handoffPrompt], { stdio: 'inherit' })
+      }
+    }
+    printLine('')
+  }
+
+  // Setup summary (success criteria checklist)
+  const summaryTargets = installOutcomes.length > 0
+    ? installOutcomes
+      .filter(outcome => outcome.action !== 'failed')
+      .map(outcome => ({ outcome, status: getSkillTargetStatus(outcome.target) }))
+    : []
+  const source = resolveSkillSource()
+
+  if (hasJsonFlag()) {
+    printJson({
+      auth: { state: auth.state, server: auth.baseUrl },
+      integrations: installOutcomes.map(outcome => ({
+        target: outcome.target,
+        path: outcome.path,
+        action: outcome.action,
+        mode: outcome.mode,
+        error: outcome.error,
+      })),
+      skill: {
+        root: source.root,
+        source: source.source,
+        cliVersion: getCliVersion(),
+        skillHash: computeSkillContentHash(source.root),
+      },
+      workspace: { state: workspaceState, path: getWorkspaceRoot() },
+    })
+    return
+  }
+
+  printLine('Setup summary')
+  printLine(`  Auth:         ${auth.state === 'signed-in' ? `signed in (${sanitizeTerminalText(auth.baseUrl)})` : 'not signed in — run `orizu login`'}`)
+  if (summaryTargets.length > 0) {
+    printLine('  Integrations:')
+    for (const { outcome, status } of summaryTargets) {
+      const modeLabel = status.mode ? `, ${status.mode}` : ''
+      printLine(`    ${outcome.target.padEnd(16)} ${status.state}${modeLabel}  ${outcome.path}`)
+    }
+  } else {
+    printLine('  Integrations: none installed this run — `orizu install-skill` sets them up.')
+  }
+  const failed = installOutcomes.filter(outcome => outcome.action === 'failed')
+  for (const failure of failed) {
+    printLine(`    ${failure.target.padEnd(16)} failed: ${failure.error}`)
+  }
+  printLine(`  Skill source: ${source.root} (${source.source})`)
+  printLine(`  Workspace:    ${workspaceState === 'skipped' ? 'skipped' : `${getWorkspaceRoot()} (${workspaceState})`}`)
+  printLine('  Next:         hand the prompt above to your coding agent to plan repo-specific Orizu adoption.')
+}
+
+function setupPromptCommand() {
+  const prompt = renderAgentSetupPrompt({
+    workspacePath: workspaceExists() ? getWorkspaceRoot() : null,
+  })
+  if (hasJsonFlag()) {
+    printJson({ prompt })
+    return
+  }
+  printLine(prompt)
 }
 
 function readJsonFile(pathArg: string): Record<string, unknown> {
@@ -3150,6 +3735,10 @@ async function createAppFromFile() {
     app: { id: string; name: string; versionNum: number; componentName?: string; url?: string }
     warnings?: string[]
   }>(response, 'App create')
+  if (hasJsonFlag()) {
+    printJson({ app: data.app, warnings: data.warnings || [] })
+    return
+  }
   printLine(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`)
   if (data.app.url) {
     printLine(`View app: ${formatTerminalLink(data.app.url)}`)
@@ -3190,6 +3779,14 @@ async function previewAppFromFile() {
     keepOpen,
   })
 
+  if (hasJsonFlag()) {
+    printJson({
+      url: result.url,
+      screenshotPath: result.screenshotPath || null,
+      warnings: result.warnings,
+    })
+    return
+  }
   printLine(`Preview rendered: ${formatTerminalLink(result.url)}`)
   if (result.screenshotPath) {
     printLine(`Screenshot: ${sanitizeTerminalText(result.screenshotPath)}`)
@@ -3241,6 +3838,10 @@ async function updateAppFromFile() {
     app: { id: string; name: string; versionNum: number; componentName?: string }
     warnings?: string[]
   }>(response, 'App update')
+  if (hasJsonFlag()) {
+    printJson({ app: data.app, warnings: data.warnings || [] })
+    return
+  }
   printLine(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`)
   if (data.warnings?.length) {
     printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
@@ -3288,6 +3889,10 @@ async function linkAppDataset() {
     versionNum: number
   }>(response, 'App link dataset')
 
+  if (hasJsonFlag()) {
+    printJson({ app: data.app, linkedDataset: data.linkedDataset, versionNum: data.versionNum })
+    return
+  }
   printLine(
     `Linked dataset ${sanitizeTerminalText(data.linkedDataset.name)} (${sanitizeTerminalText(data.linkedDataset.id)}) to app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) version ${data.versionNum}`
   )
@@ -3344,7 +3949,7 @@ async function createTask() {
 
   if (!response.ok) {
     const cliError = await formatTaskCreateError(response)
-    if (hasArg('--json')) {
+    if (hasJsonFlag()) {
       const payload = cliError.structuredPayload ?? { error: cliError.message }
       printLine(JSON.stringify({
         ...payload,
@@ -3368,7 +3973,7 @@ async function createTask() {
     warning?: string
   }>(response, 'Task create')
 
-  if (hasArg('--json')) {
+  if (hasJsonFlag()) {
     printLine(JSON.stringify({
       taskId: data.task.id,
       datasetId,
@@ -3440,7 +4045,7 @@ async function publishTask() {
     'Task publish'
   )
 
-  if (hasArg('--json')) {
+  if (hasJsonFlag()) {
     printLine(JSON.stringify({
       taskId: data.task.id,
       status: data.task.status,
@@ -3486,6 +4091,10 @@ async function assignTask() {
   }
 
   const data = await parseJsonResponse<{ assignmentsCreated: number }>(response, 'Task assign')
+  if (hasJsonFlag()) {
+    printJson({ assignmentsCreated: data.assignmentsCreated })
+    return
+  }
   printLine(`Created ${data.assignmentsCreated} assignments.`)
 }
 
@@ -3498,7 +4107,7 @@ async function taskStatus() {
   const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`)
   if (!response.ok) {
     const rawBody = await response.text()
-    if (hasArg('--json')) {
+    if (hasJsonFlag()) {
       let errorPayload: Record<string, unknown> = { error: rawBody }
       try {
         const parsed = JSON.parse(rawBody)
@@ -3525,7 +4134,7 @@ async function taskStatus() {
   }
 
   const data = await parseJsonResponse<TaskStatusPayload>(response, 'Task status')
-  if (hasArg('--json')) {
+  if (hasJsonFlag()) {
     printLine(JSON.stringify(data, null, 2))
     return
   }
@@ -3552,6 +4161,10 @@ async function updateTaskStatus(targetStatus: 'paused' | 'active') {
   }
 
   const data = await parseJsonResponse<{ task: { id: string; status: string } }>(response, 'Task status update')
+  if (hasJsonFlag()) {
+    printJson({ task: data.task })
+    return
+  }
   const action = targetStatus === 'paused' ? 'Paused' : 'Unpaused'
   printLine(`${action} task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]`)
 }
@@ -3676,7 +4289,7 @@ async function appDetail() {
     throw new Error(`App '${appId}' not found in project '${projectSlug}'`)
   }
 
-  if (hasArg('--json')) {
+  if (hasJsonFlag()) {
     printLine(JSON.stringify(detail, null, 2))
     return
   }
@@ -3737,6 +4350,14 @@ async function exportAppSource() {
     : defaultAppExportFilename(data.app.name, data.version.versionNum)
 
   writeTextFileEnsuringDir(filename, data.version.code)
+  if (hasJsonFlag()) {
+    printJson({
+      app: { id: data.app.id, name: data.app.name },
+      versionNum: data.version.versionNum,
+      savedTo: filename,
+    })
+    return
+  }
   printLine(
     `Saved app ${sanitizeTerminalText(data.app.name)} v${data.version.versionNum} source to ${sanitizeTerminalText(filename)}`
   )
@@ -3744,8 +4365,12 @@ async function exportAppSource() {
 
 async function listTeamMembers() {
   const teamSlug = await resolveTeamSlug(getArg('--team'))
-
-  printTeamMembers(await fetchTeamMembers(teamSlug))
+  const members = await fetchTeamMembers(teamSlug)
+  if (hasJsonFlag()) {
+    printJson({ team: teamSlug, members })
+    return
+  }
+  printTeamMembers(members)
 }
 
 async function addTeamMember() {
@@ -3764,6 +4389,10 @@ async function addTeamMember() {
     throw new Error(`Failed to add team member: ${await response.text()}`)
   }
   const data = await parseJsonResponse<{ member: TeamMember }>(response, 'Team member add')
+  if (hasJsonFlag()) {
+    printJson({ member: data.member })
+    return
+  }
   printLine(`Added team member ${sanitizeTerminalText(data.member.email)} (${sanitizeTerminalText(data.member.id)})`)
 }
 
@@ -3786,6 +4415,10 @@ async function removeTeamMember() {
   )
   if (!response.ok) {
     throw new Error(`Failed to remove team member: ${await response.text()}`)
+  }
+  if (hasJsonFlag()) {
+    printJson({ removed: { id: member.id, email: member.email } })
+    return
   }
   printLine(`Removed team member ${sanitizeTerminalText(member.email)}`)
 }
@@ -3821,6 +4454,10 @@ async function changeTeamMemberRole() {
     throw new Error(`Failed to update member role: ${await response.text()}`)
   }
 
+  if (hasJsonFlag()) {
+    printJson({ member: { id: member.id, email: member.email, role } })
+    return
+  }
   printLine(`Updated ${sanitizeTerminalText(member.email)} role to ${sanitizeTerminalText(role)}`)
 }
 
@@ -3923,6 +4560,10 @@ async function uploadJsonlDatasetInChunks(
     throw new Error('Dataset file contains no rows')
   }
 
+  if (hasJsonFlag()) {
+    printJson({ dataset })
+    return
+  }
   printLine(`Uploaded dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) with ${dataset.rowCount} rows.`)
   if (dataset.url) {
     printLine(`View dataset: ${formatTerminalLink(dataset.url)}`)
@@ -3952,6 +4593,10 @@ async function uploadDataset() {
   const { rows, sourceType } = parseDatasetFile(file)
   const data = await createDatasetFromRows(project, datasetName, sourceType, rows, readmeMarkdown)
 
+  if (hasJsonFlag()) {
+    printJson({ dataset: data.dataset })
+    return
+  }
   printLine(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`)
   if (data.dataset.url) {
     printLine(`View dataset: ${formatTerminalLink(data.dataset.url)}`)
@@ -4089,6 +4734,10 @@ async function downloadDataset() {
   const bytes = new Uint8Array(await response.arrayBuffer())
   writeFileSync(filename, bytes)
 
+  if (hasJsonFlag()) {
+    printJson({ datasetId, format, savedTo: filename })
+    return
+  }
   printLine(`Saved dataset ${sanitizeTerminalText(datasetId)} (${format.toUpperCase()}) to ${sanitizeTerminalText(filename)}`)
 }
 
@@ -4254,6 +4903,10 @@ async function appendDatasetRows() {
   }
 
   if (lastResult) {
+    if (hasJsonFlag()) {
+      printJson({ dataset: lastResult.dataset, appendedCount: totalAppended })
+      return
+    }
     printLine(
       `Appended ${totalAppended} rows to dataset ${sanitizeTerminalText(lastResult.dataset.name)} (${sanitizeTerminalText(lastResult.dataset.id)}). New row count: ${lastResult.dataset.rowCount}`
     )
@@ -4315,6 +4968,10 @@ async function editDatasetRows() {
     updatedCount: number
   }>(response, 'Dataset edit rows')
 
+  if (hasJsonFlag()) {
+    printJson({ dataset: data.dataset, updatedCount: data.updatedCount })
+    return
+  }
   printLine(
     `Updated ${data.updatedCount} rows in dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Current row count: ${data.dataset.rowCount}`
   )
@@ -4354,6 +5011,10 @@ async function deleteDatasetRows() {
     deletedCount: number
   }>(response, 'Dataset delete rows')
 
+  if (hasJsonFlag()) {
+    printJson({ dataset: data.dataset, deletedCount: data.deletedCount })
+    return
+  }
   printLine(
     `Deleted ${data.deletedCount} rows from dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). New row count: ${data.dataset.rowCount}`
   )
@@ -4408,6 +5069,10 @@ async function deleteDataset() {
     dataset: { id: string }
   }>(response, 'Dataset delete')
 
+  if (hasJsonFlag()) {
+    printJson({ dataset: data.dataset, deleted: true })
+    return
+  }
   printLine(`Deleted dataset ${sanitizeTerminalText(data.dataset.id)}.`)
 }
 
@@ -4444,6 +5109,10 @@ async function lockDataset() {
     }
   }>(response, 'Dataset lock')
 
+  if (hasJsonFlag()) {
+    printJson({ dataset: data.dataset })
+    return
+  }
   printLine(
     `Locked dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) at ${sanitizeTerminalText(data.dataset.lockedAt)}. Row count: ${data.dataset.rowCount}`
   )
@@ -4481,6 +5150,10 @@ async function cloneDataset() {
     }
   }>(response, 'Dataset clone')
 
+  if (hasJsonFlag()) {
+    printJson({ dataset: data.dataset })
+    return
+  }
   printLine(
     `Cloned dataset ${sanitizeTerminalText(data.dataset.parentDatasetId)} -> ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Row count: ${data.dataset.rowCount}`
   )
@@ -4512,6 +5185,10 @@ async function downloadAnnotations() {
   const bytes = new Uint8Array(await response.arrayBuffer())
   writeFileSync(filename, bytes)
 
+  if (hasJsonFlag()) {
+    printJson({ taskId, format, savedTo: filename })
+    return
+  }
   printLine(`Saved ${format.toUpperCase()} export to ${sanitizeTerminalText(filename)}`)
 }
 
@@ -4756,7 +5433,11 @@ async function runnersExec() {
     } else {
       writeFileSync(outPath, resultJsonl)
     }
-    printLine(`Wrote ${context.rows.length} runner results to ${sanitizeTerminalText(outPath)}`)
+    if (hasJsonFlag()) {
+      printJson({ rowCount: context.rows.length, out: outPath })
+    } else {
+      printLine(`Wrote ${context.rows.length} runner results to ${sanitizeTerminalText(outPath)}`)
+    }
   } finally {
     materializedRunner.cleanup()
   }
@@ -4797,6 +5478,9 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   const helpTarget = extractHelpTarget(cliArgs)
   if (helpTarget !== null) {
+    if (helpTarget.length === 0) {
+      printBannerIfInteractive()
+    }
     printLine(renderHelpForArgs(helpTarget))
     return
   }
@@ -4819,6 +5503,16 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
+  if (command === 'setup' && subcommand === 'prompt') {
+    setupPromptCommand()
+    return
+  }
+
+  if (command === 'setup') {
+    await setupCommand()
+    return
+  }
+
   if (command === 'install-skill') {
     await installSkillCommand()
     return
@@ -4826,6 +5520,21 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'skills' && subcommand === 'install') {
     await installSkillCommand()
+    return
+  }
+
+  if (command === 'skills' && subcommand === 'path') {
+    skillsPathCommand()
+    return
+  }
+
+  if (command === 'skills' && subcommand === 'status') {
+    skillsStatusCommand()
+    return
+  }
+
+  if (command === 'skills' && subcommand === 'update') {
+    await skillsUpdateCommand()
     return
   }
 

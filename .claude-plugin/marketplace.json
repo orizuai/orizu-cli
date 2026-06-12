@@ -1,0 +1,20 @@
+{
+  "name": "orizu",
+  "owner": {
+    "name": "Orizu",
+    "url": "https://orizu.ai"
+  },
+  "metadata": {
+    "description": "Official Orizu plugins: eval-first LLM optimization workflows powered by the Orizu CLI.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "orizu",
+      "source": "./plugins/claude-code",
+      "description": "Eval-first LLM optimization workflows powered by the Orizu CLI: collect human feedback, build evals, score runs, and optimize prompts.",
+      "category": "development",
+      "tags": ["evals", "llm", "optimization", "prompts"]
+    }
+  ]
+}

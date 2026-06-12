@@ -136,33 +136,129 @@ Use `orizu --help`, `orizu <group> --help`, or
 examples. Agents and scripts can run `orizu capabilities --json` for a structured
 command manifest.
 
+### JSON output everywhere
+
+Agents are first-class users of this CLI: **every command supports `--json`**,
+either as a global prefix (`orizu --json teams list`) or a trailing flag
+(`orizu teams list --json`). With the flag set, the command's result is emitted
+as a single JSON document on stdout instead of human-formatted text (a few
+long-running commands, such as `setup` and `optimizations run-gepa`, stream
+progress first and emit the JSON summary as the final line). Errors still exit
+non-zero with a message on stderr. The `capabilities --json` manifest lists
+`--json` under `globalOptions`.
+
 ## Agent Setup
+
+The mental model: the **CLI is the runtime and source of truth** (auth,
+scorers, runners, optimizers, score submission); the **skill is the agent
+workflow layer** that teaches a coding agent to use it; **plugins are native
+distribution layers** for Codex and Claude Code (see `plugins/` and
+`docs/plugins/capability-matrix.md`). Prefer the first-class plugin where your
+agent supports it; local skill installs are the lightweight fallback and the
+path for generic Open Agent Skills consumers.
+
+### Guided setup
+
+`orizu setup` is the recommended onboarding command. It walks through four
+phases — sign in, agent integration, local workspace, and coding-agent
+handoff — and ends with a summary of auth state, installed integrations (with
+sync mode and drift state), the skill source, and the next step.
+
+```bash
+orizu setup
+orizu setup --agent claude --agent codex --yes
+orizu setup --skip-login --no-workspace --dry-run
+```
+
+- Interactive runs ask which agents you use (Claude Code and Codex
+  preselected) and whether to create a gitignored `.orizu/` workspace for
+  local Orizu artifacts (`workspace.json` metadata plus a `generated/` area;
+  never credentials).
+- Non-interactive runs (`--no-input`, CI, or no TTY) are deterministic: pass
+  `--agent`, `--workspace`/`--no-workspace`, and `--yes` explicitly.
+- The handoff phase prints a prompt instructing your coding agent to read the
+  Orizu skill, inspect the repo, and propose teams, projects, datasets,
+  prompts, and scorers before changing anything. `orizu setup prompt` prints
+  just the prompt (e.g. `claude "$(orizu setup prompt)"`), and
+  `--launch claude|codex` opens a detected agent with it from an interactive
+  terminal.
+- `--json` emits the setup summary as machine-readable JSON.
 
 ### Install bundled skill
 
+Pick your coding agents by name; the CLI maps them to the right install paths:
+
 ```bash
-orizu install-skill --target agent-user --yes
+orizu install-skill --agent claude --agent codex --yes
 ```
 
-Targets:
+- `--agent <claude|codex>` (repeatable) selects agents. Without flags in a
+  terminal, an interactive chooser runs with Claude Code and Codex preselected.
+- `--scope global|project`: `global` (default) installs for you across all
+  projects (`~/.claude/skills`, `~/.agents/skills`); `project` installs into
+  the current repo (`./.claude/skills`, `./.agents/skills`).
+- `--mode auto|link|copy` controls how installs stay in sync with the CLI:
+  `auto` (default) symlinks to the CLI-managed skill when the CLI install path
+  is stable and copies otherwise (for example `npx` cache paths); `link` and
+  `copy` force a mode. Project-scope installs always copy, and copied installs
+  include a `.orizu-skill-meta.json` (skill hash, CLI version, source) used for
+  drift detection.
+- `--yes` replaces an existing managed install without prompting.
+- `--dry-run` prints the write plan without changing files. Interactive and
+  normal runs print the same plan before writing, including how a managed
+  `AGENTS.md` section would be created or replaced.
+
+Advanced target IDs (stable machine flags, repeatable via `--target`):
 
 - `agent-user`: `~/.agents/skills/orizu-cli`
-- `codex-project`: `./.codex/skills/orizu-cli`
+- `agents-project`: `./.agents/skills/orizu-cli`
+- `codex-project`: `./.codex/skills/orizu-cli` (legacy Codex project folder)
 - `claude-user`: `~/.claude/skills/orizu-cli`
 - `claude-project`: `./.claude/skills/orizu-cli`
 - `agents-md`: managed Orizu CLI section in `./AGENTS.md`
 
-Options:
-
-- `--target <target>` can be repeated.
-- `--yes` replaces an existing managed install without prompting.
-- `--dry-run` prints planned writes without changing files.
-
 Alias:
 
 ```bash
-orizu skills install --target agent-user --yes
+orizu skills install --agent claude --yes
 ```
+
+### Keep installs in sync
+
+```bash
+orizu skills status [--json]
+orizu skills update [--dry-run] [--json]
+```
+
+- `skills status` reports every known target: missing, current, stale, broken
+  symlink, or unmanaged (an `AGENTS.md` without the managed section), plus the
+  install mode and content hashes.
+- `skills update` refreshes stale copied installs, re-renders stale `AGENTS.md`
+  sections, and repairs broken symlinks. Missing targets are left alone.
+- Symlinked installs track the CLI package automatically; copied installs are
+  refreshed by `skills update` after a CLI upgrade. `npx` runs get copies
+  because the cache path is ephemeral.
+
+### Discover bundled skill (read-only)
+
+Coding agents can locate and read the bundled skill without installing it into
+any agent-specific folder:
+
+```bash
+orizu skills path
+orizu skills path --skill-md
+orizu skills path --json
+```
+
+- Plain output prints the skill root directory (or the `SKILL.md` path with
+  `--skill-md`).
+- `--json` emits stable machine-readable fields: `name`, `root`, `skillMd`,
+  `source` (`override` | `packaged` | `repo-fallback`), `cliVersion`, and
+  `skillHash` (sha256 over the skill content), which lets tooling verify that
+  installed or bundled skill copies match the CLI runtime that supplied them.
+
+Expected agent bootstrap flow: run `npx orizu --help`, discover
+`skills path`, run `orizu skills path --json`, then read `SKILL.md` directly.
 
 ## Teams
 

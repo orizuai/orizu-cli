@@ -35,15 +35,56 @@ Install the CLI globally with your package manager:
 | pnpm | `pnpm add -g orizu` |
 | Bun | `bun add -g orizu` |
 
-Install the companion coding-agent skill from the CLI package:
+Then run the guided setup — it signs you in, sets up your coding agents,
+optionally creates a gitignored `.orizu/` workspace, and hands your agent a
+prompt to plan repo-specific Orizu adoption:
 
 ```bash
-orizu install-skill --target agent-user --yes
+orizu setup
 ```
 
-The npm package ships the skill alongside the CLI. Use `orizu install-skill --help`
-to see all supported targets, including Codex project, Claude user/project, and
-`AGENTS.md` installs.
+Or install just the companion coding-agent skill:
+
+```bash
+orizu install-skill --agent claude --agent codex --yes
+```
+
+First-class plugin packages for Codex and Claude Code live under `plugins/`
+in this repository. Plugins bundle the same skill; the CLI remains the runtime
+either way.
+
+```bash
+# Codex
+codex plugin marketplace add <owner>/<this-repo>
+codex plugin add orizu@orizu-plugins
+
+# Claude Code (inside a session)
+/plugin marketplace add <owner>/<this-repo>
+/plugin install orizu@orizu
+```
+
+The npm package ships the skill alongside the CLI. Run `orizu install-skill` in
+a terminal for an interactive chooser (Claude Code and Codex preselected,
+user-level installs by default), or use `orizu install-skill --help` for
+project-scope installs, sync modes, and advanced targets including the managed
+`AGENTS.md` section. Keep installs in sync after CLI upgrades with
+`orizu skills status` and `orizu skills update`.
+
+Coding agents can also read the bundled skill directly without installing it:
+
+```bash
+orizu skills path --json
+```
+
+This prints the skill location plus source metadata (`name`, `root`, `skillMd`,
+`source`, `cliVersion`, `skillHash`), so an agent can go from `npx orizu --help`
+to reading `SKILL.md` in two commands and verify the guidance matches the CLI
+that supplied it.
+
+Agents are first-class users of this CLI: **every command supports `--json`**
+(as a prefix, `orizu --json teams list`, or a trailing flag) and emits a single
+machine-readable JSON document instead of formatted text. Discover the full
+command surface, including global options, with `orizu capabilities --json`.
 
 ## Authentication
 
@@ -81,6 +122,10 @@ orizu logout
   <tr>
     <td>Install the bundled agent skill</td>
     <td><code>orizu install-skill --target agent-user --yes</code></td>
+  </tr>
+  <tr>
+    <td>Locate the bundled skill (read-only)</td>
+    <td><code>orizu skills path --json</code></td>
   </tr>
   <tr>
     <td>Inspect CLI capabilities as JSON</td>
