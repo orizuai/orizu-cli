@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
+import type { Plugin } from 'esbuild'
 
 export const PREVIEW_RUNTIME_REGISTRY_VERSION = 1
 
@@ -110,6 +111,10 @@ interface PreviewPage {
   once?: (event: string, listener: () => void) => unknown
   on?: (event: string, listener: () => void) => unknown
   off?: (event: string, listener: () => void) => unknown
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error
 }
 
 const SUPPORTED_SCHEMA_KEYS = new Set(['type', 'required', 'properties', 'items', 'enum'])
@@ -672,18 +677,18 @@ function buildSnapshotTailwindCss() {
 `
 }
 
-function createPreviewSnapshotPlugin(): any {
+function createPreviewSnapshotPlugin(): Plugin {
   const modules = buildPreviewSnapshotModules()
   return {
     name: 'orizu-preview-runtime-snapshot',
-    setup(build: any) {
-      build.onResolve({ filter: /^@\/components\// }, (args: any) => {
+    setup(build) {
+      build.onResolve({ filter: /^@\/components\// }, (args) => {
         if (modules[args.path]) {
           return { path: args.path, namespace: 'orizu-preview-snapshot' }
         }
         return null
       })
-      build.onLoad({ filter: /.*/, namespace: 'orizu-preview-snapshot' }, (args: any) => {
+      build.onLoad({ filter: /.*/, namespace: 'orizu-preview-snapshot' }, (args) => {
         const contents = modules[args.path]
         if (!contents) {
           return null
@@ -942,19 +947,19 @@ async function listenOnAvailablePort(server: ReturnType<typeof createServer>): P
         })
       })
       return port
-    } catch (error: any) {
+    } catch (error: unknown) {
       server.removeAllListeners('error')
-      if (error?.code !== 'EADDRINUSE') throw error
+      if (!isNodeError(error) || error.code !== 'EADDRINUSE') throw error
     }
   }
   throw new Error('Unable to find an available localhost port for app preview.')
 }
 
-async function loadPlaywright(): Promise<any> {
+async function loadPlaywright(): Promise<PreviewPlaywright> {
   const fromTest = await import('@playwright/test').catch(() => null)
-  if (fromTest?.chromium) return fromTest
+  if (fromTest?.chromium) return fromTest as unknown as PreviewPlaywright
   const fromPlaywright = await import('playwright').catch(() => null)
-  if (fromPlaywright?.chromium) return fromPlaywright
+  if (fromPlaywright?.chromium) return fromPlaywright as unknown as PreviewPlaywright
   throw new Error(
     'Local preview requires Playwright. Install project dependencies with `bun install`, then rerun `orizu apps preview`.'
   )

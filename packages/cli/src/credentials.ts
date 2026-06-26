@@ -20,6 +20,10 @@ import {
   StoredCredentialsV3,
 } from './types.js'
 
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error
+}
+
 function getConfigDir(): string {
   if (process.env.ORIZU_CONFIG_DIR) {
     return process.env.ORIZU_CONFIG_DIR
@@ -100,8 +104,8 @@ function writeCredentials(config: StoredCredentialsV2 | StoredCredentialsV3) {
   chmodSync(tempPath, 0o600)
   try {
     renameSync(tempPath, path)
-  } catch (error: any) {
-    if (process.platform === 'win32' && error?.code === 'EEXIST') {
+  } catch (error: unknown) {
+    if (process.platform === 'win32' && isNodeError(error) && error.code === 'EEXIST') {
       rmSync(path, { force: true })
       renameSync(tempPath, path)
     } else {

@@ -63,6 +63,14 @@ import {
   workspaceExists,
 } from './workspace.js'
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error
+}
+
 interface Team {
   id: string
   name: string
@@ -312,13 +320,6 @@ function printUsage() {
   printLine(renderRootHelp())
 }
 
-function printPreviewUsage() {
-  printLine(`\nLocal app preview:\n\n  orizu apps preview --file <path> --input-schema <json-path> --output-schema <json-path> --sample-row <json-path> [--screenshot <png-path>] [--headed] [--keep-open] [--component <name>]`)
-}
-
-function printOptimizationUsage() {
-  printLine(`\nOptimization lifecycle commands:\n\n  orizu optimizations start --project <team/project> --optimizer-version <id> --prompt-version <id[,id]> --selection-scorer <id> [--reflection-scorer <id>] [--pareto-scorer <id>] [--best-scorer <id>] --dataset-version <id> --split-set <id> [--train-split <name>] [--validation-split <name>] [--metadata <json|@file>] [--json]\n  orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--budget auto|light|medium|heavy | --max-metric-calls <n> | --max-full-evals <n> | --max-iterations <n>] [--num-threads auto|N] [--reflection-retry-attempts N] [--reflection-http-timeout-seconds N] [--log-dir logs] [--no-skip-perfect-parent-reflection]\n  orizu optimizations export <run-id> [--out <path>] [--json]\n  orizu optimizations pause <run-id> [--reason <text>] [--json]\n  orizu optimizations resume <run-id> [--json]\n  orizu optimizations finish <run-id> [--best-score <n>] [--best-candidate <id>] [--result-prompt-version <id>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations fail <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--metadata <json|@file>] [--json]\n  orizu optimizations cancel <run-id> [--reason <text>] [--report <markdown|@file> | --report-file <path>] [--json]`)
-}
 
 let cliArgs = process.argv.slice(2)
 let cliJsonOutput = false
@@ -576,8 +577,8 @@ function readJsonObjectArg(valueArg: string | null, label: string): Record<strin
       throw new Error('JSON root must be an object')
     }
     return parsed as Record<string, unknown>
-  } catch (error: any) {
-    throw new Error(`Invalid ${label} '${valueArg}': ${error?.message || String(error)}`)
+  } catch (error: unknown) {
+    throw new Error(`Invalid ${label} '${valueArg}': ${getErrorMessage(error)}`)
   }
 }
 
@@ -2863,11 +2864,11 @@ function readSourceFile(pathArg: string): string {
   const expandedPath = expandHomePath(pathArg)
   try {
     return readFileSync(expandedPath, 'utf-8')
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') {
+  } catch (error: unknown) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
       throw new Error(`File not found: ${expandedPath}`)
     }
-    throw new Error(`Failed to read file '${expandedPath}': ${error?.message || String(error)}`)
+    throw new Error(`Failed to read file '${expandedPath}': ${getErrorMessage(error)}`)
   }
 }
 
@@ -2875,11 +2876,11 @@ function readSourceBytes(pathArg: string): Buffer {
   const expandedPath = expandHomePath(pathArg)
   try {
     return readFileSync(expandedPath)
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') {
+  } catch (error: unknown) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
       throw new Error(`File not found: ${expandedPath}`)
     }
-    throw new Error(`Failed to read file '${expandedPath}': ${error?.message || String(error)}`)
+    throw new Error(`Failed to read file '${expandedPath}': ${getErrorMessage(error)}`)
   }
 }
 
@@ -3115,8 +3116,8 @@ async function applySkillInstallTargets(
         action: result.action as 'created' | 'updated',
         mode: result.mode,
       })
-    } catch (error: any) {
-      const message = error?.message || String(error)
+    } catch (error: unknown) {
+      const message = getErrorMessage(error)
       if (!jsonMode) {
         printLine(`Failed ${installPath}: ${message}`)
       }
@@ -3481,8 +3482,8 @@ function readJsonFile(pathArg: string): Record<string, unknown> {
     }
 
     return parsed as Record<string, unknown>
-  } catch (error: any) {
-    throw new Error(`Invalid JSON file '${pathArg}': ${error?.message || String(error)}`)
+  } catch (error: unknown) {
+    throw new Error(`Invalid JSON file '${pathArg}': ${getErrorMessage(error)}`)
   }
 }
 
@@ -3672,8 +3673,8 @@ function zipDirectoryToBase64(dirArg: string): { zipBase64: string; contentSha25
     if (!stats.isDirectory()) {
       throw new Error(`${sourceDir} is not a directory`)
     }
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') {
+  } catch (error: unknown) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
       throw new Error(`Directory not found: ${sourceDir}`)
     }
     throw error

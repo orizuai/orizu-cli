@@ -23,7 +23,7 @@ export function parseAssignmentManifestJsonl(
     let parsed: unknown
     try {
       parsed = JSON.parse(trimmed)
-    } catch (error) {
+    } catch (_error) {
       throw new Error(
         `Assignment manifest line ${lineIndex + 1} is not valid JSON`
       )
