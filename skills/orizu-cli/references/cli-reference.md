@@ -186,23 +186,28 @@ orizu tasks create \
 Behavior:
 - task creation creates a draft by default and returns a task URL to test manually before assigning
 - use `--publish --assignees <userIdOrEmail1,userIdOrEmail2>` only when you intentionally want to create and ship immediately
+- use `--assignment-file <path>` instead of `--assignees` when specific rows should go to specific labellers
 - after manually approving a draft, run `orizu tasks publish --task <taskId> --assignees <userId1,userId2>`
+- or run `orizu tasks publish --task <taskId> --assignment-file <path>` to publish the exact row map
 - task creation resolves and stores the app's pinned current `version_id` at create time
 - downstream consumers (exports, judges, optimization) should trust the task's pinned `version_id`, not the app's current pointer
 - dataset compatibility is validated against that pinned app version before the task is inserted
 - malformed JSON and mixed-type assignee arrays fail with deterministic `400` responses
 - assignment fanout enforces unique `(assignee, row)` pairs; `--labels-per-item` cannot exceed the number of unique assignees, and the backend shortfalls instead of duplicating
+- explicit assignment manifests are JSONL with `rowId` plus `assignee` or `assignees`; row IDs are canonical dataset row `id` values, assignees may be emails or user IDs, and V1 publish requires whole-dataset uniform coverage
 
 Publish:
 
 ```bash
 orizu tasks publish --task <taskId> --assignees <userId1,userId2>
+orizu tasks publish --task <taskId> --assignment-file ./assignments.jsonl
 ```
 
 Assign:
 
 ```bash
 orizu tasks assign --task <taskId> --assignees <userId1,userId2>
+orizu tasks assign --task <taskId> --assignment-file ./assignments.jsonl --replace-existing
 ```
 
 Status:
@@ -301,6 +306,8 @@ orizu tasks create \
 
 # Open the returned task URL and test the draft manually before assigning.
 orizu tasks publish --task <taskId> --assignees <userId1,userId2>
+# Or publish a deterministic row map:
+orizu tasks publish --task <taskId> --assignment-file ./assignments.jsonl
 
 orizu tasks status --task <taskId>
 orizu tasks export --task <taskId> --format csv --out ./support-round1.csv
@@ -321,7 +328,8 @@ Use these shortcuts only in TTY environments where prompts can run.
 
 - `tasks create` creates a draft by default, does not require `--assignees`, and pins the app's current version when the task is created.
 - `tasks create --publish --assignees <...>` intentionally creates and ships immediately.
-- `tasks assign` and `tasks publish` expect user IDs, not emails.
+- `tasks create|publish|assign --assignment-file <path>` is mutually exclusive with `--assignees` and accepts emails or user IDs in the JSONL manifest.
+- `tasks assign --assignees` and `tasks publish --assignees` expect user IDs, not emails.
 - Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
 - Assignment completion payloads are validated against the pinned app-version `output_json_schema`.
 - `datasets delete-rows` requires `--row-ids`.

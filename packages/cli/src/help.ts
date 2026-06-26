@@ -475,20 +475,20 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['tasks', 'create'],
-    usage: 'orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> [--assignees <userIdOrEmail1,userIdOrEmail2>] [--publish] [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]',
-    summary: 'Create a draft review task by default, or publish immediately with --publish and assignees.',
+    usage: 'orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> [--assignees <userIdOrEmail1,userIdOrEmail2> | --assignment-file <path>] [--publish] [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]',
+    summary: 'Create a draft review task by default, with auto distribution or an explicit row-assignment JSONL file.',
     group: 'Tasks',
   },
   {
     path: ['tasks', 'publish'],
-    usage: 'orizu tasks publish --task <taskId> --assignees <userId1,userId2> [--json]',
+    usage: 'orizu tasks publish --task <taskId> (--assignees <userId1,userId2> | --assignment-file <path>) [--json]',
     summary: 'Publish an approved draft task and assign reviewers.',
     group: 'Tasks',
   },
   {
     path: ['tasks', 'assign'],
-    usage: 'orizu tasks assign --task <taskId> --assignees <userId1,userId2>',
-    summary: 'Assign a task to canonical user IDs.',
+    usage: 'orizu tasks assign --task <taskId> (--assignees <userId1,userId2> | --assignment-file <path>) [--replace-existing] [--json]',
+    summary: 'Assign a task with auto distribution or an explicit row-assignment JSONL file.',
     group: 'Tasks',
   },
   {

@@ -89,6 +89,8 @@ orizu tasks create --project <teamSlug>/<projectSlug> --dataset <datasetId> --ap
 
 # Open the returned task URL and test the draft manually before assigning.
 orizu tasks publish --task <taskId> --assignees <userId1,userId2>
+# Or publish exact row assignments:
+orizu tasks publish --task <taskId> --assignment-file ./assignments.jsonl
 
 orizu tasks status --task <taskId>
 orizu tasks report set --task <taskId> --report-file ./task-report.md
@@ -175,9 +177,9 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 # Execution rules
 
 - Prefer explicit flags in non-TTY contexts; reserve interactive fallback for TTY.
-- Canonical selectors: `--team`, `--project`, `--app`, `--task`, `--dataset`, `--assignees`.
-- `tasks create` creates drafts by default. Test the returned task URL manually, then use `tasks publish --task <taskId> --assignees <userId1,userId2>` after approval.
-- `tasks assign` and `tasks publish` take user IDs, not emails.
+- Canonical selectors: `--team`, `--project`, `--app`, `--task`, `--dataset`, `--assignees`, `--assignment-file`.
+- `tasks create` creates drafts by default. Test the returned task URL manually, then use `tasks publish --task <taskId> --assignees <userId1,userId2>` or `tasks publish --task <taskId> --assignment-file <path>` after approval.
+- `tasks assign --assignees` and `tasks publish --assignees` take user IDs, not emails. `--assignment-file` accepts emails or user IDs in JSONL rows shaped as `{ "rowId": "...", "assignee": "..." }` or `{ "rowId": "...", "assignees": ["..."] }`.
 - `datasets edit-rows` requires a non-empty string `id` on each row in `--file`.
 - `datasets delete-rows` uses `--row-ids` as the canonical selector.
 - `datasets delete` requires interactive terminal confirmation; there is no non-interactive confirmation option.

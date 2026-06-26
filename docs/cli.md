@@ -292,6 +292,7 @@ Output columns:
 Notes:
 - `tasks create --assignees` accepts `USER ID` values, emails, or a mix of both.
 - `tasks assign --assignees` and `tasks publish --assignees` still expect canonical `USER ID` values.
+- `tasks create|publish|assign --assignment-file <path>` accepts emails or canonical `USER ID` values inside the manifest.
 
 Interactive fallback:
 - If `--team` is omitted, CLI prompts for team selection.
@@ -618,13 +619,28 @@ orizu tasks create \
 Task creation behavior:
 - Tasks are created as drafts by default.
 - Use `--publish --assignees <...>` to create, assign, and publish in one command.
+- Use `--assignment-file <path>` instead of `--assignees` when specific rows should go to specific labellers.
 - Without `--publish`, the response includes a task URL and reminds operators to test the draft manually before assigning.
 - `--assignees` accepts canonical user IDs, emails, or a comma-separated mix during create.
+- `--assignment-file` is mutually exclusive with `--assignees`.
 - `--version <n>` is optional and defaults to the app's current pinned version.
 - Assignments are only shipped immediately when `--publish` is present.
 - The backend resolves and pins either the requested app version or the app's current `version_id` at task-creation time.
 - Dataset compatibility is validated against that pinned app version before any task rows are inserted, including per-row input-schema checks.
 - Invalid assignee selectors return per-assignee validation output so operators can fix specific emails or user IDs.
+
+Explicit assignment manifest:
+
+```jsonl
+{"rowId":"row-001","assignee":"labeler@example.com"}
+{"rowId":"row-002","assignees":["user-id-1","labeler2@example.com"]}
+```
+
+Manifest rules:
+- `rowId` is the canonical dataset row `id` from upload, download, and edit flows.
+- `assignee` assigns one labeller; `assignees` expands to multiple row/labeller pairs.
+- Assignees may be emails or canonical user IDs. The server stores canonical `assignee_id` values.
+- V1 publish requires whole-dataset, uniform row coverage.
 
 Output:
 - Plain text prints task ID, dataset ID, pinned version metadata, assignments created, and the task URL.
@@ -636,21 +652,26 @@ Output:
 
 ```bash
 orizu tasks publish --task <taskId> --assignees <userId1,userId2>
+orizu tasks publish --task <taskId> --assignment-file ./assignments.jsonl
 orizu tasks create ... --publish --assignees <userIdOrEmail1,userIdOrEmail2>
+orizu tasks create ... --publish --assignment-file ./assignments.jsonl
 ```
 
 Notes:
 - `tasks publish` replaces draft assignments with the provided user IDs, then activates the task through the draft-publish guardrails.
 - `tasks publish --assignees` currently expects user IDs.
+- `tasks publish --assignment-file` replaces draft assignments with the exact manifest pairs and accepts emails or user IDs.
 
 ### Assign task
 
 ```bash
 orizu tasks assign --task <taskId> --assignees <userId1,userId2>
+orizu tasks assign --task <taskId> --assignment-file ./assignments.jsonl --replace-existing
 ```
 
 Note:
 - `--assignees` currently expects user IDs (comma-separated), not emails.
+- `--assignment-file` assigns exact row/labeller pairs and accepts emails or user IDs.
 
 ### Task status
 
@@ -832,12 +853,12 @@ The commands above will prompt for team/project/task selection where needed.
 - Validation errors:
   - App create/update rejects invalid component contract and invalid schema files.
   - App create requires `--dataset`.
-  - Task create publishes only with `--publish --assignees`; draft creation does not require assignees.
+  - Task create publishes only with `--publish --assignees` or `--publish --assignment-file`; draft creation does not require assignees.
   - `tasks create --json` and `tasks status --json` preserve structured error payloads for automation.
 
 ## Current Limitations
 
-- `tasks assign` and `tasks publish` accept assignee user IDs, not emails.
+- `tasks assign --assignees` and `tasks publish --assignees` accept assignee user IDs, not emails; `--assignment-file` accepts emails or user IDs.
 - Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
 - Assignment completion payloads are validated against the task's pinned app-version `output_json_schema`.
 - Login flow currently expects localhost callback availability on `127.0.0.1` using `ORIZU_AUTH_PORT` or the default port `43123`.

@@ -27,6 +27,7 @@ import { extractErrorMessage } from './error-response.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
 import { runLocalAppPreview } from './preview-runtime.js'
+import { parseAssignmentManifestJsonl } from './task-assignment-manifest.js'
 import {
   assertSecureTokenTransport,
   authedFetch,
@@ -3908,43 +3909,77 @@ function parseCommaSeparated(value: string | null): string[] {
     .filter(Boolean)
 }
 
+function readAssignmentManifest(path: string | null): ReturnType<typeof parseAssignmentManifestJsonl> | null {
+  if (!path) {
+    return null
+  }
+
+  const content = readFileSync(expandHomePath(path), 'utf8')
+  return parseAssignmentManifestJsonl(content)
+}
+
 async function createTask() {
   const projectSlug = getArg('--project')
   const datasetId = getArg('--dataset')
   const appId = getArg('--app')
   const title = getArg('--title')
   const assignees = parseCommaSeparated(getArg('--assignees'))
+  const assignmentFile = getArg('--assignment-file')
   const publish = hasArg('--publish')
   const versionArg = getArg('--version')
   const instructions = getArg('--instructions')
   const labelsPerItemArg = getArg('--labels-per-item')
-  const labelsPerItem = labelsPerItemArg ? Number(labelsPerItemArg) : 1
+  const parsedLabelsPerItem = labelsPerItemArg ? Number(labelsPerItemArg) : 1
+  const labelsPerItem =
+    Number.isInteger(parsedLabelsPerItem) && parsedLabelsPerItem > 0
+      ? parsedLabelsPerItem
+      : null
   const parsedVersionNum = versionArg ? Number(versionArg) : Number.NaN
   const versionNum =
     Number.isInteger(parsedVersionNum) && parsedVersionNum > 0 ? parsedVersionNum : null
 
-  if (!projectSlug || !datasetId || !appId || !title || (publish && assignees.length === 0)) {
-    throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> [--assignees <userIdOrEmail1,userIdOrEmail2>] [--publish] [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]')
+  if (assignmentFile && assignees.length > 0) {
+    throw new Error('Use either --assignment-file or --assignees, not both.')
+  }
+
+  const explicitAssignments = readAssignmentManifest(assignmentFile)
+
+  if (!projectSlug || !datasetId || !appId || !title || (publish && assignees.length === 0 && !explicitAssignments)) {
+    throw new Error('Usage: orizu tasks create --project <team/project> --dataset <datasetId> --app <appId> --title <title> [--assignees <userIdOrEmail1,userIdOrEmail2> | --assignment-file <path>] [--publish] [--version <n>] [--instructions <text>] [--labels-per-item <n>] [--json]')
   }
 
   if (versionArg && versionNum === null) {
     throw new Error('--version must be a positive integer')
   }
 
+  if (labelsPerItemArg && labelsPerItem === null) {
+    throw new Error('--labels-per-item must be a positive integer')
+  }
+
+  const requestBody: Record<string, unknown> = {
+    projectSlug,
+    datasetId,
+    appId,
+    versionNum,
+    title,
+    publish,
+    instructions,
+  }
+
+  if (explicitAssignments) {
+    requestBody.explicitAssignments = explicitAssignments
+  } else {
+    requestBody.memberIds = assignees
+  }
+
+  if (!explicitAssignments || labelsPerItemArg) {
+    requestBody.requiredAssignmentsPerRow = labelsPerItem
+  }
+
   const response = await authedFetch('/api/cli/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      projectSlug,
-      datasetId,
-      appId,
-      versionNum,
-      title,
-      memberIds: assignees,
-      publish,
-      instructions,
-      requiredAssignmentsPerRow: labelsPerItem,
-    }),
+    body: JSON.stringify(requestBody),
   })
 
   if (!response.ok) {
@@ -3982,13 +4017,16 @@ async function createTask() {
       taskUrl: `${getBaseUrl()}/d/${projectSlug}/tasks/${data.task.id}`,
       title: data.task.title,
       status: data.task.status,
+      assignmentMode: explicitAssignments ? 'custom' : 'auto',
       requiredAssignmentsPerRow: data.task.requiredAssignmentsPerRow,
       assignmentsCreated: data.assignmentsCreated,
       draft: data.task.status === 'draft',
       ...(data.task.status === 'draft'
         ? {
             message: 'Draft created. Test it manually before assigning.',
-            publishCommand: `orizu tasks publish --task ${data.task.id} --assignees <userId1,userId2>`,
+            publishCommand: explicitAssignments
+              ? `orizu tasks publish --task ${data.task.id} --assignment-file ${assignmentFile ? shellQuote(assignmentFile) : '<path>'}`
+              : `orizu tasks publish --task ${data.task.id} --assignees <userId1,userId2>`,
           }
         : {}),
       ...(data.assignmentShortfall !== undefined ? { assignmentShortfall: data.assignmentShortfall } : {}),
@@ -4005,12 +4043,17 @@ async function createTask() {
     `\n  Task ID:    ${sanitizeTerminalText(data.task.id)}` +
     `\n  Dataset ID: ${sanitizeTerminalText(datasetId)}` +
     `\n  Version:    v${data.task.versionNum} (${sanitizeTerminalText(data.task.versionId)})` +
+    `\n  Mode:       ${explicitAssignments ? 'custom row map' : 'auto distribute'}` +
     `\n  Labels/row: ${data.task.requiredAssignmentsPerRow}` +
     `\n  Assignments: ${data.assignmentsCreated}` +
     (data.warning ? `\n  Warning:    ${sanitizeTerminalText(data.warning)}` : '') +
     `\n  URL:        ${sanitizeTerminalText(taskUrl)}` +
     (isDraft
-      ? `\n\nThis task is a draft. Test it manually before assigning.\nPublish after approval: orizu tasks publish --task ${sanitizeTerminalText(data.task.id)} --assignees <userId1,userId2>`
+      ? `\n\nThis task is a draft. Test it manually before assigning.\nPublish after approval: ${
+          explicitAssignments
+            ? `orizu tasks publish --task ${sanitizeTerminalText(data.task.id)} --assignment-file ${sanitizeTerminalText(assignmentFile || '<path>')}`
+            : `orizu tasks publish --task ${sanitizeTerminalText(data.task.id)} --assignees <userId1,userId2>`
+        }`
       : '')
   )
 }
@@ -4018,15 +4061,26 @@ async function createTask() {
 async function publishTask() {
   const taskId = getArg('--task')
   const assignees = parseCommaSeparated(getArg('--assignees'))
+  const assignmentFile = getArg('--assignment-file')
 
-  if (!taskId || assignees.length === 0) {
-    throw new Error('Usage: orizu tasks publish --task <taskId> --assignees <userId1,userId2> [--json]')
+  if (assignmentFile && assignees.length > 0) {
+    throw new Error('Use either --assignment-file or --assignees, not both.')
+  }
+
+  const explicitAssignments = readAssignmentManifest(assignmentFile)
+
+  if (!taskId || (assignees.length === 0 && !explicitAssignments)) {
+    throw new Error('Usage: orizu tasks publish --task <taskId> (--assignees <userId1,userId2> | --assignment-file <path>) [--json]')
   }
 
   const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/publish`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ memberIds: assignees }),
+    body: JSON.stringify(
+      explicitAssignments
+        ? { explicitAssignments }
+        : { memberIds: assignees }
+    ),
   })
 
   if (!response.ok) {
@@ -4049,6 +4103,7 @@ async function publishTask() {
     printLine(JSON.stringify({
       taskId: data.task.id,
       status: data.task.status,
+      assignmentMode: explicitAssignments ? 'custom' : 'auto',
       assignmentsCreated: data.assignmentsCreated,
       assignmentsProcessed: data.assignmentsProcessed,
       ...(data.assignmentsRemoved !== undefined
@@ -4064,6 +4119,7 @@ async function publishTask() {
 
   printLine(
     `Published task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]` +
+    `\n  Mode:        ${explicitAssignments ? 'custom row map' : 'auto distribute'}` +
     `\n  Assignments: ${data.assignmentsCreated}` +
     (data.assignmentsRemoved !== undefined
       ? `\n  Replaced:    ${data.assignmentsRemoved} old assignments removed`
@@ -4075,27 +4131,65 @@ async function publishTask() {
 async function assignTask() {
   const taskId = getArg('--task')
   const assignees = parseCommaSeparated(getArg('--assignees'))
+  const assignmentFile = getArg('--assignment-file')
 
-  if (!taskId || assignees.length === 0) {
-    throw new Error('Usage: orizu tasks assign --task <taskId> --assignees <userId1,userId2>')
+  if (assignmentFile && assignees.length > 0) {
+    throw new Error('Use either --assignment-file or --assignees, not both.')
+  }
+
+  const explicitAssignments = readAssignmentManifest(assignmentFile)
+
+  if (!taskId || (assignees.length === 0 && !explicitAssignments)) {
+    throw new Error('Usage: orizu tasks assign --task <taskId> (--assignees <userId1,userId2> | --assignment-file <path>) [--replace-existing] [--json]')
+  }
+
+  const requestBody: Record<string, unknown> = explicitAssignments
+    ? { explicitAssignments }
+    : { memberIds: assignees }
+  if (hasArg('--replace-existing')) {
+    requestBody.replaceExisting = true
   }
 
   const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/assign`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ memberIds: assignees }),
+    body: JSON.stringify(requestBody),
   })
 
   if (!response.ok) {
     throw new Error(`Failed to assign task: ${await response.text()}`)
   }
 
-  const data = await parseJsonResponse<{ assignmentsCreated: number }>(response, 'Task assign')
+  const data = await parseJsonResponse<{
+    assignmentsProcessed?: number
+    assignmentsCreated: number
+    assignmentsRemoved?: number
+    assignmentShortfall?: number
+    warning?: string
+  }>(response, 'Task assign')
   if (hasJsonFlag()) {
-    printJson({ assignmentsCreated: data.assignmentsCreated })
+    printJson({
+      assignmentMode: explicitAssignments ? 'custom' : 'auto',
+      assignmentsProcessed: data.assignmentsProcessed ?? data.assignmentsCreated,
+      assignmentsCreated: data.assignmentsCreated,
+      ...(data.assignmentsRemoved !== undefined
+        ? { assignmentsRemoved: data.assignmentsRemoved }
+        : {}),
+      ...(data.assignmentShortfall !== undefined
+        ? { assignmentShortfall: data.assignmentShortfall }
+        : {}),
+      ...(data.warning ? { warning: data.warning } : {}),
+    })
     return
   }
-  printLine(`Created ${data.assignmentsCreated} assignments.`)
+  printLine(
+    `Created ${data.assignmentsCreated} assignments.` +
+    `\n  Mode: ${explicitAssignments ? 'custom row map' : 'auto distribute'}` +
+    (data.assignmentsRemoved !== undefined
+      ? `\n  Replaced: ${data.assignmentsRemoved} old assignments removed`
+      : '') +
+    (data.warning ? `\n  Warning: ${sanitizeTerminalText(data.warning)}` : '')
+  )
 }
 
 async function taskStatus() {
