@@ -1,15 +1,96 @@
+import { readFileSync, statSync } from 'node:fs'
+
 export interface ParsedAssignmentManifestEntry {
   rowId: string
   assignee: string
 }
 
+export interface AssignmentManifestLimits {
+  maxBytes?: number
+  maxLines?: number
+}
+
+export const DEFAULT_ASSIGNMENT_MANIFEST_LIMITS = {
+  maxBytes: 5 * 1024 * 1024,
+  maxLines: 100_000,
+} as const
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function formatLimit(value: number): string {
+  return value.toLocaleString('en-US')
+}
+
+function countNonEmptyLines(content: string): number {
+  let lines = 0
+  let hasNonWhitespace = false
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index]
+    if (char === '\n') {
+      if (hasNonWhitespace) {
+        lines += 1
+      }
+      hasNonWhitespace = false
+      continue
+    }
+
+    if (char.trim().length > 0) {
+      hasNonWhitespace = true
+    }
+  }
+
+  if (hasNonWhitespace) {
+    lines += 1
+  }
+
+  return lines
+}
+
+function resolveLimits(
+  limits: AssignmentManifestLimits = {}
+): Required<AssignmentManifestLimits> {
+  return {
+    maxBytes: limits.maxBytes ?? DEFAULT_ASSIGNMENT_MANIFEST_LIMITS.maxBytes,
+    maxLines: limits.maxLines ?? DEFAULT_ASSIGNMENT_MANIFEST_LIMITS.maxLines,
+  }
+}
+
+function assertAssignmentManifestSize(
+  bytes: number,
+  limits: AssignmentManifestLimits = {}
+) {
+  const resolvedLimits = resolveLimits(limits)
+  if (bytes > resolvedLimits.maxBytes) {
+    throw new Error(
+      `Assignment manifest file is ${formatLimit(bytes)} bytes; maximum supported size is ${formatLimit(resolvedLimits.maxBytes)} bytes`
+    )
+  }
+}
+
+function assertAssignmentManifestLimits(
+  content: string,
+  limits: AssignmentManifestLimits = {}
+) {
+  const resolvedLimits = resolveLimits(limits)
+  assertAssignmentManifestSize(Buffer.byteLength(content, 'utf8'), resolvedLimits)
+
+  const lines = countNonEmptyLines(content)
+  if (lines > resolvedLimits.maxLines) {
+    throw new Error(
+      `Assignment manifest has ${formatLimit(lines)} lines; maximum supported line count is ${formatLimit(resolvedLimits.maxLines)}`
+    )
+  }
+}
+
 export function parseAssignmentManifestJsonl(
-  content: string
+  content: string,
+  limits?: AssignmentManifestLimits
 ): ParsedAssignmentManifestEntry[] {
+  assertAssignmentManifestLimits(content, limits)
+
   // Keep these JSONL field rules in sync with the server's explicitAssignments parser.
   const entries: ParsedAssignmentManifestEntry[] = []
   const lines = content.split(/\r?\n/)
@@ -93,4 +174,15 @@ export function parseAssignmentManifestJsonl(
   }
 
   return entries
+}
+
+export function readAssignmentManifestJsonlFile(
+  path: string,
+  limits?: AssignmentManifestLimits
+): ParsedAssignmentManifestEntry[] {
+  const stats = statSync(path)
+  assertAssignmentManifestSize(stats.size, limits)
+
+  const content = readFileSync(path, 'utf8')
+  return parseAssignmentManifestJsonl(content, limits)
 }

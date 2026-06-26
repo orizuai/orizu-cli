@@ -27,7 +27,7 @@ import { extractErrorMessage } from './error-response.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
 import { runLocalAppPreview } from './preview-runtime.js'
-import { parseAssignmentManifestJsonl } from './task-assignment-manifest.js'
+import { readAssignmentManifestJsonlFile } from './task-assignment-manifest.js'
 import {
   assertSecureTokenTransport,
   authedFetch,
@@ -3910,13 +3910,12 @@ function parseCommaSeparated(value: string | null): string[] {
     .filter(Boolean)
 }
 
-function readAssignmentManifest(path: string | null): ReturnType<typeof parseAssignmentManifestJsonl> | null {
+function readAssignmentManifest(path: string | null): ReturnType<typeof readAssignmentManifestJsonlFile> | null {
   if (!path) {
     return null
   }
 
-  const content = readFileSync(expandHomePath(path), 'utf8')
-  return parseAssignmentManifestJsonl(content)
+  return readAssignmentManifestJsonlFile(expandHomePath(path))
 }
 
 function readOptionalTaskTextArg(
