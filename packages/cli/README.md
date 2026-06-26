@@ -275,6 +275,14 @@ orizu logout
     <td><code>orizu tasks publish --task &lt;taskId&gt; --assignees &lt;userId1,userId2&gt;</code></td>
   </tr>
   <tr>
+    <td>Update a draft task</td>
+    <td><code>orizu tasks update --task &lt;taskId&gt; --title "Support QA Round 1b" --labels-per-item 2</code></td>
+  </tr>
+  <tr>
+    <td>Discard a draft task</td>
+    <td><code>orizu tasks discard --task &lt;taskId&gt; --yes</code></td>
+  </tr>
+  <tr>
     <td>Check task status</td>
     <td><code>orizu tasks status --task &lt;taskId&gt;</code></td>
   </tr>

@@ -480,6 +480,18 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Tasks',
   },
   {
+    path: ['tasks', 'update'],
+    usage: 'orizu tasks update --task <taskId> [--title <text>] [--description <text>|--description-file <path>] [--instructions <text>|--instructions-file <path>] [--dataset <datasetId>] [--app <appId> [--version <n>]] [--labels-per-item <n>] [--assignees <userIdOrEmail1,userIdOrEmail2> | --assignment-file <path>] [--json]',
+    summary: 'Update a draft review task before publishing.',
+    group: 'Tasks',
+  },
+  {
+    path: ['tasks', 'discard'],
+    usage: 'orizu tasks discard --task <taskId> [--yes] [--json]',
+    summary: 'Permanently discard a draft review task.',
+    group: 'Tasks',
+  },
+  {
     path: ['tasks', 'publish'],
     usage: 'orizu tasks publish --task <taskId> (--assignees <userId1,userId2> | --assignment-file <path>) [--json]',
     summary: 'Publish an approved draft task and assign reviewers.',

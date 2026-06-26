@@ -3919,6 +3919,41 @@ function readAssignmentManifest(path: string | null): ReturnType<typeof parseAss
   return parseAssignmentManifestJsonl(content)
 }
 
+function readOptionalTaskTextArg(
+  valueFlag: string,
+  fileFlag: string
+): string | undefined {
+  const value = getArg(valueFlag)
+  const file = getArg(fileFlag)
+  rejectDashPrefixedOptionValue(valueFlag, value)
+  rejectDashPrefixedOptionValue(fileFlag, file)
+
+  if (value !== null && file !== null) {
+    throw new Error(`Use either ${valueFlag} or ${fileFlag}, not both.`)
+  }
+
+  if (file !== null) {
+    return readSourceFile(file)
+  }
+
+  return value ?? undefined
+}
+
+function readPositiveIntegerFlag(name: string): number | undefined {
+  const value = getArg(name)
+  rejectDashPrefixedOptionValue(name, value)
+  if (value === null) {
+    return undefined
+  }
+
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`)
+  }
+
+  return parsed
+}
+
 async function createTask() {
   const projectSlug = getArg('--project')
   const datasetId = getArg('--dataset')
@@ -4057,6 +4092,155 @@ async function createTask() {
         }`
       : '')
   )
+}
+
+async function updateTask() {
+  const taskId = getArg('--task')
+  rejectDashPrefixedOptionValue('--task', taskId)
+  if (!taskId) {
+    throw new Error('Usage: orizu tasks update --task <taskId> [--title <text>] [--description <text>|--description-file <path>] [--instructions <text>|--instructions-file <path>] [--dataset <datasetId>] [--app <appId> [--version <n>]] [--labels-per-item <n>] [--assignees <userIdOrEmail1,userIdOrEmail2> | --assignment-file <path>] [--json]')
+  }
+
+  const title = getArg('--title')
+  const description = readOptionalTaskTextArg('--description', '--description-file')
+  const instructions = readOptionalTaskTextArg('--instructions', '--instructions-file')
+  const datasetId = getArg('--dataset')
+  const appId = getArg('--app')
+  const versionNum = readPositiveIntegerFlag('--version')
+  const requiredAssignmentsPerRow = readPositiveIntegerFlag('--labels-per-item')
+  const assignees = parseCommaSeparated(getArg('--assignees'))
+  const assignmentFile = getArg('--assignment-file')
+
+  rejectDashPrefixedOptionValue('--title', title)
+  rejectDashPrefixedOptionValue('--dataset', datasetId)
+  rejectDashPrefixedOptionValue('--app', appId)
+  rejectDashPrefixedOptionValue('--assignment-file', assignmentFile)
+
+  if (title !== null && title.trim().length === 0) {
+    throw new Error('--title must be a non-empty string')
+  }
+
+  if (assignmentFile && assignees.length > 0) {
+    throw new Error('Use either --assignment-file or --assignees, not both.')
+  }
+
+  if (hasArg('--assignees') && assignees.length === 0) {
+    throw new Error('--assignees requires at least one user ID or email')
+  }
+
+  if (versionNum !== undefined && !appId) {
+    throw new Error('--version requires --app')
+  }
+
+  const explicitAssignments = readAssignmentManifest(assignmentFile)
+  const requestBody: Record<string, unknown> = {}
+  if (title !== null) requestBody.title = title.trim()
+  if (description !== undefined) requestBody.description = description
+  if (instructions !== undefined) requestBody.instructions = instructions
+  if (datasetId !== null) requestBody.datasetId = datasetId
+  if (appId !== null) requestBody.appId = appId
+  if (versionNum !== undefined) requestBody.versionNum = versionNum
+  if (requiredAssignmentsPerRow !== undefined) {
+    requestBody.requiredAssignmentsPerRow = requiredAssignmentsPerRow
+  }
+  if (explicitAssignments) {
+    requestBody.explicitAssignments = explicitAssignments
+  } else if (hasArg('--assignees')) {
+    requestBody.memberIds = assignees
+  }
+
+  if (Object.keys(requestBody).length === 0) {
+    throw new Error('Usage: orizu tasks update --task <taskId> [--title <text>] [--description <text>|--description-file <path>] [--instructions <text>|--instructions-file <path>] [--dataset <datasetId>] [--app <appId> [--version <n>]] [--labels-per-item <n>] [--assignees <userIdOrEmail1,userIdOrEmail2> | --assignment-file <path>] [--json]')
+  }
+
+  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to update task: ${await extractErrorMessage(response)}`)
+  }
+
+  const data = await parseJsonResponse<{
+    task: {
+      id: string
+      title?: string | null
+      status?: string | null
+      dataset_id?: string | null
+      app_id?: string | null
+      version_id?: string | null
+      required_assignments_per_row?: number | null
+    }
+    assignmentMode?: string
+    assignmentsCreated?: number
+  }>(response, 'Task update')
+
+  if (hasJsonFlag()) {
+    printJson({
+      taskId: data.task.id,
+      title: data.task.title ?? null,
+      status: data.task.status ?? null,
+      datasetId: data.task.dataset_id ?? null,
+      appId: data.task.app_id ?? null,
+      versionId: data.task.version_id ?? null,
+      requiredAssignmentsPerRow: data.task.required_assignments_per_row ?? null,
+      ...(data.assignmentMode ? { assignmentMode: data.assignmentMode } : {}),
+      ...(data.assignmentsCreated !== undefined
+        ? { assignmentsCreated: data.assignmentsCreated }
+        : {}),
+    })
+    return
+  }
+
+  printLine(
+    `Updated draft task ${sanitizeTerminalText(data.task.title || data.task.id)} (${sanitizeTerminalText(data.task.id)})` +
+    (data.task.status ? ` [${sanitizeTerminalText(data.task.status)}]` : '') +
+    (data.task.dataset_id ? `\n  Dataset ID: ${sanitizeTerminalText(data.task.dataset_id)}` : '') +
+    (data.task.version_id ? `\n  Version ID: ${sanitizeTerminalText(data.task.version_id)}` : '') +
+    (data.task.required_assignments_per_row
+      ? `\n  Labels/row: ${data.task.required_assignments_per_row}`
+      : '') +
+    (data.assignmentMode ? `\n  Mode:       ${sanitizeTerminalText(data.assignmentMode === 'custom' ? 'custom row map' : 'auto distribute')}` : '') +
+    (data.assignmentsCreated !== undefined ? `\n  Assignments: ${data.assignmentsCreated}` : '')
+  )
+}
+
+async function discardTask() {
+  const taskId = getArg('--task')
+  rejectDashPrefixedOptionValue('--task', taskId)
+  if (!taskId) {
+    throw new Error('Usage: orizu tasks discard --task <taskId> [--yes] [--json]')
+  }
+
+  if (!hasArg('--yes')) {
+    if (!isInteractiveTerminal()) {
+      throw new Error('Refusing to discard a draft in non-interactive mode without --yes')
+    }
+
+    const confirmed = await askYesNo(`Discard draft task ${taskId}? This cannot be undone.`, false)
+    if (!confirmed) {
+      printLine('Discard cancelled.')
+      return
+    }
+  }
+
+  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to discard draft task: ${await extractErrorMessage(response)}`)
+  }
+
+  const data = await parseJsonResponse<{ success: boolean }>(response, 'Task discard')
+  if (hasJsonFlag()) {
+    printJson({ taskId, discarded: data.success })
+    return
+  }
+
+  printLine(`Discarded draft task ${sanitizeTerminalText(taskId)}.`)
 }
 
 async function publishTask() {
@@ -5877,6 +6061,16 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'tasks' && subcommand === 'create') {
     await createTask()
+    return
+  }
+
+  if (command === 'tasks' && subcommand === 'update') {
+    await updateTask()
+    return
+  }
+
+  if (command === 'tasks' && subcommand === 'discard') {
+    await discardTask()
     return
   }
 
