@@ -226,7 +226,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['teams', 'members', 'role'],
-    usage: 'orizu teams members role --team <teamSlug> --email <email> --role <admin|member>',
+    usage: 'orizu teams members role --team <teamSlug> --email <email> --role <admin|curator|judge>',
     summary: 'Change a member role.',
     group: 'Teams',
   },

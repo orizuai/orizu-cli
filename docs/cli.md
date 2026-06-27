@@ -328,7 +328,8 @@ orizu teams members role --team my-team --email person@example.com --role admin
 
 Allowed roles:
 - `admin`
-- `member`
+- `curator`
+- `judge`
 
 ## Projects
 
@@ -560,7 +561,7 @@ orizu datasets delete --dataset <datasetId|datasetUrl>
 ```
 
 Behavior:
-- Permanently deletes the dataset when project-manager/admin checks and dependency checks pass.
+- Permanently deletes the dataset when project-curator/admin checks and dependency checks pass.
 - Requires an interactive terminal confirmation by typing the dataset id exactly.
 - There is no non-interactive confirmation flag.
 
@@ -687,7 +688,7 @@ Includes:
 - paused assignments as a distinct count, not folded into pending
 
 Notes:
-- task status reads and updates are manager-only operator surfaces
+- task status reads and updates are curator-only operator surfaces
 - `--json` returns the full status payload on success
 - `--json` failures preserve the API error payload and append `httpStatus`
 
@@ -698,7 +699,7 @@ orizu tasks pause --task <taskId>
 ```
 
 Behavior:
-- pauses an active task through the manager-only task status mutation route
+- pauses an active task through the curator-only task status mutation route
 - pauses in-flight assignments so operators can stop new work cleanly
 
 ### Task report
@@ -721,7 +722,7 @@ orizu tasks unpause --task <taskId>
 ```
 
 Behavior:
-- resumes a previously paused task through the manager-only task status mutation route
+- resumes a previously paused task through the curator-only task status mutation route
 - restores paused assignments to pending so work can continue
 
 ### Export task outputs
@@ -741,7 +742,7 @@ Defaults:
 - if `--task` omitted, CLI prompts interactively
 
 Notes:
-- task export is manager-only
+- task export is curator-only
 - JSON exports return `{ metadata, responses }`
 - JSONL exports emit one canonical response record per line using the same response shape as JSON
 

@@ -4707,10 +4707,10 @@ async function changeTeamMemberRole() {
   const email = getArg('--email')
   const role = getArg('--role')
   if (!teamSlug || !email || !role) {
-    throw new Error('Usage: orizu teams members role --team <teamSlug> --email <email> --role <admin|member>')
+    throw new Error('Usage: orizu teams members role --team <teamSlug> --email <email> --role <admin|curator|judge>')
   }
-  if (!['admin', 'member'].includes(role)) {
-    throw new Error('role must be one of: admin, member')
+  if (!['admin', 'curator', 'judge'].includes(role)) {
+    throw new Error('role must be one of: admin, curator, judge')
   }
 
   const members = await fetchTeamMembers(teamSlug)
