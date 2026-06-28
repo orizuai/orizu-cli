@@ -425,6 +425,10 @@ export function sanitizeTerminalText(value: unknown): string {
   return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
 }
 
+function printError(message: string): void {
+  console.error(sanitizeTerminalText(message))
+}
+
 export function validateBrowserUrl(url: string, expectedOrigin?: string): URL {
   let parsed: URL
   try {
@@ -740,7 +744,7 @@ async function resolveProjectSelection(projectArg: string | null): Promise<Proje
 
   const matchedTeam = teams.find(team => team.slug === teamSlug)
   if (!matchedTeam) {
-    console.error(`Team '${sanitizeTerminalText(teamSlug)}' not found in your accessible teams.`)
+    printError(`Team '${teamSlug}' not found in your accessible teams.`)
     const selectedTeam = await promptSelect(
       'Select a team',
       teams,
@@ -761,7 +765,7 @@ async function resolveProjectSelection(projectArg: string | null): Promise<Proje
   const matchedProject = projects.find(project => project.slug === projectSlug)
 
   if (!matchedProject) {
-    console.error(`Project '${sanitizeTerminalText(projectSlug)}' not found in team '${sanitizeTerminalText(matchedTeam.slug)}'.`)
+    printError(`Project '${projectSlug}' not found in team '${matchedTeam.slug}'.`)
     const selectedProject = await promptSelect(
       `Select a project in ${matchedTeam.slug}`,
       projects,
@@ -6211,7 +6215,7 @@ function isCliEntrypoint(): boolean {
 
 if (isCliEntrypoint()) {
   main().catch(error => {
-    console.error(sanitizeTerminalText(error instanceof Error ? error.message : 'Unknown error'))
+    printError(error instanceof Error ? error.message : 'Unknown error')
     process.exit(1)
   })
 }
