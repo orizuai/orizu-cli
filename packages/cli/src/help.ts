@@ -539,6 +539,12 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Tasks',
   },
   {
+    path: ['tasks', 'complete'],
+    usage: 'orizu tasks complete --task <taskId>',
+    summary: 'Mark an active or paused task completed.',
+    group: 'Tasks',
+  },
+  {
     path: ['tasks', 'export'],
     usage: 'orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]',
     summary: 'Export task results.',

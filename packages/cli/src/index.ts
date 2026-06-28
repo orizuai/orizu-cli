@@ -287,6 +287,21 @@ interface TaskStatusPayload {
   }
 }
 
+const TASK_STATUS_ACTION_LABELS = {
+  paused: {
+    verb: 'pause',
+    pastTense: 'Paused',
+  },
+  active: {
+    verb: 'unpause',
+    pastTense: 'Unpaused',
+  },
+  completed: {
+    verb: 'complete',
+    pastTense: 'Completed',
+  },
+} as const
+
 function getCliVersion(): string {
   const packageJson = JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf8')
@@ -4420,11 +4435,12 @@ async function taskStatus() {
   printTaskStatusSummary(data)
 }
 
-async function updateTaskStatus(targetStatus: 'paused' | 'active') {
+async function updateTaskStatus(targetStatus: 'paused' | 'active' | 'completed') {
   const taskId = getArg('--task')
+  const labels = TASK_STATUS_ACTION_LABELS[targetStatus]
+
   if (!taskId) {
-    const verb = targetStatus === 'paused' ? 'pause' : 'unpause'
-    throw new Error(`Usage: orizu tasks ${verb} --task <taskId>`)
+    throw new Error(`Usage: orizu tasks ${labels.verb} --task <taskId>`)
   }
 
   const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`, {
@@ -4434,8 +4450,7 @@ async function updateTaskStatus(targetStatus: 'paused' | 'active') {
   })
 
   if (!response.ok) {
-    const verb = targetStatus === 'paused' ? 'pause' : 'unpause'
-    throw new Error(`Failed to ${verb} task: ${await response.text()}`)
+    throw new Error(`Failed to ${labels.verb} task: ${await response.text()}`)
   }
 
   const data = await parseJsonResponse<{ task: { id: string; status: string } }>(response, 'Task status update')
@@ -4443,8 +4458,7 @@ async function updateTaskStatus(targetStatus: 'paused' | 'active') {
     printJson({ task: data.task })
     return
   }
-  const action = targetStatus === 'paused' ? 'Paused' : 'Unpaused'
-  printLine(`${action} task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]`)
+  printLine(`${labels.pastTense} task ${sanitizeTerminalText(data.task.id)} [${sanitizeTerminalText(data.task.status)}]`)
 }
 
 async function setTaskReport() {
@@ -6104,6 +6118,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'tasks' && subcommand === 'unpause') {
     await updateTaskStatus('active')
+    return
+  }
+
+  if (command === 'tasks' && subcommand === 'complete') {
+    await updateTaskStatus('completed')
     return
   }
 
