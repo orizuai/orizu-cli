@@ -23,32 +23,6 @@ function formatLimit(value: number): string {
   return value.toLocaleString('en-US')
 }
 
-function countNonEmptyLines(content: string): number {
-  let lines = 0
-  let hasNonWhitespace = false
-
-  for (let index = 0; index < content.length; index += 1) {
-    const char = content[index]
-    if (char === '\n') {
-      if (hasNonWhitespace) {
-        lines += 1
-      }
-      hasNonWhitespace = false
-      continue
-    }
-
-    if (char.trim().length > 0) {
-      hasNonWhitespace = true
-    }
-  }
-
-  if (hasNonWhitespace) {
-    lines += 1
-  }
-
-  return lines
-}
-
 function resolveLimits(
   limits: AssignmentManifestLimits = {}
 ): Required<AssignmentManifestLimits> {
@@ -76,29 +50,31 @@ function assertAssignmentManifestLimits(
 ) {
   const resolvedLimits = resolveLimits(limits)
   assertAssignmentManifestSize(Buffer.byteLength(content, 'utf8'), resolvedLimits)
-
-  const lines = countNonEmptyLines(content)
-  if (lines > resolvedLimits.maxLines) {
-    throw new Error(
-      `Assignment manifest has ${formatLimit(lines)} lines; maximum supported line count is ${formatLimit(resolvedLimits.maxLines)}`
-    )
-  }
+  return resolvedLimits
 }
 
 export function parseAssignmentManifestJsonl(
   content: string,
   limits?: AssignmentManifestLimits
 ): ParsedAssignmentManifestEntry[] {
-  assertAssignmentManifestLimits(content, limits)
+  const resolvedLimits = assertAssignmentManifestLimits(content, limits)
 
   // Keep these JSONL field rules in sync with the server's explicitAssignments parser.
   const entries: ParsedAssignmentManifestEntry[] = []
+  let records = 0
   const lines = content.split(/\r?\n/)
 
   lines.forEach((line, lineIndex) => {
     const trimmed = line.trim()
     if (!trimmed) {
       return
+    }
+
+    records += 1
+    if (records > resolvedLimits.maxLines) {
+      throw new Error(
+        `Assignment manifest has ${formatLimit(records)} non-empty assignment records; maximum supported record count is ${formatLimit(resolvedLimits.maxLines)}`
+      )
     }
 
     let parsed: unknown
