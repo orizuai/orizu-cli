@@ -64,7 +64,7 @@ For plugin releases (Codex / Claude Code packages), follow
 ## Post-Publish Operator Checks
 
 - Run `npx orizu --help` and confirm the published package matches the repo command surface.
-- Run `npx orizu install-skill --target agent-user --dry-run` and confirm the bundled skill resolves from the npm package.
+- Run `npx orizu install-skill --target codex-user --dry-run` and confirm the bundled skill resolves from the npm package.
 - Run `orizu teams members list --team <team>` and confirm the table shows `MEMBER ID`, `USER ID`, `EMAIL`, and `ROLE`.
 - Run `orizu tasks create ...` without `--publish` and confirm it creates a draft with a task URL and manual-test guidance.
 - Run `orizu tasks create ... --publish --assignees <email-or-user-id>` and confirm immediate publish still stores canonical user IDs server-side.
@@ -78,7 +78,7 @@ For plugin releases (Codex / Claude Code packages), follow
   ```
 - Skills:
   ```bash
-  npx orizu install-skill --target agent-user --yes
+  npx orizu install-skill --target codex-user --yes
   ```
 
 The mirror still publishes the raw `skills/` tree for users who want to inspect

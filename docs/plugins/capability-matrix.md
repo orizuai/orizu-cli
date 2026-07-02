@@ -17,6 +17,9 @@ release playbook.
   install/update/discovery and namespacing through each host's plugin surface.
   A plugin may wrap or invoke `orizu`; it must never fork or re-implement
   scorer, runner, optimizer, auth, or cloud sandbox runtime logic.
+- **Plugins do not enforce the installed CLI binary at runtime.** The packaged
+  skill must verify `orizu --version` and `orizu capabilities --json` before
+  doing real work.
 
 ## Capability matrix
 
@@ -45,12 +48,14 @@ standing backlog.
 - The bundled skill's prerequisites instruct the agent to verify the CLI
   (`orizu --version`, `orizu capabilities --json`) before workflows, and route
   missing/outdated installs to `npm i -g orizu` and `npx orizu setup`.
+- Plugin installation/update improves distribution and discoverability, but it
+  does not by itself prove the user's local `orizu` binary is present or current.
 - Each bundled skill carries `.orizu-skill-meta.json` with the skill content
   hash (same algorithm as `computeSkillContentHash` in
   `packages/cli/src/skill-installer.ts`), the CLI version the bundle was
   generated against, and the plugin version. `scripts/plugins/validate.mjs`
-  fails CI when a bundle drifts from `skills/orizu-cli` or from the current
-  CLI version.
+  fails CI when a bundle drifts from `skills/orizu-cli`, the current CLI
+  version, or the plugin manifest version.
 - Skill/plugin/CLI mismatch at runtime is detected by comparing
   `orizu skills path --json` (`skillHash`, `cliVersion`) against the bundle's
   meta file.
@@ -58,6 +63,6 @@ standing backlog.
 ## Release coupling
 
 Release the CLI runtime first, then regenerate plugin bundles
-(`bun run plugins:build`) so plugin packages always declare the CLI version
-they were built against. See the release playbook in
+(`bun run plugins:build`) so bundle metadata declares the CLI version it was
+built against. See the release playbook in
 `docs/plugin-release-playbook.md` (Phase 7).

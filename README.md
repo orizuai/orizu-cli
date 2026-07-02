@@ -35,23 +35,24 @@ Install the CLI globally with your package manager:
 | pnpm | `pnpm add -g orizu` |
 | Bun | `bun add -g orizu` |
 
-Then run the guided setup — it signs you in, sets up your coding agents,
-optionally creates a gitignored `.orizu/` workspace, and hands your agent a
-prompt to plan repo-specific Orizu adoption:
+Then run the guided setup — it signs you in, initializes the local workspace
+contract, installs global coding-agent skill symlinks, and shows the next
+command for repo-specific Orizu adoption:
 
 ```bash
 orizu setup
 ```
 
-Or install just the companion coding-agent skill:
+To repair or customize skill installs later, run the companion skill installer
+directly:
 
 ```bash
 orizu install-skill --agent claude --agent codex --yes
 ```
 
-First-class plugin packages for Codex and Claude Code live under `plugins/`
-in this repository. Plugins bundle the same skill; the CLI remains the runtime
-either way.
+Experimental plugin packages for Codex and Claude Code live under `plugins/`
+in this repository. The CLI-installed skill remains the default onboarding path
+for now; the CLI is the runtime either way.
 
 ```bash
 # Codex
@@ -63,11 +64,11 @@ codex plugin add orizu@orizu-plugins
 /plugin install orizu@orizu
 ```
 
-The npm package ships the skill alongside the CLI. Run `orizu install-skill` in
-a terminal for an interactive chooser (Claude Code and Codex preselected,
-user-level installs by default), or use `orizu install-skill --help` for
-project-scope installs, sync modes, and advanced targets including the managed
-`AGENTS.md` section. Keep installs in sync after CLI upgrades with
+The npm package ships the skill alongside the CLI. Run
+`orizu install-skill --agent claude --agent codex --yes` for an explicit global
+install, or use `orizu install-skill --help` for project-scope installs, sync
+modes, and advanced targets including the managed `AGENTS.md` section for
+non-workspace repos. Keep installs in sync after CLI upgrades with
 `orizu skills status` and `orizu skills update`.
 
 Coding agents can also read the bundled skill directly without installing it:
@@ -121,7 +122,7 @@ orizu logout
   </tr>
   <tr>
     <td>Install the bundled agent skill</td>
-    <td><code>orizu install-skill --target agent-user --yes</code></td>
+    <td><code>orizu install-skill --target codex-user --yes</code></td>
   </tr>
   <tr>
     <td>Locate the bundled skill (read-only)</td>

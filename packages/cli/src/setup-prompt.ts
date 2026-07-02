@@ -4,8 +4,8 @@ export interface AgentSetupPromptOptions {
 
 export function renderAgentSetupPrompt(options?: AgentSetupPromptOptions): string {
   const workspaceLine = options?.workspacePath
-    ? `- Local Orizu artifacts belong under ${options.workspacePath} (gitignored). Keep secrets out of the repo; credentials live in ~/.config/orizu.`
-    : '- If local Orizu artifacts are needed, suggest creating a gitignored .orizu/ workspace (orizu setup can do this).'
+    ? `- The Orizu workbench root is ${options.workspacePath}. Read AGENTS.md, Memory.md, project READMEs, and orizu.*.json manifests before changing anything.`
+    : '- If this repo is not initialized yet, suggest running `orizu setup --team <slug>` from the desired directory to create the local Orizu workbench contract.'
 
   return `Help me embed Orizu (eval-first LLM optimization) into this repository's workflow.
 
@@ -19,6 +19,8 @@ Then inspect this repository and propose how Orizu should fit it:
 - Propose datasets: existing data that can be uploaded now, or a concrete plan to collect examples if none exists.
 - Propose which prompts to version in Orizu, and which scorers or LLM judges would capture quality for them.
 - Propose runner artifacts where local execution is needed.
+- Use root AGENTS.md, CLAUDE.md, and Memory.md for team context. Discover project and primitive context through README files and orizu.<kind>.json manifests.
+- Keep Git-tracked source/context separate from Orizu DB state, object-storage bytes, and local/ephemeral files. Treat .orizu/ as ignored cache/generated state.
 ${workspaceLine}
 
 Important boundaries:

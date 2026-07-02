@@ -15,12 +15,14 @@ import { dirname, isAbsolute, join, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { createHash } from 'crypto'
+import { workspaceExists } from './workspace.js'
 
 export const SKILL_NAME = 'orizu-cli'
 export const AGENTS_START_MARKER = '<!-- orizu-cli:start -->'
 export const AGENTS_END_MARKER = '<!-- orizu-cli:end -->'
 
 export const SKILL_INSTALL_TARGETS = [
+  'codex-user',
   'agent-user',
   'agents-project',
   'codex-project',
@@ -192,6 +194,10 @@ export function getSkillInstallPath(
   const home = resolveHome(options)
   const cwd = resolveCwd(options)
 
+  if (target === 'codex-user') {
+    return resolve(home, '.codex', 'skills', SKILL_NAME)
+  }
+
   if (target === 'agent-user') {
     return resolve(home, '.agents', 'skills', SKILL_NAME)
   }
@@ -222,7 +228,7 @@ export function getTargetForAgent(
   if (agent === 'claude') {
     return scope === 'global' ? 'claude-user' : 'claude-project'
   }
-  return scope === 'global' ? 'agent-user' : 'agents-project'
+  return scope === 'global' ? 'codex-user' : 'agents-project'
 }
 
 export function isSkillInstallAgent(value: string): value is SkillInstallAgent {
@@ -325,6 +331,12 @@ function installAgentsMd(
   targetPath: string,
   options?: SkillInstallOptions
 ): SkillInstallResult {
+  if (workspaceExists(dirname(targetPath))) {
+    throw new Error(
+      `${targetPath} belongs to an Orizu workspace. Keep root AGENTS.md as concise workspace guidance; use global skill installs or project skill directories for detailed Orizu CLI reference material.`
+    )
+  }
+
   const section = buildAgentsSection(sourceDir)
   const exists = existsSync(targetPath)
   const existing = exists ? readFileSync(targetPath, 'utf8') : ''

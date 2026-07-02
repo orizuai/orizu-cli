@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomBytes, randomUUID } from 'crypto'
-import { basename, delimiter, dirname, extname, isAbsolute, join, normalize } from 'path'
+import { basename, delimiter, dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { createServer } from 'http'
 import { gunzipSync, gzipSync } from 'zlib'
@@ -16,8 +16,9 @@ import {
   writeFileSync,
 } from 'fs'
 import { spawn, spawnSync } from 'child_process'
-import { tmpdir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { createInterface } from 'readline/promises'
+import { emitKeypressEvents } from 'readline'
 import { stdin as input, stdout as output } from 'process'
 import { clearServerCredentials, getServerCredentials, saveServerCredentials } from './credentials.js'
 import { parseDatasetFile } from './file-parser.js'
@@ -46,6 +47,7 @@ import {
   resolveSkillSource,
   SKILL_INSTALL_AGENTS,
   SKILL_INSTALL_TARGETS,
+  SkillInstallAgent,
   SkillInstallMode,
   SkillInstallScope,
   SkillInstallTarget,
@@ -59,7 +61,7 @@ import { LoginResponse } from './types.js'
 import {
   getWorkspaceRoot,
   initOrizuWorkspace,
-  WORKSPACE_DIR_NAME,
+  type WorkspaceProjectSeed,
   workspaceExists,
 } from './workspace.js'
 
@@ -365,6 +367,20 @@ function getArgs(name: string): string[] {
   }
 
   return values
+}
+
+function getOptionalArgValue(name: string): string | null {
+  const index = cliArgs.indexOf(name)
+  if (index === -1 || index + 1 >= cliArgs.length) {
+    return null
+  }
+
+  const value = cliArgs[index + 1]
+  if (!value || value.startsWith('-')) {
+    return null
+  }
+
+  return value
 }
 
 function rejectDashPrefixedOptionValue(name: string, value: string | null) {
@@ -707,6 +723,55 @@ async function fetchTeamMembers(teamSlug: string): Promise<TeamMember[]> {
 
   const data = await parseJsonResponse<{ members: TeamMember[] }>(response, 'Team members list')
   return data.members
+}
+
+async function createTeamOnServer(name: string): Promise<Team> {
+  const response = await authedFetch('/api/cli/teams', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to create team: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{ team: Team }>(response, 'Team create')
+  return data.team
+}
+
+async function createProjectOnServer(teamSlug: string, name: string): Promise<Project> {
+  const response = await authedFetch('/api/cli/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamSlug, name }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to create project: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{
+    project: {
+      id: string
+      name: string
+      slug: string
+      teamId?: string
+      teamName?: string
+      teamSlug: string
+      role?: string
+    }
+  }>(response, 'Project create')
+
+  return {
+    id: data.project.id,
+    name: data.project.name,
+    slug: data.project.slug,
+    teamId: data.project.teamId || '',
+    teamName: data.project.teamName || data.project.teamSlug,
+    teamSlug: data.project.teamSlug,
+    role: data.project.role || 'admin',
+  }
 }
 
 async function resolveProjectSelection(projectArg: string | null): Promise<Project> {
@@ -2791,22 +2856,12 @@ async function createTeam() {
     throw new Error('Usage: orizu teams create --name <name>')
   }
 
-  const response = await authedFetch('/api/cli/teams', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to create team: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ team: Team }>(response, 'Team create')
+  const team = await createTeamOnServer(name)
   if (hasJsonFlag()) {
-    printJson({ team: data.team })
+    printJson({ team })
     return
   }
-  printLine(`Created team: ${sanitizeTerminalText(data.team.name)} (${sanitizeTerminalText(data.team.slug)})`)
+  printLine(`Created team: ${sanitizeTerminalText(team.name)} (${sanitizeTerminalText(team.slug)})`)
 }
 
 async function listProjects() {
@@ -2839,24 +2894,12 @@ async function createProject() {
     teamSlug = team.slug
   }
 
-  const response = await authedFetch('/api/cli/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ teamSlug, name }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to create project: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    project: { id: string; name: string; slug: string; teamSlug: string }
-  }>(response, 'Project create')
+  const project = await createProjectOnServer(teamSlug, name)
   if (hasJsonFlag()) {
-    printJson({ project: data.project })
+    printJson({ project })
     return
   }
-  printLine(`Created project ${sanitizeTerminalText(`${data.project.teamSlug}/${data.project.slug}`)}`)
+  printLine(`Created project ${sanitizeTerminalText(`${project.teamSlug}/${project.slug}`)}`)
 }
 
 async function listTasks() {
@@ -2941,6 +2984,304 @@ async function askYesNo(question: string, defaultYes: boolean): Promise<boolean>
   }
 }
 
+async function askText(question: string, defaultValue: string): Promise<string> {
+  const rl = createInterface({ input, output })
+  try {
+    const suffix = defaultValue ? ` [${defaultValue}]` : ''
+    const answer = (await rl.question(`${question}${suffix} `)).trim()
+    return answer || defaultValue
+  } finally {
+    rl.close()
+  }
+}
+
+type KeypressInfo = {
+  name?: string
+  sequence?: string
+  ctrl?: boolean
+}
+
+type RawInput = typeof input & {
+  setRawMode?: (mode: boolean) => void
+  isRaw?: boolean
+}
+
+async function waitForAnyKeyOrEscape(message: string): Promise<boolean> {
+  if (!isInteractiveTerminal()) {
+    throw new Error('Interactive terminal required.')
+  }
+
+  printLine(message)
+  const rawInput = input as RawInput
+  const wasRaw = Boolean(rawInput.isRaw)
+  emitKeypressEvents(input)
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    function cleanup() {
+      input.off('keypress', onKeypress)
+      if (rawInput.setRawMode && !wasRaw) {
+        rawInput.setRawMode(false)
+      }
+      input.pause()
+      printLine('')
+    }
+
+    function onKeypress(_chunk: string, key: KeypressInfo) {
+      cleanup()
+      if (key.ctrl && key.name === 'c') {
+        rejectPromise(new Error('Setup cancelled.'))
+        return
+      }
+      resolvePromise(key.name !== 'escape')
+    }
+
+    input.on('keypress', onKeypress)
+    input.resume()
+    rawInput.setRawMode?.(true)
+  })
+}
+
+async function promptKeyboardSelect<T>(
+  title: string,
+  items: T[],
+  label: (item: T, index: number) => string
+): Promise<T> {
+  if (items.length === 0) {
+    throw new Error(`No options available for ${title.toLowerCase()}`)
+  }
+  if (!isInteractiveTerminal()) {
+    throw new Error(`${title} selection requires interactive terminal. Provide flags explicitly instead.`)
+  }
+
+  printLine(`\n${sanitizeTerminalText(title)}`)
+  printLine('Use ↑/↓ to choose, Enter to confirm, or Esc to cancel.')
+
+  let selected = 0
+  let rendered = false
+  const rawInput = input as RawInput
+  const wasRaw = Boolean(rawInput.isRaw)
+  emitKeypressEvents(input)
+
+  function render() {
+    if (rendered) {
+      output.write(`\x1b[${items.length}A`)
+    }
+    items.forEach((item, index) => {
+      output.write('\x1b[2K')
+      const marker = index === selected ? '●' : '○'
+      output.write(`  ${marker} ${sanitizeTerminalText(label(item, index))}\n`)
+    })
+    rendered = true
+  }
+
+  render()
+  output.write('\x1b[?25l')
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    function cleanup() {
+      input.off('keypress', onKeypress)
+      if (rawInput.setRawMode && !wasRaw) {
+        rawInput.setRawMode(false)
+      }
+      input.pause()
+      output.write('\x1b[?25h')
+      printLine('')
+    }
+
+    function onKeypress(_chunk: string, key: KeypressInfo) {
+      if (key.ctrl && key.name === 'c') {
+        cleanup()
+        rejectPromise(new Error('Setup cancelled.'))
+        return
+      }
+      if (key.name === 'escape') {
+        cleanup()
+        rejectPromise(new Error('Setup cancelled.'))
+        return
+      }
+      if (key.name === 'up') {
+        selected = (selected - 1 + items.length) % items.length
+        render()
+        return
+      }
+      if (key.name === 'down') {
+        selected = (selected + 1) % items.length
+        render()
+        return
+      }
+      if (key.name === 'return' || key.name === 'enter') {
+        const item = items[selected]
+        cleanup()
+        resolvePromise(item)
+      }
+    }
+
+    input.on('keypress', onKeypress)
+    input.resume()
+    rawInput.setRawMode?.(true)
+  })
+}
+
+async function promptKeyboardMultiSelect<T>(
+  title: string,
+  items: T[],
+  label: (item: T, index: number) => string,
+  defaultSelected: (item: T, index: number) => boolean
+): Promise<T[]> {
+  if (items.length === 0) {
+    return []
+  }
+  if (!isInteractiveTerminal()) {
+    throw new Error(`${title} selection requires interactive terminal. Provide flags explicitly instead.`)
+  }
+
+  printLine(`\n${sanitizeTerminalText(title)}`)
+  printLine('Use ↑/↓ to move, Space to toggle, Enter to confirm, or Esc to skip.')
+
+  let selected = 0
+  let rendered = false
+  const checked = new Set<number>()
+  items.forEach((item, index) => {
+    if (defaultSelected(item, index)) {
+      checked.add(index)
+    }
+  })
+  const rawInput = input as RawInput
+  const wasRaw = Boolean(rawInput.isRaw)
+  emitKeypressEvents(input)
+
+  function render() {
+    if (rendered) {
+      output.write(`\x1b[${items.length}A`)
+    }
+    items.forEach((item, index) => {
+      output.write('\x1b[2K')
+      const cursor = index === selected ? '›' : ' '
+      const marker = checked.has(index) ? '◉' : '○'
+      output.write(`${cursor} ${marker} ${sanitizeTerminalText(label(item, index))}\n`)
+    })
+    rendered = true
+  }
+
+  render()
+  output.write('\x1b[?25l')
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    function cleanup() {
+      input.off('keypress', onKeypress)
+      if (rawInput.setRawMode && !wasRaw) {
+        rawInput.setRawMode(false)
+      }
+      input.pause()
+      output.write('\x1b[?25h')
+      printLine('')
+    }
+
+    function onKeypress(_chunk: string, key: KeypressInfo) {
+      if (key.ctrl && key.name === 'c') {
+        cleanup()
+        rejectPromise(new Error('Setup cancelled.'))
+        return
+      }
+      if (key.name === 'escape') {
+        cleanup()
+        resolvePromise([])
+        return
+      }
+      if (key.name === 'up') {
+        selected = (selected - 1 + items.length) % items.length
+        render()
+        return
+      }
+      if (key.name === 'down') {
+        selected = (selected + 1) % items.length
+        render()
+        return
+      }
+      if (key.name === 'space') {
+        if (checked.has(selected)) {
+          checked.delete(selected)
+        } else {
+          checked.add(selected)
+        }
+        render()
+        return
+      }
+      if (key.name === 'return' || key.name === 'enter') {
+        const selectedItems = items.filter((_item, index) => checked.has(index))
+        cleanup()
+        resolvePromise(selectedItems)
+      }
+    }
+
+    input.on('keypress', onKeypress)
+    input.resume()
+    rawInput.setRawMode?.(true)
+  })
+}
+
+function formatFindingCount(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? '' : 's'}`
+}
+
+function validationSummary(findings: { severity: string }[], logPath: string | null): string {
+  if (findings.length === 0) {
+    return 'passed'
+  }
+
+  const errors = findings.filter(finding => finding.severity === 'error').length
+  const warnings = findings.filter(finding => finding.severity === 'warning').length
+  const infos = findings.filter(finding => finding.severity === 'info').length
+  const parts = [
+    errors > 0 ? formatFindingCount(errors, 'error') : null,
+    warnings > 0 ? formatFindingCount(warnings, 'warning') : null,
+    infos > 0 ? formatFindingCount(infos, 'info') : null,
+  ].filter(Boolean)
+  const location = logPath ? ` (printed to ${logPath})` : ''
+  return `${parts.join(', ')}${location}`
+}
+
+function writeWorkspaceValidationLog(
+  workspaceRoot: string,
+  findings: { severity: string, code: string, path?: string, message: string }[],
+  dryRun: boolean
+): string | null {
+  if (findings.length === 0 || dryRun) {
+    return null
+  }
+
+  const logsDir = join(workspaceRoot, '.logs')
+  mkdirSync(logsDir, { recursive: true })
+  const logPath = join(logsDir, `${randomBytes(6).toString('hex')}.log`)
+  const lines = [
+    'Orizu workspace validation',
+    `Generated at: ${new Date().toISOString()}`,
+    `Workspace: ${workspaceRoot}`,
+    `Summary: ${validationSummary(findings, null)}`,
+    '',
+    ...findings.map(finding => {
+      const path = finding.path ? ` ${finding.path}` : ''
+      return `${finding.severity.toUpperCase()} ${finding.code}:${path} ${finding.message}`
+    }),
+    '',
+  ]
+  writeFileSync(logPath, lines.join('\n'), 'utf8')
+  return relative(workspaceRoot, logPath)
+}
+
+function printWorkspaceFindings(findings: { severity: string, code: string, path?: string, message: string }[]) {
+  if (findings.length === 0) {
+    printLine('   Validation passed.')
+    return
+  }
+
+  printLine('   Validation findings:')
+  for (const finding of findings) {
+    const path = finding.path ? ` ${finding.path}` : ''
+    printLine(`   - ${finding.severity.toUpperCase()} ${finding.code}:${path} ${finding.message}`)
+  }
+}
+
 const SKILL_INSTALL_USAGE =
   `Usage: orizu install-skill [--agent <${SKILL_INSTALL_AGENTS.join('|')}>]... [--scope global|project] [--mode auto|link|copy] [--target <${SKILL_INSTALL_TARGETS.join('|')}>]... [--yes] [--dry-run]`
 
@@ -2953,6 +3294,7 @@ interface SkillInstallChoice {
 function describeSkillTarget(target: SkillInstallTarget): string {
   if (target === 'claude-user') return 'Claude Code, for you across all projects'
   if (target === 'claude-project') return 'Claude Code, only for this project'
+  if (target === 'codex-user') return 'Codex, for you across all projects'
   if (target === 'agent-user') return 'Codex / Open Agent Skills, for you across all projects'
   if (target === 'agents-project') return 'Codex / Open Agent Skills, only for this project'
   if (target === 'codex-project') return 'Codex legacy project folder (.codex/skills)'
@@ -3073,15 +3415,31 @@ interface SkillInstallOutcome {
 
 async function applySkillInstallTargets(
   targets: SkillInstallTarget[],
-  options: { mode: SkillInstallMode, skipConfirm: boolean, dryRun: boolean }
+  options: {
+    mode: SkillInstallMode
+    skipConfirm: boolean
+    dryRun: boolean
+    cwd?: string
+    homeDir?: string
+    showPlan?: boolean
+    printResults?: boolean
+  }
 ): Promise<SkillInstallOutcome[]> {
   const cliVersion = getCliVersion()
   const jsonMode = hasJsonFlag()
   const planned = targets.map(target =>
-    installSkillTarget(target, { dryRun: true, mode: options.mode, cliVersion })
+    installSkillTarget(target, {
+      cwd: options.cwd,
+      homeDir: options.homeDir,
+      dryRun: true,
+      mode: options.mode,
+      cliVersion,
+    })
   )
+  const showPlan = options.showPlan ?? true
+  const printResults = options.printResults ?? true
 
-  if (!jsonMode) {
+  if (showPlan && !jsonMode) {
     printLine('Planned writes:')
     for (const plan of planned) {
       printLine(describePlannedWrite(plan.target, plan.action, plan.mode, plan.path))
@@ -3090,7 +3448,7 @@ async function applySkillInstallTargets(
   }
 
   if (options.dryRun) {
-    if (!jsonMode) {
+    if (printResults && !jsonMode) {
       printLine('Dry run: no files were changed.')
     }
     return planned.map(plan => ({
@@ -3104,8 +3462,8 @@ async function applySkillInstallTargets(
   const outcomes: SkillInstallOutcome[] = []
   for (const target of targets) {
     let overwrite = options.skipConfirm
-    const installPath = getSkillInstallPath(target)
-    if (!overwrite && targetNeedsOverwrite(target)) {
+    const installPath = getSkillInstallPath(target, { cwd: options.cwd, homeDir: options.homeDir })
+    if (!overwrite && targetNeedsOverwrite(target, { cwd: options.cwd, homeDir: options.homeDir })) {
       if (!isInteractiveTerminal()) {
         throw new Error(`${installPath} already exists. Pass --yes to replace it.`)
       }
@@ -3121,11 +3479,13 @@ async function applySkillInstallTargets(
 
     try {
       const result = installSkillTarget(target, {
+        cwd: options.cwd,
+        homeDir: options.homeDir,
         overwrite,
         mode: options.mode,
         cliVersion,
       })
-      if (!jsonMode) {
+      if (printResults && !jsonMode) {
         const suffix = result.mode === 'link' ? ' (symlink)' : ''
         printLine(`${formatSkillInstallAction(result.action)} ${result.path}${suffix}`)
       }
@@ -3137,7 +3497,7 @@ async function applySkillInstallTargets(
       })
     } catch (error: unknown) {
       const message = getErrorMessage(error)
-      if (!jsonMode) {
+      if (printResults && !jsonMode) {
         printLine(`Failed ${installPath}: ${message}`)
       }
       outcomes.push({ target, path: installPath, action: 'failed', mode: null, error: message })
@@ -3315,17 +3675,161 @@ function describeSetupAuthState(): { state: 'signed-in' | 'signed-out', baseUrl:
   }
 }
 
+type SetupTeamChoice =
+  | { kind: 'team', team: Team }
+  | { kind: 'create' }
+
+async function resolveSetupTeam(teamSlugArg: string | null, noInput: boolean, dryRun: boolean): Promise<Team> {
+  const teams = await fetchTeams()
+  const normalizedTeamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null
+
+  if (normalizedTeamSlug) {
+    const team = teams.find(candidate => candidate.slug === normalizedTeamSlug)
+    if (!team) {
+      throw new Error(`Team '${normalizedTeamSlug}' was not found in your accessible teams.`)
+    }
+    return team
+  }
+
+  if (noInput || dryRun) {
+    throw new Error('Authenticated setup requires --team <slug> when running non-interactively.')
+  }
+
+  const choices: SetupTeamChoice[] = [
+    ...teams.map(team => ({ kind: 'team' as const, team })),
+    { kind: 'create' },
+  ]
+  const choice = await promptKeyboardSelect(
+    'Choose the team to set up in this directory',
+    choices,
+    item => item.kind === 'create'
+      ? 'Create a new team'
+      : `${item.team.name} (${item.team.slug})`
+  )
+
+  if (choice.kind === 'team') {
+    return choice.team
+  }
+
+  const name = await askText('   Team name?', '')
+  if (!name) {
+    throw new Error('Team name is required to create a team.')
+  }
+  return createTeamOnServer(name)
+}
+
+async function resolveSetupProjects(team: Team): Promise<Project[]> {
+  const projects = await fetchProjects(team.slug)
+
+  if (projects.length === 0) {
+    throw new Error(`Team '${team.slug}' has no projects. Create a project before running setup.`)
+  }
+
+  return projects
+}
+
+function projectSeedsFromProjects(projects: Project[]): WorkspaceProjectSeed[] {
+  return projects.map(project => ({
+    slug: project.slug,
+    id: project.id,
+    name: project.name,
+  }))
+}
+
+function formatProjectSetupProgress(count: number): string {
+  return `${count} project${count === 1 ? '' : 's'} being set up in workspace...`
+}
+
+interface SetupSkillChoice {
+  agent: SkillInstallAgent
+  label: string
+  target: SkillInstallTarget
+}
+
+function setupTargetForAgent(agent: SkillInstallAgent): SkillInstallTarget {
+  return agent === 'codex' ? 'codex-user' : 'claude-user'
+}
+
+function resolveSetupSkillHome(): string {
+  return resolve(process.env.HOME || homedir())
+}
+
+function detectedSetupSkillChoices(homeDir: string): SetupSkillChoice[] {
+  const choices: SetupSkillChoice[] = []
+  if (existsSync(join(homeDir, '.codex'))) {
+    choices.push({
+      agent: 'codex',
+      label: 'Codex',
+      target: 'codex-user',
+    })
+  }
+
+  if (existsSync(join(homeDir, '.claude'))) {
+    choices.push({
+      agent: 'claude',
+      label: 'Claude Code',
+      target: 'claude-user',
+    })
+  }
+
+  return choices
+}
+
+function setupSkillTargetsFromArgs(): SkillInstallTarget[] {
+  const targets: SkillInstallTarget[] = []
+  for (const agent of getArgs('--agent')) {
+    if (!isSkillInstallAgent(agent)) {
+      throw new Error(
+        `Unknown agent '${agent}'. Available agents: ${SKILL_INSTALL_AGENTS.join(', ')}`
+      )
+    }
+    const target = setupTargetForAgent(agent)
+    if (!targets.includes(target)) {
+      targets.push(target)
+    }
+  }
+  for (const target of getArgs('--target')) {
+    if (!isSkillInstallTarget(target)) {
+      throw new Error(
+        `Unknown skill install target '${target}'. Available targets: ${SKILL_INSTALL_TARGETS.join(', ')}`
+      )
+    }
+    if (!targets.includes(target)) {
+      targets.push(target)
+    }
+  }
+  return targets
+}
+
+function setupSkillLabel(target: SkillInstallTarget): string {
+  if (target === 'codex-user' || target === 'codex-project' || target === 'agent-user' || target === 'agents-project') {
+    return 'Codex skill'
+  }
+  if (target === 'claude-user' || target === 'claude-project') return 'Claude Code skill'
+  return 'Orizu skill'
+}
+
 async function setupCommand() {
   const dryRun = hasArg('--dry-run')
+  const validateOnly = hasArg('--validate') && !hasArg('--fix')
+  const fix = hasArg('--fix')
+  const verbose = hasArg('--verbose')
+  const handoffRequested = hasArg('--handoff') || Boolean(getArg('--launch'))
   const skipConfirm = hasArg('--yes')
-  const noInput = hasArg('--no-input') || !isInteractiveTerminal()
+  const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal()
+  const workspaceArg = getOptionalArgValue('--workspace')
+  const workspaceRoot = workspaceArg ? resolve(expandHomePath(workspaceArg)) : process.cwd()
+  const teamArg = getOptionalArgValue('--team')
+  const projectArg = getOptionalArgValue('--project')
+  const setupSkillHome = resolveSetupSkillHome()
+  const installMode: SkillInstallMode = getArg('--mode') ? parseSkillInstallMode() : 'link'
 
   printBannerIfInteractive()
   printLine('Orizu setup')
   printLine('')
 
-  // Phase 1: login
-  printLine('1. Authentication')
+  // Step 1: login
+  printLine('Step 1: Login')
   let auth = describeSetupAuthState()
   if (hasArg('--skip-login')) {
     printLine('   Skipped (--skip-login).')
@@ -3333,70 +3837,154 @@ async function setupCommand() {
     printLine(`   Already authenticated with ${sanitizeTerminalText(auth.baseUrl)}.`)
   } else if (noInput || dryRun) {
     printLine('   Not signed in. Run `orizu login` to authenticate.')
-  } else if (await askYesNo('   Sign in to Orizu now?', true)) {
+  } else if (await waitForAnyKeyOrEscape('   Press any key to open a browser and connect to your account, or Esc to cancel.')) {
     await login()
     auth = describeSetupAuthState()
   } else {
-    printLine('   Skipped. Run `orizu login` when ready.')
+    throw new Error('Setup cancelled.')
   }
   printLine('')
 
-  // Phase 2: agent integration
-  printLine('2. Agent integration')
-  const scope = parseSkillInstallScope()
-  const mode = parseSkillInstallMode()
-  let targets = hasArg('--no-install') ? [] : parseSkillInstallTargets(scope)
-  if (targets.length === 0 && !hasArg('--no-install')) {
-    if (noInput) {
-      printLine('   No agents selected. Pass --agent claude and/or --agent codex, or rerun interactively.')
-    } else {
-      targets = await promptSkillInstallTargets(scope)
-    }
-  }
-
-  let installOutcomes: SkillInstallOutcome[] = []
-  if (targets.length > 0) {
-    installOutcomes = await applySkillInstallTargets(targets, { mode, skipConfirm, dryRun })
-  } else if (hasArg('--no-install')) {
-    printLine('   Skipped (--no-install).')
-  }
-  printLine('')
-
-  // Phase 3: local workspace
-  printLine('3. Local workspace')
-  let workspaceState: 'created' | 'exists' | 'skipped' | 'would-create' = 'skipped'
-  if (hasArg('--no-workspace')) {
+  // Step 2: local workspace
+  printLine('Step 2: Setup your workspace')
+  let workspaceState: 'created' | 'exists' | 'skipped' | 'would-create' | 'validated' | 'invalid' | 'repaired' = 'skipped'
+  let workspaceResult: ReturnType<typeof initOrizuWorkspace> | null = null
+  let validationLogPath: string | null = null
+  if (hasArg('--no-workspace') && !validateOnly && !fix) {
     printLine('   Skipped (--no-workspace).')
-  } else if (workspaceExists()) {
-    workspaceState = 'exists'
-    printLine(`   ${WORKSPACE_DIR_NAME}/ already initialized.`)
   } else {
-    const wantsWorkspace = hasArg('--workspace') ||
-      (!noInput && await askYesNo(`   Create a gitignored ${WORKSPACE_DIR_NAME}/ workspace for local Orizu artifacts?`, true))
+    const wantsWorkspace = validateOnly
+      || fix
+      || hasArg('--workspace')
+      || Boolean(teamArg || projectArg)
+      || workspaceExists(workspaceRoot)
+      || !noInput
     if (wantsWorkspace) {
+      let teamSlug = teamArg
+      const projectSlug = projectArg
+      let teamId: string | null = null
+      let projects: WorkspaceProjectSeed[] | undefined
+
+      if (auth.state === 'signed-in' && !validateOnly) {
+        const team = await resolveSetupTeam(teamSlug, noInput, dryRun)
+        const serverProjects = await resolveSetupProjects(team)
+        teamSlug = team.slug
+        teamId = team.id
+        projects = projectSeedsFromProjects(serverProjects)
+        printLine(`   ${formatProjectSetupProgress(projects.length)}`)
+      } else if (!teamSlug && !noInput && !validateOnly) {
+        teamSlug = await askText('   Team slug?', 'local-team')
+      }
+      if (auth.state !== 'signed-in' && (!teamSlug || !projectSlug) && noInput && hasArg('--workspace')) {
+        printLine('   Using starter local-only team/project. Pass --team with authentication to materialize server projects.')
+      }
+      if (projectSlug && auth.state !== 'signed-in') {
+        projects = [{ slug: projectSlug }]
+      }
+      if (auth.state !== 'signed-in' && !validateOnly) {
+        const localProjectCount = projects?.length || 1
+        printLine(`   ${formatProjectSetupProgress(localProjectCount)}`)
+      }
+
       const result = initOrizuWorkspace({
+        workspaceRoot,
+        teamSlug,
+        teamId,
+        projectSlug: auth.state === 'signed-in' ? null : projectSlug,
+        projects,
         baseUrl: auth.baseUrl,
+        serviceOrigin: getOptionalArgValue('--service-origin') || auth.baseUrl,
+        attachWorkspaceId: getOptionalArgValue('--attach-workspace'),
         cliVersion: getCliVersion(),
         dryRun,
+        validateOnly,
+        fix,
+        noSymlinks: hasArg('--no-symlinks'),
       })
-      workspaceState = result.state === 'would-create' ? 'would-create' : result.state
-      for (const action of result.actions) {
-        printLine(`   ${dryRun ? 'Would ' : 'Did '}${action}`)
+      workspaceResult = result
+      workspaceState = result.state
+      if (dryRun || verbose) {
+        for (const action of result.actions) {
+          printLine(`   ${dryRun ? 'Would ' : 'Did '}${action}`)
+        }
+      } else if (result.actions.length > 0) {
+        printLine(validateOnly ? '   Workspace validation complete' : '   Workspace setup complete')
+      } else if (!validateOnly) {
+        printLine('   Workspace setup complete')
+      }
+      validationLogPath = writeWorkspaceValidationLog(result.root, result.findings, dryRun)
+      if (verbose) {
+        printWorkspaceFindings(result.findings)
+      }
+      if ((validateOnly || fix) && result.findings.some(finding => finding.severity === 'error')) {
+        process.exitCode = 1
       }
     } else {
-      printLine(`   Skipped. Rerun with --workspace to create ${WORKSPACE_DIR_NAME}/.`)
+      printLine(`   Skipped. Rerun with --workspace to initialize the workspace contract.`)
+    }
+  }
+  printLine('')
+
+  // Step 3: global coding-agent skills
+  let installOutcomes: SkillInstallOutcome[] = []
+  printLine('Step 3: Install coding agent skills')
+  if (hasArg('--no-install') || validateOnly || fix) {
+    printLine(hasArg('--no-install') ? '   Skipped (--no-install).' : '   Skipped for validation/repair.')
+  } else {
+    let targets = setupSkillTargetsFromArgs()
+    if (targets.length === 0 && !noInput && !dryRun) {
+      const choices = detectedSetupSkillChoices(setupSkillHome)
+      if (choices.length > 0) {
+        const selectedChoices = await promptKeyboardMultiSelect(
+          'Choose the coding agents that should learn how to use Orizu',
+          choices,
+          choice => choice.label,
+          () => true
+        )
+        targets = selectedChoices.map(choice => choice.target)
+      } else {
+        printLine('   No Codex or Claude Code agent folders were detected.')
+      }
+    }
+
+    if (targets.length === 0) {
+      printLine('   Skipped skill install.')
+    } else {
+      printLine('   Installing skills...')
+      installOutcomes = await applySkillInstallTargets(targets, {
+        mode: installMode,
+        skipConfirm,
+        dryRun,
+        cwd: workspaceRoot,
+        homeDir: setupSkillHome,
+        showPlan: false,
+        printResults: false,
+      })
+      if (dryRun) {
+        printLine('   Dry run: no skill files were changed.')
+      }
+      for (const outcome of installOutcomes) {
+        const label = setupSkillLabel(outcome.target)
+        if (outcome.action === 'failed') {
+          printLine(`   ${label} failed: ${outcome.error}`)
+        } else if (outcome.action === 'skipped') {
+          printLine(`   ${label} skipped`)
+        } else {
+          printLine(`   ${label} installed`)
+        }
+      }
     }
   }
   printLine('')
 
   // Phase 4: coding-agent handoff
   const handoffPrompt = renderAgentSetupPrompt({
-    workspacePath: workspaceState === 'created' || workspaceState === 'exists'
-      ? getWorkspaceRoot()
+    workspacePath: workspaceResult && workspaceState !== 'invalid'
+      ? getWorkspaceRoot(workspaceRoot)
       : null,
   })
-  if (!hasArg('--no-handoff')) {
-    printLine('4. Coding-agent handoff')
+  if (handoffRequested && !hasArg('--no-handoff')) {
+    printLine('Step 4: Coding-agent handoff')
     printLine('   Give your coding agent this prompt to plan repo-specific Orizu adoption:')
     printLine('')
     printLine('--- prompt start ---')
@@ -3436,7 +4024,7 @@ async function setupCommand() {
   const summaryTargets = installOutcomes.length > 0
     ? installOutcomes
       .filter(outcome => outcome.action !== 'failed')
-      .map(outcome => ({ outcome, status: getSkillTargetStatus(outcome.target) }))
+      .map(outcome => ({ outcome, status: getSkillTargetStatus(outcome.target, { cwd: workspaceRoot, homeDir: setupSkillHome }) }))
     : []
   const source = resolveSkillSource()
 
@@ -3456,7 +4044,21 @@ async function setupCommand() {
         cliVersion: getCliVersion(),
         skillHash: computeSkillContentHash(source.root),
       },
-      workspace: { state: workspaceState, path: getWorkspaceRoot() },
+      workspace: {
+        state: workspaceState,
+        path: getWorkspaceRoot(workspaceRoot),
+        validationLogPath,
+        operations: workspaceResult?.operations.map(op => ({
+          action: op.action,
+          path: op.path,
+          safe: op.safe,
+          reason: op.reason,
+          entries: op.entries,
+          sourcePath: op.sourcePath,
+          target: op.target,
+        })) || [],
+        findings: workspaceResult?.findings || [],
+      },
     })
     return
   }
@@ -3464,21 +4066,23 @@ async function setupCommand() {
   printLine('Setup summary')
   printLine(`  Auth:         ${auth.state === 'signed-in' ? `signed in (${sanitizeTerminalText(auth.baseUrl)})` : 'not signed in — run `orizu login`'}`)
   if (summaryTargets.length > 0) {
-    printLine('  Integrations:')
+    printLine('  Skills:')
     for (const { outcome, status } of summaryTargets) {
       const modeLabel = status.mode ? `, ${status.mode}` : ''
       printLine(`    ${outcome.target.padEnd(16)} ${status.state}${modeLabel}  ${outcome.path}`)
     }
   } else {
-    printLine('  Integrations: none installed this run — `orizu install-skill` sets them up.')
+    printLine('  Skills:       none installed this run')
   }
   const failed = installOutcomes.filter(outcome => outcome.action === 'failed')
   for (const failure of failed) {
     printLine(`    ${failure.target.padEnd(16)} failed: ${failure.error}`)
   }
-  printLine(`  Skill source: ${source.root} (${source.source})`)
-  printLine(`  Workspace:    ${workspaceState === 'skipped' ? 'skipped' : `${getWorkspaceRoot()} (${workspaceState})`}`)
-  printLine('  Next:         hand the prompt above to your coding agent to plan repo-specific Orizu adoption.')
+  printLine(`  Workspace:    ${workspaceState === 'skipped' ? 'skipped' : getWorkspaceRoot(workspaceRoot)}`)
+  if (workspaceResult) {
+    printLine(`  Validation:   ${validationSummary(workspaceResult.findings, validationLogPath)}`)
+  }
+  printLine('  Next:         run `orizu setup prompt` if you want a coding-agent handoff prompt.')
 }
 
 function setupPromptCommand() {

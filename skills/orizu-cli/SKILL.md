@@ -22,8 +22,10 @@ Skip this skill when:
 
 - Node.js 20+ installed.
 - Install the CLI: `npm i -g orizu`.
-- Install this skill from the CLI package: `orizu install-skill --agent codex --yes` (or `--agent claude`; advanced target IDs remain available via `--target`).
+- Run `orizu setup` to sign in, initialize the workbench, and install the global Codex/Claude Code skill symlinks.
+- Or install this skill directly from the CLI package with `orizu install-skill --agent codex --yes` (or `--agent claude`; advanced target IDs remain available via `--target`).
 - Or read the bundled skill in place without installing: `orizu skills path --json` returns `root`, `skillMd`, `source`, `cliVersion`, and `skillHash`.
+- Before doing Orizu work, verify the runtime with `orizu --version` and `orizu capabilities --json`. If the CLI is missing or stale, pause and ask the user to update it.
 - After CLI upgrades, check installed copies with `orizu skills status` and refresh them with `orizu skills update`.
 - Rediscover the command surface any time with `orizu --help`, `orizu <group> --help`, or `orizu capabilities --json`.
 - Every command supports `--json` (prefix `orizu --json <cmd>` or trailing flag) and emits a single JSON document; prefer it over parsing human-formatted text. Long-running commands emit the JSON summary as the final stdout line.
