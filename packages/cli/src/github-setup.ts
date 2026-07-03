@@ -14,6 +14,7 @@
  *      is immediately rewritten to a clean origin.
  */
 
+import { spawnSync } from 'child_process'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 
@@ -279,4 +280,81 @@ export async function runHostedAttach(
 
   io.print('   Attached. Configured the Orizu credential helper for git.')
   return { repoFullName, provisioned, targetDir: options.targetDir }
+}
+
+// -- Interactive setup dispatch (ALI-996 / WS-C crumb) ----------------------
+
+function defaultGitRunner(args: string[], opts?: { cwd?: string }): GitRunResult {
+  const result = spawnSync('git', args, { cwd: opts?.cwd, encoding: 'utf8' })
+  return { status: result.status ?? 1, stderr: result.stderr }
+}
+
+export interface InteractiveHostedSetupInput {
+  teamSlug: string
+  targetDir: string
+  /** The `--local` flag: forces Phase-1 scaffolding regardless of linkage. */
+  local: boolean
+  /** True once the required github-link step has connected an active org. */
+  activeInstallation: boolean
+}
+
+export interface InteractiveHostedSetupIo {
+  print: (line: string) => void
+  fetcher?: SetupFetcher
+  git?: GitRunner
+  ensureOrizuDir?: (repoDir: string) => void
+}
+
+export interface InteractiveHostedSetupResult {
+  mode: SetupMode
+  /** True when the hosted repo was cloned; false means the caller scaffolds locally. */
+  attached: boolean
+  repoFullName: string | null
+}
+
+/**
+ * Bridge the required github-link step to the hosted attach. Create-or-attaches
+ * the server workspace (whose response now surfaces repoProvider/repoFullName —
+ * ALI-972), then routes through the already-tested `decideSetupMode`:
+ *   - `local`                 → returns `attached: false`; the caller scaffolds.
+ *   - `attach` / `provision-then-attach` → clones (provisioning first if needed)
+ *     via `runHostedAttach` and returns `attached: true`.
+ */
+export async function runInteractiveHostedSetup(
+  input: InteractiveHostedSetupInput,
+  io: InteractiveHostedSetupIo
+): Promise<InteractiveHostedSetupResult> {
+  const fetcher = io.fetcher ?? authedFetch
+
+  const response = await fetcher('/api/cli/workspaces', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamSlug: input.teamSlug, name: input.teamSlug, slug: input.teamSlug }),
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to attach workspace: ${await readError(response)}`)
+  }
+  const data = (await response.json()) as {
+    workspace?: { id?: string; repoFullName?: string | null }
+  }
+  const workspace = data.workspace
+  if (!workspace?.id) {
+    throw new Error('Workspace attach response did not include an id')
+  }
+
+  const repoFullName = workspace.repoFullName ?? null
+  const mode = decideSetupMode({
+    local: input.local,
+    activeInstallation: input.activeInstallation,
+    repoFullName,
+  })
+  if (mode === 'local') {
+    return { mode, attached: false, repoFullName: null }
+  }
+
+  const result = await runHostedAttach(
+    { workspaceId: workspace.id, repoFullName, targetDir: input.targetDir },
+    { print: io.print, fetcher, git: io.git ?? defaultGitRunner, ensureOrizuDir: io.ensureOrizuDir }
+  )
+  return { mode, attached: true, repoFullName: result.repoFullName }
 }

@@ -63,7 +63,7 @@ import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredential } from './git-credential.js'
-import { runGithubLink } from './github-setup.js'
+import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -3849,6 +3849,7 @@ async function setupCommand() {
   let workspaceState: 'created' | 'exists' | 'skipped' | 'would-create' | 'validated' | 'invalid' | 'repaired' = 'skipped'
   let workspaceResult: ReturnType<typeof initOrizuWorkspace> | null = null
   let validationLogPath: string | null = null
+  let hostedAttached = false
   if (hasArg('--no-workspace') && !validateOnly && !fix) {
     printLine('   Skipped (--no-workspace).')
   } else {
@@ -3871,7 +3872,8 @@ async function setupCommand() {
         teamId = team.id
         projects = projectSeedsFromProjects(serverProjects)
         printLine(`   ${formatProjectSetupProgress(projects.length)}`)
-        if (!hasArg('--local') && !noInput && !dryRun) { try { await runGithubLink(team.slug, { print: printLine, fetcher: authedFetch, openUrl: openInBrowser, confirm: (org) => askYesNo(`   Connect this team to GitHub org '${org}'?`, true) }) } catch (error) { printLine(`   GitHub link skipped: ${getErrorMessage(error)} Run \`orizu github link --team ${team.slug}\` to finish.`) } }
+        if (!hasArg('--local') && !noInput && !dryRun) { let link: GithubLinkResult | null = null; try { link = await runGithubLink(team.slug, { print: printLine, fetcher: authedFetch, openUrl: openInBrowser, confirm: (org) => askYesNo(`   Connect this team to GitHub org '${org}'?`, true) }) } catch (error) { printLine(`   GitHub link skipped: ${getErrorMessage(error)} Run \`orizu github link --team ${team.slug}\` to finish.`) }
+        if (link) { try { hostedAttached = (await runInteractiveHostedSetup({ teamSlug: team.slug, targetDir: workspaceRoot, local: hasArg('--local'), activeInstallation: link.status === 'active' }, { print: printLine, fetcher: authedFetch })).attached } catch (error) { throw new Error(`Hosted setup failed: ${getErrorMessage(error)} Remove any partial clone in ${workspaceRoot} if one exists, then re-run \`orizu setup\` (or pass --local to scaffold a local-only workspace).`) } } }
       } else if (!teamSlug && !noInput && !validateOnly) {
         teamSlug = await askText('   Team slug?', 'local-team')
       }
@@ -3886,6 +3888,7 @@ async function setupCommand() {
         printLine(`   ${formatProjectSetupProgress(localProjectCount)}`)
       }
 
+      if (hostedAttached) { workspaceState = 'exists' } else {
       const result = initOrizuWorkspace({
         workspaceRoot,
         teamSlug,
@@ -3918,6 +3921,7 @@ async function setupCommand() {
       }
       if ((validateOnly || fix) && result.findings.some(finding => finding.severity === 'error')) {
         process.exitCode = 1
+      }
       }
     } else {
       printLine(`   Skipped. Rerun with --workspace to initialize the workspace contract.`)

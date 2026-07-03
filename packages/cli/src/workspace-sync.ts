@@ -45,6 +45,7 @@
  * recovery loop is: re-sync, converge per the reported status, retry.
  */
 
+import { spawnSync } from 'child_process'
 import { createHash } from 'crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'fs'
 import { join, relative, sep } from 'path'
@@ -592,14 +593,126 @@ export interface StatusResourceLine {
   serverVersionId?: string | null
 }
 
+// -- Hosted-repo freshness + stale-branch report (ALI-996 / WS-G, ALI-972) ----
+
+/** Resolves a git ref (e.g. `origin/main`) to a SHA; null when absent/non-git. */
+export type GitRefReader = (cwd: string, ref: string) => string | null
+
+function defaultGitRef(cwd: string, ref: string): string | null {
+  try {
+    const result = spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd, encoding: 'utf8' })
+    if (result.status !== 0 || typeof result.stdout !== 'string') {
+      return null
+    }
+    return result.stdout.trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * "repo moved since your last pull" — the server's recorded DEFAULT-branch push
+ * SHA differs from what the LOCAL repo knows the default branch to be. Compared
+ * against the default-branch ref (never bare HEAD) so being on a feature branch
+ * or carrying local commits never triggers a false positive.
+ */
+export interface FreshnessSignal {
+  serverSha: string
+  branch: string | null
+  pushedAt: string | null
+  localDefaultSha: string
+}
+
+/** A session branch worth reporting: an old active session or an ended, unmerged one. */
+export interface StaleSessionBranch {
+  sessionId: string
+  branch: string
+  startedAt: string | null
+  reason: 'active-stale' | 'unmerged'
+}
+
+const STALE_ACTIVE_MS = 24 * 60 * 60 * 1000
+
+// Fetch the workspace record and compare its recorded DEFAULT-branch push SHA
+// against what the local repo knows that same branch to be. Best-effort: any
+// server/non-hosted/non-git/unknown-branch condition yields null so `status`
+// never fails — and never false-warns — for a local-only, offline, or
+// feature-branch checkout.
+async function fetchFreshness(
+  root: string,
+  workspaceId: string,
+  fetcher: WorkspaceSyncFetcher,
+  gitRef: GitRefReader
+): Promise<FreshnessSignal | null> {
+  const teamSlug = teamSlugOf(root)
+  const response = await fetcher(`/api/cli/workspaces?team=${encodeURIComponent(teamSlug)}`)
+  if (!response.ok) return null
+  const data = await readJson(response)
+  const workspaces = Array.isArray(data.workspaces) ? (data.workspaces as Array<Record<string, unknown>>) : []
+  const ws = workspaces.find(item => stringOrNull(item.id) === workspaceId) ?? null
+  const serverSha = ws ? stringOrNull(ws.repoLastPushSha) : null
+  const branch = ws ? stringOrNull(ws.repoLastPushBranch) : null
+  // Without the server's default-branch name we cannot locate the right local
+  // ref to compare — stay silent rather than compare against the wrong branch.
+  if (!serverSha || !branch) return null
+  // Prefer the remote-tracking ref (what the last fetch/pull observed on the
+  // default branch); fall back to the local branch. HEAD is deliberately NOT
+  // used: a feature-branch checkout must never read as "repo moved".
+  const localDefaultSha = gitRef(root, `origin/${branch}`) ?? gitRef(root, branch)
+  if (!localDefaultSha || localDefaultSha === serverSha) return null
+  return {
+    serverSha,
+    branch,
+    pushedAt: stringOrNull(ws?.repoLastPushAt ?? null),
+    localDefaultSha,
+  }
+}
+
+// List the workspace's branched sessions and flag the stale ones. Report,
+// don't reap (ALI-972): active sessions still holding a branch past 24h, and
+// ended sessions whose branch metadata persists (unmerged write-back).
+async function fetchStaleSessionBranches(
+  workspaceId: string,
+  fetcher: WorkspaceSyncFetcher,
+  now: number
+): Promise<StaleSessionBranch[]> {
+  const response = await fetcher(`/api/cli/workspaces/${workspaceId}/sessions?branched=true`)
+  if (!response.ok) return []
+  const data = await readJson(response)
+  const sessions = Array.isArray(data.sessions) ? (data.sessions as Array<Record<string, unknown>>) : []
+  const stale: StaleSessionBranch[] = []
+  for (const session of sessions) {
+    const branch = stringOrNull(session.repoBranch)
+    if (!branch) continue
+    const status = stringOrNull(session.status)
+    const startedAt = stringOrNull(session.startedAt)
+    const sessionId = stringOrNull(session.id) ?? ''
+    if (status === 'active') {
+      const started = startedAt ? Date.parse(startedAt) : NaN
+      if (!Number.isNaN(started) && now - started > STALE_ACTIVE_MS) {
+        stale.push({ sessionId, branch, startedAt, reason: 'active-stale' })
+      }
+    } else if (status === 'ended') {
+      stale.push({ sessionId, branch, startedAt, reason: 'unmerged' })
+    }
+  }
+  return stale
+}
+
 export interface StatusResult {
   root: string
   workspaceId: string | null
   remote: boolean
   resources: StatusResourceLine[]
+  /** Set only when the hosted repo's default branch moved past the local ref (ALI-996). */
+  freshness?: FreshnessSignal | null
+  /** Branched sessions worth attention; empty for local-only workspaces (ALI-972). */
+  staleSessionBranches?: StaleSessionBranch[]
 }
 
-export async function runWorkspaceStatus(opts: CommonOptions & { remote?: boolean } = {}): Promise<StatusResult> {
+export async function runWorkspaceStatus(
+  opts: CommonOptions & { remote?: boolean; gitRef?: GitRefReader; now?: () => number } = {}
+): Promise<StatusResult> {
   const root = getWorkspaceRoot(opts.cwd)
   const fetcher = opts.fetcher ?? authedFetch
   const inventory = collectInventory(root)
@@ -670,7 +783,27 @@ export async function runWorkspaceStatus(opts: CommonOptions & { remote?: boolea
     }
   }
 
-  return { root, workspaceId, remote: Boolean(opts.remote), resources: lines }
+  // Hosted-repo freshness + stale-branch report (best-effort): only for attached
+  // workspaces, and every server/non-git failure is swallowed so a local-only or
+  // offline `status` behaves exactly as before.
+  let freshness: FreshnessSignal | null = null
+  let staleSessionBranches: StaleSessionBranch[] = []
+  if (workspaceId) {
+    const gitRef = opts.gitRef ?? defaultGitRef
+    const now = (opts.now ?? (() => Date.now()))()
+    try {
+      freshness = await fetchFreshness(root, workspaceId, fetcher, gitRef)
+    } catch {
+      freshness = null
+    }
+    try {
+      staleSessionBranches = await fetchStaleSessionBranches(workspaceId, fetcher, now)
+    } catch {
+      staleSessionBranches = []
+    }
+  }
+
+  return { root, workspaceId, remote: Boolean(opts.remote), resources: lines, freshness, staleSessionBranches }
 }
 
 export interface SyncResultLine extends SyncResourceResult {
@@ -966,6 +1099,20 @@ export async function workspaceSyncCommand(args: string[], io: WorkspaceSyncIo):
       + `${r.localStatus ? `  ${r.localStatus}` : ''}${r.remoteStatus ? `  ${r.remoteStatus}` : ''}`
       + `${r.contentPending ? '  (content-pending)' : ''}`
     )
+    if (result.freshness) {
+      const { serverSha, branch, pushedAt } = result.freshness
+      lines.push(
+        `repo moved since your last pull: ${serverSha}`
+        + `${branch ? ` on ${branch}` : ''}${pushedAt ? ` at ${pushedAt}` : ''}`
+      )
+    }
+    if (result.staleSessionBranches && result.staleSessionBranches.length > 0) {
+      lines.push('stale session branches:')
+      for (const stale of result.staleSessionBranches) {
+        const detail = stale.reason === 'active-stale' ? 'active >24h' : 'unmerged'
+        lines.push(`  ${stale.branch} (started ${stale.startedAt ?? '?'}, ${detail})`)
+      }
+    }
     emit(io, ['workspace status', ...lines].join('\n'), result as unknown as Record<string, unknown>)
     return 0
   }
