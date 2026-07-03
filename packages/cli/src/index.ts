@@ -8,7 +8,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -27,6 +26,7 @@ import { parseDatasetReference } from './dataset-download.js'
 import { extractErrorMessage } from './error-response.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
+import { zipDirectoryToBase64 } from './artifact-archive.js'
 import { runLocalAppPreview } from './preview-runtime.js'
 import { readAssignmentManifestJsonlFile } from './task-assignment-manifest.js'
 import {
@@ -336,7 +336,6 @@ function printUsage() {
   printBannerIfInteractive()
   printLine(renderRootHelp())
 }
-
 
 let cliArgs = process.argv.slice(2)
 let cliJsonOutput = false
@@ -4183,141 +4182,6 @@ function writeTextFileEnsuringDir(pathArg: string, content: string) {
   writeFileSync(pathArg, content)
 }
 
-function shouldExcludeArtifactPath(relativePath: string): boolean {
-  const parts = relativePath.split('/')
-  return parts.some(part =>
-    part === '.git' ||
-    part === '.DS_Store' ||
-    part === '__pycache__' ||
-    part === '.pytest_cache'
-  )
-}
-
-function collectArtifactFiles(sourceDir: string, relativeDir = ''): string[] {
-  const absoluteDir = relativeDir ? join(sourceDir, relativeDir) : sourceDir
-  return readdirSync(absoluteDir, { withFileTypes: true })
-    .flatMap(entry => {
-      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
-      if (shouldExcludeArtifactPath(relativePath)) {
-        return []
-      }
-      if (entry.isDirectory()) {
-        return collectArtifactFiles(sourceDir, relativePath)
-      }
-      return entry.isFile() ? [relativePath] : []
-    })
-    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
-}
-
-const ZIP_GENERAL_PURPOSE_UTF8 = 0x0800
-const ZIP_DOS_TIME_2000_01_01 = 0
-const ZIP_DOS_DATE_2000_01_01 = ((2000 - 1980) << 9) | (1 << 5) | 1
-const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
-  let value = index
-  for (let bit = 0; bit < 8; bit++) {
-    value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1)
-  }
-  return value >>> 0
-})
-
-function crc32(bytes: Buffer): number {
-  let crc = 0xffffffff
-  for (const byte of bytes) {
-    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8)
-  }
-  return (crc ^ 0xffffffff) >>> 0
-}
-
-function createStoredZip(entries: Array<{ path: string; data: Buffer }>): Buffer {
-  const localParts: Buffer[] = []
-  const centralParts: Buffer[] = []
-  let offset = 0
-
-  for (const entry of entries) {
-    const name = Buffer.from(entry.path, 'utf8')
-    const crc = crc32(entry.data)
-    const localHeader = Buffer.alloc(30)
-    localHeader.writeUInt32LE(0x04034b50, 0)
-    localHeader.writeUInt16LE(10, 4)
-    localHeader.writeUInt16LE(ZIP_GENERAL_PURPOSE_UTF8, 6)
-    localHeader.writeUInt16LE(0, 8)
-    localHeader.writeUInt16LE(ZIP_DOS_TIME_2000_01_01, 10)
-    localHeader.writeUInt16LE(ZIP_DOS_DATE_2000_01_01, 12)
-    localHeader.writeUInt32LE(crc, 14)
-    localHeader.writeUInt32LE(entry.data.length, 18)
-    localHeader.writeUInt32LE(entry.data.length, 22)
-    localHeader.writeUInt16LE(name.length, 26)
-    localHeader.writeUInt16LE(0, 28)
-
-    localParts.push(localHeader, name, entry.data)
-
-    const centralHeader = Buffer.alloc(46)
-    centralHeader.writeUInt32LE(0x02014b50, 0)
-    centralHeader.writeUInt16LE(20, 4)
-    centralHeader.writeUInt16LE(10, 6)
-    centralHeader.writeUInt16LE(ZIP_GENERAL_PURPOSE_UTF8, 8)
-    centralHeader.writeUInt16LE(0, 10)
-    centralHeader.writeUInt16LE(ZIP_DOS_TIME_2000_01_01, 12)
-    centralHeader.writeUInt16LE(ZIP_DOS_DATE_2000_01_01, 14)
-    centralHeader.writeUInt32LE(crc, 16)
-    centralHeader.writeUInt32LE(entry.data.length, 20)
-    centralHeader.writeUInt32LE(entry.data.length, 24)
-    centralHeader.writeUInt16LE(name.length, 28)
-    centralHeader.writeUInt16LE(0, 30)
-    centralHeader.writeUInt16LE(0, 32)
-    centralHeader.writeUInt16LE(0, 34)
-    centralHeader.writeUInt16LE(0, 36)
-    centralHeader.writeUInt32LE(0, 38)
-    centralHeader.writeUInt32LE(offset, 42)
-    centralParts.push(centralHeader, name)
-
-    offset += localHeader.length + name.length + entry.data.length
-  }
-
-  const centralDirectoryOffset = offset
-  const centralDirectory = Buffer.concat(centralParts)
-  const endOfCentralDirectory = Buffer.alloc(22)
-  endOfCentralDirectory.writeUInt32LE(0x06054b50, 0)
-  endOfCentralDirectory.writeUInt16LE(0, 4)
-  endOfCentralDirectory.writeUInt16LE(0, 6)
-  endOfCentralDirectory.writeUInt16LE(entries.length, 8)
-  endOfCentralDirectory.writeUInt16LE(entries.length, 10)
-  endOfCentralDirectory.writeUInt32LE(centralDirectory.length, 12)
-  endOfCentralDirectory.writeUInt32LE(centralDirectoryOffset, 16)
-  endOfCentralDirectory.writeUInt16LE(0, 20)
-
-  return Buffer.concat([...localParts, centralDirectory, endOfCentralDirectory])
-}
-
-function zipDirectoryToBase64(dirArg: string): { zipBase64: string; contentSha256: string } {
-  const sourceDir = expandHomePath(dirArg)
-  try {
-    const stats = statSync(sourceDir)
-    if (!stats.isDirectory()) {
-      throw new Error(`${sourceDir} is not a directory`)
-    }
-  } catch (error: unknown) {
-    if (isNodeError(error) && error.code === 'ENOENT') {
-      throw new Error(`Directory not found: ${sourceDir}`)
-    }
-    throw error
-  }
-
-  const files = collectArtifactFiles(sourceDir)
-  if (files.length === 0) {
-    throw new Error(`Directory contains no artifact files: ${sourceDir}`)
-  }
-
-  const bytes = createStoredZip(files.map(relativePath => ({
-    path: relativePath,
-    data: readFileSync(join(sourceDir, relativePath)),
-  })))
-  return {
-    zipBase64: bytes.toString('base64'),
-    contentSha256: createHash('sha256').update(bytes).digest('hex'),
-  }
-}
-
 function readManifestFile(dirArg: string): Record<string, unknown> {
   return readJsonFile(join(expandHomePath(dirArg), 'manifest.json'))
 }
@@ -6314,12 +6178,16 @@ async function runnersExec() {
         }
 
         const runnerOutput = JSON.parse(readFileSync(outputPath, 'utf8')) as Record<string, unknown>
+        // Spread runner output first: the scorer/prompt context identity fields
+        // (row_id, version ids, metric_key) are authoritative, never runner-overridable.
         resultLines.push(JSON.stringify({
+          ...runnerOutput,
           row_id: row.id,
           prompt_version_id: context.prompt.promptVersionId,
           runner_version_id: context.prompt.runnerVersionId,
-          ...(scorerVersion ? { scorer_version_id: context.scorer?.versionId || scorerVersion } : {}),
-          ...runnerOutput,
+          ...(scorerVersion
+            ? { scorer_version_id: context.scorer?.versionId || scorerVersion, metric_key: context.scorer?.metricKey || 'score' }
+            : {}),
         }))
       } finally {
         rmSync(tempDir, { recursive: true, force: true })
