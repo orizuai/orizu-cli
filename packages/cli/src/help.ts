@@ -43,6 +43,8 @@ const GROUPS: CliGroupDoc[] = [
   { name: 'Workspace', summary: 'Metadata-first sync of the workbench contract: inspect status, reconcile, pull, and apply.' },
   { name: 'Sessions', summary: 'Start, inspect, and end durable workspace sessions for agent/operator work.' },
   { name: 'Workbench runs', summary: 'Start, inspect, tail, and finish resumable workbench runs.' },
+  { name: 'Connectors', summary: 'Inspect project connector/integration readiness (read-only; secrets redacted).' },
+  { name: 'Promotion manifests', summary: 'List, inspect, approve, reject, and idempotently apply promotion manifests.' },
 ]
 
 export const COMMAND_DOCS: CliCommandDoc[] = [
@@ -781,6 +783,69 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
       { name: '--json', help: 'Emit the machine-readable run payload.' },
     ],
     examples: ['orizu run cancel --run run_123 --summary "Superseded by run_456"'],
+  },
+  {
+    path: ['connectors', 'status'],
+    usage: 'orizu connectors [status] [--project <team/project>] [--json]',
+    summary: 'Show project connector readiness (configured/missing/stale/unauthorized/unsupported/unknown) derived read-only from stored integration state. Secrets are always redacted.',
+    group: 'Connectors',
+    options: [
+      { name: '--project <team/project>', help: 'Project whose connector readiness to inspect.' },
+      { name: '--json', help: 'Emit the machine-readable connector readiness payload.' },
+    ],
+    examples: ['orizu connectors', 'orizu connectors status --project highlight/hip --json'],
+  },
+  {
+    path: ['manifests', 'list'],
+    usage: 'orizu manifests list [--project <team/project>] [--status <status>] [--json]',
+    summary: 'List promotion manifests for a project, newest first, optionally filtered by status.',
+    group: 'Promotion manifests',
+    options: [
+      { name: '--project <team/project>', help: 'Project whose manifests to list.' },
+      { name: '--status <status>', help: 'Filter by status.', choices: ['draft', 'pending_approval', 'approved', 'applied', 'rejected'] },
+      { name: '--json', help: 'Emit the machine-readable manifest list.' },
+    ],
+    examples: ['orizu manifests list --project highlight/hip --status pending_approval'],
+  },
+  {
+    path: ['manifests', 'show'],
+    usage: 'orizu manifests show <id> [--json]',
+    summary: 'Show one promotion manifest, including current/proposed state, evidence, outcome, and approver.',
+    group: 'Promotion manifests',
+    options: [
+      { name: '--json', help: 'Emit the machine-readable manifest payload.' },
+    ],
+    examples: ['orizu manifests show manifest_123 --json'],
+  },
+  {
+    path: ['manifests', 'approve'],
+    usage: 'orizu manifests approve <id> [--json]',
+    summary: 'Approve a draft or pending_approval manifest; records the approver principal separately from the author.',
+    group: 'Promotion manifests',
+    options: [
+      { name: '--json', help: 'Emit the machine-readable manifest payload.' },
+    ],
+    examples: ['orizu manifests approve manifest_123'],
+  },
+  {
+    path: ['manifests', 'reject'],
+    usage: 'orizu manifests reject <id> [--json]',
+    summary: 'Reject a manifest so it can no longer be applied.',
+    group: 'Promotion manifests',
+    options: [
+      { name: '--json', help: 'Emit the machine-readable manifest payload.' },
+    ],
+    examples: ['orizu manifests reject manifest_123'],
+  },
+  {
+    path: ['manifests', 'apply'],
+    usage: 'orizu manifests apply <id> [--json]',
+    summary: 'Apply an approved manifest. Idempotent: re-applying returns the stored outcome with no second effect. v0 records the outcome and links evidence; content promotion still flows through the primitive commands.',
+    group: 'Promotion manifests',
+    options: [
+      { name: '--json', help: 'Emit the machine-readable manifest payload.' },
+    ],
+    examples: ['orizu manifests apply manifest_123 --json'],
   },
 ]
 

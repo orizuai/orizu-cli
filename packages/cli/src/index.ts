@@ -29,13 +29,7 @@ import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
 import { zipDirectoryToBase64 } from './artifact-archive.js'
 import { runLocalAppPreview } from './preview-runtime.js'
 import { readAssignmentManifestJsonlFile } from './task-assignment-manifest.js'
-import {
-  assertSecureTokenTransport,
-  authedFetch,
-  getBaseUrl,
-  resolveLoginBaseUrl,
-  setGlobalFlags,
-} from './http.js'
+import { assertSecureTokenTransport, authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js'
 import {
   computeSkillContentHash,
   getSkillInstallPath,
@@ -64,6 +58,8 @@ import {
   type WorkspaceProjectSeed,
   workspaceExists,
 } from './workspace.js'
+import { connectorsCommand } from './connectors-cli.js'
+import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 
@@ -6665,6 +6661,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
   if (command === 'workspace') {
     process.exitCode = await workspaceSyncCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine })
+    return
+  }
+  if (command === 'connectors' || command === 'manifests') {
+    const moduleCommand = command === 'connectors' ? connectorsCommand : manifestsCommand
+    process.exitCode = await moduleCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
     return
   }
 
