@@ -20,6 +20,7 @@
     "postpack": "node scripts/vendor-gepa-python.mjs --clean && node scripts/vendor-orizu-skill.mjs --clean"
   },
   "dependencies": {
+    "@daytonaio/sdk": "0.193.0",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4.1.7",
     "esbuild": "^0.25.8",
