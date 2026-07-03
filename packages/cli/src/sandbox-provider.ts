@@ -289,16 +289,22 @@ interface ProcResult {
 }
 
 function runIn(bin: string, args: string[], cwd: string, home: string): ProcResult {
-  const res = spawnSync(bin, args, {
-    cwd,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      HOME: home,
-      GIT_TERMINAL_PROMPT: '0',
-      GIT_CONFIG_NOSYSTEM: '1',
-    },
-  })
+  // Strip git's repo-context env (set by git when this code runs inside a
+  // hook, e.g. pre-push running `bun test`) so sim git commands operate on
+  // the sandbox cwd — not whatever repo GIT_DIR points at. See
+  // daytona-slice-rehearsal.ts for the core.bare=true corruption this caused.
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_NOSYSTEM: '1',
+  }
+  delete env.GIT_DIR
+  delete env.GIT_WORK_TREE
+  delete env.GIT_INDEX_FILE
+  delete env.GIT_OBJECT_DIRECTORY
+  delete env.GIT_COMMON_DIR
+  const res = spawnSync(bin, args, { cwd, encoding: 'utf8', env })
   return { stdout: res.stdout ?? '', stderr: res.stderr ?? '', exitCode: res.status ?? 1 }
 }
 

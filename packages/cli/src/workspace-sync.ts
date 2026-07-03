@@ -600,7 +600,13 @@ export type GitRefReader = (cwd: string, ref: string) => string | null
 
 function defaultGitRef(cwd: string, ref: string): string | null {
   try {
-    const result = spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd, encoding: 'utf8' })
+    // Strip repo-context env (set by git inside hooks) so the query answers
+    // about `cwd`, not whatever repo GIT_DIR points at.
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    delete env.GIT_DIR
+    delete env.GIT_WORK_TREE
+    delete env.GIT_INDEX_FILE
+    const result = spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd, encoding: 'utf8', env })
     if (result.status !== 0 || typeof result.stdout !== 'string') {
       return null
     }

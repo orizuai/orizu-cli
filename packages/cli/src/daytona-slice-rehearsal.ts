@@ -23,11 +23,19 @@ import { createLocalSimProvider } from './sandbox-provider.js'
 import type { SandboxProvider } from './sandbox-provider.js'
 
 function git(args: string[], cwd?: string): { stdout: string; stderr: string; status: number } {
-  const res = spawnSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
-  })
+  // Strip git's repo-context env vars before spawning. When this code runs
+  // inside a git hook (e.g. the pre-push hook running `bun test`), git sets
+  // GIT_DIR in the environment — and `git init --bare <dir>` with GIT_DIR set
+  // REINITIALIZES the repo GIT_DIR points at as bare (core.bare=true in the
+  // shared config), breaking every linked worktree. Scope every child git
+  // strictly to its cwd/args instead.
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' }
+  delete env.GIT_DIR
+  delete env.GIT_WORK_TREE
+  delete env.GIT_INDEX_FILE
+  delete env.GIT_OBJECT_DIRECTORY
+  delete env.GIT_COMMON_DIR
+  const res = spawnSync('git', args, { cwd, encoding: 'utf8', env })
   return { stdout: res.stdout ?? '', stderr: res.stderr ?? '', status: res.status ?? 1 }
 }
 

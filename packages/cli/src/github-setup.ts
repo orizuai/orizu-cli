@@ -285,7 +285,13 @@ export async function runHostedAttach(
 // -- Interactive setup dispatch (ALI-996 / WS-C crumb) ----------------------
 
 function defaultGitRunner(args: string[], opts?: { cwd?: string }): GitRunResult {
-  const result = spawnSync('git', args, { cwd: opts?.cwd, encoding: 'utf8' })
+  // Strip repo-context env (set by git when running inside hooks) so the
+  // child git is scoped strictly to cwd/args — see daytona-slice-rehearsal.ts.
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  delete env.GIT_DIR
+  delete env.GIT_WORK_TREE
+  delete env.GIT_INDEX_FILE
+  const result = spawnSync('git', args, { cwd: opts?.cwd, encoding: 'utf8', env })
   return { status: result.status ?? 1, stderr: result.stderr }
 }
 
