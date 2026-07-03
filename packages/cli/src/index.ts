@@ -62,6 +62,8 @@ import { connectorsCommand } from './connectors-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
+import { runGitCredential } from './git-credential.js'
+import { runGithubLink } from './github-setup.js'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -3869,6 +3871,7 @@ async function setupCommand() {
         teamId = team.id
         projects = projectSeedsFromProjects(serverProjects)
         printLine(`   ${formatProjectSetupProgress(projects.length)}`)
+        if (!hasArg('--local') && !noInput && !dryRun) { try { await runGithubLink(team.slug, { print: printLine, fetcher: authedFetch, openUrl: openInBrowser, confirm: (org) => askYesNo(`   Connect this team to GitHub org '${org}'?`, true) }) } catch (error) { printLine(`   GitHub link skipped: ${getErrorMessage(error)} Run \`orizu github link --team ${team.slug}\` to finish.`) } }
       } else if (!teamSlug && !noInput && !validateOnly) {
         teamSlug = await askText('   Team slug?', 'local-team')
       }
@@ -6643,18 +6646,9 @@ export async function main(rawArgs = process.argv.slice(2)) {
     await deleteDataset()
     return
   }
-  if (command === 'datasets' && subcommand === 'lock') {
-    await lockDataset()
-    return
-  }
-  if (command === 'datasets' && subcommand === 'clone') {
-    await cloneDataset()
-    return
-  }
-  if (command === 'tasks' && subcommand === 'export') {
-    await downloadAnnotations()
-    return
-  }
+  if (command === 'datasets' && subcommand === 'lock') { await lockDataset(); return }
+  if (command === 'datasets' && subcommand === 'clone') { await cloneDataset(); return }
+  if (command === 'tasks' && subcommand === 'export') { await downloadAnnotations(); return }
   if (command === 'session' || command === 'run') {
     process.exitCode = await workbenchCommand(cliArgs, { json: hasJsonFlag(), print: printLine })
     return
@@ -6663,6 +6657,8 @@ export async function main(rawArgs = process.argv.slice(2)) {
     process.exitCode = await workspaceSyncCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine })
     return
   }
+  if (command === 'git-credential') { process.exitCode = await runGitCredential(subcommand ?? 'get', { stdin: readFileSync(0, 'utf8'), cwd: process.cwd(), print: printLine, printErr: printError }); return }
+  if (command === 'github' && subcommand === 'link') { const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal(); const team = getOptionalArgValue('--team') || (await resolveSetupTeam(null, noInput, false)).slug; await runGithubLink(team, { print: printLine, fetcher: authedFetch, openUrl: openInBrowser, confirm: (org) => askYesNo(`Connect this team to GitHub org '${org}'?`, true) }); return }
   if (command === 'connectors' || command === 'manifests') {
     const moduleCommand = command === 'connectors' ? connectorsCommand : manifestsCommand
     process.exitCode = await moduleCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
