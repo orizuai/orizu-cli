@@ -41,6 +41,8 @@ const GROUPS: CliGroupDoc[] = [
   { name: 'Tasks', summary: 'Create review tasks, mutate task status, assign reviewers, and export labels.' },
   { name: 'Datasets', summary: 'Upload, version, split, mutate, export, lock, clone, and delete datasets.' },
   { name: 'Workspace', summary: 'Metadata-first sync of the workbench contract: inspect status, reconcile, pull, and apply.' },
+  { name: 'Sessions', summary: 'Start, inspect, and end durable workspace sessions for agent/operator work.' },
+  { name: 'Workbench runs', summary: 'Start, inspect, tail, and finish resumable workbench runs.' },
 ]
 
 export const COMMAND_DOCS: CliCommandDoc[] = [
@@ -671,6 +673,114 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
       { name: '--json', help: 'Emit the machine-readable apply result.' },
     ],
     examples: ['orizu workspace apply projects/hip/prompts/judge/orizu.prompt.json'],
+  },
+  {
+    path: ['session', 'start'],
+    usage: 'orizu session start [--project <team/project>] [--json]',
+    summary: 'Start a durable workspace session for the attached workspace and print the session id for later resume.',
+    group: 'Sessions',
+    options: [
+      { name: '--project <team/project>', help: 'Optionally scope the session to a project in the attached workspace.' },
+      { name: '--json', help: 'Emit the machine-readable session payload.' },
+    ],
+    examples: ['orizu session start', 'orizu session start --project highlight/hip --json'],
+  },
+  {
+    path: ['session', 'status'],
+    usage: 'orizu session status [--session <id> | --status active|ended] [--json]',
+    summary: 'Inspect one session by id, including run summaries, or list sessions for the attached workspace.',
+    group: 'Sessions',
+    options: [
+      { name: '--session <id>', help: 'Resume by session id; does not require the original terminal.' },
+      { name: '--status <status>', help: 'Filter attached-workspace sessions when --session is omitted.', choices: ['active', 'ended'] },
+      { name: '--json', help: 'Emit the machine-readable session or session-list payload.' },
+    ],
+    examples: ['orizu session status --session sess_123 --json', 'orizu session status --status active'],
+  },
+  {
+    path: ['session', 'end'],
+    usage: 'orizu session end --session <id> [--json]',
+    summary: 'Mark a durable workspace session ended.',
+    group: 'Sessions',
+    options: [
+      { name: '--session <id>', help: 'Session id to end.', required: true },
+      { name: '--json', help: 'Emit the machine-readable ended session payload.' },
+    ],
+    examples: ['orizu session end --session sess_123'],
+  },
+  {
+    path: ['run', 'start'],
+    usage: 'orizu run start --session <id> --title <title> [--project <team/project>] [--json]',
+    summary: 'Start a resumable workbench run inside a workspace session and print the run id.',
+    group: 'Workbench runs',
+    options: [
+      { name: '--session <id>', help: 'Workspace session id.', required: true },
+      { name: '--title <title>', help: 'Human-readable run title.', required: true },
+      { name: '--project <team/project>', help: 'Optionally override the session project scope.' },
+      { name: '--json', help: 'Emit the machine-readable run payload.' },
+    ],
+    examples: ['orizu run start --session sess_123 --title "Fix evaluator drift" --json'],
+  },
+  {
+    path: ['run', 'status'],
+    usage: 'orizu run status --run <id> [--json]',
+    summary: 'Inspect a workbench run by id, including evidence and latest event sequence.',
+    group: 'Workbench runs',
+    options: [
+      { name: '--run <id>', help: 'Workbench run id.', required: true },
+      { name: '--json', help: 'Emit the machine-readable run payload.' },
+    ],
+    examples: ['orizu run status --run run_123 --json'],
+  },
+  {
+    path: ['run', 'tail'],
+    usage: 'orizu run tail --run <id> [--after <seq>] [--interval <seconds>] [--once] [--json]',
+    summary: 'Cursor-poll a workbench run event log; JSON mode emits one event object per line.',
+    group: 'Workbench runs',
+    options: [
+      { name: '--run <id>', help: 'Workbench run id.', required: true },
+      { name: '--after <seq>', help: 'Start after this event sequence. Defaults to 0.' },
+      { name: '--interval <seconds>', help: 'Polling interval for non-terminal runs. Defaults to 2.' },
+      { name: '--once', help: 'Fetch one page and exit; useful for tests and agents.' },
+      { name: '--json', help: 'Emit JSONL, one event object per line.' },
+    ],
+    examples: ['orizu run tail --run run_123', 'orizu run tail --run run_123 --after 42 --once --json'],
+  },
+  {
+    path: ['run', 'complete'],
+    usage: 'orizu run complete --run <id> [--summary <text>] [--json]',
+    summary: 'Mark a workbench run succeeded.',
+    group: 'Workbench runs',
+    options: [
+      { name: '--run <id>', help: 'Workbench run id.', required: true },
+      { name: '--summary <text>', help: 'Optional note stored in the run summary.' },
+      { name: '--json', help: 'Emit the machine-readable run payload.' },
+    ],
+    examples: ['orizu run complete --run run_123 --summary "All gates passed"'],
+  },
+  {
+    path: ['run', 'fail'],
+    usage: 'orizu run fail --run <id> [--summary <text>] [--json]',
+    summary: 'Mark a workbench run failed.',
+    group: 'Workbench runs',
+    options: [
+      { name: '--run <id>', help: 'Workbench run id.', required: true },
+      { name: '--summary <text>', help: 'Optional note stored in the run summary.' },
+      { name: '--json', help: 'Emit the machine-readable run payload.' },
+    ],
+    examples: ['orizu run fail --run run_123 --summary "Lint failed"'],
+  },
+  {
+    path: ['run', 'cancel'],
+    usage: 'orizu run cancel --run <id> [--summary <text>] [--json]',
+    summary: 'Mark a workbench run cancelled.',
+    group: 'Workbench runs',
+    options: [
+      { name: '--run <id>', help: 'Workbench run id.', required: true },
+      { name: '--summary <text>', help: 'Optional note stored in the run summary.' },
+      { name: '--json', help: 'Emit the machine-readable run payload.' },
+    ],
+    examples: ['orizu run cancel --run run_123 --summary "Superseded by run_456"'],
   },
 ]
 

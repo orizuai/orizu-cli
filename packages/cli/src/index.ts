@@ -64,6 +64,7 @@ import {
   type WorkspaceProjectSeed,
   workspaceExists,
 } from './workspace.js'
+import { workbenchCommand } from './workbench-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 
 function getErrorMessage(error: unknown): string {
@@ -6642,27 +6643,26 @@ export async function main(rawArgs = process.argv.slice(2)) {
     await deleteDatasetRows()
     return
   }
-
   if (command === 'datasets' && subcommand === 'delete') {
     await deleteDataset()
     return
   }
-
   if (command === 'datasets' && subcommand === 'lock') {
     await lockDataset()
     return
   }
-
   if (command === 'datasets' && subcommand === 'clone') {
     await cloneDataset()
     return
   }
-
   if (command === 'tasks' && subcommand === 'export') {
     await downloadAnnotations()
     return
   }
-
+  if (command === 'session' || command === 'run') {
+    process.exitCode = await workbenchCommand(cliArgs, { json: hasJsonFlag(), print: printLine })
+    return
+  }
   if (command === 'workspace') {
     process.exitCode = await workspaceSyncCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine })
     return

@@ -162,14 +162,14 @@ function fileContentSha(absPath: string): string {
   return sha256Hex(readFileSync(absPath))
 }
 
-function readCanonical(manifest: Record<string, unknown> | null): Record<string, unknown> {
+export function readCanonical(manifest: Record<string, unknown> | null): Record<string, unknown> {
   const canonical = manifest?.canonical
   return canonical && typeof canonical === 'object' && !Array.isArray(canonical)
     ? (canonical as Record<string, unknown>)
     : {}
 }
 
-function stringOrNull(value: unknown): string | null {
+export function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
@@ -496,7 +496,7 @@ function teamSlugOf(root: string): string {
   return stringOrNull(manifest?.slug) || 'local-team'
 }
 
-function attachedWorkspaceId(root: string): string | null {
+export function attachedWorkspaceId(root: string): string | null {
   const manifest = readJsonManifest(join(root, 'orizu.team.json'))
   const setup = manifest?.setup
   const fromSetup = setup && typeof setup === 'object' && !Array.isArray(setup)
