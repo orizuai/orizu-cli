@@ -64,6 +64,7 @@ import {
   type WorkspaceProjectSeed,
   workspaceExists,
 } from './workspace.js'
+import { workspaceSyncCommand } from './workspace-sync.js'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -6616,33 +6617,27 @@ export async function main(rawArgs = process.argv.slice(2)) {
     await downloadDataset()
     return
   }
-
   if (command === 'datasets' && subcommand === 'append') {
     await appendDatasetRows()
     return
   }
-
   const datasetsAction = cliArgs[2]
   if (command === 'datasets' && subcommand === 'readme' && datasetsAction === 'set') {
     await setDatasetReadme()
     return
   }
-
   if (command === 'datasets' && subcommand === 'versions' && datasetsAction === 'create') {
     await createDatasetVersion()
     return
   }
-
   if (command === 'datasets' && subcommand === 'splits' && datasetsAction === 'create') {
     await createDatasetSplitSet()
     return
   }
-
   if (command === 'datasets' && subcommand === 'edit-rows') {
     await editDatasetRows()
     return
   }
-
   if (command === 'datasets' && subcommand === 'delete-rows') {
     await deleteDatasetRows()
     return
@@ -6665,6 +6660,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'tasks' && subcommand === 'export') {
     await downloadAnnotations()
+    return
+  }
+
+  if (command === 'workspace') {
+    process.exitCode = await workspaceSyncCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine })
     return
   }
 

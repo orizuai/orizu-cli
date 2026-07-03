@@ -769,7 +769,7 @@ function checkProjectFileCanonicalCase(projectRoot: string, projectName: string,
   }
 }
 
-function readJsonManifest(path: string): Record<string, unknown> | null {
+export function readJsonManifest(path: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

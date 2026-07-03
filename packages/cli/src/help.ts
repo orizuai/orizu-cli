@@ -40,6 +40,7 @@ const GROUPS: CliGroupDoc[] = [
   { name: 'Apps', summary: 'Create, preview, update, inspect, and export review apps.' },
   { name: 'Tasks', summary: 'Create review tasks, mutate task status, assign reviewers, and export labels.' },
   { name: 'Datasets', summary: 'Upload, version, split, mutate, export, lock, clone, and delete datasets.' },
+  { name: 'Workspace', summary: 'Metadata-first sync of the workbench contract: inspect status, reconcile, pull, and apply.' },
 ]
 
 export const COMMAND_DOCS: CliCommandDoc[] = [
@@ -629,6 +630,47 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     usage: 'orizu datasets clone [--dataset <datasetId|datasetUrl>] [--project <team/project>] [--name <name>]',
     summary: 'Clone a dataset.',
     group: 'Datasets',
+  },
+  {
+    path: ['workspace', 'status'],
+    usage: 'orizu workspace status [--remote] [--json]',
+    summary: 'Show tracked-resource status: local dirtiness vs the last-sync cache, plus missing and untracked files; --remote adds server statuses via a server-side reconciliation.',
+    group: 'Workspace',
+    options: [
+      { name: '--remote', help: 'Attach server statuses. This performs the same server-side reconciliation as `orizu workspace sync` — it registers and updates tracked-resource records; there is no read-only remote status in v0. The local cache is never advanced.' },
+      { name: '--json', help: 'Emit the machine-readable status result.' },
+    ],
+    examples: ['orizu workspace status', 'orizu workspace status --remote --json'],
+  },
+  {
+    path: ['workspace', 'sync'],
+    usage: 'orizu workspace sync [--json]',
+    summary: 'Metadata-first reconcile of the whole workbench. Attaches the workspace on first run; advances the cache base only on a clean convergence.',
+    group: 'Workspace',
+    options: [
+      { name: '--json', help: 'Emit the machine-readable per-resource status list.' },
+    ],
+    examples: ['orizu workspace sync', 'orizu workspace sync --json'],
+  },
+  {
+    path: ['workspace', 'pull'],
+    usage: 'orizu workspace pull <path> [--json]',
+    summary: 'Fast-forward a resource to the server truth (v0: manifest canonical block + cache only). Refuses when local edits are ahead and no-ops when the server has no truth (local-only/stale). Bulk content materializes via the primitive command (e.g. orizu prompts pull).',
+    group: 'Workspace',
+    options: [
+      { name: '--json', help: 'Emit the machine-readable pull result.' },
+    ],
+    examples: ['orizu workspace pull projects/hip/prompts/judge/orizu.prompt.json'],
+  },
+  {
+    path: ['workspace', 'apply'],
+    usage: 'orizu workspace apply <path> [--json]',
+    summary: 'Promote a repo-owned resource to the server, addressed by the row id recorded by sync. Refuses (409) DB-native/object-storage owners, conflicts, remote-newer, and lost compare-and-set races — on any refusal, run `orizu workspace sync`, converge, then retry.',
+    group: 'Workspace',
+    options: [
+      { name: '--json', help: 'Emit the machine-readable apply result.' },
+    ],
+    examples: ['orizu workspace apply projects/hip/prompts/judge/orizu.prompt.json'],
   },
 ]
 
