@@ -711,6 +711,19 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     examples: ['orizu session end --session sess_123'],
   },
   {
+    path: ['session', 'finish'],
+    usage: 'orizu session finish --session <id> [--project <team/project>] [--json]',
+    summary:
+      'Finish a hosted session branch: no changes deletes the branch; changes create a repo_merge promotion manifest to review and approve (no GitHub PR).',
+    group: 'Sessions',
+    options: [
+      { name: '--session <id>', help: 'Session id whose branch to finish.', required: true },
+      { name: '--project <team/project>', help: 'Project scope for the manifest when the session is not already project-scoped.' },
+      { name: '--json', help: 'Emit the machine-readable outcome (no-changes or the created manifest).' },
+    ],
+    examples: ['orizu session finish --session sess_123', 'orizu session finish --session sess_123 --project highlight/hip --json'],
+  },
+  {
     path: ['run', 'start'],
     usage: 'orizu run start --session <id> --title <title> [--project <team/project>] [--json]',
     summary: 'Start a resumable workbench run inside a workspace session and print the run id.',

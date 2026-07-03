@@ -89,6 +89,19 @@ export interface SessionEndOptions {
   sessionId: string
 }
 
+export interface SessionFinishOptions {
+  fetcher?: WorkbenchFetcher
+  sessionId: string
+  projectSlug?: string | null
+}
+
+export interface SessionFinishResult {
+  outcome: string
+  branch?: string
+  branchDeleted?: boolean
+  manifest?: Record<string, unknown>
+}
+
 export interface SessionStartResult {
   session: WorkbenchSession
 }
@@ -100,6 +113,7 @@ export interface SessionStatusResult {
 
 export interface SessionEndResult {
   session: WorkbenchSession
+  branchStatus?: string
 }
 
 export interface WorkbenchRunStartOptions {
@@ -306,7 +320,39 @@ export async function runSessionEnd(opts: SessionEndOptions): Promise<SessionEnd
   })
   await assertOk(response, 'Session end')
   const data = await readJson(response)
-  return { session: sessionFrom(data, 'Session end') }
+  return {
+    session: sessionFrom(data, 'Session end'),
+    branchStatus: stringOrNull(data.branchStatus) ?? undefined,
+  }
+}
+
+export async function runSessionFinish(opts: SessionFinishOptions): Promise<SessionFinishResult> {
+  const fetcher = fetcherFrom(opts)
+  if (!stringOrNull(opts.sessionId)) {
+    throw new Error('Usage: orizu session finish --session <id> [--project <team/project>] [--json]')
+  }
+  const body: Record<string, unknown> = {}
+  const projectSlug = normalizeProjectSlug(opts.projectSlug)
+  if (projectSlug) {
+    body.projectSlug = projectSlug
+  }
+  const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(opts.sessionId)}/finish-branch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  await assertOk(response, 'Session finish')
+  const data = await readJson(response)
+  const manifest =
+    data.manifest && typeof data.manifest === 'object' && !Array.isArray(data.manifest)
+      ? (data.manifest as Record<string, unknown>)
+      : undefined
+  return {
+    outcome: stringOrNull(data.outcome) || 'unknown',
+    branch: stringOrNull(data.branch) ?? undefined,
+    branchDeleted: typeof data.branchDeleted === 'boolean' ? data.branchDeleted : undefined,
+    manifest,
+  }
 }
 
 export async function runWorkbenchRunStart(opts: WorkbenchRunStartOptions): Promise<WorkbenchRunResult> {
@@ -504,6 +550,23 @@ function formatSessionStatus(result: SessionStatusResult): string {
   return ['workspace sessions', ...sessions.map(session => `${session.id}  ${session.status}`)].join('\n')
 }
 
+function formatSessionFinish(result: SessionFinishResult): string {
+  if (result.outcome === 'no-changes') {
+    const branch = result.branch ?? 'the session branch'
+    return result.branchDeleted === false
+      ? `no changes on ${branch}; branch NOT deleted (delete it manually or retry \`orizu session finish\`)`
+      : `no changes on ${branch}; branch deleted`
+  }
+  const manifest = result.manifest ?? {}
+  const id = typeof manifest.id === 'string' ? manifest.id : '(unknown)'
+  const status = typeof manifest.status === 'string' ? manifest.status : '(unknown)'
+  const proposed = (manifest.proposedState ?? {}) as Record<string, unknown>
+  const files = typeof proposed.filesChanged === 'number' ? proposed.filesChanged : 0
+  const additions = typeof proposed.additions === 'number' ? proposed.additions : 0
+  const deletions = typeof proposed.deletions === 'number' ? proposed.deletions : 0
+  return `manifest ${id}  ${status}  repo_merge  (${files} files, +${additions}/-${deletions})`
+}
+
 function formatRunStatus(run: WorkbenchRun): string {
   const sequence = typeof run.latestSequence === 'number' ? `  latestSequence=${run.latestSequence}` : ''
   return `run ${run.id}  ${run.status}${sequence}`
@@ -522,7 +585,7 @@ function terminalStatusForCommand(command: string): string | null {
 }
 
 const USAGE_LINE =
-  'Usage: orizu session <start|status|end> ... | orizu run <start|status|tail|complete|fail|cancel> ...  (run tail --once drains all currently persisted events, then exits without following)'
+  'Usage: orizu session <start|status|end|finish> ... | orizu run <start|status|tail|complete|fail|cancel> ...  (run tail --once drains all currently persisted events, then exits without following)'
 
 // In --json mode ANY command failure — bad usage, or an operational failure
 // such as a 401/403/404/409/network error surfaced by assertOk — must still
@@ -575,7 +638,20 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
     }
     if (subcommand === 'end') {
       const result = await runSessionEnd({ fetcher, sessionId: argValue(args, '--session') || '' })
-      emit(io, `session ended: ${result.session.id}`, result as unknown as Record<string, unknown>)
+      const hint =
+        result.branchStatus === 'has-changes'
+          ? '\nsession branch has changes — run `orizu session finish --session ' + result.session.id + '` to promote them'
+          : ''
+      emit(io, `session ended: ${result.session.id}${hint}`, result as unknown as Record<string, unknown>)
+      return 0
+    }
+    if (subcommand === 'finish') {
+      const result = await runSessionFinish({
+        fetcher,
+        sessionId: argValue(args, '--session') || '',
+        projectSlug: argValue(args, '--project'),
+      })
+      emit(io, formatSessionFinish(result), result as unknown as Record<string, unknown>)
       return 0
     }
   }

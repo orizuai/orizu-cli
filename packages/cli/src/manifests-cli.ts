@@ -85,6 +85,38 @@ function manifestLine(manifest: Record<string, unknown>): string {
   return `${id}  ${status}  ${actionType}`
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+}
+
+function num(value: unknown): number {
+  return typeof value === 'number' ? value : 0
+}
+
+// repo_merge manifests (ALI-972) render the compare summary from stored evidence
+// — no live GitHub call — so a reviewer can approve informed without a PR.
+function repoMergeShow(manifest: Record<string, unknown>): string {
+  const proposed = asRecord(manifest.proposedState)
+  const compare = asRecord(asRecord(manifest.evidence).compare)
+  const branch = typeof proposed.branch === 'string' ? proposed.branch : '(branch)'
+  const defaultBranch = typeof proposed.defaultBranch === 'string' ? proposed.defaultBranch : '(default)'
+  const files = num(compare.filesChanged || proposed.filesChanged)
+  const additions = num(compare.additions ?? proposed.additions)
+  const deletions = num(compare.deletions ?? proposed.deletions)
+  const lines = [
+    manifestLine(manifest),
+    `  ${branch} -> ${defaultBranch}`,
+    `  ${files} files, +${additions}/-${deletions}`,
+  ]
+  const compareFiles = Array.isArray(compare.files) ? (compare.files as Record<string, unknown>[]) : []
+  for (const file of compareFiles.slice(0, 100)) {
+    const status = typeof file.status === 'string' ? file.status : 'modified'
+    const filename = typeof file.filename === 'string' ? file.filename : '(file)'
+    lines.push(`    ${status} ${filename} (+${num(file.additions)}/-${num(file.deletions)})`)
+  }
+  return lines.join('\n')
+}
+
 export async function manifestsCommand(args: string[], io: ManifestsCommandIo): Promise<number> {
   const positional = positionalArgs(args)
   const subcommand = positional[0]
@@ -110,7 +142,8 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
     const response = await fetcherFrom(io)(`/api/cli/promotion-manifests/${encodeURIComponent(id)}`)
     const data = await requireOk(response, 'Manifest show')
     const manifest = (data.manifest ?? {}) as Record<string, unknown>
-    emit(io, { manifest }, manifestLine(manifest))
+    const human = manifest.actionType === 'repo_merge' ? repoMergeShow(manifest) : manifestLine(manifest)
+    emit(io, { manifest }, human)
     return 0
   }
 
