@@ -150,7 +150,14 @@ function isTerminalStatus(status: string | null): boolean {
 export interface CreateRunEventSinkOptions {
   apiBaseUrl: string
   runId: string
-  bearer: string
+  /**
+   * The Orizu bearer, EITHER a fixed string OR a provider resolved per request.
+   * A provider (e.g. one that reads the rotated 0600 bearer file) lets the sink
+   * pick up a host-side token rotation without being rebuilt: every request
+   * resolves the current value, and on a 401/403 the sink re-resolves ONCE and
+   * retries before classifying the failure (fresh token after rotation).
+   */
+  bearer: string | (() => string)
   fetchImpl?: HostedFetch
   /**
    * Verbatim secrets to strip from every payload before it leaves the sandbox.
@@ -195,15 +202,32 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
   const sleep = options.sleepImpl ?? defaultSleep
   const base = options.apiBaseUrl.replace(/\/$/, '')
   const eventIdPrefix = options.eventIdPrefix ?? options.runId
-  const secretList = [options.bearer, ...(options.redactSecretsList ?? [])]
+  const bearerOption = options.bearer
+  const bearerIsRotatable = typeof bearerOption === 'function'
+  const resolveBearer = bearerIsRotatable ? bearerOption : (): string => bearerOption
+  const extraSecrets = options.redactSecretsList ?? []
+  // Resolve the CURRENT bearer for every redaction pass so a rotated token is
+  // scrubbed too (the fixed-string case still resolves the same value).
+  const currentSecrets = (): string[] => [resolveBearer(), ...extraSecrets]
   const maxCriticalAttempts = options.maxCriticalAttempts ?? DEFAULT_MAX_CRITICAL_ATTEMPTS
   const diag = options.onDiagnostic ?? ((): void => {})
 
   const eventsUrl = `${base}/api/cli/workbench-runs/${encodeURIComponent(options.runId)}/events`
   const runUrl = `${base}/api/cli/workbench-runs/${encodeURIComponent(options.runId)}`
-  const headers = {
+  const authHeaders = (): Record<string, string> => ({
     'Content-Type': 'application/json',
-    Authorization: `Bearer ${options.bearer}`,
+    Authorization: `Bearer ${resolveBearer()}`,
+  })
+
+  // One request with a single re-auth retry: a 401/403 may just mean the bearer
+  // was rotated mid-flight, so re-resolve it ONCE and retry before the caller
+  // classifies the failure. Only meaningful when the bearer is a PROVIDER (a
+  // rotated file yields a new value); a fixed string re-resolves identically, so
+  // we skip the wasted retry and let the caller classify the first response.
+  async function requestWithReauth(url: string, init: RequestInit): Promise<Response> {
+    const first = await fetchImpl(url, { ...init, headers: authHeaders() })
+    if (!bearerIsRotatable || (first.status !== 401 && first.status !== 403)) return first
+    return fetchImpl(url, { ...init, headers: authHeaders() })
   }
 
   const recorded: AppendedRunEvent[] = []
@@ -246,7 +270,7 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
   ): Promise<void> {
     const sequence = nextSequence
     const eventId = `${eventIdPrefix}:${sequence}`
-    const redactedPayload = redactSecrets(payload, { secrets: secretList })
+    const redactedPayload = redactSecrets(payload, { secrets: currentSecrets() })
     const body = JSON.stringify({
       eventId,
       sequence,
@@ -263,7 +287,7 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       let response: Response
       try {
-        response = await fetchImpl(eventsUrl, { method: 'POST', headers, body })
+        response = await requestWithReauth(eventsUrl, { method: 'POST', body })
       } catch (error) {
         // Network throw: the request may have reached and committed on the
         // server — ambiguous, so burn.
@@ -287,11 +311,13 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
         throw new RunTerminalError(`append rejected (${response.status}) — run is terminal server-side`)
       }
       // Not authorized to write this run: revoked bearer OR lost access. The
-      // write did not land; surface a distinct error and do NOT seal or burn.
-      if (response.status === 403) {
-        diag(`append rejected (403) for ${eventType} — bearer revoked or run access lost`)
+      // re-auth retry above already re-resolved the bearer once (a rotation), so
+      // a persistent 401/403 is a real auth failure. The write did not land;
+      // surface a distinct error and do NOT seal or burn.
+      if (response.status === 401 || response.status === 403) {
+        diag(`append rejected (${response.status}) for ${eventType} — bearer revoked or run access lost`)
         throw new RunAuthError(
-          `append rejected (403) for ${eventType} — bearer revoked or run access lost`
+          `append rejected (${response.status}) for ${eventType} — bearer revoked or run access lost`
         )
       }
       lastDetail = `status ${response.status}`
@@ -352,7 +378,7 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
   // null on any transport/parse failure or non-2xx so the caller can decide.
   async function fetchRunStatus(): Promise<string | null> {
     try {
-      const res = await fetchImpl(runUrl, { method: 'GET', headers })
+      const res = await requestWithReauth(runUrl, { method: 'GET' })
       if (!res.ok) return null
       const data = (await res.json()) as { run?: { status?: unknown } }
       const status = data.run?.status
@@ -369,8 +395,8 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
   async function patchTerminal(status: TerminalStatus, opts?: FinishOptions): Promise<void> {
     const eventId = `${eventIdPrefix}:terminal:${status}`
     const patchBody: Record<string, unknown> = { status, eventId }
-    if (opts?.summary) patchBody.summary = redactSecrets(opts.summary, { secrets: secretList })
-    if (opts?.evidence) patchBody.evidence = redactSecrets(opts.evidence, { secrets: secretList })
+    if (opts?.summary) patchBody.summary = redactSecrets(opts.summary, { secrets: currentSecrets() })
+    if (opts?.evidence) patchBody.evidence = redactSecrets(opts.evidence, { secrets: currentSecrets() })
     const body = JSON.stringify(patchBody)
 
     let sequenceRetried = false
@@ -378,7 +404,7 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
     for (let attempt = 1; attempt <= maxCriticalAttempts; attempt += 1) {
       let response: Response
       try {
-        response = await fetchImpl(runUrl, { method: 'PATCH', headers, body })
+        response = await requestWithReauth(runUrl, { method: 'PATCH', body })
       } catch (error) {
         lastDetail = error instanceof Error ? error.message : String(error)
         if (attempt < maxCriticalAttempts) {
@@ -492,12 +518,16 @@ export async function resumeRunEventSink(
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as HostedFetch)
   const base = options.apiBaseUrl.replace(/\/$/, '')
   const pageSize = options.pageSize ?? 500
-  const headers = { Authorization: `Bearer ${options.bearer}` }
+  const bearerOption = options.bearer
+  const resolveBearer = typeof bearerOption === 'function' ? bearerOption : (): string => bearerOption
 
   let cursor = 0
   for (;;) {
     const url = `${base}/api/cli/workbench-runs/${encodeURIComponent(options.runId)}/events?after=${cursor}&limit=${pageSize}`
-    const response = await fetchImpl(url, { method: 'GET', headers })
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${resolveBearer()}` },
+    })
     if (!response.ok) {
       throw new Error(`resume cursor read failed (${response.status})`)
     }

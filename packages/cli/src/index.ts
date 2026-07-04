@@ -61,6 +61,7 @@ import {
 import { connectorsCommand } from './connectors-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
+import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredential } from './git-credential.js'
 import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
@@ -6592,20 +6593,9 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
-  if (command === 'tasks' && subcommand === 'pause') {
-    await updateTaskStatus('paused')
-    return
-  }
-
-  if (command === 'tasks' && subcommand === 'unpause') {
-    await updateTaskStatus('active')
-    return
-  }
-
-  if (command === 'tasks' && subcommand === 'complete') {
-    await updateTaskStatus('completed')
-    return
-  }
+  if (command === 'tasks' && subcommand === 'pause') { await updateTaskStatus('paused'); return }
+  if (command === 'tasks' && subcommand === 'unpause') { await updateTaskStatus('active'); return }
+  if (command === 'tasks' && subcommand === 'complete') { await updateTaskStatus('completed'); return }
 
   if (command === 'datasets' && subcommand === 'upload') {
     await uploadDataset()
@@ -6653,6 +6643,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
   if (command === 'datasets' && subcommand === 'lock') { await lockDataset(); return }
   if (command === 'datasets' && subcommand === 'clone') { await cloneDataset(); return }
   if (command === 'tasks' && subcommand === 'export') { await downloadAnnotations(); return }
+  if (command === 'internal' || (command === 'session' && subcommand === 'start' && hasArg('--hosted'))) { process.exitCode = await hostedCommand(cliArgs, { json: hasJsonFlag(), print: printLine, printErr: printError }); return }
   if (command === 'session' || command === 'run') {
     process.exitCode = await workbenchCommand(cliArgs, { json: hasJsonFlag(), print: printLine })
     return

@@ -51,11 +51,48 @@ export interface GitPushParams {
   password?: string
 }
 
+/**
+ * A single request transform a provider firewall applies to matching egress
+ * (the credential-brokering seam: inject a header at the proxy so the raw
+ * secret never enters the sandbox). Structurally identical to @vercel/sandbox's
+ * `NetworkPolicyRule` so a Vercel adapter can pass it straight through, but
+ * declared here so the Orizu seam owns the shape (ADR-003).
+ */
+export interface SandboxEgressRule {
+  transform?: { headers?: Record<string, string> }[]
+}
+
+/**
+ * Provider-neutral egress/network policy, wired to the sandbox firewall AT
+ * CREATE. G5 (ALI-1006) owns the allowlist CONTENT; this slice only plumbs the
+ * option so the orchestrator can pass a policy (incl. a credential-injection
+ * transform for a model endpoint). `'allow-all'` is the provider default when
+ * omitted. Structurally compatible with @vercel/sandbox's `NetworkPolicy`.
+ */
+export type SandboxEgressPolicy =
+  | 'allow-all'
+  | 'deny-all'
+  | {
+      allow?: string[] | Record<string, SandboxEgressRule[]>
+      subnets?: { allow?: string[]; deny?: string[] }
+    }
+
 export interface SandboxCreateOpts {
   language?: string
   snapshot?: string
   envVars?: Record<string, string>
   labels?: Record<string, string>
+  /** Sandbox auto-terminate timeout (ms). Honored where the provider supports a
+   *  configurable session length (Vercel); ignored by providers that do not. */
+  timeoutMs?: number
+  /** Provider runtime image hint (e.g. Vercel 'node24'); provider-specific. */
+  runtime?: string
+  /** vCPUs to allocate (memory scales with vCPUs on Vercel: 2048 MiB each). */
+  vcpus?: number
+  /** Ports to expose from the sandbox (provider-specific; up to 4 on Vercel). */
+  ports?: number[]
+  /** Egress/firewall policy applied at create (G5 supplies content). */
+  egressPolicy?: SandboxEgressPolicy
 }
 
 /**
@@ -72,9 +109,16 @@ export interface SandboxSession {
   writeFile(path: string, content: string): Promise<void>
   fileExists(path: string): Promise<boolean>
   destroy(): Promise<void>
+  /**
+   * Extend the sandbox's auto-terminate timeout by `durationMs` (keepalive).
+   * OPTIONAL: only providers with a configurable session length implement it
+   * (Vercel). Host-side token rotation uses it to keep a long session alive
+   * beyond the provider's default. Absent on local-sim / Daytona.
+   */
+  extendTimeout?(durationMs: number): Promise<void>
 }
 
-export type SandboxProviderKind = 'daytona' | 'local-sim'
+export type SandboxProviderKind = 'daytona' | 'local-sim' | 'vercel'
 
 export interface SandboxProvider {
   readonly kind: SandboxProviderKind

@@ -146,12 +146,19 @@ export interface HostedBootstrapOptions {
   /** VCS host the credential helper serves (default github.com). */
   host?: string
   /**
-   * Broker purpose vocabulary the helper mints with. Defaults to the production
-   * route's TODAY vocabulary (`write` primary, `read` fallback-on-403). Injectable
-   * so the P3.5 slice can flip to `session_write`/`session_read` without editing
-   * the credential-helper script.
+   * Broker purpose vocabulary the helper mints with. When omitted, the default
+   * is chosen from `bearerKind` (below): a human bearer mints `write`/`read`, an
+   * agent bearer mints `session_write`/`session_read`. Injectable so a caller can
+   * override without editing the credential-helper script.
    */
   tokenPurposes?: { primary: string; fallback: string }
+  /**
+   * Kind of bearer in the 0600 file — the orchestrator KNOWS what it minted, so
+   * the default broker purposes are chosen from this EXPLICIT signal, never by
+   * sniffing the token. 'agent' → session_write/session_read; 'human' (default)
+   * → write/read. Ignored when `tokenPurposes` is passed explicitly.
+   */
+  bearerKind?: 'agent' | 'human'
   /**
    * Hosts the credential helper may serve over plain HTTP (loopback rehearsal
    * only). Production omits this → the helper stays https-only.
@@ -198,6 +205,7 @@ export interface HostedRuntimePaths {
 
 const DEFAULT_WORKSPACE_DIR = 'repo'
 const DEFAULT_TOKEN_PURPOSES = { primary: 'write', fallback: 'read' } as const
+const DEFAULT_AGENT_TOKEN_PURPOSES = { primary: 'session_write', fallback: 'session_read' } as const
 const DEFAULT_CLI_INSTALL = (version: string): string =>
   `bun add -g orizu@${version} >/dev/null 2>&1 || npm install -g orizu@${version} >/dev/null 2>&1`
 
@@ -272,7 +280,9 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
   const { session } = opts
   const workspaceDir = opts.workspaceDir ?? DEFAULT_WORKSPACE_DIR
   const host = opts.host ?? 'github.com'
-  const tokenPurposes = opts.tokenPurposes ?? { ...DEFAULT_TOKEN_PURPOSES }
+  const tokenPurposes =
+    opts.tokenPurposes ??
+    (opts.bearerKind === 'agent' ? { ...DEFAULT_AGENT_TOKEN_PURPOSES } : { ...DEFAULT_TOKEN_PURPOSES })
   const cloneUrl = opts.resolveCloneUrl(opts.repoFullName)
   const runDirRel = `.orizu-run/${opts.runId}`
 

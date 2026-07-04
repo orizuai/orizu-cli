@@ -74,9 +74,12 @@ export function brokerEnv(config: BrokerConfig): Record<string, string> {
   const env: Record<string, string> = { HB_BEARER: config.bearer, HB_REPO: config.repo }
   if (config.eventsFile) env.HB_EVENTS_FILE = config.eventsFile
   if (config.tokensFile) env.HB_TOKENS_FILE = config.tokensFile
+  if (config.sessionId) env.HB_SESSION_ID = config.sessionId
+  if (config.sessionBranch) env.HB_SESSION_BRANCH = config.sessionBranch
   if (config.repoTokenStatus) env.HB_REPO_TOKEN_STATUS = String(config.repoTokenStatus)
   if (config.eventsStatus) env.HB_EVENTS_STATUS = String(config.eventsStatus)
   if (config.denyWrite) env.HB_DENY_WRITE = '1'
+  if (config.fullRunApi) env.HB_FULL_RUN_API = '1'
   return env
 }
 
@@ -194,6 +197,8 @@ export interface RehearsalOptions {
   repoTokenStatus?: number
   /** Force the run-events ingest to a status (tests the failure path). */
   eventsStatus?: number
+  /** Serve the full RunAPI + session + agent-token surface (P3.5 e2e). */
+  fullRunApi?: boolean
 }
 
 function readJsonl<T>(file: string): T[] {
@@ -265,6 +270,9 @@ export async function createHostedBootstrapRehearsal(
     tokensFile,
     repoTokenStatus: options.repoTokenStatus,
     eventsStatus: options.eventsStatus,
+    fullRunApi: options.fullRunApi,
+    sessionId,
+    sessionBranch,
   })
 
   // Real authenticated smart-HTTP git server on loopback: this is what makes the

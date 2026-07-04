@@ -21,13 +21,13 @@ import { appendFileSync } from 'fs'
 
 const RESERVED_EVENT_TYPES = new Set(['run_started', 'run_completed', 'run_failed', 'run_cancelled'])
 
-// Mirror the PRODUCTION route (app/api/cli/workspaces/[id]/repo-token/route.ts)
-// EXACTLY: today it accepts only 'read' | 'write'. Unknown purpose → 400 with the
-// route's error body; a known purpose the caller is not authorized for → 403.
-// When the G1/G2 route work flips to session_read/session_write, update this set
-// (and the helper's default tokenPurposes) in lockstep.
-const VALID_PURPOSES = new Set(['read', 'write'])
-const WRITE_PURPOSE = 'write'
+// Mirror the PRODUCTION route (app/api/cli/workspaces/[id]/repo-token/route.ts):
+// it accepts 'read' | 'write' (human) and 'session_read' | 'session_write'
+// (agent, ALI-928 — flipped in lockstep with the route). Unknown purpose → 400;
+// a known purpose the caller is not authorized for → 403.
+const VALID_PURPOSES = new Set(['read', 'write', 'session_read', 'session_write'])
+// Purposes that require write access (subject to the denyWrite simulation).
+const WRITE_PURPOSES = new Set(['write', 'session_write'])
 
 interface BunServeLike {
   serve: (options: {
@@ -52,6 +52,18 @@ export interface BrokerConfig {
   eventsStatus?: number
   denyWrite?: boolean
   port?: number
+  /**
+   * E2E mode: accept ANY non-empty Bearer (the full hosted flow uses a human
+   * bearer for session/agent-token mints and a DISTINCT agent bearer for
+   * run/events), and serve the full RunAPI + session + agent-token surface so
+   * `startHostedSession` can be driven end to end. Off by default so the
+   * bootstrap/credential-helper tests keep their strict single-bearer contract.
+   */
+  fullRunApi?: boolean
+  /** E2E: the session id + branch the /sessions endpoint returns (so it matches
+   *  a pre-seeded session branch on the local bare repo). */
+  sessionId?: string
+  sessionBranch?: string
 }
 
 export function readBrokerConfigFromEnv(env: NodeJS.ProcessEnv): BrokerConfig {
@@ -64,13 +76,53 @@ export function readBrokerConfigFromEnv(env: NodeJS.ProcessEnv): BrokerConfig {
     eventsStatus: env.HB_EVENTS_STATUS ? Number.parseInt(env.HB_EVENTS_STATUS, 10) : undefined,
     denyWrite: env.HB_DENY_WRITE === '1',
     port: env.HB_PORT ? Number.parseInt(env.HB_PORT, 10) : 0,
+    fullRunApi: env.HB_FULL_RUN_API === '1',
+    sessionId: env.HB_SESSION_ID,
+    sessionBranch: env.HB_SESSION_BRANCH,
   }
+}
+
+interface StoredEvent {
+  eventId: string
+  sequence: number
+  eventType: string
+  payload: unknown
 }
 
 export function startBrokerServer(config: BrokerConfig): { port: number; stop: (force?: boolean) => void } {
   let mints = 0
+  let agentTokens = 0
+  let sessions = 0
+  let runs = 0
+  // In-memory RunAPI state (E2E mode): events + status per run, terminal record.
+  const runEvents = new Map<string, StoredEvent[]>()
+  const runStatus = new Map<string, string>()
+  // E2E: the CURRENT valid agent token — the most recently issued by the
+  // agent-token endpoint. A rotation (a fresh mint) invalidates the previous
+  // token, so agent-authenticated WRITES (run start / events / terminal PATCH)
+  // must present the current value; a rotated-out token is 401 (an honest
+  // "old token invalidated at the broker"). Reads stay permissive so a fresh
+  // human can still tail the run.
+  let currentAgentToken: string | null = null
   const json = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+  const authOk = (header: string): boolean =>
+    config.fullRunApi ? header.startsWith('Bearer ') && header.length > 'Bearer '.length : header === `Bearer ${config.bearer}`
+
+  // Agent-write auth (E2E only): once an agent token has been issued, an
+  // agent-authenticated write MUST carry the current one.
+  const agentWriteOk = (header: string): boolean =>
+    currentAgentToken === null || header === `Bearer ${currentAgentToken}`
+
+  const recordEvent = (runId: string, event: StoredEvent): void => {
+    const list = runEvents.get(runId) ?? []
+    list.push(event)
+    runEvents.set(runId, list)
+    if (config.eventsFile) {
+      appendFileSync(config.eventsFile, `${JSON.stringify({ runId, ...event })}\n`)
+    }
+  }
 
   return bun().serve({
     port: config.port ?? 0,
@@ -78,10 +130,85 @@ export function startBrokerServer(config: BrokerConfig): { port: number; stop: (
     async fetch(request) {
       const url = new URL(request.url)
       const method = request.method.toUpperCase()
-      if ((request.headers.get('authorization') ?? '') !== `Bearer ${config.bearer}`) {
+      if (!authOk(request.headers.get('authorization') ?? '')) {
         return json({ error: 'Unauthorized' }, 401)
       }
-      const body = method === 'POST' ? ((await request.json().catch(() => ({}))) as Record<string, unknown>) : {}
+      const body =
+        method === 'POST' || method === 'PATCH'
+          ? ((await request.json().catch(() => ({}))) as Record<string, unknown>)
+          : {}
+
+      // -- Full RunAPI + session + agent-token (E2E mode only) --------------
+      if (config.fullRunApi) {
+        const sessionsMatch = url.pathname.match(/^\/api\/cli\/workspaces\/([^/]+)\/sessions$/)
+        if (method === 'POST' && sessionsMatch) {
+          sessions += 1
+          const id = config.sessionId ?? `sess-e2e-${sessions}`
+          const repoBranch = config.sessionBranch ?? `orizu/session-${id}`
+          return json(
+            { session: { id, workspaceId: sessionsMatch[1], repoBranch, status: 'active' } },
+            201
+          )
+        }
+        const agentTokenMatch = url.pathname.match(/^\/api\/cli\/sessions\/([^/]+)\/agent-token$/)
+        if (method === 'POST' && agentTokenMatch) {
+          agentTokens += 1
+          const issued = `orizu_agent_e2e_${agentTokens}_${Math.random().toString(36).slice(2)}`
+          // A fresh mint rotates the current token: the previous one is now stale
+          // for agent-authenticated writes.
+          currentAgentToken = issued
+          return json(
+            {
+              token: issued,
+              agentUserId: 'agent-user-e2e',
+              sessionId: agentTokenMatch[1],
+              expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+            },
+            201
+          )
+        }
+        if (method === 'POST' && url.pathname === '/api/cli/workbench-runs') {
+          if (!agentWriteOk(request.headers.get('authorization') ?? '')) {
+            return json({ error: 'stale agent token' }, 401)
+          }
+          runs += 1
+          const runId = `run-e2e-${runs}`
+          runStatus.set(runId, 'running')
+          recordEvent(runId, { eventId: 'run_started', sequence: 1, eventType: 'run_started', payload: {} })
+          return json({ run: { id: runId, status: 'running' } }, 201)
+        }
+        const runEventsGet = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)\/events$/)
+        if (method === 'GET' && runEventsGet) {
+          const runId = runEventsGet[1]
+          const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10) || 0
+          const limit = Number.parseInt(url.searchParams.get('limit') ?? '500', 10) || 500
+          const all = runEvents.get(runId) ?? []
+          const page = all.filter(e => e.sequence > after).slice(0, limit)
+          const cursor = page.length > 0 ? page[page.length - 1].sequence : after
+          return json({ events: page, cursor, runStatus: runStatus.get(runId) ?? 'running' })
+        }
+        const runDetail = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)$/)
+        if (method === 'GET' && runDetail) {
+          return json({ run: { id: runDetail[1], status: runStatus.get(runDetail[1]) ?? 'running' } })
+        }
+        if (method === 'PATCH' && runDetail) {
+          if (!agentWriteOk(request.headers.get('authorization') ?? '')) {
+            return json({ error: 'stale agent token' }, 401)
+          }
+          const runId = runDetail[1]
+          const status = String(body.status ?? '')
+          if (!['succeeded', 'failed', 'cancelled'].includes(status)) {
+            return json({ error: 'invalid terminal status' }, 400)
+          }
+          const existing = runStatus.get(runId)
+          if (existing && ['succeeded', 'failed', 'cancelled'].includes(existing)) {
+            // Already terminal — Orizu records win (concurrent finisher).
+            return json({ error: `Run already ${existing}` }, 409)
+          }
+          runStatus.set(runId, status)
+          return json({ run: { id: runId, status } })
+        }
+      }
 
       const tokenMatch = url.pathname.match(/^\/api\/cli\/workspaces\/([^/]+)\/repo-token$/)
       if (method === 'POST' && tokenMatch) {
@@ -91,10 +218,10 @@ export function startBrokerServer(config: BrokerConfig): { port: number; stop: (
         const purpose = String(body.purpose ?? '')
         // Unknown purpose → 400 with the production route's exact error body.
         if (!VALID_PURPOSES.has(purpose)) {
-          return json({ error: 'purpose must be "read" or "write"' }, 400)
+          return json({ error: 'purpose must be "read", "write", "session_read", or "session_write"' }, 400)
         }
         // Simulate a read-only caller: known purpose, but unauthorized to write.
-        if (config.denyWrite && purpose === WRITE_PURPOSE) {
+        if (config.denyWrite && WRITE_PURPOSES.has(purpose)) {
           return json({ error: 'Access denied' }, 403)
         }
         mints += 1
@@ -106,6 +233,11 @@ export function startBrokerServer(config: BrokerConfig): { port: number; stop: (
 
       const eventsMatch = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)\/events$/)
       if (method === 'POST' && eventsMatch) {
+        // E2E: appending events is an agent-authenticated write — a rotated-out
+        // token is rejected so the honest rotation test can prove re-resolve.
+        if (config.fullRunApi && !agentWriteOk(request.headers.get('authorization') ?? '')) {
+          return json({ error: 'stale agent token' }, 401)
+        }
         if (config.eventsStatus && config.eventsStatus >= 400) {
           return json({ error: 'forced events failure' }, config.eventsStatus)
         }
@@ -118,12 +250,18 @@ export function startBrokerServer(config: BrokerConfig): { port: number; stop: (
         }
         if (!eventType) return json({ error: 'eventType is required' }, 400)
         if (RESERVED_EVENT_TYPES.has(eventType)) return json({ error: `${eventType} is a lifecycle event` }, 400)
-        if (config.eventsFile) {
-          appendFileSync(
-            config.eventsFile,
-            `${JSON.stringify({ runId: eventsMatch[1], eventId, sequence: Number(sequence), eventType, payload: body.payload })}\n`
-          )
+        const runId = eventsMatch[1]
+        const seq = Number(sequence)
+        const existingForRun = runEvents.get(runId) ?? []
+        // Idempotent replay: same eventId → 201 without re-recording. Same
+        // sequence, different eventId → 409 (mirrors the ingest RPC contract).
+        if (existingForRun.some(e => e.eventId === eventId)) {
+          return json({ eventId, id: `stored-${eventId}`, inserted: false }, 201)
         }
+        if (existingForRun.some(e => e.sequence === seq)) {
+          return json({ error: 'Workbench event sequence already exists for a different event_id' }, 409)
+        }
+        recordEvent(runId, { eventId, sequence: seq, eventType, payload: body.payload })
         return json({ eventId, id: `stored-${eventId}` }, 201)
       }
 
