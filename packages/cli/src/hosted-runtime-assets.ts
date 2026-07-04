@@ -35,6 +35,58 @@ export const DEFAULT_CACHE_REFRESH_BUFFER_MS = 5 * 60 * 1000
  *  `.openinspect/setup.sh` — fresh-boot only, non-fatal, output captured). */
 export const SETUP_HOOK_RELATIVE_PATH = '.orizu/setup.sh'
 
+// -- Pre-baked runtime marker (ALI-1017) -------------------------------------
+
+/**
+ * Absolute path of the marker the pre-baked hosted-runtime image writes at build
+ * time (see packages/cli/hosted-runtime-image/Dockerfile). Its presence — plus
+ * the boot-context `prebaked` flag — tells the runtime the CLI + OpenCode are
+ * already on PATH, so the from-scratch install steps must be SKIPPED (they would
+ * otherwise fail under G5 default-deny egress).
+ */
+export const PREBAKED_MARKER_PATH = '/opt/orizu/prebaked.json'
+
+/**
+ * The schema of `/opt/orizu/prebaked.json`. Records the exact versions baked into
+ * the image so a run (and audit) can tell WHICH runtime it booted on. `builtFor`
+ * is a constant guard so a stray same-named file from another toolchain is not
+ * mistaken for our marker.
+ */
+export interface PrebakedMarker {
+  cliVersion: string
+  opencodeVersion: string
+  claudeSdkVersion: string
+  builtFor: 'vercel-sandbox'
+}
+
+/**
+ * Parse + validate a pre-baked marker file's contents. Returns the typed marker
+ * when the JSON is well-formed AND carries the expected `builtFor` guard with
+ * string version fields; returns null otherwise (missing file → caller passes an
+ * empty/whitespace string; malformed JSON; wrong shape). Never throws, so a
+ * belt-and-braces filesystem probe can call it on best-effort file reads.
+ */
+export function parsePrebakedMarker(raw: string): PrebakedMarker | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const rec = parsed as Record<string, unknown>
+  if (rec.builtFor !== 'vercel-sandbox') return null
+  const { cliVersion, opencodeVersion, claudeSdkVersion } = rec
+  if (
+    typeof cliVersion !== 'string' ||
+    typeof opencodeVersion !== 'string' ||
+    typeof claudeSdkVersion !== 'string'
+  ) {
+    return null
+  }
+  return { cliVersion, opencodeVersion, claudeSdkVersion, builtFor: 'vercel-sandbox' }
+}
+
 /**
  * The non-secret boot context the helper script reads. Paths are ABSOLUTE so
  * the helper resolves them regardless of git's cwd at invocation time.

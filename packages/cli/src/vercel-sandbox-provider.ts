@@ -40,6 +40,16 @@ export const VERCEL_MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000
 /** Default runtime image when opts/config omit one. */
 export const VERCEL_DEFAULT_RUNTIME = 'node24'
 
+// -- Custom-image readiness retry (ALI-1017) ---------------------------------
+// A freshly-pushed VCR image is asynchronously PREPARED; a create against it
+// while it is still 'Preparing' throws `image_not_ready`. We retry that (and
+// only that) a bounded number of times with linear backoff so a create that
+// races the preparation window succeeds instead of failing the whole run.
+/** Max create attempts when the SDK reports the image is not yet ready. */
+export const VERCEL_IMAGE_NOT_READY_MAX_ATTEMPTS = 6
+/** Base backoff (ms) between image-not-ready retries (multiplied by attempt#). */
+export const VERCEL_IMAGE_NOT_READY_BACKOFF_MS = 5000
+
 // -- Structural view of the @vercel/sandbox surface we touch -----------------
 // Kept local (not imported) so the seam type-checks and the app build resolves
 // without the package present — same discipline as the Daytona adapter.
@@ -58,6 +68,12 @@ interface VercelRunCommandParams {
   sudo?: boolean
 }
 
+/** The @vercel/sandbox `Snapshot` surface we touch: the id getter is enough to
+ *  hand the snapshot to a later `create({ source: { type: 'snapshot', … } })`. */
+interface VercelSdkSnapshot {
+  readonly snapshotId: string
+}
+
 interface VercelSdkSandbox {
   readonly sandboxId: string
   runCommand(params: VercelRunCommandParams): Promise<VercelSdkCommandFinished>
@@ -66,11 +82,24 @@ interface VercelSdkSandbox {
   stop(opts?: { blocking?: boolean }): Promise<unknown>
   extendTimeout(durationMs: number): Promise<void>
   updateNetworkPolicy(policy: unknown): Promise<unknown>
+  /** Snapshot the running sandbox; STOPS it as part of the process (verified
+   *  against @vercel/sandbox@1.10.2 `Sandbox.snapshot(opts?): Promise<Snapshot>`). */
+  snapshot(opts?: { expiration?: number }): Promise<VercelSdkSnapshot>
 }
 
 interface VercelCreateParams {
   timeout: number
   runtime?: string
+  /** Custom VCR image ref (pre-baked runtime, ALI-1017); omitted → base runtime. */
+  image?: string
+  /**
+   * Boot from a Vercel Sandbox SNAPSHOT (ALI-1017, zero-Docker prebaked path).
+   * VERIFIED against @vercel/sandbox@1.10.2: the create-from-snapshot param is the
+   * NESTED `source: { type: 'snapshot', snapshotId }` (NOT a flat `snapshot`), and
+   * the snapshot variant of `CreateSandboxParams` OMITS `runtime`/`source` from the
+   * base — so we never set `runtime` alongside a snapshot `source`.
+   */
+  source?: { type: 'snapshot'; snapshotId: string }
   resources?: { vcpus: number }
   ports?: number[]
   networkPolicy?: unknown
@@ -90,12 +119,14 @@ export interface VercelSdkModule {
 
 // PIN CONTRACT: verified against @vercel/sandbox@1.10.2 — `Sandbox.create`
 // accepts `{ timeout, runtime, resources, ports, networkPolicy, env }` plus the
-// `{ token, projectId, teamId }` credential fields, and the returned Sandbox
-// exposes `runCommand / readFileToBuffer / writeFiles / stop / extendTimeout /
-// updateNetworkPolicy / sandboxId`. packages/cli/package.json pins this version
-// EXACTLY (no caret); re-verify before bumping. The lazy `import(specifier)`
-// keeps the (Node-only) SDK genuinely optional — it loads only when the Vercel
-// provider is actually selected.
+// `{ token, projectId, teamId }` credential fields, and a `source` union whose
+// snapshot arm is `{ type: 'snapshot', snapshotId }` (create-from-snapshot). The
+// returned Sandbox exposes `runCommand / readFileToBuffer / writeFiles / stop /
+// extendTimeout / updateNetworkPolicy / snapshot / sandboxId`, and `snapshot()`
+// returns a `Snapshot` with a `snapshotId` getter. packages/cli/package.json pins
+// this version EXACTLY (no caret); re-verify before bumping. The lazy
+// `import(specifier)` keeps the (Node-only) SDK genuinely optional — it loads only
+// when the Vercel provider is actually selected.
 const VERCEL_SDK_SPECIFIER = '@vercel/sandbox'
 
 async function loadVercelModule(): Promise<VercelSdkModule> {
@@ -125,14 +156,27 @@ export interface VercelProviderConfig {
   teamId?: string
   /** Default runtime image (default node24). */
   runtime?: string
+  /** Default custom VCR image ref (pre-baked runtime); default env
+   *  ORIZU_HOSTED_IMAGE, else undefined = base runtime (back-compat). */
+  image?: string
+  /** Default Vercel Sandbox snapshot id (zero-Docker prebaked runtime); default
+   *  env ORIZU_HOSTED_SNAPSHOT, else undefined. Mutually exclusive with `image`;
+   *  when both resolve, the snapshot wins (see createSandbox). */
+  snapshot?: string
   /** Default session length (ms) when createSandbox opts omit one. */
   defaultTimeoutMs?: number
   /** Hard cap on the configured session length (ms; default 24 h). */
   maxTimeoutMs?: number
+  /** Max create attempts while a custom image reports `image_not_ready`. */
+  imageNotReadyMaxAttempts?: number
+  /** Base backoff (ms) between image-not-ready retries (× attempt number). */
+  imageNotReadyBackoffMs?: number
 }
 
 export interface VercelProviderDeps {
   loadModule?: () => Promise<VercelSdkModule>
+  /** Injectable delay so the image-not-ready retry test runs without real waits. */
+  sleep?: (ms: number) => Promise<void>
 }
 
 interface ResolvedCredentials {
@@ -175,6 +219,21 @@ function clampTimeout(requested: number | undefined, def: number, cap: number): 
   const base = typeof requested === 'number' && Number.isFinite(requested) && requested > 0 ? requested : def
   return Math.min(Math.max(1, Math.floor(base)), cap)
 }
+
+/**
+ * True when an error is the SDK's "custom image is still being prepared" signal.
+ * We match on a `code` field OR the message text, so we catch the error whether
+ * the SDK surfaces it as `{ code: 'image_not_ready' }` or only in `.message`.
+ * ONLY this specific condition is retried — any other create failure propagates.
+ */
+export function isImageNotReadyError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const rec = error as { code?: unknown; message?: unknown }
+  if (typeof rec.code === 'string' && rec.code === 'image_not_ready') return true
+  return typeof rec.message === 'string' && /image_not_ready/i.test(rec.message)
+}
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 function wrapVercelSandbox(sandbox: VercelSdkSandbox): SandboxSession {
   const runShell = async (command: string, cwd?: string): Promise<VercelSdkCommandFinished> =>
@@ -230,6 +289,18 @@ function wrapVercelSandbox(sandbox: VercelSdkSandbox): SandboxSession {
     async extendTimeout(durationMs: number): Promise<void> {
       await sandbox.extendTimeout(durationMs)
     },
+    // ALI-1017: capture a snapshot of THIS running sandbox and return its id so a
+    // provisioner can bake the runtime once and boot future sandboxes from it with
+    // no Docker/VCR. Vercel STOPS the sandbox as part of snapshotting, so the
+    // caller must treat the session as spent afterwards.
+    async snapshot(opts?: { expiration?: number }): Promise<string> {
+      const snap = await sandbox.snapshot(opts)
+      const id = snap?.snapshotId
+      if (typeof id !== 'string' || id.length === 0) {
+        throw new Error('sandbox.snapshot() returned no snapshotId')
+      }
+      return id
+    },
   }
 }
 
@@ -238,8 +309,11 @@ export function createVercelProvider(
   deps: VercelProviderDeps = {}
 ): SandboxProvider {
   const load = deps.loadModule ?? loadVercelModule
+  const waitFor = deps.sleep ?? sleep
   const defaultTimeoutMs = config.defaultTimeoutMs ?? VERCEL_DEFAULT_TIMEOUT_MS
   const maxTimeoutMs = config.maxTimeoutMs ?? VERCEL_MAX_TIMEOUT_MS
+  const imageNotReadyMaxAttempts = config.imageNotReadyMaxAttempts ?? VERCEL_IMAGE_NOT_READY_MAX_ATTEMPTS
+  const imageNotReadyBackoffMs = config.imageNotReadyBackoffMs ?? VERCEL_IMAGE_NOT_READY_BACKOFF_MS
   let modulePromise: Promise<VercelSdkModule> | null = null
   const sdk = (): Promise<VercelSdkModule> => {
     if (!modulePromise) modulePromise = load()
@@ -255,7 +329,22 @@ export function createVercelProvider(
         // FOUNDER REQUIREMENT: always set timeout from opts/config; never rely
         // on Vercel's 5-minute default.
         timeout: clampTimeout(opts.timeoutMs, defaultTimeoutMs, maxTimeoutMs),
-        runtime: opts.runtime ?? config.runtime ?? VERCEL_DEFAULT_RUNTIME,
+      }
+      // ALI-1017: two mutually-exclusive prebaked-runtime paths, each resolved by
+      // the same precedence (per-call opts → provider config → env default):
+      //   - `snapshot` → boot from a Vercel Sandbox snapshot (zero-Docker path);
+      //   - `image`    → boot from a custom VCR image (Docker/VCR path).
+      // When BOTH resolve, the SNAPSHOT wins (documented preference) — never boot
+      // an ambiguous mix. A snapshot boot OMITS `runtime`/`image` (the SDK's
+      // snapshot create-variant forbids `runtime`); the base runtime is otherwise
+      // set so we never fall back to Vercel's default.
+      const snapshot = opts.snapshot ?? config.snapshot ?? process.env.ORIZU_HOSTED_SNAPSHOT
+      const image = opts.image ?? config.image ?? process.env.ORIZU_HOSTED_IMAGE
+      if (snapshot) {
+        params.source = { type: 'snapshot', snapshotId: snapshot }
+      } else {
+        params.runtime = opts.runtime ?? config.runtime ?? VERCEL_DEFAULT_RUNTIME
+        if (image) params.image = image
       }
       if (typeof opts.vcpus === 'number' && opts.vcpus > 0) params.resources = { vcpus: opts.vcpus }
       if (opts.ports && opts.ports.length > 0) params.ports = opts.ports
@@ -265,8 +354,25 @@ export function createVercelProvider(
       if (creds.token) params.token = creds.token
       if (creds.projectId) params.projectId = creds.projectId
       if (creds.teamId) params.teamId = creds.teamId
-      const sandbox = await mod.Sandbox.create(params)
-      return wrapVercelSandbox(sandbox)
+
+      // A freshly-pushed custom image may still be 'Preparing' in VCR; retry the
+      // `image_not_ready` create (and ONLY that) with bounded linear backoff.
+      let lastError: unknown
+      for (let attempt = 1; attempt <= imageNotReadyMaxAttempts; attempt += 1) {
+        try {
+          const sandbox = await mod.Sandbox.create(params)
+          return wrapVercelSandbox(sandbox)
+        } catch (error) {
+          if (!isImageNotReadyError(error)) throw error
+          lastError = error
+          if (attempt < imageNotReadyMaxAttempts) await waitFor(imageNotReadyBackoffMs * attempt)
+        }
+      }
+      const detail = lastError instanceof Error ? lastError.message : String(lastError)
+      throw new Error(
+        `Vercel Sandbox image ${image ?? snapshot ?? '(unknown)'} not ready after ${imageNotReadyMaxAttempts} attempts (${detail}). ` +
+          'Wait until the image shows status "Ready" for linux/amd64 in VCR before creating a sandbox.'
+      )
     },
   }
 }

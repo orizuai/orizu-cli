@@ -38,7 +38,11 @@ import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
 import type { AgentHarness, HarnessEvent, HarnessPrompt } from './hosted-harness.js'
-import { SETUP_HOOK_RELATIVE_PATH } from './hosted-runtime-assets.js'
+import {
+  PREBAKED_MARKER_PATH,
+  SETUP_HOOK_RELATIVE_PATH,
+  parsePrebakedMarker,
+} from './hosted-runtime-assets.js'
 import {
   OPENCODE_PINNED_VERSION,
   createOpenCodeHarness,
@@ -83,6 +87,16 @@ export interface HostedLoopContext {
   harness?: 'opencode' | 'claude-agent-sdk'
   opencodePort?: number
   opencodePinnedVersion?: string
+  /**
+   * Pre-baked runtime (ALI-1017): the image already ships the pinned `opencode`
+   * on PATH, so the loop SKIPS the `opencode-ai` install (npm is blocked under G5
+   * default-deny egress) and spawns `opencode` directly, recording an
+   * `opencode_prebaked` artifact instead of `opencode_install`. The host sets this
+   * together with the sandbox `image` so the two never disagree. When unset, the
+   * loop ALSO belt-checks the `/opt/orizu/prebaked.json` marker; either signal
+   * skips the install. Ignored on the claude-agent-sdk path (no server to install).
+   */
+  prebaked?: boolean
   /**
    * Non-secret placeholder key OpenCode is given so it FORMS model requests; the
    * sandbox firewall's request transform overrides the real auth header at the
@@ -360,6 +374,21 @@ function redactionListFromEnv(): string[] {
   return secrets
 }
 
+/**
+ * Decide whether the loop is running the PRE-BAKED runtime image (ALI-1017).
+ * Prefers the explicit boot-context flag (the host KNOWS the image it passed);
+ * falls back to a belt read of the `/opt/orizu/prebaked.json` marker (validated
+ * via `parsePrebakedMarker`, so a stray file cannot trigger a skip). Either → true.
+ */
+function detectLoopPrebaked(flag: boolean | undefined): boolean {
+  if (flag) return true
+  try {
+    return parsePrebakedMarker(readFileSync(PREBAKED_MARKER_PATH, 'utf8')) !== null
+  } catch {
+    return false
+  }
+}
+
 /** Best-effort global install of the pinned opencode. Non-fatal: a failure is
  *  recorded and the run finishes cleanly when the subsequent connect fails. */
 function installOpenCodePinned(version: string): InstallResult {
@@ -524,14 +553,26 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
         ((): AgentHarness =>
           createClaudeAgentHarness({ anthropicDummyKey: context.anthropicDummyKey })))()
     } else {
-      const install = opts.installOpenCode
-        ? await opts.installOpenCode()
-        : installOpenCodePinned(pinnedVersion)
-      installOk = install.ok
-      await sink.append({
-        kind: 'artifact',
-        payload: { step: 'opencode_install', ok: install.ok, detail: install.detail },
-      })
+      // PRE-BAKED (ALI-1017): the pinned `opencode` is already on PATH, so SKIP the
+      // install (npm is blocked under G5 default-deny egress) and record
+      // `opencode_prebaked`. FROM-SCRATCH (local-sim / fallback): install as before.
+      const prebaked = detectLoopPrebaked(context.prebaked)
+      if (prebaked) {
+        installOk = true
+        await sink.append({
+          kind: 'artifact',
+          payload: { step: 'opencode_prebaked', ok: true, detail: `opencode-ai@${pinnedVersion} pre-baked in the runtime image` },
+        })
+      } else {
+        const install = opts.installOpenCode
+          ? await opts.installOpenCode()
+          : installOpenCodePinned(pinnedVersion)
+        installOk = install.ok
+        await sink.append({
+          kind: 'artifact',
+          payload: { step: 'opencode_install', ok: install.ok, detail: install.detail },
+        })
+      }
 
       const spawnImpl = opts.spawnOpenCode ?? spawnOpenCode
       spawned = spawnImpl({

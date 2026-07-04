@@ -87,6 +87,14 @@ export interface SandboxCreateOpts {
   timeoutMs?: number
   /** Provider runtime image hint (e.g. Vercel 'node24'); provider-specific. */
   runtime?: string
+  /**
+   * Provider custom-image ref (e.g. Vercel VCR 'orizu-hosted-runtime:<tag>').
+   * When set, the provider creates the sandbox from this pre-baked image instead
+   * of the base runtime (ALI-1017). Provider-specific — Vercel honors it; other
+   * providers ignore it. `runtime` is still the base-runtime hint when no image
+   * is given.
+   */
+  image?: string
   /** vCPUs to allocate (memory scales with vCPUs on Vercel: 2048 MiB each). */
   vcpus?: number
   /** Ports to expose from the sandbox (provider-specific; up to 4 on Vercel). */
@@ -116,6 +124,17 @@ export interface SandboxSession {
    * beyond the provider's default. Absent on local-sim / Daytona.
    */
   extendTimeout?(durationMs: number): Promise<void>
+  /**
+   * Snapshot the running sandbox's filesystem state and RETURN the snapshot id
+   * (ALI-1017). A new sandbox can then boot from it via `createSandbox({ snapshot })`
+   * — the zero-Docker "prebaked runtime" path (parallel to a VCR `image`).
+   * OPTIONAL: only providers with a snapshot API implement it (Vercel); absent on
+   * local-sim / Daytona. NOTE: the provider may STOP this sandbox as part of the
+   * snapshot (Vercel does), so treat the session as spent afterwards.
+   *
+   * `expiration` is an optional TTL (ms) for the snapshot; 0 = never expire.
+   */
+  snapshot?(opts?: { expiration?: number }): Promise<string>
 }
 
 export type SandboxProviderKind = 'daytona' | 'local-sim' | 'vercel'

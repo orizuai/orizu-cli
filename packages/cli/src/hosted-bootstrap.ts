@@ -31,8 +31,10 @@ import {
   BOOT_CONTEXT_BASENAME,
   DEFAULT_CACHE_REFRESH_BUFFER_MS,
   HELPER_SCRIPT_BASENAME,
+  PREBAKED_MARKER_PATH,
   REPO_CRED_CACHE_BASENAME,
   SETUP_HOOK_RELATIVE_PATH,
+  parsePrebakedMarker,
   renderCredentialHelperScript,
   serializeBootContext,
   type HostedBootContext,
@@ -178,6 +180,15 @@ export interface HostedBootstrapOptions {
   cliVersion?: string
   /** Override the CLI-install shell command (tests inject a deterministic one). */
   cliInstallCommand?: string
+  /**
+   * Pre-baked runtime (ALI-1017): the image already ships the Orizu CLI on PATH,
+   * so the CLI-install step is SKIPPED (it would fail under G5 default-deny egress
+   * anyway) and a `cli_prebaked` event is recorded instead of `cli_installed`.
+   * The host sets this together with the sandbox `image` so the two never
+   * disagree. When unset, bootstrap ALSO belt-checks the `/opt/orizu/prebaked.json`
+   * marker on the sandbox filesystem; either signal skips the install.
+   */
+  prebaked?: boolean
   /** Inject a RunAPI sink (tests/production); default builds one over apiBaseUrl. */
   sink?: BootstrapRunEventSink
   fetchImpl?: HostedFetch
@@ -251,6 +262,23 @@ async function assertJsRuntimeAvailable(session: SandboxSession): Promise<void> 
   )
   if (res.stdout.trim() !== 'ok') {
     throw new Error('no JS runtime on PATH: the git credential helper requires node (>=18) or bun, neither found')
+  }
+}
+
+/**
+ * Decide whether the sandbox is running the PRE-BAKED runtime image (ALI-1017).
+ * Prefers the explicit boot-context flag (the host KNOWS what image it passed —
+ * testable, no filesystem dependency); falls back to a belt read of the
+ * `/opt/orizu/prebaked.json` marker (validated via `parsePrebakedMarker`, so a
+ * stray same-named file cannot trigger a skip). Either signal → pre-baked.
+ */
+async function detectPrebaked(session: SandboxSession, flag: boolean | undefined): Promise<boolean> {
+  if (flag) return true
+  try {
+    const raw = await session.readFile(PREBAKED_MARKER_PATH)
+    return parsePrebakedMarker(raw) !== null
+  } catch {
+    return false
   }
 }
 
@@ -329,6 +357,10 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
     currentStep = 'runtime_preflight'
     await assertJsRuntimeAvailable(session)
 
+    // Pre-baked detection (ALI-1017): the boot-context flag (preferred) or the
+    // filesystem marker. Decided ONCE here; step 4 uses it to skip the CLI install.
+    const prebaked = await detectPrebaked(session, opts.prebaked)
+
     // 1 — Inject boot context. Run dir is 0700; bearer + context are 0600.
     currentStep = 'inject_context'
     await session.exec(`mkdir -p ${paths.runDirRel} && chmod 700 ${paths.runDirRel}`)
@@ -381,18 +413,27 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
     record('repo_cloned', true, `cloned ${opts.sessionBranch}`)
     await sink.append('repo_cloned', { branch: opts.sessionBranch, workspaceDir })
 
-    // 4 — Install the Orizu CLI (non-fatal, recorded — OpenInspect setup.sh
-    // discipline). v0 mechanism: install the published `orizu` npm package.
+    // 4 — Provision the Orizu CLI (non-fatal, recorded — OpenInspect setup.sh
+    // discipline). PRE-BAKED (ALI-1017): the image already ships `orizu` on PATH,
+    // so SKIP the install (npm is blocked under G5 default-deny egress) and record
+    // `cli_prebaked` instead. FROM-SCRATCH (local-sim / fallback): install the
+    // published `orizu` npm package as before. assertJsRuntimeAvailable already
+    // ran in the preflight above, so the pre-baked node/bun is proven present.
     currentStep = 'cli_installed'
-    const installCommand = opts.cliInstallCommand ?? DEFAULT_CLI_INSTALL(opts.cliVersion ?? 'latest')
-    const install = await session.exec(installCommand, { cwd: workspaceDir })
-    const installOk = install.exitCode === 0
-    record('cli_installed', installOk, installOk ? 'orizu CLI installed' : `install exit ${install.exitCode}`)
-    await sink.append('cli_installed', {
-      ok: installOk,
-      exitCode: install.exitCode,
-      outputTail: tail(install.stdout, install.stderr),
-    })
+    if (prebaked) {
+      record('cli_prebaked', true, 'orizu CLI pre-baked in the runtime image')
+      await sink.append('cli_prebaked', { detail: 'orizu CLI pre-baked in the runtime image' })
+    } else {
+      const installCommand = opts.cliInstallCommand ?? DEFAULT_CLI_INSTALL(opts.cliVersion ?? 'latest')
+      const install = await session.exec(installCommand, { cwd: workspaceDir })
+      const installOk = install.exitCode === 0
+      record('cli_installed', installOk, installOk ? 'orizu CLI installed' : `install exit ${install.exitCode}`)
+      await sink.append('cli_installed', {
+        ok: installOk,
+        exitCode: install.exitCode,
+        outputTail: tail(install.stdout, install.stderr),
+      })
+    }
 
     // 5 — Customer setup hook (fresh-boot only, non-fatal, output captured).
     // P3-a: for enforced-egress providers the host DEFERS this hook to the loop,

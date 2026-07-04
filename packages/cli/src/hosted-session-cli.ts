@@ -176,6 +176,21 @@ export interface StartHostedSessionOptions {
   /** Sandbox session length (minutes); default 60, hard-capped at 24h. */
   durationMinutes?: number
   runtime?: string
+  /**
+   * Pre-baked custom VCR image ref (ALI-1017), e.g. 'orizu-hosted-runtime:v1'.
+   * When set, it is passed to `Sandbox.create({ image })` AND flips the `prebaked`
+   * flag on BOTH the bootstrap and the loop together — so the sandbox image and
+   * the install-skip decision can never disagree. When unset, the from-scratch
+   * install path runs (local-sim / base runtime). Default: env ORIZU_HOSTED_IMAGE.
+   */
+  hostedImage?: string
+  /**
+   * Pre-baked Vercel Sandbox SNAPSHOT id (ALI-1017, zero-Docker path). Parallel to
+   * `hostedImage`: when set it is passed to `Sandbox.create({ source:{ type:'snapshot' }})`
+   * AND flips the `prebaked` flag on bootstrap + loop together. Mutually exclusive
+   * with `hostedImage` — both set is a hard error. Default: env ORIZU_HOSTED_SNAPSHOT.
+   */
+  hostedSnapshot?: string
   title?: string
   /** Attach: rotate the bearer + stream the run tail until it terminates. */
   tail?: boolean
@@ -245,8 +260,12 @@ function isLoopStartupEvent(event: Record<string, unknown>): boolean {
   if (type === 'agent_ready') return true
   if (type === 'artifact') {
     const payload = event.payload
-    if (payload && typeof payload === 'object' && (payload as Record<string, unknown>).step === 'opencode_install') {
-      return true
+    if (payload && typeof payload === 'object') {
+      // The loop's first artifact — either the OpenCode install (from-scratch) or
+      // the opencode_prebaked record (pre-baked runtime, ALI-1017). Presence of
+      // either proves the detached loop launched and is talking to the RunAPI.
+      const step = (payload as Record<string, unknown>).step
+      if (step === 'opencode_install' || step === 'opencode_prebaked') return true
     }
   }
   return false
@@ -343,6 +362,23 @@ export async function startHostedSession(
   const rawFetch = opts.rawFetch ?? (globalThis.fetch as HostedFetch)
   const log = opts.logLine ?? ((): void => {})
   const model = opts.model ?? DEFAULT_HOSTED_MODEL
+  // ALI-1017: a pre-baked custom image both selects the sandbox image AND flips
+  // the prebaked skip-install flag — derived ONCE so bootstrap, the loop, and the
+  // create call can never disagree. Env is the default (matches the provider's
+  // own ORIZU_HOSTED_IMAGE default) so the flag and the image stay in lockstep.
+  const hostedImage = opts.hostedImage ?? process.env.ORIZU_HOSTED_IMAGE
+  const hostedSnapshot = opts.hostedSnapshot ?? process.env.ORIZU_HOSTED_SNAPSHOT
+  // image and snapshot are two mutually-exclusive prebaked-runtime paths; a run
+  // must pick ONE. Fail loudly rather than silently preferring one.
+  if (hostedImage && hostedSnapshot) {
+    throw new Error(
+      'hosted runtime: set EITHER a pre-baked image (--image / ORIZU_HOSTED_IMAGE) OR a snapshot ' +
+        '(--snapshot / ORIZU_HOSTED_SNAPSHOT), not both.'
+    )
+  }
+  // Either prebaked source ships the CLI + OpenCode, so the install-skip flag keys
+  // on both — derived ONCE so bootstrap, the loop, and the create call agree.
+  const prebakedImage = Boolean(hostedImage || hostedSnapshot)
   // G5: DEFAULT-DENY egress with the code-owned base allowlist (Orizu API + model
   // provider + git host), the model-key broker composed onto the model rule, and
   // the resolved per-team additive domains. The Orizu host is derived from the
@@ -407,6 +443,10 @@ export async function startHostedSession(
   const sandbox = await opts.provider.createSandbox({
     timeoutMs: clampDuration(opts.durationMinutes) * 60 * 1000,
     runtime: opts.runtime,
+    // Exactly one of image/snapshot is set (guarded above); pass both through and
+    // let the provider apply the snapshot-wins precedence defensively.
+    image: hostedImage,
+    snapshot: hostedSnapshot,
     egressPolicy,
   })
   // Arm the in-sandbox startup canary ONLY for providers that actually enforce
@@ -451,6 +491,8 @@ export async function startHostedSession(
     fetchImpl: rawFetch,
     host: opts.host,
     insecureHttpHosts: opts.insecureHttpHosts,
+    // ALI-1017: skip the in-sandbox CLI install when the pre-baked image ships it.
+    prebaked: prebakedImage,
     // P3-a: when egress is enforced (canary armed), DEFER the customer setup hook
     // to the loop so it runs only AFTER the canary proves the firewall is live.
     deferSetupHook: egressCanaryHost !== undefined,
@@ -494,6 +536,8 @@ export async function startHostedSession(
     messageId: `${runId}:task`,
     author: { name: 'Orizu Agent', email: 'agent@orizu.ai' },
     anthropicDummyKey: opts.modelApiKey ? ANTHROPIC_DUMMY_KEY : undefined,
+    // ALI-1017: skip the in-sandbox opencode install when the image ships it.
+    prebaked: prebakedImage,
     egressCanaryHost,
     // Run the DEFERRED setup hook in the loop iff bootstrap deferred it (same
     // condition: an enforced-egress provider armed the canary).
@@ -715,7 +759,10 @@ function numFlag(args: readonly string[], flag: string): number | undefined {
 
 const HOSTED_USAGE =
   'Usage: orizu session start --hosted --task "<prompt>" [--duration <min> (default 60, max 1440)] ' +
-  '[--model <provider/model>] [--project <team/project>] [--provider vercel|local-sim] [--tail]\n' +
+  '[--model <provider/model>] [--project <team/project>] [--provider vercel|local-sim] ' +
+  '[--image <orizu-hosted-runtime:tag> (pre-baked VCR image; default env ORIZU_HOSTED_IMAGE)] ' +
+  '[--snapshot <snapshot-id> (pre-baked Vercel snapshot, zero-Docker; default env ORIZU_HOSTED_SNAPSHOT; ' +
+  'mutually exclusive with --image)] [--tail]\n' +
   'Note (v0): if you disconnect, the agent token expires within its TTL (<=60m) and the run finishes ' +
   'cleanly; reconnect with `orizu run tail --run <id>`. The sandbox timeout is independent (up to 24h).'
 
@@ -768,6 +815,11 @@ export async function hostedCommand(args: string[], io: HostedCommandIo): Promis
     model: argVal(args, '--model') ?? undefined,
     durationMinutes: numFlag(args, '--duration'),
     runtime: argVal(args, '--runtime') ?? undefined,
+    // Pre-baked runtime (ALI-1017): flag wins, else env. Image = Docker/VCR path,
+    // snapshot = zero-Docker path; both flip the install-skip flag. startHostedSession
+    // enforces mutual exclusion.
+    hostedImage: argVal(args, '--image') ?? process.env.ORIZU_HOSTED_IMAGE ?? undefined,
+    hostedSnapshot: argVal(args, '--snapshot') ?? process.env.ORIZU_HOSTED_SNAPSHOT ?? undefined,
     tail,
     modelApiKey: process.env.ANTHROPIC_API_KEY || undefined,
     logLine: line => io.print(line),
