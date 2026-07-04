@@ -9,11 +9,20 @@
  *   1. exact-match on caller-supplied secrets (the bearer, any token the
  *      orchestrator itself minted) — these are known verbatim, so replace them
  *      wherever they appear, even mid-string;
- *   2. shape-match on the well-known credential prefixes GitHub and Orizu emit
- *      (ghs_/ghp_/gho_/ghu_/ghr_/github_pat_ installation+PAT tokens, Orizu's own
- *      `orizu_pat_`/`orizu_agent_` tokens, and a generic `Bearer <blob>` header)
- *      — a defense-in-depth net for tokens the orchestrator never held a copy of
- *      (e.g. a token echoed by a customer setup hook).
+ *   2. shape-match on the well-known credential prefixes GitHub, Orizu, and the
+ *      model providers emit (ghs_/ghp_/gho_/ghu_/ghr_/github_pat_ installation+PAT
+ *      tokens, Orizu's own `orizu_pat_`/`orizu_agent_` tokens, Anthropic
+ *      `sk-ant-…` and OpenAI `sk-proj-…`/legacy `sk-…` model keys, and a generic
+ *      `Bearer <blob>` header) — a defense-in-depth net for tokens the
+ *      orchestrator never held a copy of (e.g. a model key echoed by a customer
+ *      setup hook or an OpenCode error message).
+ *
+ * SHAPES ARE DEFENSE IN DEPTH, NOT THE GUARANTEE. The guaranteed scrub is the
+ * exact-match pass (1): any secret that will be present in the sandbox MUST be
+ * handed to the caller's secret list (the RunEventSink's `redactSecretsList`)
+ * so it is stripped verbatim wherever it appears, even mid-string and even when
+ * its shape is unknown. The shape patterns below only catch credentials no one
+ * declared; do not rely on them as the primary control.
  *
  * The function is pure and recursive over JSON-ish structures so an entire
  * event payload can be passed through before it is sent to the RunAPI.
@@ -32,6 +41,17 @@ const TOKEN_SHAPE_PATTERNS: readonly RegExp[] = [
   // lib/personal-access-tokens.ts — prefix + base64url body) and the future
   // `orizu_agent_` session-token prefix. base64url alphabet is [A-Za-z0-9_-].
   /\borizu_(agent|pat)_[A-Za-z0-9_-]{10,}/g,
+  // Model-provider API keys the agent runs with. Specific prefixes first so the
+  // bare `sk-` fallback below cannot partially shadow them:
+  //   Anthropic  `sk-ant-…`  (real keys look like `sk-ant-api03-<blob>`);
+  //   OpenAI     `sk-proj-…` (project-scoped keys) and legacy bare `sk-<blob>`.
+  // The bare fallback demands 20+ base62 chars after `sk-` so it cannot fire on
+  // the hyphenated `sk-ant-`/`sk-proj-` prefixes (both break the run at the
+  // first `-`) or on short `sk-` substrings — tuned to avoid a false-positive
+  // massacre while still netting an undeclared legacy OpenAI key.
+  /\bsk-ant-[A-Za-z0-9_-]{10,}/g,
+  /\bsk-proj-[A-Za-z0-9_-]{10,}/g,
+  /\bsk-[A-Za-z0-9]{20,}\b/g,
   /\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/g,
 ]
 
