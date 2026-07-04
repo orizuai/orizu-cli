@@ -75,6 +75,28 @@ export const AGENT_TRANSCRIPT_EVENT_TYPE = 'agent_transcript'
 /** Bounded tail size for the transcript stopgap (see artifact-ref decision). */
 export const TRANSCRIPT_TAIL_MAX_CHARS = 16_384
 
+// -- Reserved credential-use audit vocabulary (G6 / ALI-1007, NOT emitted) ----
+// The DURABLE credential-use audit is the per-mint DB row (agent_session_tokens
+// for agent-token mints; repo_token_mints for repo tokens): each rotation writes
+// a fresh row with created_at/expires_at/revoked_at, which IS the credential-use
+// trail. These event-type constants RESERVE the run-timeline vocabulary but are
+// NOT emitted today: a run's event/sequence space has a SINGLE writer (the
+// in-sandbox loop — see app/api/cli/workbench-runs/[id]/events/route.ts), and a
+// host-side append here would race that writer (409 → a healthy run killed). A
+// FUTURE emitter must run in-sandbox (single-writer) or be out-of-band
+// coordinated before these are wired to the stream.
+export const CREDENTIAL_ROTATED_EVENT_TYPE = 'credential_rotated'
+export const CREDENTIAL_MINT_FAILED_EVENT_TYPE = 'credential_mint_failed'
+
+// -- Reserved egress-audit vocabulary (G5 / ALI-1006, NOT emitted yet) -------
+// G6's list includes "egress attempt" events, but egress default-deny +
+// blocked-attempt logging is the G5 slice. These constants RESERVE the event
+// types so the vocabulary is stable when the G5 firewall lands; nothing emits
+// them in this slice. Any future emitter is subject to the same single-writer
+// constraint noted above. See docs/.../t1-t7-adversarial-results.md (T1).
+export const EGRESS_ALLOWED_EVENT_TYPE = 'egress_allowed'
+export const EGRESS_BLOCKED_EVENT_TYPE = 'egress_blocked'
+
 export type TerminalStatus = 'succeeded' | 'failed' | 'cancelled'
 
 export interface FinishOptions {

@@ -582,6 +582,13 @@ export async function startHostedSession(
         await writeBearerFile(sandbox, bearerRel, freshToken)
         tokenExpiresAtMs = now() + ttlMinutes * 60 * 1000
         delayMs = rotationIntervalMs
+        // The DURABLE credential-use audit for this rotation is the fresh
+        // agent_session_tokens row minted above (created_at/expires_at/revoked_at
+        // per mint). We do NOT emit a run event: the in-sandbox loop is the sole
+        // writer on this run's event/sequence space (single-writer invariant, see
+        // app/api/cli/workbench-runs/[id]/events/route.ts) and a host-side append
+        // here races the loop → 409 → a healthy run killed. Operator visibility is
+        // the local stderr log below.
         log('rotated agent bearer (file overwritten)')
         // Keepalive: extend the sandbox by one rotation interval each rotation
         // while attached (SDK supports extendTimeout(ms)), bounded by the 24h cap
@@ -596,6 +603,10 @@ export async function startHostedSession(
           }
         }
       } catch (error) {
+        // No run-event emit on failure either: the host is not the run's event
+        // writer (see the successful-rotation note above). Failure visibility is
+        // this local log plus, if the token will lapse, emitRotationFailureEvent()
+        // below — which fires ONLY on the terminal/dying path, not the live stream.
         log(`bearer rotation failed: ${error instanceof Error ? error.message : String(error)}`)
         // Fast-retry on the short interval — never silently ride the token to
         // expiry. Give up loudly if the current token will lapse before another
