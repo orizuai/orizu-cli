@@ -11,9 +11,18 @@
  *      'failed' cleanly — the run never dangles);
  *   3. build a RESUME-AWARE RunEventSink (continues the server's sequence after
  *      the run-start + bootstrap events — so a reconnect loses nothing);
- *   4. spawn `opencode serve`, construct the OpenCode `AgentHarness`, and drive
- *      the SINGLE task prompt (v0: no queue) through `drainHarnessToSink`;
+ *   4. provision the `AgentHarness` SELECTED by `context.harness` (default
+ *      'opencode': install+spawn `opencode serve` then connect the OpenCode
+ *      driver; 'claude-agent-sdk': construct the in-process Claude-Agent-SDK
+ *      driver — no server to install or spawn), then drive the SINGLE task prompt
+ *      (v0: no queue) through `drainHarnessToSink`;
  *   5. the terminal event decides the run's final status via the sink's PATCH.
+ *
+ * SWAPPABILITY (ALI-929 / P3.6): harness SELECTION is the ONLY thing that differs
+ * between the two drivers — `start()` → `runPrompt()` → `drainHarnessToSink()` →
+ * `shutdown()` is byte-identical for both, and the sink, event vocabulary, and
+ * terminal-PATCH flow are unchanged. That is the proof: a second harness drops in
+ * behind the seam with no change to any consumer beyond the selector.
  *
  * The redaction list carries the agent bearer (added automatically by the sink)
  * plus any model key present in the process env (defense in depth for the G3
@@ -35,6 +44,7 @@ import {
   type SpawnOpenCodeOptions,
   type SpawnedOpenCode,
 } from './hosted-harness-opencode.js'
+import { createClaudeAgentHarness } from './hosted-harness-claude.js'
 import {
   drainHarnessToSink,
   resumeRunEventSink,
@@ -63,6 +73,12 @@ export interface HostedLoopContext {
   messageId: string
   /** Git identity for commit attribution during the prompt. */
   author: { name: string; email: string }
+  /**
+   * Which `AgentHarness` drives the loop (ALI-929 swappability seam). Default
+   * 'opencode'. 'claude-agent-sdk' selects the in-process Claude-Agent-SDK driver
+   * — no `opencode` install/spawn happens on that path.
+   */
+  harness?: 'opencode' | 'claude-agent-sdk'
   opencodePort?: number
   opencodePinnedVersion?: string
   /**
@@ -97,6 +113,9 @@ export interface RunHostedLoopOptions {
   fetchImpl?: HostedFetch
   /** Build the harness for a spawned OpenCode base URL (default: OpenCode driver). */
   createHarness?: (baseUrl: string) => AgentHarness
+  /** Build the in-process Claude-Agent-SDK harness (default: real SDK loader).
+   *  Injectable so the swap test drives a fake `query()` with no real SDK. */
+  createClaudeHarness?: () => AgentHarness
   spawnOpenCode?: (opts: SpawnOpenCodeOptions) => SpawnedOpenCode
   installOpenCode?: () => Promise<InstallResult>
   now?: () => number
@@ -181,28 +200,48 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
   let spawned: SpawnedOpenCode | null = null
   let agentSessionId: string | null = null
   let installOk = false
+  const harnessKind = context.harness ?? 'opencode'
   try {
-    const install = opts.installOpenCode
-      ? await opts.installOpenCode()
-      : installOpenCodePinned(pinnedVersion)
-    installOk = install.ok
-    await sink.append({
-      kind: 'artifact',
-      payload: { step: 'opencode_install', ok: install.ok, detail: install.detail },
-    })
+    // --- Harness PROVISIONING: the ONLY thing that differs between the two
+    // drivers (ALI-929). Everything after `harness` is constructed is identical.
+    let harness: AgentHarness
+    if (harnessKind === 'claude-agent-sdk') {
+      // In-process agent loop: no server to install or spawn. Record an
+      // analogous setup artifact so the event stream shape is unchanged.
+      installOk = true
+      await sink.append({
+        kind: 'artifact',
+        payload: { step: 'harness_select', harness: harnessKind, inProcess: true },
+      })
+      // G3 parity with the OpenCode path: hand the in-process SDK client the SAME
+      // non-secret dummy key (firewall brokers the real key on egress).
+      harness = (opts.createClaudeHarness ??
+        ((): AgentHarness =>
+          createClaudeAgentHarness({ anthropicDummyKey: context.anthropicDummyKey })))()
+    } else {
+      const install = opts.installOpenCode
+        ? await opts.installOpenCode()
+        : installOpenCodePinned(pinnedVersion)
+      installOk = install.ok
+      await sink.append({
+        kind: 'artifact',
+        payload: { step: 'opencode_install', ok: install.ok, detail: install.detail },
+      })
 
-    const spawnImpl = opts.spawnOpenCode ?? spawnOpenCode
-    spawned = spawnImpl({
-      model: context.model,
-      cwd: context.workspaceDir,
-      port: context.opencodePort,
-      env: context.anthropicDummyKey ? { ANTHROPIC_API_KEY: context.anthropicDummyKey } : undefined,
-      spawn: nodeChildSpawner,
-    })
+      const spawnImpl = opts.spawnOpenCode ?? spawnOpenCode
+      spawned = spawnImpl({
+        model: context.model,
+        cwd: context.workspaceDir,
+        port: context.opencodePort,
+        env: context.anthropicDummyKey ? { ANTHROPIC_API_KEY: context.anthropicDummyKey } : undefined,
+        spawn: nodeChildSpawner,
+      })
 
-    const harness = (opts.createHarness ?? ((baseUrl: string) => createOpenCodeHarness({ baseUrl })))(
-      spawned.baseUrl
-    )
+      harness = (opts.createHarness ?? ((baseUrl: string) => createOpenCodeHarness({ baseUrl })))(
+        spawned.baseUrl
+      )
+    }
+
     const started = await harness.start({
       workspaceDir: context.workspaceDir,
       model: context.model,
