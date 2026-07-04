@@ -34,9 +34,11 @@
  */
 
 import { spawnSync, spawn as nodeSpawn } from 'child_process'
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
 
-import type { AgentHarness, HarnessPrompt } from './hosted-harness.js'
+import type { AgentHarness, HarnessEvent, HarnessPrompt } from './hosted-harness.js'
+import { SETUP_HOOK_RELATIVE_PATH } from './hosted-runtime-assets.js'
 import {
   OPENCODE_PINNED_VERSION,
   createOpenCodeHarness,
@@ -89,6 +91,30 @@ export interface HostedLoopContext {
   anthropicDummyKey?: string
   /** OpenCode session id to resume on reconnect. */
   resumeAgentSessionId?: string
+  /**
+   * Startup egress-canary probe host (G5 / ALI-1006). When SET, the loop runs a
+   * POSITIVE-CONTROL canary before any agent work, probing BOTH this known
+   * NON-allowlisted (denied) host AND a known-allowed host (the Orizu API base,
+   * derived from `apiBaseUrl`). The run proceeds ONLY IF the allowed host is
+   * reachable AND the denied host is blocked (`egress_blocked` proof). Any other
+   * outcome FAILS the run closed (`egress_allowed`): the denied host reachable
+   * means the firewall did not take; the allowed host ALSO unreachable means the
+   * network is broken and we cannot distinguish policy-enforcement from a total
+   * outage — either way we must not proceed to real customer data. The host sets
+   * this only for providers that actually enforce egress (Vercel); it is UNSET
+   * for local-sim / no-policy runs, so the canary is skipped there. Default
+   * denied probe target: `example.com`.
+   */
+  egressCanaryHost?: string
+  /**
+   * When true, run the customer `.orizu/setup.sh` hook HERE (in the loop), AFTER
+   * the egress canary has proven the firewall is live and BEFORE harness work.
+   * The host sets this for enforced-egress providers so bootstrap DEFERS the hook
+   * (which would otherwise get network access before the canary could detect a
+   * silent firewall failure). UNSET for local-sim / no-policy runs, where
+   * bootstrap runs the hook inline as before. See docs sandbox-egress-policy §4.
+   */
+  runSetupHook?: boolean
 }
 
 export interface InstallResult {
@@ -122,6 +148,14 @@ export interface RunHostedLoopOptions {
   signal?: AbortSignal
   /** Extra verbatim secrets to redact (the bearer is added by the sink itself). */
   redactSecretsList?: readonly string[]
+  /** Egress-canary probe (default: a bounded `fetch` to https://<host>/).
+   *  Injectable so tests exercise both the blocked and reachable branches with
+   *  no real network. Called once per host (allowed + denied) by the canary. */
+  probeEgress?: (host: string) => Promise<EgressProbeResult>
+  /** Run the deferred customer setup hook (default: `bash .orizu/setup.sh` in the
+   *  workspace, non-fatal). Injectable so tests exercise the deferred-hook path
+   *  with no real filesystem or child process. */
+  runSetupHook?: (input: { workspaceDir: string }) => Promise<SetupHookOutcome> | SetupHookOutcome
 }
 
 export interface HostedLoopResult {
@@ -129,6 +163,189 @@ export interface HostedLoopResult {
   agentSessionId: string | null
   installOk: boolean
   error: string | null
+}
+
+/** Default egress-canary probe host (a known non-allowlisted destination). */
+export const DEFAULT_EGRESS_CANARY_HOST = 'example.com'
+/** Bound (ms) on the canary probe — a live firewall resets/times out fast; a
+ *  reachable host answers well within this. */
+const EGRESS_CANARY_TIMEOUT_MS = 5000
+
+export interface EgressProbeResult {
+  /** True when the denied host was reachable (policy did NOT take → fail closed). */
+  reachable: boolean
+  /** Short human/audit detail (HTTP status on reach, error class on block). */
+  detail: string
+}
+
+/**
+ * Default probe: attempt a bounded HTTPS GET to `host`. A live default-deny
+ * firewall makes this THROW for a DENIED host (connection reset / timeout / DNS
+ * failure) → `reachable: false`. Any response at all — even an error status —
+ * proves the host was reachable → `reachable: true`. Used for BOTH the allowed
+ * (positive-control) and denied probes.
+ */
+async function defaultProbeEgress(host: string): Promise<EgressProbeResult> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), EGRESS_CANARY_TIMEOUT_MS)
+  try {
+    const response = await fetch(`https://${host}/`, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: controller.signal,
+    })
+    return { reachable: true, detail: `reachable (HTTP ${response.status})` }
+  } catch (error) {
+    return { reachable: false, detail: `blocked (${error instanceof Error ? error.name : 'error'})` }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** The two hosts the positive-control canary probes. */
+export interface EgressCanaryTargets {
+  /** A known-ALLOWED host (the Orizu API base) that MUST be reachable — the
+   *  positive control that distinguishes "policy blocking" from "network dead". */
+  allowedHost: string
+  /** A known-DENIED, non-allowlisted host that MUST be blocked (`example.com`). */
+  deniedHost: string
+}
+
+export interface EgressCanaryDecision {
+  proceed: boolean
+  /** Null on proceed; a human/audit reason for the fail-closed decision. */
+  reason: string | null
+  allowed: EgressProbeResult
+  denied: EgressProbeResult
+}
+
+/**
+ * Run the startup egress canary as a POSITIVE CONTROL and emit the proof event
+ * through the (single-writer) sink. Probes BOTH a known-allowed host and the
+ * known-denied host, then decides:
+ *
+ *   - allowed REACHABLE and denied BLOCKED → the firewall is live AND the network
+ *     works → emit `egress_blocked` and PROCEED (the ONLY healthy outcome);
+ *   - denied REACHABLE → egress is NOT enforced → emit `egress_allowed`, FAIL
+ *     CLOSED;
+ *   - allowed ALSO UNREACHABLE (denied blocked but the positive control failed) →
+ *     we cannot tell policy-blocking from a total network outage → emit
+ *     `egress_allowed`, FAIL CLOSED.
+ *
+ * The `egress_blocked` kind therefore means EXACTLY "proceeded, positive control
+ * passed"; `egress_allowed` means "failed closed" (the payload `result` field
+ * distinguishes an unexpectedly-reachable denied host from an unreachable
+ * positive control). Old behavior — treating ANY denied-host throw (incl. a
+ * timeout under a total outage) as "blocked → proceed" — failed OPEN; this now
+ * fails closed on that ambiguity.
+ */
+export async function runEgressCanary(
+  targets: EgressCanaryTargets,
+  sink: { append: (event: HarnessEvent) => Promise<void> },
+  probe: (host: string) => Promise<EgressProbeResult>,
+  now: () => number = () => Date.now()
+): Promise<EgressCanaryDecision> {
+  const [allowed, denied] = await Promise.all([probe(targets.allowedHost), probe(targets.deniedHost)])
+  const checkedAt = new Date(now()).toISOString()
+  const positiveControl = {
+    host: targets.allowedHost,
+    reachable: allowed.reachable,
+    detail: allowed.detail,
+  }
+
+  // FAIL CLOSED: a denied host answered — the policy is not enforcing egress.
+  if (denied.reachable) {
+    await sink.append({
+      kind: 'egress_allowed',
+      critical: true,
+      payload: {
+        host: targets.deniedHost,
+        result: 'unexpectedly_reachable',
+        detail: denied.detail,
+        positiveControl,
+        checkedAt,
+      },
+    })
+    return {
+      proceed: false,
+      reason: `denied host ${targets.deniedHost} was reachable (${denied.detail}) — egress is not enforced`,
+      allowed,
+      denied,
+    }
+  }
+
+  // FAIL CLOSED: the denied host was blocked, but the positive control ALSO did
+  // not answer — the environment/network is broken and we cannot distinguish a
+  // policy block from a total outage. This is the case the old code got wrong.
+  if (!allowed.reachable) {
+    await sink.append({
+      kind: 'egress_allowed',
+      critical: true,
+      payload: {
+        host: targets.deniedHost,
+        result: 'positive_control_unreachable',
+        detail: denied.detail,
+        positiveControl,
+        checkedAt,
+      },
+    })
+    return {
+      proceed: false,
+      reason: `positive control ${targets.allowedHost} was unreachable (${allowed.detail}) — cannot distinguish egress enforcement from a network outage`,
+      allowed,
+      denied,
+    }
+  }
+
+  // HEALTHY: allowed reachable AND denied blocked → the firewall is live.
+  await sink.append({
+    kind: 'egress_blocked',
+    critical: true,
+    payload: {
+      host: targets.deniedHost,
+      result: 'blocked',
+      detail: denied.detail,
+      positiveControl,
+      checkedAt,
+    },
+  })
+  return { proceed: true, reason: null, allowed, denied }
+}
+
+/**
+ * Derive the known-ALLOWED positive-control host from the run's Orizu API base —
+ * always allowlisted (it is the agent's control-plane path) and ours, so it is
+ * the safest "must be reachable" signal. Falls back to a lenient host parse if
+ * the base is not a well-formed URL.
+ */
+export function egressCanaryAllowedHost(apiBaseUrl: string): string {
+  try {
+    return new URL(apiBaseUrl).hostname
+  } catch {
+    return apiBaseUrl.replace(/^[a-z]+:\/\//i, '').split('/')[0].split(':')[0]
+  }
+}
+
+/** Outcome of the deferred customer setup hook run inside the loop. */
+export interface SetupHookOutcome {
+  /** True when a `.orizu/setup.sh` existed and was executed. */
+  ran: boolean
+  /** True when the hook was absent OR exited 0 (non-fatal either way). */
+  ok: boolean
+  detail: string
+}
+
+/**
+ * Default deferred-setup-hook runner (in-sandbox): run `bash .orizu/setup.sh` in
+ * the workspace if present. Non-fatal — a missing hook or a non-zero exit is
+ * recorded and the loop proceeds, matching the bootstrap's inline behavior.
+ */
+function defaultRunSetupHook({ workspaceDir }: { workspaceDir: string }): SetupHookOutcome {
+  const hookPath = join(workspaceDir, SETUP_HOOK_RELATIVE_PATH)
+  if (!existsSync(hookPath)) return { ran: false, ok: true, detail: 'no .orizu/setup.sh' }
+  const res = spawnSync('bash', [SETUP_HOOK_RELATIVE_PATH], { cwd: workspaceDir, encoding: 'utf8' })
+  const ok = (res.status ?? 1) === 0
+  return { ran: true, ok, detail: ok ? 'setup.sh ok' : `setup.sh exit ${res.status ?? 'unknown'}` }
 }
 
 /** Model-key env vars whose value must be scrubbed from every run event. */
@@ -196,6 +413,94 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     now: opts.now,
     redactSecretsList: [...(opts.redactSecretsList ?? []), ...redactionListFromEnv()],
   })
+
+  // G5 startup canary (fail-closed, POSITIVE CONTROL): when the host applied an
+  // enforced egress policy it sets `egressCanaryHost`; probe BOTH the denied host
+  // AND a known-allowed host (the Orizu API base) BEFORE any agent work. Proceed
+  // ONLY IF the allowed host is reachable and the denied host is blocked; any
+  // other outcome (denied reachable → firewall not enforcing; allowed ALSO
+  // unreachable → network broken / indistinguishable from a block) emits
+  // `egress_allowed` and finishes the run FAILED rather than touch real customer
+  // data. A canary whose own event append fails is likewise fail-closed.
+  if (context.egressCanaryHost) {
+    const probe = opts.probeEgress ?? defaultProbeEgress
+    const targets: EgressCanaryTargets = {
+      allowedHost: egressCanaryAllowedHost(context.apiBaseUrl),
+      deniedHost: context.egressCanaryHost,
+    }
+    let canary: EgressCanaryDecision
+    try {
+      canary = await runEgressCanary(targets, sink, probe, opts.now)
+    } catch (error) {
+      // The canary's own event append failed — treat as fail-closed: we cannot
+      // prove the firewall is live, so do not proceed.
+      const message = error instanceof Error ? error.message : String(error)
+      if (!sink.sealed) {
+        try {
+          await sink.finish('failed', { summary: { error: `egress canary error: ${message}` } })
+        } catch {
+          // best-effort terminal
+        }
+      }
+      return { status: 'failed', agentSessionId: null, installOk: false, error: `egress canary error: ${message}` }
+    }
+    if (!canary.proceed) {
+      const error = `egress canary FAILED: ${canary.reason} — refusing to proceed`
+      if (!sink.sealed) {
+        try {
+          await sink.finish('failed', {
+            summary: {
+              error,
+              egressCanary: {
+                deniedHost: targets.deniedHost,
+                deniedReachable: canary.denied.reachable,
+                deniedDetail: canary.denied.detail,
+                allowedHost: targets.allowedHost,
+                allowedReachable: canary.allowed.reachable,
+                allowedDetail: canary.allowed.detail,
+              },
+            },
+          })
+        } catch {
+          // best-effort terminal
+        }
+      }
+      return { status: 'failed', agentSessionId: null, installOk: false, error }
+    }
+  }
+
+  // P3-a: run the DEFERRED customer setup hook now — AFTER the canary proved the
+  // firewall is live, BEFORE any harness/network work. bootstrap deferred it (for
+  // enforced-egress providers) precisely so its network access could not precede
+  // the canary. Non-fatal, single-writer (this loop sink owns the run now).
+  if (context.runSetupHook) {
+    try {
+      const runHook = opts.runSetupHook ?? defaultRunSetupHook
+      const outcome = await runHook({ workspaceDir: context.workspaceDir })
+      await sink.append({
+        kind: 'artifact',
+        payload: {
+          step: outcome.ran ? 'setup_hook_completed' : 'setup_hook_skipped',
+          ok: outcome.ok,
+          detail: outcome.detail,
+          deferred: true,
+        },
+      })
+    } catch (error) {
+      // The hook run/record is best-effort — never block the run on it.
+      const message = error instanceof Error ? error.message : String(error)
+      if (!sink.sealed) {
+        try {
+          await sink.append({
+            kind: 'artifact',
+            payload: { step: 'setup_hook_error', ok: false, detail: message, deferred: true },
+          })
+        } catch {
+          // best-effort
+        }
+      }
+    }
+  }
 
   let spawned: SpawnedOpenCode | null = null
   let agentSessionId: string | null = null

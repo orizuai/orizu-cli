@@ -13,12 +13,13 @@
  * (session length) — the adapter NEVER lets Vercel's 5-minute default apply.
  * Default 60 min, hard cap 24 h.
  *
- * G5 (ALI-1006) owns the egress ALLOWLIST CONTENT; this adapter only plumbs the
- * `egressPolicy` option through to the Sandbox firewall (`networkPolicy`) at
- * create. The model-key credential-broker path (`buildModelKeyBrokerPolicy`,
- * G3/ALI-1004) is built on the SAME firewall seam: a per-domain request
- * transform injects the model key AT THE PROXY, so the raw key never enters the
- * sandbox (see docs/.../sandbox-secrets-policy.md §3).
+ * G5 (ALI-1006) owns the egress ALLOWLIST CONTENT (`egress-policy.ts` →
+ * `buildEgressPolicy`); this adapter only plumbs the `egressPolicy` option
+ * through to the Sandbox firewall (`networkPolicy`) at create. The model-key
+ * credential broker (G3/ALI-1004) is COMPOSED into that same default-deny policy
+ * by `buildEgressPolicy`: a per-domain request transform injects the model key AT
+ * THE PROXY, so the raw key never enters the sandbox (see
+ * docs/.../sandbox-secrets-policy.md §3).
  */
 
 import type {
@@ -26,7 +27,6 @@ import type {
   GitCloneParams,
   GitPushParams,
   SandboxCreateOpts,
-  SandboxEgressPolicy,
   SandboxProvider,
   SandboxSession,
 } from './sandbox-provider.js'
@@ -271,59 +271,12 @@ export function createVercelProvider(
   }
 }
 
-// -- Model-key credential brokering (G3 / ALI-1004, item 4) ------------------
-
-/** Default model endpoint the broker policy injects a key for. */
-export const ANTHROPIC_API_HOST = 'api.anthropic.com'
-/** Anthropic authenticates with `x-api-key` (not a Bearer Authorization). */
-export const ANTHROPIC_API_KEY_HEADER = 'x-api-key'
-
-export interface ModelKeyBrokerOptions {
-  /** The raw model API key. Stays HOST-side in the firewall policy; NEVER enters
-   *  the sandbox — the proxy sets it on matching egress. */
-  apiKey: string
-  /** Domain to inject the key for (default api.anthropic.com). */
-  host?: string
-  /** Header the endpoint authenticates with (default x-api-key). */
-  headerName?: string
-  /** G5's allowlist to merge the injection rule INTO. When omitted or
-   *  'allow-all', the result stays permissive (`'*': []`) for v0 — G5 tightens
-   *  it later — while still injecting the key for the model host. */
-  basePolicy?: SandboxEgressPolicy
-}
-
-function normalizeAllow(
-  policy: SandboxEgressPolicy | undefined
-): Record<string, { transform?: { headers?: Record<string, string> }[] }[]> {
-  if (!policy || policy === 'allow-all') return { '*': [] }
-  if (policy === 'deny-all') return {}
-  const allow = policy.allow
-  if (!allow) return {}
-  if (Array.isArray(allow)) {
-    const out: Record<string, { transform?: { headers?: Record<string, string> }[] }[]> = {}
-    for (const domain of allow) out[domain] = []
-    return out
-  }
-  return { ...allow }
-}
-
-/**
- * Build an egress policy that injects `apiKey` as the model endpoint's auth
- * header AT THE PROXY (Vercel firewall request transform). The key lives only in
- * the policy the HOST sends to Vercel's control plane at create — it is never
- * written into the sandbox env, disk, or a run event. OpenCode inside the
- * sandbox is given a NON-SECRET dummy key so it forms requests; the proxy
- * overrides the header with the real value.
- */
-export function buildModelKeyBrokerPolicy(opts: ModelKeyBrokerOptions): SandboxEgressPolicy {
-  const host = opts.host ?? ANTHROPIC_API_HOST
-  const headerName = opts.headerName ?? ANTHROPIC_API_KEY_HEADER
-  const allow = normalizeAllow(opts.basePolicy)
-  allow[host] = [{ transform: [{ headers: { [headerName]: opts.apiKey } }] }]
-  // Preserve v0 permissiveness unless G5's basePolicy explicitly constrains it.
-  if (opts.basePolicy === undefined || opts.basePolicy === 'allow-all') {
-    if (!('*' in allow)) allow['*'] = []
-  }
-  const subnets = typeof opts.basePolicy === 'object' ? opts.basePolicy.subnets : undefined
-  return subnets ? { allow, subnets } : { allow }
-}
+// -- Model-key credential brokering (G3 / ALI-1004) --------------------------
+//
+// The model-key broker is NOT a separate builder anymore: `egress-policy.ts` →
+// `buildEgressPolicy({ modelKeyBroker })` COMPOSES the key-injection transform
+// onto the model host's rule inside the ONE default-deny allowlist, so brokering
+// and allowlisting cannot disagree. The prior permissive `buildModelKeyBrokerPolicy`
+// (which emitted an allow-all `'*': []`) has been DELETED — a default-deny policy
+// must only ever come from `buildEgressPolicy`. See
+// docs/requirements/hosted-customer-workbench/sandbox-egress-policy.md §2.

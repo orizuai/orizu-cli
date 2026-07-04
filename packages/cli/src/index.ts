@@ -60,6 +60,7 @@ import {
 } from './workspace.js'
 import { connectorsCommand } from './connectors-cli.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
+import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
 import { hostedCommand } from './hosted-session-cli.js'
@@ -6662,6 +6663,10 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
   if (command === 'team' && (subcommand === 'kill-agents' || subcommand === 'release-agents')) {
     process.exitCode = await killSwitchCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, printErr: printError })
+    return
+  }
+  if (command === 'team' && subcommand === 'egress-allowlist') {
+    process.exitCode = await egressAllowlistCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, printErr: printError })
     return
   }
 

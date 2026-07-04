@@ -166,6 +166,14 @@ export interface HostedBootstrapOptions {
   insecureHttpHosts?: readonly string[]
   /** Helper cache refresh buffer (ms) — overridable so tests can force refresh. */
   cacheBufferMs?: number
+  /**
+   * Defer the customer `.orizu/setup.sh` hook to the in-sandbox loop (P3-a). When
+   * true, bootstrap does NOT run the hook; it records `setup_hook_deferred` and
+   * the loop runs it AFTER its egress canary passes. The host sets this for
+   * enforced-egress providers so the hook's network access cannot precede the
+   * canary's detection of a silent firewall failure. Default false (run inline).
+   */
+  deferSetupHook?: boolean
   /** Published CLI version to install in-sandbox (default 'latest'). */
   cliVersion?: string
   /** Override the CLI-install shell command (tests inject a deterministic one). */
@@ -387,7 +395,16 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
     })
 
     // 5 — Customer setup hook (fresh-boot only, non-fatal, output captured).
+    // P3-a: for enforced-egress providers the host DEFERS this hook to the loop,
+    // which runs it AFTER the egress canary proves the firewall is live — so the
+    // hook's network access can never precede detection of a silent firewall
+    // failure. Here we only record the deferral (the loop emits the real result).
     currentStep = 'setup_hook'
+    if (opts.deferSetupHook) {
+      record('setup_hook_deferred', true, 'deferred to loop (runs after egress canary)')
+      await sink.append('setup_hook_deferred', { reason: 'egress canary must pass before customer setup.sh runs' })
+      return { ok: true, steps, events: sink.recorded, paths, sweep: null, failure: null }
+    }
     const hookRel = `${workspaceDir}/${SETUP_HOOK_RELATIVE_PATH}`
     if (await session.fileExists(hookRel)) {
       const hook = await session.exec(`bash ${SETUP_HOOK_RELATIVE_PATH}`, { cwd: workspaceDir })

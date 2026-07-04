@@ -45,9 +45,16 @@ const PHASE_BY_EVENT_TYPE: Record<string, SessionPhase> = {
   cli_installed: 'bootstrap',
   setup_hook_completed: 'bootstrap',
   setup_hook_skipped: 'bootstrap',
+  // P3-a: for enforced-egress providers bootstrap defers the hook to the loop
+  // (which runs it after the egress canary); this marks the deferral in-timeline.
+  setup_hook_deferred: 'bootstrap',
   // ready: the agent harness is up and holds a live credential
   agent_ready: 'ready',
   agent_token: 'ready',
+  // The startup egress canary (G5) fires in the ready window, right after
+  // bootstrap and before any agent work — proof the firewall is live.
+  egress_blocked: 'ready',
+  egress_allowed: 'ready',
   // credential_rotated / credential_mint_failed are RESERVED vocabulary, NOT
   // emitted today (host-side run-stream emission was rejected as a single-writer
   // violation; the durable credential-use audit is the per-mint DB row). They

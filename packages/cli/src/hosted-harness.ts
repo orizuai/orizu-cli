@@ -72,6 +72,13 @@ export const HARNESS_EVENT_KINDS = {
   git_sync: 'git_sync',
   artifact: 'artifact',
   session_title: 'session_title',
+  // Egress-canary results (G5 / ALI-1006). NOT produced by a harness — the
+  // in-sandbox loop emits these through the SAME single-writer run-event sink
+  // right after bootstrap (the startup canary that proves the firewall is live).
+  // They are part of the §4b run-event vocabulary (G6 lists "egress attempt")
+  // and never terminal, so they append like any structural event.
+  egress_blocked: 'egress_blocked',
+  egress_allowed: 'egress_allowed',
   error: 'error',
   execution_complete: 'execution_complete',
 } as const

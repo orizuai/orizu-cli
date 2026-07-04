@@ -47,6 +47,17 @@ import { redactSecrets } from './secret-redaction.js'
 
 export type HostedFetch = (url: string, init?: RequestInit) => Promise<Response>
 
+// -- Egress-audit vocabulary (G5 / ALI-1006) ---------------------------------
+// The startup egress CANARY (in-sandbox loop, `hosted-loop.ts`) emits ONE of
+// these right after bootstrap: `egress_blocked` when a known non-allowlisted
+// host is correctly denied (the firewall is live → proof), or `egress_allowed`
+// when it is UNEXPECTEDLY reachable (the policy did NOT take → the loop then
+// fails the run closed). Emitted through the loop's single sink (single-writer
+// invariant preserved — no host-side second writer). See
+// docs/.../sandbox-egress-policy.md and t1-t7-adversarial-results.md (T1).
+export const EGRESS_ALLOWED_EVENT_TYPE = 'egress_allowed'
+export const EGRESS_BLOCKED_EVENT_TYPE = 'egress_blocked'
+
 // -- Mapping table (audit §4b, in-scope rows) --------------------------------
 // Kinds NOT present here are handled out-of-band:
 //   execution_complete / error → terminal PATCH (never a raw event);
@@ -62,6 +73,10 @@ const EVENT_TYPE_BY_KIND: Partial<Record<HarnessEventKind, string>> = {
   git_sync: 'repo_sync',
   artifact: 'artifact',
   session_title: 'session_title',
+  // Egress-canary proof events (G5 / ALI-1006) — emitted by the in-sandbox loop
+  // through this SAME sink (single writer). See EGRESS_*_EVENT_TYPE below.
+  egress_blocked: EGRESS_BLOCKED_EVENT_TYPE,
+  egress_allowed: EGRESS_ALLOWED_EVENT_TYPE,
 }
 
 /** The RunAPI event type a harness kind maps to, or null if it is not appendable
@@ -87,15 +102,6 @@ export const TRANSCRIPT_TAIL_MAX_CHARS = 16_384
 // coordinated before these are wired to the stream.
 export const CREDENTIAL_ROTATED_EVENT_TYPE = 'credential_rotated'
 export const CREDENTIAL_MINT_FAILED_EVENT_TYPE = 'credential_mint_failed'
-
-// -- Reserved egress-audit vocabulary (G5 / ALI-1006, NOT emitted yet) -------
-// G6's list includes "egress attempt" events, but egress default-deny +
-// blocked-attempt logging is the G5 slice. These constants RESERVE the event
-// types so the vocabulary is stable when the G5 firewall lands; nothing emits
-// them in this slice. Any future emitter is subject to the same single-writer
-// constraint noted above. See docs/.../t1-t7-adversarial-results.md (T1).
-export const EGRESS_ALLOWED_EVENT_TYPE = 'egress_allowed'
-export const EGRESS_BLOCKED_EVENT_TYPE = 'egress_blocked'
 
 export type TerminalStatus = 'succeeded' | 'failed' | 'cancelled'
 

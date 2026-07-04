@@ -50,7 +50,8 @@ import {
 } from './hosted-bootstrap.js'
 import { resumeRunEventSink } from './hosted-run-event-sink.js'
 import { BEARER_BASENAME } from './hosted-runtime-assets.js'
-import { buildModelKeyBrokerPolicy, createVercelProvider } from './vercel-sandbox-provider.js'
+import { createVercelProvider } from './vercel-sandbox-provider.js'
+import { buildEgressPolicy, DEFAULT_EGRESS_CANARY_HOST } from './egress-policy.js'
 import { hostedLoopCommand, type HostedLoopContext } from './hosted-loop.js'
 import { authedFetch } from './http.js'
 import { resolveBaseUrl } from './http.js'
@@ -188,7 +189,15 @@ export interface StartHostedSessionOptions {
   rawFetch?: HostedFetch
   resolveRepo?: (workspaceId: string) => Promise<RepoResolution>
   launchLoop?: (params: LaunchLoopParams) => Promise<void>
-  buildEgressPolicy?: (modelApiKey: string | undefined) => SandboxEgressPolicy | undefined
+  /** Build the sandbox egress policy from the resolved inputs. Default: G5
+   *  `buildEgressPolicy` — DEFAULT-DENY base allowlist (Orizu API + model provider
+   *  + git) with the model-key broker composed on, plus the per-team additive
+   *  domains. Injectable for tests. */
+  buildEgressPolicy?: (input: { modelApiKey?: string; extraDomains: readonly string[] }) => SandboxEgressPolicy | undefined
+  /** Resolve the per-team ADDITIVE egress domains for this workspace's team
+   *  (base hosts are code-owned and always present). Default: no extra domains —
+   *  the production CLI injects a route-backed resolver. */
+  resolveExtraEgressDomains?: (workspaceId: string) => Promise<readonly string[]>
   rotationIntervalMs?: number
   agentTokenTtlMinutes?: number
   now?: () => number
@@ -334,10 +343,18 @@ export async function startHostedSession(
   const rawFetch = opts.rawFetch ?? (globalThis.fetch as HostedFetch)
   const log = opts.logLine ?? ((): void => {})
   const model = opts.model ?? DEFAULT_HOSTED_MODEL
+  // G5: DEFAULT-DENY egress with the code-owned base allowlist (Orizu API + model
+  // provider + git host), the model-key broker composed onto the model rule, and
+  // the resolved per-team additive domains. The Orizu host is derived from the
+  // API base URL so a self-hosted / staging base allowlists the right host.
   const buildEgress =
     opts.buildEgressPolicy ??
-    ((key: string | undefined): SandboxEgressPolicy | undefined =>
-      key ? buildModelKeyBrokerPolicy({ apiKey: key }) : undefined)
+    ((input: { modelApiKey?: string; extraDomains: readonly string[] }): SandboxEgressPolicy | undefined =>
+      buildEgressPolicy({
+        orizuBaseUrl: opts.apiBaseUrl,
+        extraDomains: input.extraDomains,
+        modelKeyBroker: input.modelApiKey ? { apiKey: input.modelApiKey } : undefined,
+      }))
 
   // (a) open a workspace session (its own session branch is cut server-side).
   const sessionResp = await postJson(
@@ -376,12 +393,26 @@ export async function startHostedSession(
     : defaultResolveRepo(opts.fetcher, opts.workspaceId, sessionId))
 
   // (d) create the sandbox — timeout ALWAYS set from --duration.
-  const egressPolicy = buildEgress(opts.modelApiKey)
+  // Resolve the per-team ADDITIVE egress domains (best-effort: a resolution
+  // failure falls back to the base allowlist only — never widens on error).
+  let extraEgressDomains: readonly string[] = []
+  if (opts.resolveExtraEgressDomains) {
+    try {
+      extraEgressDomains = await opts.resolveExtraEgressDomains(opts.workspaceId)
+    } catch (error) {
+      log(`egress allowlist resolve failed (using base allowlist only): ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  const egressPolicy = buildEgress({ modelApiKey: opts.modelApiKey, extraDomains: extraEgressDomains })
   const sandbox = await opts.provider.createSandbox({
     timeoutMs: clampDuration(opts.durationMinutes) * 60 * 1000,
     runtime: opts.runtime,
     egressPolicy,
   })
+  // Arm the in-sandbox startup canary ONLY for providers that actually enforce
+  // egress at the firewall (Vercel). local-sim ignores the policy, so probing a
+  // denied host there would hit the real network and wrongly fail the run closed.
+  const egressCanaryHost = opts.provider.kind === 'vercel' ? DEFAULT_EGRESS_CANARY_HOST : undefined
   log(`sandbox ${sandbox.id} (${clampDuration(opts.durationMinutes)}m)`)
 
   const base: StartHostedSessionResult = {
@@ -420,6 +451,9 @@ export async function startHostedSession(
     fetchImpl: rawFetch,
     host: opts.host,
     insecureHttpHosts: opts.insecureHttpHosts,
+    // P3-a: when egress is enforced (canary armed), DEFER the customer setup hook
+    // to the loop so it runs only AFTER the canary proves the firewall is live.
+    deferSetupHook: egressCanaryHost !== undefined,
   })
 
   if (!bootstrap.ok) {
@@ -460,6 +494,10 @@ export async function startHostedSession(
     messageId: `${runId}:task`,
     author: { name: 'Orizu Agent', email: 'agent@orizu.ai' },
     anthropicDummyKey: opts.modelApiKey ? ANTHROPIC_DUMMY_KEY : undefined,
+    egressCanaryHost,
+    // Run the DEFERRED setup hook in the loop iff bootstrap deferred it (same
+    // condition: an enforced-egress provider armed the canary).
+    runSetupHook: egressCanaryHost !== undefined,
   }
   await (opts.launchLoop ?? defaultLaunchLoop)({
     session: sandbox,
@@ -711,12 +749,21 @@ export async function hostedCommand(args: string[], io: HostedCommandIo): Promis
   const provider: SandboxProvider =
     providerKind === 'local-sim' ? createLocalSimProvider() : createVercelProvider()
 
+  const hostFetcher: HostFetcher = (path, init) => authedFetch(path, init)
   const result = await startHostedSession({
-    fetcher: (path, init) => authedFetch(path, init),
+    fetcher: hostFetcher,
     apiBaseUrl: resolveBaseUrl(),
     provider,
     workspaceId,
     task,
+    // Resolve the per-team additive egress domains at create (best-effort — a
+    // failure falls back to the base allowlist only). Human-scoped read.
+    resolveExtraEgressDomains: async (id: string): Promise<readonly string[]> => {
+      const response = await hostFetcher(`/api/cli/workspaces/${encodeURIComponent(id)}/egress-allowlist`)
+      if (!response.ok) return []
+      const data = (await response.json().catch(() => ({}))) as { extraDomains?: unknown }
+      return Array.isArray(data.extraDomains) ? data.extraDomains.filter((d): d is string => typeof d === 'string') : []
+    },
     projectSlug: argVal(args, '--project'),
     model: argVal(args, '--model') ?? undefined,
     durationMinutes: numFlag(args, '--duration'),
