@@ -86,23 +86,40 @@ export async function runGithubLink(teamSlug: string, io: GithubLinkIo): Promise
 
   io.print('   Connect your team GitHub org by installing the Orizu GitHub App:')
   io.print(`     ${installUrl}`)
+  // Bug 2: personal accounts cannot host an auto-provisioned workbench.
+  io.print('   • Install into a GitHub ORGANIZATION, not a personal account. Personal')
+  io.print('     accounts are not supported for auto-provisioning; creating an org is free.')
+  // Bug 4: repo selection guidance — GitHub forces picking at least one repo.
+  io.print('   • On the "Repository access" step choose "Only select repositories" and pick')
+  io.print('     any one repo (GitHub requires at least one). Orizu adds the workbench repo')
+  io.print('     it creates automatically — do NOT choose "All repositories".')
   if (io.openUrl) {
     io.openUrl(installUrl)
-    io.print('   Opened the install page in your browser. Waiting for you to finish...')
+    io.print('   Opened the install page in your browser.')
   } else {
-    io.print('   Open the URL above, install the App, then return here. Waiting...')
+    io.print('   Open the URL above and install the App, then return here.')
   }
+  io.print(
+    `   Waiting for you to finish installing in the browser… (Ctrl+C to abort; resume later with \`orizu github link --team ${teamSlug}\`).`
+  )
 
   const now = io.now ?? (() => Date.now())
   const sleep = io.sleep ?? defaultSleep
   const interval = io.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const timeout = io.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS
   const deadline = now() + timeout
+  // Periodic heartbeat so a long install does not look hung; never echoes state.
+  const HEARTBEAT_MS = 15000
+  let lastHeartbeat = now()
 
   for (;;) {
     const poll = await fetcher(`/api/cli/github/link?state=${encodeURIComponent(state)}`)
     if (poll.ok) {
-      const data = (await poll.json()) as { status: string; orgLogin?: string | null }
+      const data = (await poll.json()) as {
+        status: string
+        orgLogin?: string | null
+        error?: string
+      }
       if (data.status === 'active') {
         io.print(`   GitHub org connected${data.orgLogin ? ` (${data.orgLogin})` : ''}.`)
         return { status: 'active', orgLogin: data.orgLogin ?? null, alreadyLinked: false }
@@ -110,12 +127,25 @@ export async function runGithubLink(teamSlug: string, io: GithubLinkIo): Promise
       if (data.status === 'pending_confirmation') {
         return await confirmLink(teamSlug, data.orgLogin ?? null, io, fetcher)
       }
+      // Distinguishable terminal errors (personal account / expired nonce): print
+      // the server's reason and exit non-zero instead of polling until timeout.
+      if (data.status === 'unsupported_account' || data.status === 'expired') {
+        throw new Error(
+          data.error ??
+            `GitHub link could not be completed. Re-run \`orizu github link --team ${teamSlug}\`.`
+        )
+      }
+      // status 'pending' → keep waiting.
     }
     if (now() >= deadline) {
       throw new Error(
         'Timed out waiting for the GitHub App install to complete. ' +
           `Resume with \`orizu github link --team ${teamSlug}\` after finishing the install.`
       )
+    }
+    if (now() - lastHeartbeat >= HEARTBEAT_MS) {
+      io.print('   …still waiting for the GitHub install to complete.')
+      lastHeartbeat = now()
     }
     await sleep(interval)
   }
