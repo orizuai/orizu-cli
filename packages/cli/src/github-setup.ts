@@ -19,8 +19,19 @@ import { mkdirSync } from 'fs'
 import { join } from 'path'
 
 import { authedFetch } from './http.js'
+import { assertWorkspaceDirUsable } from './workspace.js'
 
 export type SetupFetcher = (path: string, init?: RequestInit) => Promise<Response>
+
+/**
+ * Strip terminal control characters from server-supplied strings before they
+ * are printed (mirrors index.ts `sanitizeTerminalText`), so a hostile or
+ * mangled provisioning `warnings[]`/`defaultBranch` value can't inject escape
+ * sequences into the user's terminal.
+ */
+function sanitizeServerText(value: unknown): string {
+  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+}
 
 export interface GithubLinkIo {
   print: (line: string) => void
@@ -278,9 +289,25 @@ export async function runHostedAttach(
     if (!response.ok) {
       throw new Error(`Failed to provision workbench repo: ${await readError(response)}`)
     }
-    const data = (await response.json()) as { repo: string }
+    const data = (await response.json()) as {
+      repo: string
+      defaultBranch?: string
+      rulesetApplied?: boolean
+      warnings?: string[]
+    }
     repoFullName = data.repo
     provisioned = true
+
+    if (data.rulesetApplied === true) {
+      io.print(
+        `   Default-branch protection applied (ruleset "orizu-default-branch-protection"${
+          data.defaultBranch ? ` on ${sanitizeServerText(data.defaultBranch)}` : ''
+        }).`
+      )
+    }
+    for (const warning of data.warnings ?? []) {
+      io.print(`   ⚠ ${sanitizeServerText(warning)}`)
+    }
   }
 
   const cleanUrl = `https://github.com/${repoFullName}.git`
@@ -387,6 +414,15 @@ export async function runInteractiveHostedSetup(
   if (mode === 'local') {
     return { mode, attached: false, repoFullName: null }
   }
+
+  // The hosted paths (attach / provision-then-attach) clone the workbench repo
+  // into targetDir, and `git clone` refuses ANY non-empty directory. Fail fast
+  // here — before the provision call and the clone's git invocation, so no
+  // partial server/git state is created — with a friendly, actionable message
+  // (including the `--local` escape hatch). Only this real-clone path is gated;
+  // --local, --skip-login (not signed in), and a declined connect prompt never
+  // reach here, so they scaffold locally unblocked.
+  assertWorkspaceDirUsable(input.targetDir)
 
   const result = await runHostedAttach(
     { workspaceId: workspace.id, repoFullName, targetDir: input.targetDir },

@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -183,6 +184,67 @@ export function getWorkspaceRoot(cwd?: string): string {
 
 export function workspaceExists(cwd?: string): boolean {
   return existsSync(join(getWorkspaceRoot(cwd), 'orizu.team.json'))
+}
+
+/**
+ * `orizu setup`'s hosted path clones the workbench repo into the resolved
+ * workspace root; `git clone` refuses to write into ANY non-empty directory —
+ * including one holding only macOS `.DS_Store` cruft — and fails late with a
+ * raw git error (ALI QA: founder ran `orizu setup` from an existing folder).
+ * Call this right before the hosted clone so the failure is immediate and
+ * actionable instead of surfacing mid-clone.
+ *
+ * A directory is usable only when it doesn't exist yet, is STRICTLY empty
+ * (`readdirSync(...).length === 0` — no `.DS_Store` allowance, since git itself
+ * grants none), or is already a recognized Orizu workspace for a re-run
+ * (`workspaceExists`, i.e. it has `orizu.team.json`) — the legitimate
+ * idempotent-setup case, which must proceed. Symlinks are followed (a symlink
+ * to an empty dir is fine); a file, an unreadable dir, and a non-empty dir each
+ * get a distinct, friendly message.
+ */
+export function assertWorkspaceDirUsable(root: string): void {
+  const resolvedRoot = resolve(root)
+  if (!existsSync(resolvedRoot)) return
+  if (workspaceExists(resolvedRoot)) return
+
+  let stat
+  try {
+    // statSync (not lstatSync) follows symlinks, so a symlink to an empty dir
+    // is treated as the empty dir it points at.
+    stat = statSync(resolvedRoot)
+  } catch {
+    // Broken symlink / vanished between checks — nothing to clone over.
+    return
+  }
+
+  if (!stat.isDirectory()) {
+    throw new Error(
+      `The path ${resolvedRoot} is a file, but \`orizu setup\` needs a directory to clone your workbench repo into. `
+      + 'Choose an empty directory (or pass `--workspace <empty-path>`, or `--local` to scaffold a local-only workspace elsewhere), then re-run `orizu setup`.'
+    )
+  }
+
+  let entries: string[]
+  try {
+    entries = readdirSync(resolvedRoot)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EACCES' || code === 'EPERM') {
+      throw new Error(
+        `The directory ${resolvedRoot} can't be read (permission denied). `
+        + 'Fix its permissions, or pass `--workspace <empty-path>` (or `--local`), then re-run `orizu setup`.'
+      )
+    }
+    throw error
+  }
+  if (entries.length === 0) return
+
+  throw new Error(
+    `The directory ${resolvedRoot} is not empty. \`orizu setup\` clones your workbench repo here and needs an empty directory. `
+    + 'Create and enter an empty sub-directory (for example: `mkdir orizu-workbench && cd orizu-workbench`), '
+    + 'pass `--workspace <empty-path>`, or pass `--local` to scaffold a local-only workspace in place, '
+    + 'then re-run `orizu setup`.'
+  )
 }
 
 function formatJson(value: Record<string, unknown>): string {

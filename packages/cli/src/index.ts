@@ -3820,7 +3820,7 @@ async function setupCommand() {
   const skipConfirm = hasArg('--yes')
   const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal()
   const workspaceArg = getOptionalArgValue('--workspace')
-  const workspaceRoot = workspaceArg ? resolve(expandHomePath(workspaceArg)) : process.cwd()
+  const workspaceRoot = workspaceArg ? resolve(expandHomePath(workspaceArg)) : process.cwd() // non-empty-dir guard now lives next to the hosted clone in runInteractiveHostedSetup, so --skip-login / decline-connect / local scaffolds are never blocked
   const teamArg = getOptionalArgValue('--team')
   const projectArg = getOptionalArgValue('--project')
   const setupSkillHome = resolveSetupSkillHome()
