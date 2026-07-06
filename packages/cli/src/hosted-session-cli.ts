@@ -49,7 +49,7 @@ import {
   type HostedRuntimePaths,
 } from './hosted-bootstrap.js'
 import { resumeRunEventSink } from './hosted-run-event-sink.js'
-import { BEARER_BASENAME } from './hosted-runtime-assets.js'
+import { AGENT_GIT_IDENTITY, BEARER_BASENAME } from './hosted-runtime-assets.js'
 import { createVercelProvider } from './vercel-sandbox-provider.js'
 import { buildEgressPolicy, DEFAULT_EGRESS_CANARY_HOST } from './egress-policy.js'
 import { hostedLoopCommand, type HostedLoopContext } from './hosted-loop.js'
@@ -534,7 +534,7 @@ export async function startHostedSession(
     model,
     reasoningEffort: opts.reasoningEffort,
     messageId: `${runId}:task`,
-    author: { name: 'Orizu Agent', email: 'agent@orizu.ai' },
+    author: AGENT_GIT_IDENTITY,
     anthropicDummyKey: opts.modelApiKey ? ANTHROPIC_DUMMY_KEY : undefined,
     // ALI-1017: skip the in-sandbox opencode install when the image ships it.
     prebaked: prebakedImage,

@@ -35,6 +35,15 @@ export const DEFAULT_CACHE_REFRESH_BUFFER_MS = 5 * 60 * 1000
  *  `.openinspect/setup.sh` — fresh-boot only, non-fatal, output captured). */
 export const SETUP_HOOK_RELATIVE_PATH = '.orizu/setup.sh'
 
+/**
+ * The git author identity for hosted-agent commits. Bootstrap configures it
+ * repo-LOCAL in the sandbox clone (never --global) so agent `git commit` works
+ * out of the box — the sandbox has no ambient identity and commits died with
+ * "Author identity unknown" (ALI-1036, found live in QA-3). The loop uses the
+ * same identity for run-event attribution; keep them identical.
+ */
+export const AGENT_GIT_IDENTITY = { name: 'Orizu Agent', email: 'agent@orizu.ai' } as const
+
 // -- Pre-baked runtime marker (ALI-1017) -------------------------------------
 
 /**

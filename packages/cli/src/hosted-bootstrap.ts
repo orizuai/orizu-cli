@@ -27,6 +27,7 @@ import type { SandboxSession } from './sandbox-provider.js'
 import { sweepForTokenResidue, type HygieneFinding } from './daytona-slice.js'
 import { redactSecrets } from './secret-redaction.js'
 import {
+  AGENT_GIT_IDENTITY,
   BEARER_BASENAME,
   BOOT_CONTEXT_BASENAME,
   DEFAULT_CACHE_REFRESH_BUFFER_MS,
@@ -410,6 +411,11 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
     // Persist the helper repo-LOCAL (never --global) for subsequent fetch/push.
     await session.exec(`git -C ${workspaceDir} config credential.helper ${shellSingleQuote(helperValue)}`)
     await session.exec(`git -C ${workspaceDir} config credential.useHttpPath true`)
+    // Repo-LOCAL agent identity: the sandbox has no ambient git identity, so
+    // without this every agent `git commit` dies with "Author identity unknown"
+    // (ALI-1036, found live in QA-3). Same identity the loop stamps on events.
+    await session.exec(`git -C ${workspaceDir} config user.name ${shellSingleQuote(AGENT_GIT_IDENTITY.name)}`)
+    await session.exec(`git -C ${workspaceDir} config user.email ${shellSingleQuote(AGENT_GIT_IDENTITY.email)}`)
     record('repo_cloned', true, `cloned ${opts.sessionBranch}`)
     await sink.append('repo_cloned', { branch: opts.sessionBranch, workspaceDir })
 
