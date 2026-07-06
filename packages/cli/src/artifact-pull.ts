@@ -1,10 +1,11 @@
 /**
- * Runner/optimizer artifact pull (symmetric with `runners push` /
- * `optimizers push`): resolve the artifact by id or name, download the
- * content-addressed zip from storage, and extract it into --out. Version
- * metadata is written to .orizu/pull.json — .orizu/ is excluded from artifact
- * zips (see artifact-archive.ts), so a pulled directory re-pushes with an
- * identical content hash.
+ * Runner/optimizer artifact commands: list (discover names, version ids, and
+ * labels) and pull (symmetric with `runners push` / `optimizers push` —
+ * resolve by id or name, download the content-addressed zip from storage,
+ * and extract it into --out). Pull writes version metadata to
+ * .orizu/pull.json — .orizu/ is excluded from artifact zips (see
+ * artifact-archive.ts), so a pulled directory re-pushes with an identical
+ * content hash.
  *
  * Lives outside index.ts per the CLI index line ratchet (ALI-976): this module
  * owns its own argument parsing and printing via injected io.
@@ -84,7 +85,67 @@ interface PullArtifactResponse {
   labels?: Array<{ label: string; runnerVersionId?: string; optimizerVersionId?: string }>
 }
 
-export async function pullArtifactCommand(args: string[], io: PullArtifactIo) {
+interface ArtifactListEntry {
+  id: string
+  name: string
+  description?: string | null
+  optimizerFamily?: string | null
+  latestVersionId?: string | null
+  versionCount?: number
+  labels?: Array<{ label: string; runnerVersionId?: string; optimizerVersionId?: string }>
+}
+
+export async function runnerOptimizerCommand(args: string[], io: PullArtifactIo) {
+  if (args[1] === 'list') {
+    await listArtifactsCommand(args, io)
+    return
+  }
+  await pullArtifactCommand(args, io)
+}
+
+async function listArtifactsCommand(args: string[], io: PullArtifactIo) {
+  const kind: PullableArtifactKind = args[0] === 'runners' ? 'runner' : 'optimizer'
+  const plural = kind === 'runner' ? 'runners' : 'optimizers'
+  const fetcher = io.fetcher || authedFetch
+  const project = argValue(args, '--project') || await io.resolveProjectSlug(null)
+
+  const response = await fetcher(`/api/cli/${plural}?project=${encodeURIComponent(project)}`)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${plural}: ${await response.text()}`)
+  }
+
+  const data = await parseJsonPayload<Record<string, ArtifactListEntry[]>>(response, `${plural} list`)
+  if (io.json) {
+    io.print(JSON.stringify(data))
+    return
+  }
+
+  const items = data[plural] || []
+  if (items.length === 0) {
+    io.print(`No ${plural} found.`)
+    return
+  }
+
+  const rows = items.map(item => ({
+    id: sanitizeTerminalText(item.id),
+    name: sanitizeTerminalText(item.name),
+    versions: String(item.versionCount ?? 0),
+    latest: sanitizeTerminalText(item.latestVersionId || '-'),
+    labels: sanitizeTerminalText((item.labels || []).map(entry => entry.label).join(', ') || '-'),
+  }))
+  const idWidth = Math.max('ID'.length, ...rows.map(row => row.id.length))
+  const nameWidth = Math.max('NAME'.length, ...rows.map(row => row.name.length))
+  const versionsWidth = Math.max('VERSIONS'.length, ...rows.map(row => row.versions.length))
+  const latestWidth = Math.max('LATEST VERSION'.length, ...rows.map(row => row.latest.length))
+
+  io.print(`${'ID'.padEnd(idWidth)}  ${'NAME'.padEnd(nameWidth)}  ${'VERSIONS'.padEnd(versionsWidth)}  ${'LATEST VERSION'.padEnd(latestWidth)}  LABELS`)
+  io.print(`${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(versionsWidth)}  ${'-'.repeat(latestWidth)}  ${'-'.repeat('LABELS'.length)}`)
+  rows.forEach(row => {
+    io.print(`${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.versions.padEnd(versionsWidth)}  ${row.latest.padEnd(latestWidth)}  ${row.labels}`)
+  })
+}
+
+async function pullArtifactCommand(args: string[], io: PullArtifactIo) {
   const kind: PullableArtifactKind = args[0] === 'runners' ? 'runner' : 'optimizer'
   const fetcher = io.fetcher || authedFetch
   const positionalRef = args[2]

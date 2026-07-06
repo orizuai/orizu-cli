@@ -59,7 +59,7 @@ import {
   workspaceExists,
 } from './workspace.js'
 import { connectorsCommand } from './connectors-cli.js'
-import { ARTIFACT_MAX_BYTES, pullArtifactCommand } from './artifact-pull.js'
+import { ARTIFACT_MAX_BYTES, runnerOptimizerCommand } from './artifact-pull.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
@@ -6467,8 +6467,8 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
-  if ((command === 'runners' || command === 'optimizers') && subcommand === 'pull') {
-    await pullArtifactCommand(cliArgs, { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return
+  if ((command === 'runners' || command === 'optimizers') && (subcommand === 'pull' || subcommand === 'list')) {
+    await runnerOptimizerCommand(cliArgs, { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return
   }
 
   if (command === 'runners' && subcommand === 'exec') {

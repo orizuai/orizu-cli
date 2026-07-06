@@ -370,6 +370,12 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Scorers and runners',
   },
   {
+    path: ['runners', 'list'],
+    usage: 'orizu runners list [--project <team/project>] [--json]',
+    summary: 'List runner artifacts with version counts, latest version ids, and labels.',
+    group: 'Scorers and runners',
+  },
+  {
     path: ['runners', 'pull'],
     usage: 'orizu runners pull <runner-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <version-id>] [--json]',
     summary: 'Pull a runner artifact version to a local directory.',
@@ -385,6 +391,12 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     path: ['optimizers', 'push'],
     usage: 'orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]',
     summary: 'Push a local optimizer artifact directory.',
+    group: 'Optimizations',
+  },
+  {
+    path: ['optimizers', 'list'],
+    usage: 'orizu optimizers list [--project <team/project>] [--json]',
+    summary: 'List optimizer artifacts with version counts, latest version ids, and labels.',
     group: 'Optimizations',
   },
   {
