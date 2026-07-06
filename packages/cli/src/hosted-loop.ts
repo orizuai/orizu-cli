@@ -34,7 +34,8 @@
  */
 
 import { spawnSync, spawn as nodeSpawn } from 'child_process'
-import { existsSync, readFileSync } from 'fs'
+import { closeSync, existsSync, openSync, readFileSync } from 'fs'
+import { tmpdir } from 'os'
 import { join } from 'path'
 
 import type { AgentHarness, HarnessEvent, HarnessPrompt } from './hosted-harness.js'
@@ -156,7 +157,7 @@ export interface RunHostedLoopOptions {
   /** Build the in-process Claude-Agent-SDK harness (default: real SDK loader).
    *  Injectable so the swap test drives a fake `query()` with no real SDK. */
   createClaudeHarness?: () => AgentHarness
-  spawnOpenCode?: (opts: SpawnOpenCodeOptions) => SpawnedOpenCode
+  spawnOpenCode?: (opts: SpawnOpenCodeOptions) => SpawnedOpenCode | Promise<SpawnedOpenCode>
   installOpenCode?: () => Promise<InstallResult>
   now?: () => number
   signal?: AbortSignal
@@ -402,16 +403,36 @@ function installOpenCodePinned(version: string): InstallResult {
 
 /** Node child_process spawner for `opencode serve` (the sandbox runtime is
  *  node24 — Bun.spawn is not guaranteed present, so spawnOpenCode is given this
- *  runtime-agnostic spawner). */
+ *  runtime-agnostic spawner). When a logPath is provided, opencode's
+ *  stdout/stderr land there so a readiness timeout can surface the real boot
+ *  failure instead of a bare "fetch failed" (ALI-1034). */
 function nodeChildSpawner(
   cmd: string[],
-  opts: { cwd?: string; env: Record<string, string> }
+  opts: { cwd?: string; env: Record<string, string>; logPath?: string }
 ): { kill: () => void } {
+  let stdio: 'ignore' | Array<'ignore' | number> = 'ignore'
+  let fd: number | null = null
+  if (opts.logPath) {
+    try {
+      fd = openSync(opts.logPath, 'a')
+      stdio = ['ignore', fd, fd]
+    } catch {
+      // log capture is best-effort — never block the spawn on it
+    }
+  }
   const child = nodeSpawn(cmd[0], cmd.slice(1), {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
-    stdio: 'ignore',
+    stdio,
   })
+  if (fd !== null) {
+    // The child holds its own copy of the descriptor.
+    try {
+      closeSync(fd)
+    } catch {
+      // already closed
+    }
+  }
   return { kill: () => child.kill() }
 }
 
@@ -575,13 +596,25 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
       }
 
       const spawnImpl = opts.spawnOpenCode ?? spawnOpenCode
-      spawned = spawnImpl({
+      // The default spawnOpenCode WAITS for the server to answer HTTP before
+      // returning — OpenCode's first boot runs a one-time sqlite migration, and
+      // starting the harness before the server listens raced straight into a
+      // connection-refused "fetch failed" (ALI-1034).
+      spawned = await spawnImpl({
         model: context.model,
         cwd: context.workspaceDir,
         port: context.opencodePort,
         env: context.anthropicDummyKey ? { ANTHROPIC_API_KEY: context.anthropicDummyKey } : undefined,
         spawn: nodeChildSpawner,
+        logPath: join(tmpdir(), `opencode-serve-${context.runId}.log`),
+        signal,
       })
+      if (typeof spawned.readyAfterMs === 'number') {
+        await sink.append({
+          kind: 'artifact',
+          payload: { step: 'opencode_ready', ok: true, waitedMs: spawned.readyAfterMs },
+        })
+      }
 
       harness = (opts.createHarness ?? ((baseUrl: string) => createOpenCodeHarness({ baseUrl })))(
         spawned.baseUrl

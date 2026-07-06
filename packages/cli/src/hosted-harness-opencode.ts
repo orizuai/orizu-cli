@@ -49,6 +49,8 @@
  *     would break both ports and must be re-verified.
  */
 
+import { readFileSync } from 'fs'
+
 import type {
   AgentHarness,
   HarnessEvent,
@@ -781,24 +783,62 @@ export interface SpawnOpenCodeOptions extends OpenCodeConfigOptions {
   /** Extra env merged over the config-content injection. */
   env?: Record<string, string>
   /** Injectable spawner (defaults to Bun.spawn) so this stays unit-testable. */
-  spawn?: (cmd: string[], opts: { cwd?: string; env: Record<string, string> }) => { kill: () => void }
+  spawn?: (
+    cmd: string[],
+    opts: { cwd?: string; env: Record<string, string>; logPath?: string }
+  ) => { kill: () => void }
+  /** File the spawner should append opencode's stdout/stderr to. On readiness
+   *  timeout its tail is included in the thrown error — the bare "fetch failed"
+   *  this replaces was undiagnosable (ALI-1034). */
+  logPath?: string
+  /** Overall readiness budget. OpenCode's FIRST boot runs a one-time sqlite
+   *  migration ("may take a few minutes") before it listens, so this must
+   *  comfortably cover a cold snapshot. */
+  readyTimeoutMs?: number
+  /** Poll interval while waiting for the server to answer. */
+  readyPollMs?: number
+  /** Abort (e.g. run cancelled) while still waiting for readiness. */
+  signal?: AbortSignal
+  /** Injectable readiness probe (defaults to global fetch) for tests. */
+  fetchImpl?: typeof fetch
 }
 
 export interface SpawnedOpenCode {
   baseUrl: string
   port: number
   stop: () => void
+  /** How long the server took to answer its first request (set by the real
+   *  spawnOpenCode; injected test spawners may omit it). */
+  readyAfterMs?: number
+}
+
+const OPENCODE_READY_TIMEOUT_MS = 180_000
+const OPENCODE_READY_POLL_MS = 500
+const OPENCODE_READY_PROBE_TIMEOUT_MS = 2_000
+const OPENCODE_LOG_TAIL_BYTES = 2_000
+
+function readLogTail(logPath: string | undefined): string | null {
+  if (!logPath) return null
+  try {
+    const content = readFileSync(logPath, 'utf8')
+    if (!content.trim()) return null
+    return content.slice(-OPENCODE_LOG_TAIL_BYTES).trim()
+  } catch {
+    return null
+  }
 }
 
 /**
- * Launch `opencode serve` locally. Process supervision is intentionally minimal
- * for this slice — P3.5 runs this INSIDE the Daytona sandbox via the CLI. The
- * pinned version (`OPENCODE_PINNED_VERSION`) is the one the sandbox image must
- * install (see the SSE-fragility note on that constant). Returns the localhost
- * base URL the driver connects to; callers still `start()`/`runPrompt()` the
- * harness against it.
+ * Launch `opencode serve` locally and WAIT until it answers HTTP. OpenCode's
+ * first boot performs a one-time sqlite migration before it listens; returning
+ * the baseUrl without waiting raced the harness's first `POST /session` into a
+ * connection-refused "fetch failed" (ALI-1034, found live in QA-3). Any HTTP
+ * status counts as ready — we only need the socket to be accepting. Process
+ * supervision is otherwise intentionally minimal for this slice; the pinned
+ * version (`OPENCODE_PINNED_VERSION`) is the one the sandbox image must install
+ * (see the SSE-fragility note on that constant).
  */
-export function spawnOpenCode(opts: SpawnOpenCodeOptions): SpawnedOpenCode {
+export async function spawnOpenCode(opts: SpawnOpenCodeOptions): Promise<SpawnedOpenCode> {
   const port = opts.port ?? DEFAULT_OPENCODE_PORT
   const env: Record<string, string> = {
     OPENCODE_CONFIG_CONTENT: buildOpenCodeConfigContent(opts),
@@ -818,6 +858,47 @@ export function spawnOpenCode(opts: SpawnOpenCodeOptions): SpawnedOpenCode {
         stderr: 'ignore',
       })
     })
-  const child = spawnImpl(cmd, { cwd: opts.cwd, env })
-  return { baseUrl: `http://localhost:${port}`, port, stop: () => child.kill() }
+  const child = spawnImpl(cmd, { cwd: opts.cwd, env, logPath: opts.logPath })
+  const baseUrl = `http://localhost:${port}`
+
+  const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch)
+  const timeoutMs = opts.readyTimeoutMs ?? OPENCODE_READY_TIMEOUT_MS
+  const pollMs = opts.readyPollMs ?? OPENCODE_READY_POLL_MS
+  const startedAt = Date.now()
+  for (;;) {
+    if (opts.signal?.aborted) {
+      child.kill()
+      throw new Error('opencode serve readiness wait aborted')
+    }
+    try {
+      const probe = new AbortController()
+      const timer = setTimeout(() => probe.abort(), OPENCODE_READY_PROBE_TIMEOUT_MS)
+      // Link the run signal so an abort tears down an in-flight probe
+      // immediately instead of waiting out the per-probe timeout.
+      const probeSignal = opts.signal ? AbortSignal.any([opts.signal, probe.signal]) : probe.signal
+      try {
+        // Any HTTP response (even 404) proves the server is accepting.
+        const res = await fetchImpl(`${baseUrl}/session`, { signal: probeSignal })
+        await cancelBody(res.body)
+        break
+      } finally {
+        clearTimeout(timer)
+      }
+    } catch {
+      // not listening yet — fall through to the timeout check + sleep
+    }
+    // Soft budget: checked between probes, so the total wait can overrun by up
+    // to one probe timeout + poll interval. Negligible against the default.
+    if (Date.now() - startedAt >= timeoutMs) {
+      child.kill()
+      const tail = readLogTail(opts.logPath)
+      throw new Error(
+        `opencode serve did not become ready on ${baseUrl} within ${timeoutMs}ms` +
+          (tail ? ` — log tail: ${tail}` : ' (no log output captured)')
+      )
+    }
+    await new Promise(resolve => setTimeout(resolve, pollMs))
+  }
+
+  return { baseUrl, port, stop: () => child.kill(), readyAfterMs: Date.now() - startedAt }
 }
