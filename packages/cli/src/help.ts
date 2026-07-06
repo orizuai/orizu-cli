@@ -370,6 +370,12 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Scorers and runners',
   },
   {
+    path: ['runners', 'pull'],
+    usage: 'orizu runners pull <runner-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <version-id>] [--json]',
+    summary: 'Pull a runner artifact version to a local directory.',
+    group: 'Scorers and runners',
+  },
+  {
     path: ['runners', 'exec'],
     usage: 'orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>',
     summary: 'Execute a runner locally against a dataset split and write row results.',
@@ -379,6 +385,12 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     path: ['optimizers', 'push'],
     usage: 'orizu optimizers push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]',
     summary: 'Push a local optimizer artifact directory.',
+    group: 'Optimizations',
+  },
+  {
+    path: ['optimizers', 'pull'],
+    usage: 'orizu optimizers pull <optimizer-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <version-id>] [--json]',
+    summary: 'Pull an optimizer artifact version to a local directory.',
     group: 'Optimizations',
   },
   {

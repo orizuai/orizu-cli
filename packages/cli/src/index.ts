@@ -59,6 +59,7 @@ import {
   workspaceExists,
 } from './workspace.js'
 import { connectorsCommand } from './connectors-cli.js'
+import { ARTIFACT_MAX_BYTES, pullArtifactCommand } from './artifact-pull.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
@@ -5994,7 +5995,6 @@ function readRunnerManifest(runnerDir: string): { command: string[]; supports_bo
 
 const RUNNER_TIMEOUT_MS = 120_000
 const RUNNER_OUTPUT_MAX_BYTES = 2 * 1024 * 1024
-const RUNNER_ARTIFACT_MAX_BYTES = 25 * 1024 * 1024
 const RUNNER_ENV_ALLOWLIST = new Set([
   'PATH',
   'SystemRoot',
@@ -6045,9 +6045,9 @@ async function materializeRunnerVersion(runnerVersionId: string): Promise<{ runn
   const zipPath = join(tempDir, 'runner.zip')
   const runnerDir = join(tempDir, 'runner')
   const zipBytes = new Uint8Array(await response.arrayBuffer())
-  if (zipBytes.byteLength > RUNNER_ARTIFACT_MAX_BYTES) {
+  if (zipBytes.byteLength > ARTIFACT_MAX_BYTES) {
     rmSync(tempDir, { recursive: true, force: true })
-    throw new Error(`Runner artifact exceeds ${RUNNER_ARTIFACT_MAX_BYTES} bytes`)
+    throw new Error(`Runner artifact exceeds ${ARTIFACT_MAX_BYTES} bytes`)
   }
   writeFileSync(zipPath, zipBytes)
 
@@ -6462,18 +6462,17 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
-  if (command === 'runners' && subcommand === 'push') {
-    await pushRunnerArtifact('runner')
+  if ((command === 'runners' || command === 'optimizers') && subcommand === 'push') {
+    await pushRunnerArtifact(command === 'runners' ? 'runner' : 'optimizer')
     return
+  }
+
+  if ((command === 'runners' || command === 'optimizers') && subcommand === 'pull') {
+    await pullArtifactCommand(cliArgs, { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return
   }
 
   if (command === 'runners' && subcommand === 'exec') {
     await runnersExec()
-    return
-  }
-
-  if (command === 'optimizers' && subcommand === 'push') {
-    await pushRunnerArtifact('optimizer')
     return
   }
 
