@@ -93,6 +93,71 @@ function num(value: unknown): number {
   return typeof value === 'number' ? value : 0
 }
 
+// -- list table (ALI-1038) ----------------------------------------------------
+
+/** "3m" / "4h" / "2d" — enough resolution to pick a manifest out of a list. */
+function relativeAge(iso: unknown, now: number): string {
+  if (typeof iso !== 'string') return '-'
+  const then = Date.parse(iso)
+  if (Number.isNaN(then)) return '-'
+  const mins = Math.max(0, Math.floor((now - then) / 60_000))
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  if (hours < 48) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
+/** One-glance change summary from the stored proposedState — no live API call. */
+function changesSummary(manifest: Record<string, unknown>): string {
+  if (manifest.actionType !== 'repo_merge') return '-'
+  const proposed = asRecord(manifest.proposedState)
+  const files = num(proposed.filesChanged)
+  const parts = `${files} file${files === 1 ? '' : 's'} +${num(proposed.additions)}/-${num(proposed.deletions)}`
+  // Instruction files steer agent behavior — reviewers should see the flag in the list.
+  return proposed.touches_instruction_files === true ? `${parts} !instr` : parts
+}
+
+/** Reviewable-first (pending_approval, then draft), newest first within a group. */
+function listOrder(a: Record<string, unknown>, b: Record<string, unknown>): number {
+  const rank = (m: Record<string, unknown>): number =>
+    m.status === 'pending_approval' ? 0 : m.status === 'draft' ? 1 : 2
+  const byRank = rank(a) - rank(b)
+  if (byRank !== 0) return byRank
+  const created = (m: Record<string, unknown>): number =>
+    typeof m.createdAt === 'string' ? Date.parse(m.createdAt) || 0 : 0
+  return created(b) - created(a)
+}
+
+/** Render manifests as the standard padEnd table (matches teams/projects list). */
+function manifestsTable(manifests: Record<string, unknown>[], now: number): string {
+  if (manifests.length === 0) return 'promotion manifests\n(none)'
+  const rows = [...manifests].sort(listOrder).map(manifest => ({
+    id: typeof manifest.id === 'string' ? manifest.id : '(unknown)',
+    status: typeof manifest.status === 'string' ? manifest.status : '(unknown)',
+    type: typeof manifest.actionType === 'string' ? manifest.actionType : '(unknown)',
+    changes: changesSummary(manifest),
+    author: typeof manifest.authorActorType === 'string' ? manifest.authorActorType : '-',
+    age: relativeAge(manifest.createdAt, now),
+  }))
+  const idWidth = Math.max('ID'.length, ...rows.map(row => row.id.length))
+  const statusWidth = Math.max('STATUS'.length, ...rows.map(row => row.status.length))
+  const typeWidth = Math.max('TYPE'.length, ...rows.map(row => row.type.length))
+  const changesWidth = Math.max('CHANGES'.length, ...rows.map(row => row.changes.length))
+  const authorWidth = Math.max('AUTHOR'.length, ...rows.map(row => row.author.length))
+  const header =
+    `${'ID'.padEnd(idWidth)}  ${'STATUS'.padEnd(statusWidth)}  ${'TYPE'.padEnd(typeWidth)}  ` +
+    `${'CHANGES'.padEnd(changesWidth)}  ${'AUTHOR'.padEnd(authorWidth)}  AGE`
+  const divider =
+    `${'-'.repeat(idWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(typeWidth)}  ` +
+    `${'-'.repeat(changesWidth)}  ${'-'.repeat(authorWidth)}  ---`
+  const body = rows.map(
+    row =>
+      `${row.id.padEnd(idWidth)}  ${row.status.padEnd(statusWidth)}  ${row.type.padEnd(typeWidth)}  ` +
+      `${row.changes.padEnd(changesWidth)}  ${row.author.padEnd(authorWidth)}  ${row.age}`
+  )
+  return [header, divider, ...body].join('\n')
+}
+
 // repo_merge manifests (ALI-972) render the compare summary from stored evidence
 // — no live GitHub call — so a reviewer can approve informed without a PR.
 function repoMergeShow(manifest: Record<string, unknown>): string {
@@ -130,7 +195,7 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
     const response = await fetcherFrom(io)(`/api/cli/promotion-manifests${query}`)
     const data = await requireOk(response, 'Manifest list')
     const manifests = Array.isArray(data.manifests) ? (data.manifests as Record<string, unknown>[]) : []
-    emit(io, { manifests }, ['promotion manifests', ...manifests.map(manifestLine)].join('\n'))
+    emit(io, { manifests }, manifestsTable(manifests, Date.now()))
     return 0
   }
 
@@ -159,7 +224,23 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
     })
     const data = await requireOk(response, `Manifest ${subcommand}`)
     const manifest = (data.manifest ?? {}) as Record<string, unknown>
-    emit(io, { manifest }, manifestLine(manifest))
+    const lines = [manifestLine(manifest)]
+    // Reject reaps the session branch best-effort; a failed reap must never be
+    // silent (ALI-1043) — surface it with the exact cleanup command.
+    if (subcommand === 'reject' && manifest.actionType === 'repo_merge') {
+      const outcome = asRecord(manifest.outcome)
+      const branch = asRecord(manifest.proposedState).branch
+      if (outcome.branchDeleted === true) {
+        lines.push('session branch deleted')
+      } else if (typeof branch === 'string' && branch.length > 0) {
+        lines.push(
+          `warning: the session branch could not be deleted — remove it with: git push origin --delete ${branch}`
+        )
+      } else {
+        lines.push('warning: the session branch could not be deleted (branch name unavailable)')
+      }
+    }
+    emit(io, { manifest }, lines.join('\n'))
     return 0
   }
 
