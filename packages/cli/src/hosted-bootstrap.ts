@@ -441,6 +441,52 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
       })
     }
 
+    // 4b — Stage the orizu-cli skill into the workspace so the agent discovers it
+    // (ALI-1044). Resolve the CLI's OWN vendored skill dir in-sandbox, preferring:
+    //   (1) $ORIZU_SKILL_SOURCE_DIR  — explicit override (also honored by the CLI's
+    //       skill-installer; the local-sim rehearsal sets it),
+    //   (2) `orizu skills path`      — the packaged vendor/skills/orizu-cli of the
+    //       globally-installed CLI (the production path),
+    //   (3) `$(npm root -g)/orizu/vendor/skills/orizu-cli` — belt fallback.
+    // Then SYMLINK it under <workspaceDir>/.claude/skills/orizu-cli, falling back
+    // to a copy if the symlink cannot be created. Non-fatal + recorded, exactly
+    // like the CLI install. Resolved paths stay in shell vars (never interpolated),
+    // so they cannot inject into the command.
+    currentStep = 'skill_staged'
+    const skillSkillsDirRel = `${workspaceDir}/.claude/skills`
+    const stage = await session.exec(
+      [
+        `mkdir -p ${skillSkillsDirRel}`,
+        `src="${'${ORIZU_SKILL_SOURCE_DIR:-}'}"`,
+        `if [ -z "$src" ] || [ ! -d "$src" ]; then src="$(orizu skills path 2>/dev/null || true)"; fi`,
+        `if [ -z "$src" ] || [ ! -d "$src" ]; then r="$(npm root -g 2>/dev/null || true)"; if [ -n "$r" ] && [ -d "$r/orizu/vendor/skills/orizu-cli" ]; then src="$r/orizu/vendor/skills/orizu-cli"; fi; fi`,
+        `if [ -z "$src" ] || [ ! -d "$src" ]; then echo "NO_SOURCE"; exit 0; fi`,
+        `dest="${skillSkillsDirRel}/orizu-cli"`,
+        `rm -rf "$dest"`,
+        `if ln -s "$src" "$dest" 2>/dev/null; then echo "SYMLINK $src"; else cp -R "$src" "$dest" && echo "COPY $src"; fi`,
+      ].join('\n')
+    )
+    const stageOut = stage.stdout.trim()
+    const stagedMethod = stageOut.startsWith('SYMLINK')
+      ? 'symlink'
+      : stageOut.startsWith('COPY')
+        ? 'copy'
+        : null
+    const stagedOk = stage.exitCode === 0 && stagedMethod !== null
+    record(
+      'skill_staged',
+      stagedOk,
+      stagedOk
+        ? `orizu-cli skill staged (${stagedMethod})`
+        : `skill staging unresolved: ${stageOut || `exit ${stage.exitCode}`}`
+    )
+    await sink.append('skill_staged', {
+      ok: stagedOk,
+      method: stagedMethod,
+      dest: `${skillSkillsDirRel}/orizu-cli`,
+      outputTail: tail(stage.stdout, stage.stderr),
+    })
+
     // 5 — Customer setup hook (fresh-boot only, non-fatal, output captured).
     // P3-a: for enforced-egress providers the host DEFERS this hook to the loop,
     // which runs it AFTER the egress canary proves the firewall is live — so the

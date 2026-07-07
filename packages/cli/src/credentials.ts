@@ -210,6 +210,52 @@ export function getActiveBaseUrl(): string | null {
   return config?.activeBaseUrl || null
 }
 
+/**
+ * In-sandbox bearer resolution (ALI-1044). Resolves a bearer supplied out-of-band
+ * to the hosted agent, WITHOUT consulting credentials.json:
+ *   1. `ORIZU_TOKEN` — an explicit bearer in the environment (wins if present).
+ *   2. `ORIZU_TOKEN_FILE` — an absolute path to a 0600 file whose TRIMMED contents
+ *      are the bearer.
+ * Returns null when neither is set, so callers fall through to credentials.json.
+ *
+ * The token file is read FRESH on EVERY call and never cached: the hosted loop
+ * ROTATES the file underneath a long-lived agent process, so caching the value
+ * would pin a stale (soon-expired) bearer. The token is never logged, echoed, or
+ * passed via argv — only returned to the caller for a single request's header.
+ *
+ * A set-but-unreadable/empty `ORIZU_TOKEN_FILE` throws a clear error rather than
+ * returning null, so a misconfigured sandbox fails loudly instead of silently
+ * falling back to (absent) credentials.json and emitting a confusing "not logged
+ * in" message.
+ */
+export function resolveEnvBearerToken(): string | null {
+  const explicit = process.env.ORIZU_TOKEN
+  if (explicit && explicit.trim()) {
+    return explicit.trim()
+  }
+
+  const tokenFile = process.env.ORIZU_TOKEN_FILE
+  if (tokenFile && tokenFile.length > 0) {
+    if (!existsSync(tokenFile)) {
+      throw new Error(`ORIZU_TOKEN_FILE is set to ${tokenFile} but no such file exists.`)
+    }
+    let raw: string
+    try {
+      raw = readFileSync(tokenFile, 'utf8')
+    } catch (error) {
+      const detail = isNodeError(error) ? error.message : String(error)
+      throw new Error(`Failed to read ORIZU_TOKEN_FILE (${tokenFile}): ${detail}`)
+    }
+    const token = raw.trim()
+    if (!token) {
+      throw new Error(`ORIZU_TOKEN_FILE (${tokenFile}) is empty.`)
+    }
+    return token
+  }
+
+  return null
+}
+
 export function setActiveBaseUrl(baseUrl: string | null) {
   const config = loadCredentialsConfigForWrite()
   config.activeBaseUrl = baseUrl

@@ -28,6 +28,8 @@ export const SKILL_INSTALL_TARGETS = [
   'codex-project',
   'claude-user',
   'claude-project',
+  'opencode-user',
+  'opencode-project',
   'agents-md',
 ] as const
 
@@ -35,7 +37,7 @@ export type SkillInstallTarget = typeof SKILL_INSTALL_TARGETS[number]
 
 export const SKILL_META_FILENAME = '.orizu-skill-meta.json'
 
-export const SKILL_INSTALL_AGENTS = ['claude', 'codex'] as const
+export const SKILL_INSTALL_AGENTS = ['claude', 'codex', 'opencode'] as const
 
 export type SkillInstallAgent = typeof SKILL_INSTALL_AGENTS[number]
 
@@ -47,6 +49,7 @@ const PROJECT_LEVEL_TARGETS: readonly SkillInstallTarget[] = [
   'agents-project',
   'codex-project',
   'claude-project',
+  'opencode-project',
 ]
 
 export interface SkillInstallOptions {
@@ -218,6 +221,17 @@ export function getSkillInstallPath(
     return resolve(cwd, '.claude', 'skills', SKILL_NAME)
   }
 
+  // OpenCode discovers user skills under XDG config (~/.config/opencode/skills)
+  // and project skills under .opencode/skills (ALI-1044). The copy/link machinery
+  // is agent-neutral; only the destination path differs.
+  if (target === 'opencode-user') {
+    return resolve(home, '.config', 'opencode', 'skills', SKILL_NAME)
+  }
+
+  if (target === 'opencode-project') {
+    return resolve(cwd, '.opencode', 'skills', SKILL_NAME)
+  }
+
   return resolve(cwd, 'AGENTS.md')
 }
 
@@ -227,6 +241,9 @@ export function getTargetForAgent(
 ): SkillInstallTarget {
   if (agent === 'claude') {
     return scope === 'global' ? 'claude-user' : 'claude-project'
+  }
+  if (agent === 'opencode') {
+    return scope === 'global' ? 'opencode-user' : 'opencode-project'
   }
   return scope === 'global' ? 'codex-user' : 'agents-project'
 }

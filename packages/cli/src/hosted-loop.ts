@@ -132,6 +132,28 @@ export interface HostedLoopContext {
   runSetupHook?: boolean
 }
 
+/**
+ * Environment injected into the spawned OpenCode server so the AGENT's bash sees a
+ * PRE-AUTHENTICATED `orizu` CLI (ALI-1044). ORIZU_TOKEN_FILE points at the 0600
+ * rotated bearer file and ORIZU_BASE_URL at the Orizu API — the exact vars the
+ * CLI's auth resolution reads (resolveEnvBearerToken + resolveBaseUrl). The dummy
+ * ANTHROPIC key (model-key brokering, G3) is preserved. No real secret is carried
+ * here: the bearer stays on disk and is read fresh per request from the file.
+ */
+export function buildOpenCodeSpawnEnv(context: HostedLoopContext): Record<string, string> | undefined {
+  const env: Record<string, string> = {}
+  if (context.anthropicDummyKey) {
+    env.ANTHROPIC_API_KEY = context.anthropicDummyKey
+  }
+  if (context.bearerFile) {
+    env.ORIZU_TOKEN_FILE = context.bearerFile
+  }
+  if (context.apiBaseUrl) {
+    env.ORIZU_BASE_URL = context.apiBaseUrl
+  }
+  return Object.keys(env).length > 0 ? env : undefined
+}
+
 export interface InstallResult {
   ok: boolean
   detail: string
@@ -604,7 +626,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
         model: context.model,
         cwd: context.workspaceDir,
         port: context.opencodePort,
-        env: context.anthropicDummyKey ? { ANTHROPIC_API_KEY: context.anthropicDummyKey } : undefined,
+        env: buildOpenCodeSpawnEnv(context),
         spawn: nodeChildSpawner,
         logPath: join(tmpdir(), `opencode-serve-${context.runId}.log`),
         signal,

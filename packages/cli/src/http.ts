@@ -1,4 +1,9 @@
-import { getActiveBaseUrl, getServerCredentials, updateServerCredentials } from './credentials.js'
+import {
+  getActiveBaseUrl,
+  getServerCredentials,
+  resolveEnvBearerToken,
+  updateServerCredentials,
+} from './credentials.js'
 import { getFlagBaseUrl, GlobalFlags, normalizeBaseUrl } from './global-flags.js'
 import { LoginResponse, ServerCredentials, SessionServerCredentials } from './types.js'
 
@@ -122,6 +127,23 @@ async function refreshCredentials(baseUrl: string, credentials: ServerCredential
 export async function authedFetch(path: string, init: RequestInit = {}) {
   const baseUrl = resolveBaseUrl()
   assertSecureTokenTransport(baseUrl)
+
+  // In-sandbox pre-auth (ALI-1044): a bearer supplied via ORIZU_TOKEN /
+  // ORIZU_TOKEN_FILE takes precedence over credentials.json. It is externally
+  // managed (the hosted loop rotates the token file), so it is read FRESH here on
+  // every request and NEVER refreshed by this client — on a 401 the loop rotates
+  // the file and the next request naturally picks up the new bearer.
+  const envBearer = resolveEnvBearerToken()
+  if (envBearer) {
+    return await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers: {
+        ...(init.headers || {}),
+        Authorization: `Bearer ${envBearer}`,
+      },
+    })
+  }
+
   const credentials = getServerCredentials(baseUrl)
   if (!credentials) {
     throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)

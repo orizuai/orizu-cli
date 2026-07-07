@@ -187,7 +187,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['install-skill'],
-    usage: 'orizu install-skill [--agent <claude|codex>]... [--scope global|project] [--mode auto|link|copy] [--target <target>]... [--yes] [--dry-run]',
+    usage: 'orizu install-skill [--agent <claude|codex|opencode>]... [--scope global|project] [--mode auto|link|copy] [--target <target>]... [--yes] [--dry-run]',
     summary: 'Install or repair the Orizu coding-agent skill.',
     group: 'Agent setup',
     aliases: [['skills', 'install']],
