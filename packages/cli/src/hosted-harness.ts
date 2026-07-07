@@ -79,6 +79,15 @@ export const HARNESS_EVENT_KINDS = {
   // and never terminal, so they append like any structural event.
   egress_blocked: 'egress_blocked',
   egress_allowed: 'egress_allowed',
+  // Durability + headless (ALI-1036 / ALI-1037). NOT produced by a harness — the
+  // in-sandbox loop emits these through the SAME single-writer run-event sink:
+  // the end-of-run auto-harvest result (work_persisted/work_none/work_persist_failed)
+  // and the headless question auto-handling record (question_auto_answered). They
+  // are ordinary structural events (never terminal), appended like any other.
+  work_persisted: 'work_persisted',
+  work_none: 'work_none',
+  work_persist_failed: 'work_persist_failed',
+  question_auto_answered: 'question_auto_answered',
   error: 'error',
   execution_complete: 'execution_complete',
 } as const

@@ -44,6 +44,37 @@ export const SETUP_HOOK_RELATIVE_PATH = '.orizu/setup.sh'
  */
 export const AGENT_GIT_IDENTITY = { name: 'Orizu Agent', email: 'agent@orizu.ai' } as const
 
+// -- Hosted task prompt scaffolding (ALI-1036) -------------------------------
+
+/**
+ * Standing preamble wrapped around every hosted task prompt so a NATURAL task
+ * ("review X and update the readme") runs unattended with zero magic words. The
+ * agent is told to work autonomously (never block on the human), commit as it
+ * goes, and treat Orizu — not the repo — as the home for production pointers and
+ * run metadata. An end-of-run auto-harvest (ALI-1036, `harvestWorkspace`) is the
+ * safety net for anything left uncommitted; the preamble names it so the agent
+ * knows partial work is preserved.
+ */
+export const HOSTED_TASK_PREAMBLE =
+  'You are running unattended in a hosted sandbox. Work autonomously: never ask the user ' +
+  'questions — when uncertain, choose the most reasonable/reversible option and note the ' +
+  'decision. Commit your work to the current branch in logical units as you go (an automatic ' +
+  'checkpoint will also save anything uncommitted at the end). Never switch branches. ' +
+  'Production/default pointers and run metadata live in Orizu, not this repo.'
+
+/** Delimiter separating the standing preamble from the verbatim user task. */
+export const HOSTED_TASK_DELIMITER = '--- YOUR TASK ---'
+
+/**
+ * Compose the full hosted prompt: the standing preamble, a clear delimiter, then
+ * the user's task VERBATIM beneath it. Passing an empty preamble yields the task
+ * unchanged (an explicit opt-out for tests / callers that scaffold elsewhere).
+ */
+export function composeHostedTaskPrompt(task: string, preamble: string = HOSTED_TASK_PREAMBLE): string {
+  if (!preamble) return task
+  return `${preamble}\n\n${HOSTED_TASK_DELIMITER}\n${task}`
+}
+
 // -- Pre-baked runtime marker (ALI-1017) -------------------------------------
 
 /**

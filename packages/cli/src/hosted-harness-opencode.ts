@@ -760,8 +760,30 @@ function errorEvent(messageId: string, error: unknown): HarnessEvent {
 export interface OpenCodeConfigOptions {
   /** Provider-qualified model string, e.g. "anthropic/claude-opus-4-8". */
   model: string
-  /** OpenCode permission map; defaults to allow-all (sandbox is the boundary). */
+  /** OpenCode permission map; defaults to allow-all EXCEPT the headless-denied
+   *  tools below (sandbox is the boundary for everything else). */
   permission?: Record<string, unknown>
+}
+
+/**
+ * Tools DENIED in a hosted headless run (ALI-1037). OpenCode exposes a `question`
+ * permission key (docs/permissions) that gates the interactive "ask the user a
+ * question" tool. In an unattended sandbox there is no human to answer it, and
+ * OpenCode's only external reply endpoint — `POST /session/{id}/permissions/{permID}`
+ * — takes a BOOLEAN allow/deny, so it cannot select one of the tool's multiple
+ * options anyway. Denying the tool makes the model's ask fail fast (surfaced back
+ * to it as a tool error) so it proceeds autonomously per the standing preamble
+ * (HOSTED_TASK_PREAMBLE), instead of blocking the run forever. This is the
+ * documented fallback path in ALI-1037 (answer-externally is not cleanly possible).
+ */
+export const HEADLESS_DENIED_TOOLS = ['question'] as const
+
+/** The default headless permission map: allow everything, deny the interactive
+ *  question tool (see HEADLESS_DENIED_TOOLS). */
+export function defaultHeadlessPermission(): Record<string, unknown> {
+  const permission: Record<string, unknown> = { '*': { '*': 'allow' } }
+  for (const tool of HEADLESS_DENIED_TOOLS) permission[tool] = 'deny'
+  return permission
 }
 
 /**
@@ -772,7 +794,7 @@ export interface OpenCodeConfigOptions {
 export function buildOpenCodeConfigContent(opts: OpenCodeConfigOptions): string {
   return JSON.stringify({
     model: opts.model,
-    permission: opts.permission ?? { '*': { '*': 'allow' } },
+    permission: opts.permission ?? defaultHeadlessPermission(),
   })
 }
 

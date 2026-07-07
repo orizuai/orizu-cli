@@ -40,10 +40,14 @@ import { join } from 'path'
 
 import type { AgentHarness, HarnessEvent, HarnessPrompt } from './hosted-harness.js'
 import {
+  HOSTED_TASK_PREAMBLE,
   PREBAKED_MARKER_PATH,
   SETUP_HOOK_RELATIVE_PATH,
+  composeHostedTaskPrompt,
   parsePrebakedMarker,
 } from './hosted-runtime-assets.js'
+import { harvestWorkspace, type HarvestExec, type HarvestOutcome } from './hosted-harvest.js'
+import { annotateHeadlessQuestions, withIdleWatchdog } from './hosted-headless.js'
 import {
   OPENCODE_PINNED_VERSION,
   createOpenCodeHarness,
@@ -193,6 +197,24 @@ export interface RunHostedLoopOptions {
    *  workspace, non-fatal). Injectable so tests exercise the deferred-hook path
    *  with no real filesystem or child process. */
   runSetupHook?: (input: { workspaceDir: string }) => Promise<SetupHookOutcome> | SetupHookOutcome
+  /**
+   * Standing preamble wrapped around the user task (ALI-1036). Defaults to
+   * `HOSTED_TASK_PREAMBLE`; pass an override to customize it, or an empty string
+   * to send the task verbatim (tests). The user task is always kept verbatim
+   * beneath a delimiter (see `composeHostedTaskPrompt`).
+   */
+  taskPreamble?: string
+  /**
+   * Injectable git runner for the end-of-run auto-harvest (ALI-1036). Default:
+   * real `git` via child_process in `context.workspaceDir`.
+   */
+  harvestExec?: HarvestExec
+  /**
+   * Idle watchdog window (ALI-1037): abort the prompt + fail the run
+   * `agent_stalled` if NO harness event arrives for this many ms. Default: env
+   * `ORIZU_AGENT_IDLE_TIMEOUT_MS` or 10 minutes. <= 0 disables the watchdog.
+   */
+  idleTimeoutMs?: number
 }
 
 export interface HostedLoopResult {
@@ -385,6 +407,25 @@ function defaultRunSetupHook({ workspaceDir }: { workspaceDir: string }): SetupH
   return { ran: true, ok, detail: ok ? 'setup.sh ok' : `setup.sh exit ${res.status ?? 'unknown'}` }
 }
 
+/** Default idle-watchdog window (ALI-1037): abort a prompt that makes no progress
+ *  for this long. The timer resets on every harness EVENT, and a legitimate long
+ *  single tool call (a big `npm install`, a build, an optimization step) emits no
+ *  intermediate events — so this must comfortably exceed the longest expected
+ *  quiet tool call (review finding #2). Overridable per-run via `idleTimeoutMs` or
+ *  the `ORIZU_AGENT_IDLE_TIMEOUT_MS` env var. */
+export const DEFAULT_AGENT_IDLE_TIMEOUT_MS = 25 * 60 * 1000
+
+/** Resolve the idle window: explicit option wins, then env, then the default. */
+function resolveIdleTimeoutMs(override: number | undefined): number {
+  if (typeof override === 'number' && Number.isFinite(override)) return override
+  const raw = process.env.ORIZU_AGENT_IDLE_TIMEOUT_MS
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return DEFAULT_AGENT_IDLE_TIMEOUT_MS
+}
+
 /** Model-key env vars whose value must be scrubbed from every run event. */
 const MODEL_KEY_ENV_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']
 
@@ -574,6 +615,44 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     }
   }
 
+  // End-of-run auto-harvest (ALI-1036): commit + push anything the agent left
+  // uncommitted/unpushed so a run NEVER loses work — on BOTH the success and
+  // failure paths. Runs at most once (guarded), records exactly one of
+  // work_persisted / work_none / work_persist_failed, and NEVER throws or changes
+  // the run's terminal status: a harvest failure is recorded and the run proceeds.
+  let harvested = false
+  const runAutoHarvest = async (): Promise<void> => {
+    if (harvested) return
+    harvested = true
+    let outcome: HarvestOutcome
+    try {
+      outcome = harvestWorkspace({
+        workspaceDir: context.workspaceDir,
+        runId: context.runId,
+        author: context.author,
+        exec: opts.harvestExec,
+        // Real harvest only inside a genuine hosted sandbox (prebaked marker
+        // present) — never on a host/test working tree (review finding #1).
+        enabled: existsSync(PREBAKED_MARKER_PATH),
+      })
+    } catch (error) {
+      outcome = { kind: 'work_persist_failed', error: error instanceof Error ? error.message : String(error) }
+    }
+    if (sink.sealed) return
+    try {
+      if (outcome.kind === 'work_persisted') {
+        await sink.append({ kind: 'work_persisted', payload: { sha: outcome.sha, files: outcome.files } })
+      } else if (outcome.kind === 'work_none') {
+        await sink.append({ kind: 'work_none', payload: {} })
+      } else {
+        await sink.append({ kind: 'work_persist_failed', payload: { error: outcome.error } })
+      }
+    } catch {
+      // Recording harvest is best-effort — never fail the run because the harvest
+      // event append failed.
+    }
+  }
+
   let spawned: SpawnedOpenCode | null = null
   let agentSessionId: string | null = null
   let installOk = false
@@ -651,21 +730,49 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     })
     agentSessionId = started.agentSessionId
 
+    // Prompt scaffolding (ALI-1036): wrap the user task with the standing
+    // headless preamble, keeping the task verbatim beneath a delimiter.
     const prompt: HarnessPrompt = {
       runId: context.runId,
       messageId: context.messageId,
-      content: taskPrompt,
+      content: composeHostedTaskPrompt(taskPrompt, opts.taskPreamble ?? HOSTED_TASK_PREAMBLE),
       author: context.author,
     }
-    const status = await drainHarnessToSink(harness.runPrompt(prompt, signal), sink, {
+    // Drive the prompt through (a) question auto-handling annotation and (b) the
+    // idle watchdog (ALI-1037): no harness event for `idleTimeoutMs` aborts the
+    // prompt and throws `AgentStalledError` → the catch below harvests, then
+    // finishes the run `failed`. The prompt runs under a CHILD AbortController
+    // linked to the loop signal so the watchdog can abort the in-flight prompt
+    // (unblocking a signal-respecting harness the same way a cancel would), then
+    // best-effort `harness.stop()` the driver.
+    const idleTimeoutMs = resolveIdleTimeoutMs(opts.idleTimeoutMs)
+    const promptController = new AbortController()
+    if (signal.aborted) promptController.abort()
+    else signal.addEventListener('abort', () => promptController.abort(), { once: true })
+    const annotated = annotateHeadlessQuestions(harness.runPrompt(prompt, promptController.signal))
+    const drivenStream =
+      idleTimeoutMs > 0
+        ? withIdleWatchdog(annotated, {
+            timeoutMs: idleTimeoutMs,
+            onTimeout: async () => {
+              promptController.abort()
+              await harness.stop()
+            },
+          })
+        : annotated
+    const status = await drainHarnessToSink(drivenStream, sink, {
       summary: { agentSessionId },
+      // Auto-harvest runs on EVERY terminal path, before the sink seals.
+      beforeFinish: runAutoHarvest,
     })
     await harness.shutdown()
     return { status, agentSessionId, installOk, error: null }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     // Fail closed: never leave the run non-terminal. finish() is idempotent and
-    // no-ops when the drain already sealed the sink.
+    // no-ops when the drain already sealed the sink. Harvest FIRST (partial work
+    // is valuable, incl. an idle-watchdog abort) — before the terminal seals.
+    await runAutoHarvest()
     if (!sink.sealed) {
       try {
         await sink.finish('failed', { summary: { error: message } })

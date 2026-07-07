@@ -359,6 +359,12 @@ async function defaultResolveRepo(
 export async function startHostedSession(
   opts: StartHostedSessionOptions
 ): Promise<StartHostedSessionResult> {
+  // ALI-1035 fail-fast: a hosted run cannot reach the model provider without a key
+  // (the firewall brokers the real key onto egress). Refuse BEFORE creating any
+  // session, run row, or sandbox — no orphaned rows, no paid box, instant error.
+  if (!opts.modelApiKey) {
+    throw new Error('hosted session needs a model API key: set ANTHROPIC_API_KEY (or pass --model-key)')
+  }
   const rawFetch = opts.rawFetch ?? (globalThis.fetch as HostedFetch)
   const log = opts.logLine ?? ((): void => {})
   const model = opts.model ?? DEFAULT_HOSTED_MODEL
@@ -602,6 +608,32 @@ export async function startHostedSession(
   let sandboxBudgetMs = durationMs
   let tokenExpiresAtMs = now() + ttlMinutes * 60 * 1000
   let stopped = false
+
+  // ALI-1037 host-side idle gate: only KEEP a sandbox alive while its run is
+  // making progress. Before each keepalive extension we cheaply check whether any
+  // new run event landed since the last check; a run with NO new events since the
+  // previous rotation cycle is not extended (the in-sandbox watchdog is the
+  // primary stall killer — this stops the HOST from paying to keep a dead box
+  // alive). "Can't tell" (non-2xx / transport error) never starves a healthy run.
+  let lastEventCursor = 0
+  const hasEventProgress = async (): Promise<boolean> => {
+    try {
+      const res = await opts.fetcher(
+        `/api/cli/workbench-runs/${encodeURIComponent(runId)}/events?after=${lastEventCursor}&limit=500`
+      )
+      if (!res.ok) return true
+      const body = (await res.json().catch(() => ({}))) as { events?: unknown }
+      const events = Array.isArray(body.events) ? (body.events as Record<string, unknown>[]) : []
+      if (events.length === 0) return false
+      lastEventCursor = events.reduce((max, event) => {
+        const seq = typeof event.sequence === 'number' ? event.sequence : 0
+        return seq > max ? seq : max
+      }, lastEventCursor)
+      return true
+    } catch {
+      return true
+    }
+  }
   let cancelSleep: (() => void) | null = null
   const stop = (): void => {
     stopped = true
@@ -674,14 +706,21 @@ export async function startHostedSession(
         log('rotated agent bearer (file overwritten)')
         // Keepalive: extend the sandbox by one rotation interval each rotation
         // while attached (SDK supports extendTimeout(ms)), bounded by the 24h cap
-        // so a long attached session outlives the initial --duration window.
+        // so a long attached session outlives the initial --duration window — BUT
+        // only while the run is making progress (ALI-1037). A run with no new
+        // events since the last rotation is not extended: the box is left to wind
+        // down to its current budget instead of the host paying for a stalled run.
         if (sandbox.extendTimeout && sandboxBudgetMs + rotationIntervalMs <= sandboxCapMs) {
-          try {
-            await sandbox.extendTimeout(rotationIntervalMs)
-            sandboxBudgetMs += rotationIntervalMs
-            log(`extended sandbox timeout (+${Math.round(rotationIntervalMs / 1000)}s, budget ${Math.round(sandboxBudgetMs / 60000)}m)`)
-          } catch (error) {
-            log(`sandbox extendTimeout failed: ${error instanceof Error ? error.message : String(error)}`)
+          if (!(await hasEventProgress())) {
+            log('sandbox timeout NOT extended: no run events since the last rotation (agent stalled) — letting the box wind down')
+          } else {
+            try {
+              await sandbox.extendTimeout(rotationIntervalMs)
+              sandboxBudgetMs += rotationIntervalMs
+              log(`extended sandbox timeout (+${Math.round(rotationIntervalMs / 1000)}s, budget ${Math.round(sandboxBudgetMs / 60000)}m)`)
+            } catch (error) {
+              log(`sandbox extendTimeout failed: ${error instanceof Error ? error.message : String(error)}`)
+            }
           }
         }
       } catch (error) {
@@ -762,7 +801,7 @@ const HOSTED_USAGE =
   '[--model <provider/model>] [--project <team/project>] [--provider vercel|local-sim] ' +
   '[--image <orizu-hosted-runtime:tag> (pre-baked VCR image; default env ORIZU_HOSTED_IMAGE)] ' +
   '[--snapshot <snapshot-id> (pre-baked Vercel snapshot, zero-Docker; default env ORIZU_HOSTED_SNAPSHOT; ' +
-  'mutually exclusive with --image)] [--tail]\n' +
+  'mutually exclusive with --image)] [--model-key <key> (else ANTHROPIC_API_KEY; required)] [--tail]\n' +
   'Note (v0): if you disconnect, the agent token expires within its TTL (<=60m) and the run finishes ' +
   'cleanly; reconnect with `orizu run tail --run <id>`. The sandbox timeout is independent (up to 24h).'
 
@@ -821,7 +860,9 @@ export async function hostedCommand(args: string[], io: HostedCommandIo): Promis
     hostedImage: argVal(args, '--image') ?? process.env.ORIZU_HOSTED_IMAGE ?? undefined,
     hostedSnapshot: argVal(args, '--snapshot') ?? process.env.ORIZU_HOSTED_SNAPSHOT ?? undefined,
     tail,
-    modelApiKey: process.env.ANTHROPIC_API_KEY || undefined,
+    // Model key: explicit --model-key wins, else ANTHROPIC_API_KEY. Falsy → the
+    // fail-fast in startHostedSession throws before any session/sandbox is made.
+    modelApiKey: argVal(args, '--model-key') ?? (process.env.ANTHROPIC_API_KEY || undefined),
     logLine: line => io.print(line),
     onTailEvent: event =>
       io.print(io.json ? JSON.stringify(event) : `#${String(event.sequence ?? '?')} ${String(event.eventType ?? '')}`),

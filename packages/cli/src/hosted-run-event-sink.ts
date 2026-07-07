@@ -77,6 +77,13 @@ const EVENT_TYPE_BY_KIND: Partial<Record<HarnessEventKind, string>> = {
   // through this SAME sink (single writer). See EGRESS_*_EVENT_TYPE below.
   egress_blocked: EGRESS_BLOCKED_EVENT_TYPE,
   egress_allowed: EGRESS_ALLOWED_EVENT_TYPE,
+  // Durability + headless (ALI-1036 / ALI-1037), emitted by the in-sandbox loop
+  // through this SAME sink (single writer): auto-harvest results + headless
+  // question auto-handling record.
+  work_persisted: 'work_persisted',
+  work_none: 'work_none',
+  work_persist_failed: 'work_persist_failed',
+  question_auto_answered: 'agent_question_auto_answered',
 }
 
 /** The RunAPI event type a harness kind maps to, or null if it is not appendable
@@ -576,6 +583,15 @@ export interface DrainOptions {
   transcript?: string
   summary?: Record<string, unknown>
   evidence?: Record<string, unknown>
+  /**
+   * Hook invoked AFTER the stream yields its terminal event but BEFORE `finish()`
+   * seals the sink, on EVERY terminal path (success, failure, abnormal end). Used
+   * by the loop's end-of-run auto-harvest (ALI-1036) so `work_persisted` /
+   * `work_none` / `work_persist_failed` can still be appended while the sink is
+   * writable. Its own failure must never change the run's terminal status — the
+   * hook itself is responsible for swallowing errors.
+   */
+  beforeFinish?: () => Promise<void>
 }
 
 /**
@@ -590,6 +606,14 @@ export async function drainHarnessToSink(
   sink: RunEventSink,
   opts: DrainOptions = {}
 ): Promise<TerminalStatus> {
+  // Run the pre-terminal hook (auto-harvest) at most once, right before the first
+  // finish() on any terminal path — while the sink is still writable.
+  let beforeFinishRan = false
+  const runBeforeFinish = async (): Promise<void> => {
+    if (beforeFinishRan) return
+    beforeFinishRan = true
+    if (opts.beforeFinish) await opts.beforeFinish()
+  }
   for await (const event of events) {
     if (event.kind === 'execution_complete') {
       // A prompt the caller/agent stopped is a cancellation, not a failure: the
@@ -597,6 +621,7 @@ export async function drainHarnessToSink(
       // and stop()-initiated paths. A genuine failure (success:false, no abort
       // flag) still lands 'failed'.
       if (event.payload.aborted === true) {
+        await runBeforeFinish()
         await sink.finish('cancelled', {
           summary: opts.summary,
           evidence: opts.evidence,
@@ -609,10 +634,12 @@ export async function drainHarnessToSink(
       const summary = success
         ? opts.summary
         : { ...(opts.summary ?? {}), error: event.payload.error ?? 'execution failed' }
+      await runBeforeFinish()
       await sink.finish(status, { summary, evidence: opts.evidence, transcript: opts.transcript })
       return status
     }
     if (event.kind === 'error') {
+      await runBeforeFinish()
       await sink.finish('failed', {
         summary: { ...(opts.summary ?? {}), error: event.payload.error ?? 'agent error' },
         evidence: opts.evidence,
@@ -624,6 +651,7 @@ export async function drainHarnessToSink(
   }
   // The harness contract guarantees a terminal event; reaching here means the
   // stream ended abnormally. Fail closed so the run never dangles non-terminal.
+  await runBeforeFinish()
   await sink.finish('failed', {
     summary: { ...(opts.summary ?? {}), error: 'harness stream ended without a terminal event' },
     transcript: opts.transcript,
