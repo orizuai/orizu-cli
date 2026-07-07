@@ -24,7 +24,7 @@
  */
 
 import type { SandboxSession } from './sandbox-provider.js'
-import { sweepForTokenResidue, type HygieneFinding } from './daytona-slice.js'
+import { sweepForTokenResidue, type HygieneFinding } from './sandbox-hygiene.js'
 import { redactSecrets } from './secret-redaction.js'
 import {
   AGENT_GIT_IDENTITY,
