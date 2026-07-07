@@ -35,6 +35,7 @@ const GROUPS: CliGroupDoc[] = [
   { name: 'Teams', summary: 'Manage teams and team memberships.' },
   { name: 'Projects', summary: 'Manage projects inside teams.' },
   { name: 'Prompts and judges', summary: 'Work with versioned prompt and judge artifacts.' },
+  { name: 'Report comments', summary: 'Review and mutate anchored report comments across prompt, optimization, and task reports.' },
   { name: 'Scorers and runners', summary: 'Register scorers, push runnable artifacts, execute runners, and submit scores.' },
   { name: 'Optimizations', summary: 'Start, run, export, and finalize optimization runs.' },
   { name: 'Apps', summary: 'Create, preview, update, inspect, and export review apps.' },
@@ -81,6 +82,67 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     usage: 'orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json',
     summary: 'Submit an optimization event payload.',
     group: 'Optimizations',
+  },
+  {
+    path: ['comments', 'list'],
+    usage: 'orizu comments list (--prompt <id-or-name> --project <team/project> [--label <label> | --version <id>] | --run <run-id> | --task <task-id>) [--json]',
+    summary: 'List report comment threads with open/resolved status and replies.',
+    group: 'Report comments',
+    options: [
+      { name: '--prompt <id-or-name>', help: 'Prompt report target. Requires --project.' },
+      { name: '--project <team/project>', help: 'Project slug for prompt targets.' },
+      { name: '--label <label>', help: 'Prompt version label to comment on.' },
+      { name: '--version <id>', help: 'Prompt version ID to comment on.' },
+      { name: '--run <run-id>', help: 'Optimization run report target.' },
+      { name: '--task <task-id>', help: 'Task report target.' },
+      { name: '--json', help: 'Emit the full comments payload.' },
+    ],
+    examples: [
+      'orizu comments list --prompt Generator --project core/evals --label production',
+      'orizu comments list --run <run-id>',
+      'orizu comments list --task <task-id>',
+    ],
+  },
+  {
+    path: ['comments', 'add'],
+    usage: 'orizu comments add (--prompt <id-or-name> --project <team/project> [--label <label> | --version <id>] | --run <run-id> | --task <task-id>) --body <text|@file> [--anchor <text>] [--lines <start:end>] [--via <name>] [--json]',
+    summary: 'Add an anchored top-level comment to a report.',
+    group: 'Report comments',
+    options: [
+      { name: '--body <text|@file>', help: 'Comment body or @file reference.', required: true },
+      { name: '--anchor <text>', help: 'Quoted report text for the comment anchor.' },
+      { name: '--lines <start:end>', help: 'One-based inclusive line range for the anchor.' },
+      { name: '--via <name>', help: 'Tool or agent name to show in attribution.' },
+      { name: '--json', help: 'Emit the created comment payload.' },
+    ],
+    examples: [
+      'orizu comments add --run <run-id> --body @comment.md --anchor "Score summary" --lines 4:6',
+      'orizu comments add --task <task-id> --body "Clarify this finding" --via Codex',
+    ],
+  },
+  {
+    path: ['comments', 'reply'],
+    usage: 'orizu comments reply <comment-id> --body <text|@file> [--via <name>] [--json]',
+    summary: 'Reply to a top-level report comment thread.',
+    group: 'Report comments',
+  },
+  {
+    path: ['comments', 'resolve'],
+    usage: 'orizu comments resolve <comment-id> [--json]',
+    summary: 'Resolve a top-level report comment thread.',
+    group: 'Report comments',
+  },
+  {
+    path: ['comments', 'unresolve'],
+    usage: 'orizu comments unresolve <comment-id> [--json]',
+    summary: 'Reopen a resolved report comment thread.',
+    group: 'Report comments',
+  },
+  {
+    path: ['comments', 'edit'],
+    usage: 'orizu comments edit <comment-id> --body <text|@file> [--json]',
+    summary: 'Edit one of your report comments or replies.',
+    group: 'Report comments',
   },
   {
     path: ['setup'],
@@ -271,12 +333,6 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     path: ['prompts', 'restore'],
     usage: 'orizu prompts restore <prompt-id-or-name> --project <team/project> [--json]',
     summary: 'Restore an archived prompt artifact to active status.',
-    group: 'Prompts and judges',
-  },
-  {
-    path: ['prompts', 'comments'],
-    usage: 'orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <id>] [--json]',
-    summary: 'List prompt comment threads with open/resolved status and replies.',
     group: 'Prompts and judges',
   },
   {
@@ -561,6 +617,20 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     examples: [
       'orizu tasks report set --task <taskId> --report-file ./report.md',
       'orizu tasks report upload --task <taskId> --report @./report.md',
+    ],
+  },
+  {
+    path: ['tasks', 'report', 'get'],
+    usage: 'orizu tasks report get --task <taskId> [--json]',
+    summary: 'Read the Markdown report for a task.',
+    group: 'Tasks',
+    options: [
+      { name: '--task <taskId>', help: 'Task ID whose report should be read.', required: true },
+      { name: '--json', help: 'Emit the full report payload.' },
+    ],
+    examples: [
+      'orizu tasks report get --task <taskId>',
+      'orizu tasks report get --task <taskId> --json',
     ],
   },
   {

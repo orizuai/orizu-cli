@@ -105,7 +105,7 @@ Deeper: `references/primer.md` (Step 2); `references/cli-reference.md` (apps + t
 
 ## 3. Judge — turn labels into automated evaluators
 
-Use the Phase 0 prompt control plane when the user wants judges stored in Orizu as versioned prompt artifacts, runner zips, scorer definitions, and submitted score results. Read **`references/prompt-control-plane.md`** before using those commands. When the user mentions prompt feedback, prompt comments, or asks what to focus on for the next prompt version, inspect comment threads with `orizu prompts comments <prompt-id-or-name> --project <team>/<project>` before editing or pushing.
+Use the Phase 0 prompt control plane when the user wants judges stored in Orizu as versioned prompt artifacts, runner zips, scorer definitions, and submitted score results. Read **`references/prompt-control-plane.md`** before using those commands. When the user mentions prompt feedback, prompt comments, or asks what to focus on for the next prompt version, inspect comment threads with `orizu comments list --prompt <prompt-id-or-name> --project <team>/<project>` before editing or pushing.
 
 Judge construction details are still useful when authoring the evaluator itself.
 
@@ -192,4 +192,4 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - Prompt control-plane commands should use ids for dataset versions, split sets, prompt versions, scorer versions, runner versions, optimizer versions, and optimization runs.
 - Optimization exports default to `<run-id>.optimization.json`; prefer the existing `logs/<run-id>` directory from `run-gepa` when it is available because it contains the full local trace without needing server rehydration.
 - When ending an optimization run, attach a markdown report with `--report-file` when possible. Use `references/optimization-reports.md` for what to include.
-- Use `orizu prompts comments <prompt-id-or-name> --project <team>/<project> [--label <label> | --version <id>] [--json]` to list prompt-level discussion threads with open/resolved status, selected text/line context, and replies.
+- Use `orizu comments list --prompt <prompt-id-or-name> --project <team>/<project> [--label <label> | --version <id>] [--json]` to list prompt-level discussion threads with open/resolved status, selected text/line context, and replies.

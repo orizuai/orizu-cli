@@ -350,7 +350,7 @@ orizu --local prompts restore <prompt-id-or-name> --project <team>/<project>
 List prompt comment threads for the latest version, or a specific label/version:
 
 ```bash
-orizu --local prompts comments <prompt-id-or-name> \
+orizu --local comments list --prompt <prompt-id-or-name> \
   --project <team>/<project> \
   [--label production | --version <prompt-version-id>] \
   [--json]

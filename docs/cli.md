@@ -483,6 +483,27 @@ orizu apps export --app <appId> --version 2
 
 Exports the stored `.tsx` source for the app's current version by default. Use `--version <n>` to inspect an older implementation. When `--out` is omitted, the CLI writes `<app-name>.v<version>.tsx` in the current directory.
 
+## Report comments
+
+Report comments use one command family across prompt version reports, optimization run reports, and task reports.
+
+```bash
+orizu comments list --prompt <promptIdOrName> --project my-team/quality-eval [--label production | --version <promptVersionId>]
+orizu comments list --run <optimizationRunId>
+orizu comments list --task <taskId>
+orizu comments add --run <optimizationRunId> --body @comment.md --anchor "Score summary" --lines 4:6
+orizu comments reply <commentId> --body "Fixed in the next pass"
+orizu comments resolve <commentId>
+orizu comments unresolve <commentId>
+orizu comments edit <commentId> --body @updated-comment.md
+```
+
+Behavior:
+- `list` prints threads with open/resolved status, anchors, and replies
+- `add` accepts `--body <text|@file>`, optional `--anchor`, optional `--lines <start:end>`, and optional `--via <name>`
+- `reply`, `resolve`, `unresolve`, and `edit` use only the globally unique comment ID
+- `--json` returns the full API payload
+
 ## Datasets
 
 Canonical contract reference:
@@ -738,12 +759,14 @@ Behavior:
 orizu tasks report set --task <taskId> --report-file ./report.md
 orizu tasks report set --task <taskId> --report "## Findings"
 orizu tasks report upload --task <taskId> --report @./report.md
+orizu tasks report get --task <taskId>
 ```
 
 Behavior:
 - replaces the current task report if one already exists
 - accepts reports only when the task status is `paused` or `completed`
-- `--json` returns the updated report payload
+- `get` reads the current report so humans and scoped agent sessions can inspect it before commenting
+- `--json` returns the updated or fetched report payload
 
 ### Unpause task
 

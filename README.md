@@ -174,8 +174,15 @@ orizu logout
     <td><code>orizu prompts archive &lt;promptIdOrName&gt; --project ops-eval/support-qa</code><br><code>orizu prompts restore &lt;promptIdOrName&gt; --project ops-eval/support-qa</code></td>
   </tr>
   <tr>
-    <td>Show prompt comments</td>
-    <td><code>orizu prompts comments &lt;promptIdOrName&gt; --project ops-eval/support-qa</code></td>
+    <td colspan="2"><strong>Report comments</strong></td>
+  </tr>
+  <tr>
+    <td>List report comments</td>
+    <td><code>orizu comments list --prompt &lt;promptIdOrName&gt; --project ops-eval/support-qa</code><br><code>orizu comments list --run &lt;runId&gt;</code><br><code>orizu comments list --task &lt;taskId&gt;</code></td>
+  </tr>
+  <tr>
+    <td>Add or update comments</td>
+    <td><code>orizu comments add --run &lt;runId&gt; --body @comment.md --anchor "Summary" --lines 4:6</code><br><code>orizu comments reply &lt;commentId&gt; --body "Fixed"</code><br><code>orizu comments resolve &lt;commentId&gt;</code></td>
   </tr>
   <tr>
     <td colspan="2"><strong>Datasets</strong></td>
@@ -294,6 +301,10 @@ orizu logout
   <tr>
     <td>Upload a task report</td>
     <td><code>orizu tasks report set --task &lt;taskId&gt; --report-file ./report.md</code></td>
+  </tr>
+  <tr>
+    <td>Read a task report</td>
+    <td><code>orizu tasks report get --task &lt;taskId&gt;</code></td>
   </tr>
   <tr>
     <td>Resume a task</td>

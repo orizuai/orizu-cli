@@ -68,6 +68,11 @@ import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredential } from './git-credential.js'
 import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
+import {
+  reportCommentsCommand,
+  throwDeprecatedPromptCommentsCommand,
+  type ReportCommentsCliContext,
+} from './report-comments-cli.js'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -144,60 +149,18 @@ interface PromptSummary {
   description?: string | null
 }
 
-interface PromptCommentAuthor {
-  name: string
-  initials?: string
-  color?: string
-}
-
-interface PromptCommentAnchor {
-  text: string | null
-  startLine: number | null
-  endLine: number | null
-}
-
-interface PromptCommentReply {
-  id: string
-  body: string
-  author: PromptCommentAuthor
-  createdAt: string
-  updatedAt: string
-}
-
-interface PromptCommentThread {
-  id: string
-  status: 'open' | 'resolved'
-  body: string
-  anchor: PromptCommentAnchor | null
-  author: PromptCommentAuthor
-  createdAt: string
-  updatedAt: string
-  resolvedAt: string | null
-  resolvedByUserId: string | null
-  replyCount: number
-  replies: PromptCommentReply[]
-}
-
-interface PromptCommentsPayload {
-  prompt: {
+interface TaskReportPayload {
+  task: {
     id: string
-    name: string
-    role: string
-    description?: string | null
-  }
-  version: {
-    id: string
-    versionNumber?: number
-    versionLabel?: string | null
+    title?: string | null
     status?: string | null
+    report: {
+      markdown: string
+      sourceName: string | null
+      createdAt: string | null
+      updatedAt?: string | null
+    }
   }
-  summary: {
-    threadCount: number
-    openThreadCount: number
-    resolvedThreadCount: number
-    replyCount: number
-  }
-  comments: PromptCommentThread[]
 }
 
 interface ScorerSummary {
@@ -1083,78 +1046,6 @@ function printTaskStatusSummary(data: TaskStatusPayload) {
   }
 }
 
-function compactTerminalText(value: string, maxLength = 160): string {
-  const compact = sanitizeTerminalText(value).replace(/\s+/g, ' ').trim()
-  if (compact.length <= maxLength) {
-    return compact
-  }
-
-  return `${compact.slice(0, Math.max(0, maxLength - 1)).trim()}…`
-}
-
-function printIndentedBody(value: string, indent: string) {
-  const lines = sanitizeTerminalText(value || '').split(/\r?\n/)
-  for (const line of lines) {
-    printLine(`${indent}${line}`)
-  }
-}
-
-function formatPromptCommentAnchor(anchor: PromptCommentAnchor | null): string | null {
-  if (!anchor) {
-    return null
-  }
-
-  const lineLabel = anchor.startLine && anchor.endLine
-    ? anchor.startLine === anchor.endLine
-      ? `line ${anchor.startLine}`
-      : `lines ${anchor.startLine}-${anchor.endLine}`
-    : null
-  const selectedText = anchor.text ? `"${compactTerminalText(anchor.text, 180)}"` : null
-
-  if (lineLabel && selectedText) {
-    return `${lineLabel}: ${selectedText}`
-  }
-  return lineLabel || selectedText
-}
-
-function printPromptComments(data: PromptCommentsPayload) {
-  const versionLabel = data.version.versionLabel || (
-    data.version.versionNumber ? `v${data.version.versionNumber}` : data.version.id
-  )
-
-  printLine(`Prompt: ${sanitizeTerminalText(data.prompt.name)} (${sanitizeTerminalText(data.prompt.id)})`)
-  printLine(`Version: ${sanitizeTerminalText(String(versionLabel))} (${sanitizeTerminalText(data.version.id)})`)
-  printLine(
-    `Comments: ${data.summary.threadCount} thread${data.summary.threadCount === 1 ? '' : 's'} ` +
-    `(${data.summary.openThreadCount} open, ${data.summary.resolvedThreadCount} resolved, ${data.summary.replyCount} replies)`
-  )
-
-  if (data.comments.length === 0) {
-    printLine('\nNo comments found for this prompt version.')
-    return
-  }
-
-  for (const [index, thread] of data.comments.entries()) {
-    const authorName = thread.author?.name || 'Unknown'
-    const anchor = formatPromptCommentAnchor(thread.anchor)
-    printLine('')
-    printLine(`${index + 1}. [${thread.status}] ${sanitizeTerminalText(authorName)} · ${sanitizeTerminalText(thread.createdAt)}`)
-    if (anchor) {
-      printLine(`   Selection: ${anchor}`)
-    }
-    printIndentedBody(thread.body, '   ')
-
-    if (thread.replies.length > 0) {
-      printLine(`   Replies (${thread.replies.length})`)
-      for (const reply of thread.replies) {
-        const replyAuthor = reply.author?.name || 'Unknown'
-        printLine(`   - ${sanitizeTerminalText(replyAuthor)} · ${sanitizeTerminalText(reply.createdAt)}`)
-        printIndentedBody(reply.body, '     ')
-      }
-    }
-  }
-}
-
 const DEFAULT_AUTH_CALLBACK_PORT = 43123
 
 function resolveAuthCallbackPort(): number {
@@ -1560,37 +1451,6 @@ async function listJudges() {
     return
   }
   printPromptSummaries(data.judges, 'No judges found.')
-}
-
-async function listPromptComments() {
-  const promptRef = getPositionalArg(2)
-  const project = getArg('--project') || await resolveProjectSlug(null)
-  const label = getArg('--label')
-  const version = getArg('--version')
-
-  if (!promptRef) {
-    throw new Error('Usage: orizu prompts comments <prompt-id-or-name> --project <team/project> [--label <label> | --version <version-id>] [--json]')
-  }
-  if (label && version) {
-    throw new Error('Use either --label or --version, not both')
-  }
-
-  const params = new URLSearchParams({ project })
-  if (label) params.set('label', label)
-  if (version) params.set('version', version)
-
-  const response = await authedFetch(`/api/cli/prompts/${encodeURIComponent(promptRef)}/comments?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch prompt comments: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<PromptCommentsPayload>(response, 'Prompt comments')
-  if (hasJsonFlag()) {
-    printJson(data as unknown as Record<string, unknown>)
-    return
-  }
-
-  printPromptComments(data)
 }
 
 async function listScorers() {
@@ -2955,6 +2815,22 @@ function hasJsonFlag(): boolean {
 
 function printJson(value: Record<string, unknown>) {
   printLine(JSON.stringify(value))
+}
+
+function createReportCommentsCliContext(): ReportCommentsCliContext {
+  return {
+    getArg,
+    getPositionalArg,
+    rejectDashPrefixedOptionValue,
+    resolveProjectSlug,
+    readSourceFile,
+    authedFetch,
+    parseJsonResponse,
+    hasJsonFlag,
+    printJson,
+    printLine,
+    sanitizeTerminalText,
+  }
 }
 
 function printCapabilities() {
@@ -4994,6 +4870,39 @@ async function setTaskReport() {
   )
 }
 
+async function getTaskReport() {
+  const taskId = getArg('--task')
+  rejectDashPrefixedOptionValue('--task', taskId)
+  if (!taskId) {
+    throw new Error('Usage: orizu tasks report get --task <taskId> [--json]')
+  }
+
+  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/report`)
+  if (!response.ok) {
+    throw new Error(`Failed to read task report: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<TaskReportPayload>(response, 'Task report get')
+  if (hasJsonFlag()) {
+    printJson(data as unknown as Record<string, unknown>)
+    return
+  }
+
+  const title = data.task.title ? `${data.task.title} ` : ''
+  printLine(`Task report: ${sanitizeTerminalText(title)}(${sanitizeTerminalText(data.task.id)})`)
+  if (data.task.status) {
+    printLine(`Status: ${sanitizeTerminalText(data.task.status)}`)
+  }
+  if (data.task.report.sourceName) {
+    printLine(`Source: ${sanitizeTerminalText(data.task.report.sourceName)}`)
+  }
+  if (data.task.report.createdAt) {
+    printLine(`Created: ${sanitizeTerminalText(data.task.report.createdAt)}`)
+  }
+  printLine('')
+  printLine(sanitizeTerminalText(data.task.report.markdown))
+}
+
 interface AppDetailPayload {
   id: string
   name: string
@@ -6339,6 +6248,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
+  if (command === 'comments') {
+    await reportCommentsCommand(subcommand, createReportCommentsCliContext())
+    return
+  }
+
   if (command === 'teams' && subcommand === 'list') {
     await listTeams()
     return
@@ -6383,8 +6297,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   if (command === 'prompts' && subcommand === 'comments') {
-    await listPromptComments()
-    return
+    throwDeprecatedPromptCommentsCommand()
   }
 
   if (command === 'prompts' && subcommand === 'pull') {
@@ -6591,6 +6504,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
     (cliArgs[2] === 'set' || cliArgs[2] === 'upload')
   ) {
     await setTaskReport()
+    return
+  }
+
+  if (command === 'tasks' && subcommand === 'report' && cliArgs[2] === 'get') {
+    await getTaskReport()
     return
   }
 
