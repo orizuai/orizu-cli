@@ -127,7 +127,13 @@ export interface VercelSdkModule {
 // this version EXACTLY (no caret); re-verify before bumping. The lazy
 // `import(specifier)` keeps the (Node-only) SDK genuinely optional — it loads only
 // when the Vercel provider is actually selected.
-const VERCEL_SDK_SPECIFIER = '@vercel/sandbox'
+//
+// The specifier is ASSEMBLED at runtime (join, not a literal) so a bundler that
+// reaches this module through the shared `lib/hosted-runtime/` surface (ALI-1015:
+// `next build` for the app, wrangler for the coordinator Worker) cannot
+// constant-fold `import(specifier)` into a static dependency on the SDK — the
+// same discipline as the ALI-1031 server provider.
+const VERCEL_SDK_SPECIFIER = ['@vercel', 'sandbox'].join('/')
 
 async function loadVercelModule(): Promise<VercelSdkModule> {
   try {

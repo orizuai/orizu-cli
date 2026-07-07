@@ -222,7 +222,13 @@ export interface DaytonaProviderDeps {
 // cost is a one-time developer/CI tax on this package, not a runtime or
 // shipped-artifact cost. Re-evaluate if @daytonaio/sdk ever becomes a
 // dependency of a package that IS shipped to end users.
-const DAYTONA_SDK_SPECIFIER = '@daytonaio/sdk'
+//
+// The specifier is ASSEMBLED at runtime (join, not a literal) so a bundler that
+// reaches this module through the shared `lib/hosted-runtime/` surface (ALI-1015:
+// `next build` for the app, wrangler for the coordinator Worker) cannot
+// constant-fold `import(specifier)` into a static dependency on the SDK — the
+// same discipline as the ALI-1031 server provider.
+const DAYTONA_SDK_SPECIFIER = ['@daytonaio', 'sdk'].join('/')
 
 async function loadDaytonaModule(): Promise<DaytonaSdkModule> {
   try {
