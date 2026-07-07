@@ -62,6 +62,7 @@ import { connectorsCommand } from './connectors-cli.js'
 import { ARTIFACT_MAX_BYTES, runnerOptimizerCommand } from './artifact-pull.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
+import { teamConnectorsCommand } from './team-connectors-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
 import { hostedCommand } from './hosted-session-cli.js'
@@ -6584,6 +6585,22 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
   if (command === 'team' && subcommand === 'egress-allowlist') {
     process.exitCode = await egressAllowlistCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, printErr: printError })
+    return
+  }
+  if (command === 'team' && subcommand === 'connectors') {
+    process.exitCode = await teamConnectorsCommand(cliArgs.slice(2), {
+      json: hasJsonFlag(),
+      print: printLine,
+      printErr: printError,
+      resolveTeamSlug: async () => {
+        const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal()
+        try {
+          return (await resolveSetupTeam(getOptionalArgValue('--team'), noInput, false)).slug
+        } catch {
+          return null
+        }
+      },
+    })
     return
   }
 
