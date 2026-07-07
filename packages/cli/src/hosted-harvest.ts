@@ -104,14 +104,19 @@ export function harvestWorkspace(opts: HarvestOptions): HarvestOutcome {
   }
   const exec = opts.exec ?? defaultHarvestExec(opts.workspaceDir)
   try {
-    const status = exec(['status', '--porcelain'])
+    // Never harvest bootstrap-injected runtime scaffolding (ALI-1051): the
+    // .claude/skills symlink is a sandbox-local pointer, not the agent's work.
+    // Bootstrap also excludes it via .git/info/exclude; this pathspec is the
+    // belt-and-braces for any sandbox where that didn't run.
+    const excludeScaffold = [':(exclude).claude/skills/**', ':(exclude).claude/skills']
+    const status = exec(['status', '--porcelain', '--', '.', ...excludeScaffold])
     if (status.exitCode !== 0) {
       return { kind: 'work_persist_failed', error: `git status failed: ${detail(status)}` }
     }
     const dirty = status.stdout.trim().length > 0
 
     if (dirty) {
-      const add = exec(['add', '-A'])
+      const add = exec(['add', '-A', '--', '.', ...excludeScaffold])
       if (add.exitCode !== 0) {
         return { kind: 'work_persist_failed', error: `git add failed: ${detail(add)}` }
       }

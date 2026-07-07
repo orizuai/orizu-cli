@@ -457,6 +457,12 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
     const stage = await session.exec(
       [
         `mkdir -p ${skillSkillsDirRel}`,
+        // The staged skill is bootstrap-injected RUNTIME scaffolding (a symlink to
+        // the sandbox-local CLI vendor dir), NOT the agent's work. Exclude it
+        // repo-LOCALLY (.git/info/exclude — invisible to the diff, never committed)
+        // so auto-harvest's `git add -A` can't sweep it into the session branch and
+        // (ALI-1051) auto-apply a broken symlink to the customer's main.
+        `if [ -d ${workspaceDir}/.git ]; then printf '%s\\n' '/.claude/skills/' >> ${workspaceDir}/.git/info/exclude; fi`,
         `src="${'${ORIZU_SKILL_SOURCE_DIR:-}'}"`,
         `if [ -z "$src" ] || [ ! -d "$src" ]; then src="$(orizu skills path 2>/dev/null || true)"; fi`,
         `if [ -z "$src" ] || [ ! -d "$src" ]; then r="$(npm root -g 2>/dev/null || true)"; if [ -n "$r" ] && [ -d "$r/orizu/vendor/skills/orizu-cli" ]; then src="$r/orizu/vendor/skills/orizu-cli"; fi; fi`,
