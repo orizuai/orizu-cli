@@ -16,7 +16,7 @@ export interface ManifestsCommandIo {
   resolveProjectSlug?: (arg: string | null) => Promise<string>
 }
 
-const MANIFEST_ACTIONS = new Set(['approve', 'reject', 'apply'])
+const MANIFEST_ACTIONS = new Set(['approve', 'reject', 'apply', 'revert'])
 
 async function responseMessage(response: Response): Promise<string> {
   try {
@@ -93,6 +93,28 @@ function num(value: unknown): number {
   return typeof value === 'number' ? value : 0
 }
 
+// Auto-applied manifests (ALI-1040) landed by SERVER POLICY, not a human approver
+// (approved_by is NULL). Mark them so a reviewer can tell policy applies from
+// human applies at a glance; the reason lives in the outcome for `show`.
+function wasAutoApplied(manifest: Record<string, unknown>): boolean {
+  return asRecord(manifest.outcome).autoApplied === true
+}
+
+/** STATUS cell: `applied*` when the server auto-applied it, else the raw status. */
+function statusDisplay(manifest: Record<string, unknown>): string {
+  const status = typeof manifest.status === 'string' ? manifest.status : '(unknown)'
+  return wasAutoApplied(manifest) ? `${status}*` : status
+}
+
+/** One-line auto-apply audit note for `show`, or null when not auto-applied. */
+function autoApplyNote(manifest: Record<string, unknown>): string | null {
+  if (!wasAutoApplied(manifest)) return null
+  const reason = asRecord(manifest.outcome).autoApplyReason
+  return typeof reason === 'string' && reason.length > 0
+    ? `auto-applied by policy: ${reason}`
+    : 'auto-applied by policy'
+}
+
 // -- list table (ALI-1038) ----------------------------------------------------
 
 /** "3m" / "4h" / "2d" — enough resolution to pick a manifest out of a list. */
@@ -133,7 +155,7 @@ function manifestsTable(manifests: Record<string, unknown>[], now: number): stri
   if (manifests.length === 0) return 'promotion manifests\n(none)'
   const rows = [...manifests].sort(listOrder).map(manifest => ({
     id: typeof manifest.id === 'string' ? manifest.id : '(unknown)',
-    status: typeof manifest.status === 'string' ? manifest.status : '(unknown)',
+    status: statusDisplay(manifest),
     type: typeof manifest.actionType === 'string' ? manifest.actionType : '(unknown)',
     changes: changesSummary(manifest),
     author: typeof manifest.authorActorType === 'string' ? manifest.authorActorType : '-',
@@ -207,7 +229,9 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
     const response = await fetcherFrom(io)(`/api/cli/promotion-manifests/${encodeURIComponent(id)}`)
     const data = await requireOk(response, 'Manifest show')
     const manifest = (data.manifest ?? {}) as Record<string, unknown>
-    const human = manifest.actionType === 'repo_merge' ? repoMergeShow(manifest) : manifestLine(manifest)
+    const base = manifest.actionType === 'repo_merge' ? repoMergeShow(manifest) : manifestLine(manifest)
+    const note = autoApplyNote(manifest)
+    const human = note ? `${base}\n  ${note}` : base
     emit(io, { manifest }, human)
     return 0
   }
@@ -244,6 +268,6 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
     return 0
   }
 
-  io.print('Usage: orizu manifests <list|show|approve|reject|apply> ... [--json]')
+  io.print('Usage: orizu manifests <list|show|approve|reject|apply|revert> ... [--json]')
   return 1
 }
