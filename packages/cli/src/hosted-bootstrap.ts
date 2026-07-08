@@ -24,6 +24,7 @@
  */
 
 import type { SandboxSession } from './sandbox-provider.js'
+import { stageOrizuSkill } from './hosted-skill-staging.js'
 import { sweepForTokenResidue, type HygieneFinding } from './sandbox-hygiene.js'
 import { redactSecrets } from './secret-redaction.js'
 import {
@@ -442,54 +443,29 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
     }
 
     // 4b — Stage the orizu-cli skill into the workspace so the agent discovers it
-    // (ALI-1044). Resolve the CLI's OWN vendored skill dir in-sandbox, preferring:
-    //   (1) $ORIZU_SKILL_SOURCE_DIR  — explicit override (also honored by the CLI's
-    //       skill-installer; the local-sim rehearsal sets it),
-    //   (2) `orizu skills path`      — the packaged vendor/skills/orizu-cli of the
-    //       globally-installed CLI (the production path),
-    //   (3) `$(npm root -g)/orizu/vendor/skills/orizu-cli` — belt fallback.
-    // Then SYMLINK it under <workspaceDir>/.claude/skills/orizu-cli, falling back
-    // to a copy if the symlink cannot be created. Non-fatal + recorded, exactly
-    // like the CLI install. Resolved paths stay in shell vars (never interpolated),
-    // so they cannot inject into the command.
+    // (ALI-1044). SHARED with the DO path (ALI-1059): the resolution chain + the
+    // .git/info/exclude append live in `stageOrizuSkill`; here we only adapt the
+    // sandbox exec seam and record the outcome. Non-fatal + recorded, exactly like
+    // the CLI install.
     currentStep = 'skill_staged'
-    const skillSkillsDirRel = `${workspaceDir}/.claude/skills`
-    const stage = await session.exec(
-      [
-        `mkdir -p ${skillSkillsDirRel}`,
-        // The staged skill is bootstrap-injected RUNTIME scaffolding (a symlink to
-        // the sandbox-local CLI vendor dir), NOT the agent's work. Exclude it
-        // repo-LOCALLY (.git/info/exclude — invisible to the diff, never committed)
-        // so auto-harvest's `git add -A` can't sweep it into the session branch and
-        // (ALI-1051) auto-apply a broken symlink to the customer's main.
-        `if [ -d ${workspaceDir}/.git ]; then printf '%s\\n' '/.claude/skills/' >> ${workspaceDir}/.git/info/exclude; fi`,
-        `src="${'${ORIZU_SKILL_SOURCE_DIR:-}'}"`,
-        `if [ -z "$src" ] || [ ! -d "$src" ]; then src="$(orizu skills path 2>/dev/null || true)"; fi`,
-        `if [ -z "$src" ] || [ ! -d "$src" ]; then r="$(npm root -g 2>/dev/null || true)"; if [ -n "$r" ] && [ -d "$r/orizu/vendor/skills/orizu-cli" ]; then src="$r/orizu/vendor/skills/orizu-cli"; fi; fi`,
-        `if [ -z "$src" ] || [ ! -d "$src" ]; then echo "NO_SOURCE"; exit 0; fi`,
-        `dest="${skillSkillsDirRel}/orizu-cli"`,
-        `rm -rf "$dest"`,
-        `if ln -s "$src" "$dest" 2>/dev/null; then echo "SYMLINK $src"; else cp -R "$src" "$dest" && echo "COPY $src"; fi`,
-      ].join('\n')
-    )
-    const stageOut = stage.stdout.trim()
-    const stagedMethod = stageOut.startsWith('SYMLINK')
-      ? 'symlink'
-      : stageOut.startsWith('COPY')
-        ? 'copy'
-        : null
-    const stagedOk = stage.exitCode === 0 && stagedMethod !== null
+    const stage = await stageOrizuSkill({
+      workspaceDir,
+      exec: async command => {
+        const res = await session.exec(command)
+        return { exitCode: res.exitCode, stdout: res.stdout, stderr: res.stderr ?? '' }
+      },
+    })
     record(
       'skill_staged',
-      stagedOk,
-      stagedOk
-        ? `orizu-cli skill staged (${stagedMethod})`
-        : `skill staging unresolved: ${stageOut || `exit ${stage.exitCode}`}`
+      stage.ok,
+      stage.ok
+        ? `orizu-cli skill staged (${stage.method})`
+        : `skill staging unresolved: ${stage.stdout.trim() || `exit ${stage.exitCode}`}`
     )
     await sink.append('skill_staged', {
-      ok: stagedOk,
-      method: stagedMethod,
-      dest: `${skillSkillsDirRel}/orizu-cli`,
+      ok: stage.ok,
+      method: stage.method,
+      dest: stage.dest,
       outputTail: tail(stage.stdout, stage.stderr),
     })
 
