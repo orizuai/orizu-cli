@@ -51,6 +51,7 @@ import {
   type HostedLoopResult,
 } from './hosted-loop.js'
 import { DEFAULT_EGRESS_CANARY_HOST } from './hosted-loop-lifecycle.js'
+import { resumeRunEventSink } from './hosted-run-event-sink.js'
 import { stageOrizuSkill } from './hosted-skill-staging.js'
 
 export type BootFetch = (url: string, init?: RequestInit) => Promise<Response>
@@ -77,6 +78,9 @@ export const REQUIRED_BOOT_ENV_VARS = [
 export interface HostedBootEnv {
   bootSecret: string
   agentTokenUrl: string
+  /** {coordinator}/sessions/:id/boot-status — the ALI-1060 agent-liveness
+   *  callback, derived from agentTokenUrl (same boot-secret auth). */
+  bootStatusUrl: string
   envBundleUrl: string
   baseUrl: string
   sessionId: string
@@ -111,6 +115,10 @@ export function resolveHostedBootEnv(
     value: {
       bootSecret,
       agentTokenUrl,
+      // The boot-status route is the agent-token route's sibling on the same
+      // coordinator, same boot-secret auth (ALI-1060). Deriving it here means no
+      // new env var in the frozen contract / planSandboxEnv.
+      bootStatusUrl: deriveBootStatusUrl(agentTokenUrl),
       envBundleUrl,
       baseUrl: baseUrl.replace(/\/+$/, ''),
       sessionId,
@@ -118,6 +126,63 @@ export function resolveHostedBootEnv(
       workspaceId: env.ORIZU_WORKSPACE_ID?.trim() || null,
       anthropicDummyKey: env.ANTHROPIC_API_KEY?.trim() || null,
     },
+  }
+}
+
+/** The boot-status route is the agent-token route's sibling; swap the trailing
+ *  path segment. Falls back to appending when the shape is unexpected. */
+export function deriveBootStatusUrl(agentTokenUrl: string): string {
+  if (/\/agent-token\/?$/.test(agentTokenUrl)) {
+    return agentTokenUrl.replace(/\/agent-token\/?$/, '/boot-status')
+  }
+  return `${agentTokenUrl.replace(/\/+$/, '')}/boot-status`
+}
+
+// -- Boot-status callback (ALI-1060) ------------------------------------------
+
+/** Max chars of the failure reason reported to the coordinator. A boot reason
+ *  is never a place for a secret; this bounds it anyway, and we scrub the boot
+ *  secret defensively before sending. */
+const MAX_BOOT_REASON_CHARS = 800
+
+/** Best-effort scrub + truncate for a reported failure reason: never leak the
+ *  boot secret (the one credential the boot always holds), and keep it short. */
+export function redactBootReason(reason: string, bootSecret: string): string {
+  let out = reason
+  if (bootSecret && out.includes(bootSecret)) {
+    out = out.split(bootSecret).join('[redacted]')
+  }
+  return out.slice(0, MAX_BOOT_REASON_CHARS)
+}
+
+/**
+ * Report the boot outcome to the coordinator's boot-status route (ALI-1060),
+ * authed with the boot secret (same as the agent-token pull). Best-effort: the
+ * DO's own readiness-timeout is the backstop if this never lands, so a failed
+ * report must never mask the boot result. NEVER logs the secret.
+ */
+export async function postBootStatus(opts: {
+  bootStatusUrl: string
+  bootSecret: string
+  status: 'ready' | 'failed'
+  runId: string | null
+  reason?: string | null
+  fetchImpl: BootFetch
+  log?: (line: string) => void
+}): Promise<void> {
+  try {
+    const res = await opts.fetchImpl(opts.bootStatusUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${opts.bootSecret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: opts.status,
+        ...(opts.runId ? { runId: opts.runId } : {}),
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      }),
+    })
+    opts.log?.(`boot-status ${opts.status} reported (${res.status})`)
+  } catch (error) {
+    opts.log?.(`boot-status ${opts.status} report failed: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
@@ -402,6 +467,22 @@ function assertSafeGitValue(name: string, value: string): void {
   }
 }
 
+/**
+ * Path-safety for the run id BEFORE it is interpolated into `.orizu-run/${runId}`
+ * (ALI-1060). ORIZU_RUN_ID can be CALLER-SUPPLIED (resume flows), and unlike the
+ * boot-created uuid it is untrusted — a `../` value would escape the run dir and
+ * let boot assets (0600 bearer/boot-secret files) land outside it. A run id is a
+ * single opaque segment: allow only `[A-Za-z0-9._-]` and reject any `..`, so no
+ * separators or traversal survive. Stricter than the operator path's shared
+ * shell-value assertion (which allows `/`), applied to the same value.
+ */
+const SAFE_RUN_ID = /^[A-Za-z0-9._-]+$/
+export function assertSafeRunId(runId: string): void {
+  if (!SAFE_RUN_ID.test(runId) || runId.includes('..')) {
+    throw new Error('unsafe run id; refusing to build run-dir paths')
+  }
+}
+
 function writeSecretFile(path: string, contents: string, write: (p: string, c: string) => void): void {
   write(path, contents.endsWith('\n') ? contents : `${contents}\n`)
 }
@@ -435,6 +516,9 @@ export interface RunHostedBootOptions {
   bearerAttempts?: number
   bearerBackoffMs?: number
   sleep?: (ms: number) => Promise<void>
+  /** ALI-1060: invoked once the run id + agent bearer are known (after
+   *  ensureRun), so a caller can report/mark on a LATER throw. */
+  onBootContext?: (ctx: { runId: string; bearer: string }) => void
 }
 
 export interface HostedBootResult {
@@ -504,6 +588,12 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
     fetchImpl,
     existingRunId: env.runId ?? session.runId,
   })
+  // Path-safety BEFORE the run id reaches any `.orizu-run/${runId}` path
+  // (ALI-1060): a caller-supplied ORIZU_RUN_ID must not escape the run dir.
+  assertSafeRunId(runId)
+  // Hand the run id + bearer to the caller so a throw AFTER this point can mark
+  // the run failed + report the boot failure (the DO is the backstop otherwise).
+  opts.onBootContext?.({ runId, bearer: bearer.token })
   const repo = await resolveRepo({ baseUrl: env.baseUrl, workspaceId, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
   log(`resolved run ${runId} on ${repo.repoFullName}@${session.repoBranch}`)
 
@@ -590,6 +680,20 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   } catch (error) {
     log(`orizu-cli skill staging failed: ${error instanceof Error ? error.message : String(error)}`)
   }
+
+  // ALI-1060: the agent is now genuinely LIVE — bearer minted, connectors
+  // applied, session/run resolved, repo cloned, skill staged. Signal the
+  // coordinator's readiness gate BEFORE the loop so the DO stops waiting (and
+  // never tears down a healthy box on timeout). Best-effort; the DO's timeout is
+  // the backstop.
+  await postBootStatus({
+    bootStatusUrl: env.bootStatusUrl,
+    bootSecret: env.bootSecret,
+    status: 'ready',
+    runId,
+    fetchImpl,
+    log,
+  })
 
   // 6 — Launch the hosted loop, reused in-process. The bearer PROVIDER keeps the
   // event sink's bearer fresh from the same pull-mode source; the DO-provisioned
@@ -736,10 +840,18 @@ export async function hostedBootCommand(io: HostedBootCommandIo): Promise<number
     )
     return 1
   }
+  const env = resolved.value
+  const log = (line: string): void => io.printErr?.(`[hosted-boot] ${line}`)
+  // Captured once the run id + bearer are known, so a LATER throw can mark the
+  // run failed with an authenticated bearer (ALI-1060).
+  let bootCtx: { runId: string; bearer: string } | null = null
   try {
     const result = await runHostedBoot({
-      env: resolved.value,
-      log: line => io.printErr?.(`[hosted-boot] ${line}`),
+      env,
+      log,
+      onBootContext: ctx => {
+        bootCtx = ctx
+      },
     })
     io.print(
       io.json
@@ -750,6 +862,80 @@ export async function hostedBootCommand(io: HostedBootCommandIo): Promise<number
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     io.printErr?.(`hosted-boot failed: ${message}`)
+    // A boot THROW (before/around ensureRun) means the agent never came alive.
+    // Report it so the DO stops + destroys the sandbox NOW instead of waiting
+    // for the readiness timeout, and mark the run failed so it never stays
+    // 'running' forever (the DO also marks it — both are idempotent).
+    await reportBootFailure({ env, ctx: bootCtx, reason: message, log })
     return 1
   }
+}
+
+/**
+ * Failure fan-out on a boot throw (ALI-1060): mark the run terminally `failed`
+ * (the operator path's agent-bearer terminal PATCH) and always signal the
+ * coordinator's boot-status route so the DO tears the sandbox down promptly.
+ * Best-effort throughout — the boot secret is scrubbed from the reported reason.
+ *
+ * PRE-BEARER failures (a throw before `onBootContext` — `pullAgentBearer` /
+ * `fetchEnvBundle` blew up, so `ctx` is null) still have a run id: the server
+ * PRE-CREATES it and injects ORIZU_RUN_ID. We attempt a SHORT bearer pull here
+ * so we can self-mark that run failed rather than leaving it `running` until the
+ * DO's readiness timeout. If even that pull fails, the DO backstop (boot-status
+ * failure now, readiness timeout otherwise) is the last line.
+ */
+export async function reportBootFailure(opts: {
+  env: HostedBootEnv
+  ctx: { runId: string; bearer: string } | null
+  reason: string
+  log: (line: string) => void
+  /** Injectable transport (default: global fetch). Exposed for tests. */
+  fetchImpl?: BootFetch
+}): Promise<void> {
+  const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as BootFetch)
+  const reason = redactBootReason(opts.reason, opts.env.bootSecret)
+  // The run id is known from the boot context, or (pre-created / resume flows)
+  // straight from the env contract.
+  const runId = opts.ctx?.runId ?? opts.env.runId
+  // Prefer the bearer we already hold; otherwise pull a fresh one (bounded — the
+  // DO is the backstop) so a pre-bearer failure can still self-mark the run.
+  let bearer = opts.ctx?.bearer ?? null
+  if (!bearer && runId) {
+    try {
+      bearer = (
+        await pullAgentBearer({
+          agentTokenUrl: opts.env.agentTokenUrl,
+          bootSecret: opts.env.bootSecret,
+          fetchImpl,
+          attempts: 2,
+          log: opts.log,
+        })
+      ).token
+    } catch (error) {
+      opts.log(`failure-path bearer pull failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  if (bearer && runId) {
+    try {
+      const sink = await resumeRunEventSink({
+        apiBaseUrl: opts.env.baseUrl,
+        runId,
+        bearer,
+        fetchImpl,
+      })
+      await sink.finish('failed', { summary: { error: reason } })
+      opts.log('marked run failed')
+    } catch (error) {
+      opts.log(`run-failed mark failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  await postBootStatus({
+    bootStatusUrl: opts.env.bootStatusUrl,
+    bootSecret: opts.env.bootSecret,
+    status: 'failed',
+    runId,
+    reason,
+    fetchImpl,
+    log: opts.log,
+  })
 }
