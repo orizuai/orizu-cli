@@ -2617,6 +2617,48 @@ async function exportOptimizationRun() {
   printLine(`Saved optimization export to ${sanitizeTerminalText(filename)}`)
 }
 
+interface OptimizationRunSummary {
+  id: string
+  status: string
+  optimizerVersionId: string | null
+  datasetVersionId: string | null
+  bestScore: number | null
+  resultPromptVersionId: string | null
+  createdAt: string | null
+}
+
+// ALI-1073: enumerate the project's optimization runs (id, status, refs, and the
+// promoted-version link if any) so an agent/human can discover a prior run.
+async function listOptimizationRuns() {
+  const project = getArg('--project') || await resolveProjectSlug(null)
+  const response = await authedFetch(`/api/cli/optimization-runs?project=${encodeURIComponent(project)}`)
+  if (!response.ok) {
+    throw new Error(`Failed to list optimization runs: ${await response.text()}`)
+  }
+
+  const data = await parseJsonResponse<{ optimizationRuns: OptimizationRunSummary[] }>(response, 'Optimization runs list')
+  if (hasJsonFlag()) {
+    printJson(data as unknown as Record<string, unknown>)
+    return
+  }
+
+  const rows = data.optimizationRuns || []
+  if (rows.length === 0) {
+    printLine('No optimization runs found for this project.')
+    return
+  }
+
+  const idWidth = Math.max(2, ...rows.map(row => String(row.id).length))
+  const statusWidth = Math.max(6, ...rows.map(row => String(row.status).length))
+  printLine(`${'ID'.padEnd(idWidth)}  ${'STATUS'.padEnd(statusWidth)}  BEST   PROMOTED_VERSION`)
+  printLine(`${'-'.repeat(idWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(5)}  ${'-'.repeat('PROMOTED_VERSION'.length)}`)
+  for (const row of rows) {
+    const best = row.bestScore === null || row.bestScore === undefined ? '-' : String(row.bestScore)
+    const promoted = row.resultPromptVersionId || '-'
+    printLine(`${String(row.id).padEnd(idWidth)}  ${String(row.status).padEnd(statusWidth)}  ${best.padEnd(5)}  ${promoted}`)
+  }
+}
+
 function removeFlagWithValue(args: string[], flag: string): string[] {
   const filtered: string[] = []
   for (let index = 0; index < args.length; index += 1) {
@@ -6412,6 +6454,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'optimizations' && subcommand === 'export') {
     await exportOptimizationRun()
+    return
+  }
+
+  if (command === 'optimizations' && subcommand === 'list') {
+    await listOptimizationRuns()
     return
   }
 
