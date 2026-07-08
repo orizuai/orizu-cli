@@ -145,6 +145,23 @@ export interface HostedBootContext {
   /** Absolute path to the 0600 minted-token cache the script maintains. */
   cacheFile: string
   /**
+   * PULL MODE (ALI-1057, DO-path hosted agent): the coordinator agent-token URL.
+   * When SET, the helper GETs a FRESH short-lived Orizu bearer here per mint —
+   * `Authorization: Bearer <boot secret read from bootSecretFile>` — instead of
+   * reading the host-written 0600 `bearerFile`. Everything downstream (POST the
+   * repo-token broker with that bearer → serve the GitHub x-access-token to git)
+   * is byte-identical to the operator/file path. When UNSET the helper stays in
+   * file mode and reads `bearerFile` exactly as before. This is the ONLY DO-path
+   * difference: the bearer SOURCE is HTTP, not a 0600 file.
+   */
+  agentTokenUrl?: string
+  /**
+   * PULL MODE: absolute path to the 0600 file holding the durable BOOT SECRET —
+   * the sandbox's bootstrap identity, used to authenticate the agent-token GET.
+   * Required when `agentTokenUrl` is set; ignored in file mode.
+   */
+  bootSecretFile?: string
+  /**
    * Broker purpose vocabulary, INJECTABLE so a later slice can flip the whole
    * script from write/read to session_write/session_read without editing it. The
    * helper POSTs `primary` first and falls back to `fallback` ONLY on a 403
@@ -236,9 +253,33 @@ async function requestToken(url, bearer, purpose, sessionId) {
   return { cred: null, status: res.status }
 }
 
-async function mint(ctx) {
+// Resolve the Orizu bearer used to mint a repo token. PULL MODE (ALI-1057): when
+// ctx.agentTokenUrl is set, exchange the durable BOOT SECRET (0600 file) for a
+// FRESH short-lived bearer over HTTP on every mint — the DO-path credential
+// identity is the boot secret, not a host-written 0600 bearer file. FILE MODE:
+// read the 0600 bearer file exactly as before. The rest of mint() is unchanged.
+async function resolveOrizuBearer(ctx) {
+  if (ctx.agentTokenUrl) {
+    let secret = ''
+    try { secret = fs.readFileSync(ctx.bootSecretFile, 'utf8').trim() } catch (_) { secret = '' }
+    if (!secret) throw new Error('empty boot secret file')
+    const res = await fetch(ctx.agentTokenUrl, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + secret },
+    })
+    if (!res.ok) throw new Error('agent-token pull failed (' + res.status + ')')
+    let data = null
+    try { data = await res.json() } catch (_) { data = null }
+    if (!data || !data.token) throw new Error('agent-token pull returned no token')
+    return String(data.token)
+  }
   const bearer = fs.readFileSync(ctx.bearerFile, 'utf8').trim()
   if (!bearer) throw new Error('empty bearer file')
+  return bearer
+}
+
+async function mint(ctx) {
+  const bearer = await resolveOrizuBearer(ctx)
   const base = String(ctx.apiBaseUrl || '').replace(/\\/$/, '')
   const url = base + '/api/cli/workspaces/' + encodeURIComponent(ctx.workspaceId) + '/repo-token'
   const purposes = ctx.tokenPurposes || {}

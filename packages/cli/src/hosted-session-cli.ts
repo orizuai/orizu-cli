@@ -53,6 +53,7 @@ import { AGENT_GIT_IDENTITY, BEARER_BASENAME } from './hosted-runtime-assets.js'
 import { createVercelProvider } from './vercel-sandbox-provider.js'
 import { buildEgressPolicy, DEFAULT_EGRESS_CANARY_HOST } from './egress-policy.js'
 import { hostedLoopCommand, type HostedLoopContext } from './hosted-loop.js'
+import { hostedBootCommand } from './hosted-boot.js'
 import { authedFetch } from './http.js'
 import { resolveBaseUrl } from './http.js'
 import { getWorkspaceRoot } from './workspace.js'
@@ -917,7 +918,11 @@ export async function hostedCommand(
     if (positional[1] === 'hosted-loop') {
       return hostedLoopCommand(args, io)
     }
-    io.printErr?.('Usage: orizu internal hosted-loop --context <path>')
+    // ALI-1057: the DO-path in-sandbox boot entrypoint (ORIZU_SANDBOX_ENTRYPOINT).
+    if (positional[1] === 'hosted-boot') {
+      return hostedBootCommand(io)
+    }
+    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot>')
     return 1
   }
 
