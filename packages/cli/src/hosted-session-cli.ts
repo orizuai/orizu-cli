@@ -798,19 +798,120 @@ function numFlag(args: readonly string[], flag: string): number | undefined {
 
 const HOSTED_USAGE =
   'Usage: orizu session start --hosted --task "<prompt>" [--duration <min> (default 60, max 1440)] ' +
-  '[--model <provider/model>] [--project <team/project>] [--provider vercel|local-sim] ' +
-  '[--image <orizu-hosted-runtime:tag> (pre-baked VCR image; default env ORIZU_HOSTED_IMAGE)] ' +
-  '[--snapshot <snapshot-id> (pre-baked Vercel snapshot, zero-Docker; default env ORIZU_HOSTED_SNAPSHOT; ' +
-  'mutually exclusive with --image)] [--model-key <key> (else ANTHROPIC_API_KEY; required)] [--tail]\n' +
-  'Note (v0): if you disconnect, the agent token expires within its TTL (<=60m) and the run finishes ' +
-  'cleanly; reconnect with `orizu run tail --run <id>`. The sandbox timeout is independent (up to 24h).'
+  '[--model <provider/model>] [--reasoning-effort <level>] [--project <team/project>] ' +
+  '[--title <title>] [--tail]\n' +
+  'Default: the Orizu server provisions the sandbox (no VERCEL_* or model key needed on your machine); ' +
+  'the session coordinator owns its lifetime (ALI-1055).\n' +
+  'DEPRECATED escape hatch: --operator provisions from THIS machine (requires VERCEL_* + ANTHROPIC_API_KEY ' +
+  'or --model-key; extra flags: [--provider vercel|local-sim] [--image <ref>] [--snapshot <id>]). ' +
+  'Removal is planned after DO-coordinator validation (ALI-1055).\n' +
+  'Note (v0, --operator only): if you disconnect, the agent token expires within its TTL (<=60m) and the run ' +
+  'finishes cleanly; reconnect with `orizu run tail --run <id>`. The sandbox timeout is independent (up to 24h).'
+
+/** Printed on EVERY `--operator` use (founder-locked: deprecate NOW, remove
+ *  after Phase 6 validation). Loud on purpose. */
+export const OPERATOR_DEPRECATION_WARNING =
+  '! DEPRECATED: --operator (operator-provisioned hosted sessions) is deprecated; ' +
+  'removal planned after DO-coordinator validation — ALI-1055. ' +
+  'The default server path needs no VERCEL_* or model key on your machine.'
+
+/**
+ * Default hosted path (ALI-1055 cutover): POST the server's hosted-sessions
+ * route and let the Durable Object coordinator own the sandbox lifetime. The
+ * CLI never reads VERCEL_* or a model key on this path — the server holds them.
+ */
+export async function startHostedViaServer(
+  args: readonly string[],
+  workspaceId: string,
+  task: string,
+  tail: boolean,
+  io: HostedCommandIo,
+  fetcher: HostFetcher = (path, init) => authedFetch(path, init)
+): Promise<number> {
+  const payload: Record<string, unknown> = {
+    workspaceId,
+    task,
+    durationMinutes: numFlag(args, '--duration'),
+    model: argVal(args, '--model') ?? undefined,
+    reasoningEffort: argVal(args, '--reasoning-effort') ?? undefined,
+    projectSlug: argVal(args, '--project') ?? undefined,
+    title: argVal(args, '--title') ?? undefined,
+  }
+  let response: Response
+  try {
+    response = await fetcher('/api/cli/hosted-sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch (error) {
+    io.printErr?.(`hosted session request failed: ${error instanceof Error ? error.message : String(error)}`)
+    return 1
+  }
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>
+  const errorMessage = typeof body.error === 'string' ? body.error : `${response.status}`
+
+  if (response.status === 503) {
+    io.printErr?.(errorMessage)
+    io.printErr?.(
+      'Re-run with `orizu session start --hosted --operator ...` to provision from your machine ' +
+        '(deprecated escape hatch; requires the Vercel token + snapshot on your side).'
+    )
+    return 1
+  }
+  if (!response.ok) {
+    io.print(io.json ? JSON.stringify({ ok: false, error: errorMessage }) : `hosted session failed: ${errorMessage}`)
+    return 1
+  }
+
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+  const runId = typeof body.runId === 'string' ? body.runId : ''
+  if (io.json) {
+    io.print(JSON.stringify({ ok: true, sessionId, runId: runId || null, coordinator: body.coordinator ?? null }))
+  } else {
+    io.print(
+      `hosted session started: session ${sessionId}` +
+        (runId ? `, run ${runId}` : '') +
+        ' (coordinator-managed sandbox)'
+    )
+    if (!tail && runId) io.print(`stream it: orizu run tail --run ${runId}`)
+  }
+
+  if (tail && runId) {
+    await tailWorkbenchRun({
+      fetcher,
+      runId,
+      onEvent: event =>
+        io.print(
+          io.json
+            ? JSON.stringify(event)
+            : `#${String((event as Record<string, unknown>).sequence ?? '?')} ${String((event as Record<string, unknown>).eventType ?? '')}`
+        ),
+    })
+  }
+  return 0
+}
+
+/** Test seams for `hostedCommand` dispatch (server default vs operator hatch). */
+export interface HostedCommandDeps {
+  startViaServer?: typeof startHostedViaServer
+  startViaOperator?: (args: string[], workspaceId: string, task: string, tail: boolean, io: HostedCommandIo) => Promise<number>
+}
 
 /**
  * Dispatch `orizu internal hosted-loop` (in-sandbox) and `orizu session start
  * --hosted` (host-side). Kept out of index.ts so the CLI entrypoint stays a thin
  * dispatcher (ALI-976 ratchet).
+ *
+ * ALI-1055 cutover: the DEFAULT is the server path (POST /api/cli/hosted-sessions
+ * → DO coordinator). `--operator` keeps the old client-provisioned flow as a
+ * DEPRECATED escape hatch (loud warning on every use; removal after Phase 6).
  */
-export async function hostedCommand(args: string[], io: HostedCommandIo): Promise<number> {
+export async function hostedCommand(
+  args: string[],
+  io: HostedCommandIo,
+  deps: HostedCommandDeps = {}
+): Promise<number> {
   const positional = args.filter(arg => !arg.startsWith('--'))
   if (positional[0] === 'internal') {
     if (positional[1] === 'hosted-loop') {
@@ -831,6 +932,18 @@ export async function hostedCommand(args: string[], io: HostedCommandIo): Promis
     return 1
   }
   const tail = hasFlag(args, '--tail')
+
+  if (!hasFlag(args, '--operator')) {
+    // DEFAULT (ALI-1055): server-provisioned. No provider, no VERCEL_* read, no
+    // model key on the customer machine — the coordinator owns the lifetime.
+    return (deps.startViaServer ?? startHostedViaServer)(args, workspaceId, task, tail, io)
+  }
+
+  // DEPRECATED operator escape hatch — warn LOUDLY on every use.
+  io.printErr?.(OPERATOR_DEPRECATION_WARNING)
+  if (deps.startViaOperator) {
+    return deps.startViaOperator(args, workspaceId, task, tail, io)
+  }
   const providerKind = (argVal(args, '--provider') ?? 'vercel').toLowerCase()
   const provider: SandboxProvider =
     providerKind === 'local-sim' ? createLocalSimProvider() : createVercelProvider()

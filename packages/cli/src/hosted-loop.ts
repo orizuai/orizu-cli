@@ -192,9 +192,22 @@ function resolveIdleTimeoutMs(override: number | undefined): number {
 /** Model-key env vars whose value must be scrubbed from every run event. */
 const MODEL_KEY_ENV_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']
 
+/**
+ * Env var naming OTHER env vars whose values were injected as secrets — the
+ * server env-bundle pull (ALI-1055: `GET /api/coordinator/sessions/:id/
+ * env-bundle` returns `redactEnvVars`) writes it as a comma-separated list of
+ * names (e.g. `ANTHROPIC_API_KEY,BRAINTRUST_API_KEY`) so every pulled secret
+ * (model key + connector credentials) lands on the run-event redaction list.
+ */
+export const INJECTED_ENV_VARS_ENV = 'ORIZU_INJECTED_ENV_VARS'
+
 function redactionListFromEnv(): string[] {
   const secrets: string[] = []
-  for (const key of MODEL_KEY_ENV_VARS) {
+  const injected = (process.env[INJECTED_ENV_VARS_ENV] ?? '')
+    .split(',')
+    .map(name => name.trim())
+    .filter(name => name.length > 0)
+  for (const key of [...MODEL_KEY_ENV_VARS, ...injected]) {
     const value = process.env[key]
     if (value) secrets.push(value)
   }
