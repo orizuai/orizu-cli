@@ -49,6 +49,7 @@ import {
 import { harvestWorkspace, type HarvestExec, type HarvestOutcome } from './hosted-harvest.js'
 import { annotateHeadlessQuestions, withIdleWatchdog } from './hosted-headless.js'
 import {
+  DEFAULT_PROMPT_MAX_DURATION_MS,
   OPENCODE_PINNED_VERSION,
   createOpenCodeHarness,
   spawnOpenCode,
@@ -91,6 +92,26 @@ export type {
   SetupHookOutcome,
 } from './hosted-loop-lifecycle.js'
 
+// Time reserved BEFORE the sandbox self-terminates so a duration-capped prompt
+// abort still has room to harvest partial work (commit/push) + write the terminal
+// event: `promptMaxDurationMs = sandboxBudgetMs − this` (ALI-1061). 5 min is
+// comfortably above the observed harvest+flush cost while costing little of a
+// multi-hour budget.
+export const PROMPT_HARVEST_MARGIN_MS = 5 * 60 * 1000
+
+/**
+ * Derive the per-prompt max-duration cap from the sandbox lifetime budget: the
+ * budget minus a harvest margin, FLOORED at the harness default so a short or
+ * undated run is never shortened below the historical 5400s cap (ALI-1061).
+ * Undated runs (`sandboxBudgetMs` unset / non-positive) get exactly the default.
+ */
+export function derivePromptMaxDurationMs(sandboxBudgetMs: number | undefined): number {
+  if (typeof sandboxBudgetMs !== 'number' || !Number.isFinite(sandboxBudgetMs) || sandboxBudgetMs <= 0) {
+    return DEFAULT_PROMPT_MAX_DURATION_MS
+  }
+  return Math.max(DEFAULT_PROMPT_MAX_DURATION_MS, sandboxBudgetMs - PROMPT_HARVEST_MARGIN_MS)
+}
+
 export interface InstallResult {
   ok: boolean
   detail: string
@@ -111,8 +132,9 @@ export interface RunHostedLoopOptions {
   /** The single task prompt (already read from the task file by the caller). */
   taskPrompt: string
   fetchImpl?: HostedFetch
-  /** Build the harness for a spawned OpenCode base URL (default: OpenCode driver). */
-  createHarness?: (baseUrl: string) => AgentHarness
+  /** Build the harness for a spawned OpenCode base URL (default: OpenCode driver).
+   *  `options.promptMaxDurationMs` is the duration-derived per-prompt cap (ALI-1061). */
+  createHarness?: (baseUrl: string, options?: { promptMaxDurationMs?: number }) => AgentHarness
   /** Build the in-process Claude-Agent-SDK harness (default: real SDK loader).
    *  Injectable so the swap test drives a fake `query()` with no real SDK. */
   createClaudeHarness?: () => AgentHarness
@@ -493,9 +515,16 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
         })
       }
 
-      harness = (opts.createHarness ?? ((baseUrl: string) => createOpenCodeHarness({ baseUrl })))(
-        spawned.baseUrl
-      )
+      // Derive the per-prompt max-duration cap from the sandbox budget so a long
+      // `--duration` run is not killed at the hard-coded 90-min cap while its
+      // sandbox is still alive; floored at the harness default for short/undated
+      // runs (ALI-1061).
+      const promptMaxDurationMs = derivePromptMaxDurationMs(context.sandboxBudgetMs)
+      harness = (
+        opts.createHarness ??
+        ((baseUrl: string, options?: { promptMaxDurationMs?: number }) =>
+          createOpenCodeHarness({ baseUrl, promptMaxDurationMs: options?.promptMaxDurationMs }))
+      )(spawned.baseUrl, { promptMaxDurationMs })
     }
 
     const started = await harness.start({

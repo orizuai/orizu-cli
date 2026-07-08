@@ -215,6 +215,14 @@ export interface CreateRunEventSinkOptions {
   eventIdPrefix?: string
   /** Bounded retry budget for critical deliveries (append critical + finish). */
   maxCriticalAttempts?: number
+  /**
+   * Bounded retry budget for NON-critical appends (agent_tool_call, agent_step_*,
+   * token snapshots) before the event is DROPPED. Retries only on transient
+   * network/5xx failures; on exhaustion the event is dropped (never thrown), so a
+   * single bad POST in a multi-hour run never fails the whole run (ALI-1061).
+   * Default 3.
+   */
+  maxNonCriticalAttempts?: number
   /** Injectable backoff sleep (tests pass a no-op to avoid real delays). */
   sleepImpl?: (ms: number) => Promise<void>
   /** Local diagnostic sink for disagreement-rule logs (never throws). */
@@ -222,6 +230,12 @@ export interface CreateRunEventSinkOptions {
 }
 
 const DEFAULT_MAX_CRITICAL_ATTEMPTS = 4
+// Non-critical appends get a SMALL bounded retry so a single transient blip
+// (network reset / 5xx) does not drop the event — but on exhaustion they are
+// DROPPED, never thrown, so one bad POST in a long headless run never fails the
+// whole run (ALI-1061). Kept well below the critical budget: non-critical events
+// are best-effort telemetry, not delivery-guaranteed.
+const DEFAULT_MAX_NONCRITICAL_ATTEMPTS = 3
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -245,6 +259,7 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
   // scrubbed too (the fixed-string case still resolves the same value).
   const currentSecrets = (): string[] => [resolveBearer(), ...extraSecrets]
   const maxCriticalAttempts = options.maxCriticalAttempts ?? DEFAULT_MAX_CRITICAL_ATTEMPTS
+  const maxNonCriticalAttempts = options.maxNonCriticalAttempts ?? DEFAULT_MAX_NONCRITICAL_ATTEMPTS
   const diag = options.onDiagnostic ?? ((): void => {})
 
   const eventsUrl = `${base}/api/cli/workbench-runs/${encodeURIComponent(options.runId)}/events`
@@ -296,13 +311,20 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
   //   • 403 throws RunAuthError WITHOUT sealing (bearer revoked or access lost).
   //
   // Because the eventId is derived from the candidate sequence, a retry of the
-  // SAME content within the critical budget is an idempotent replay (same
-  // eventId), never a same-sequence-different-eventId 409.
+  // SAME content within the retry budget is an idempotent replay (same eventId),
+  // never a same-sequence-different-eventId 409.
+  //
+  // Critical AND non-critical appends both get a bounded retry on TRANSIENT
+  // failures (network throw / 5xx); a 4xx sequence-burn (409) or clean validation
+  // 4xx (400) is never retried. On exhaustion a CRITICAL append throws
+  // CriticalDeliveryError; a NON-critical append is DROPPED (returns false, never
+  // throws) so one bad POST in a long headless run cannot fail the whole run
+  // (ALI-1061). Returns true when the event was recorded server-side.
   async function postEvent(
     eventType: string,
     payload: Record<string, unknown>,
     critical: boolean
-  ): Promise<void> {
+  ): Promise<boolean> {
     const sequence = nextSequence
     const eventId = `${eventIdPrefix}:${sequence}`
     const redactedPayload = redactSecrets(payload, { secrets: currentSecrets() })
@@ -314,7 +336,7 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
       payload: redactedPayload,
     })
 
-    const attempts = critical ? maxCriticalAttempts : 1
+    const attempts = critical ? maxCriticalAttempts : maxNonCriticalAttempts
     let lastDetail = ''
     // Burn the candidate sequence on exit unless we prove the server did not
     // (and cannot have) committed it — i.e. a clean 4xx.
@@ -325,10 +347,11 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
         response = await requestWithReauth(eventsUrl, { method: 'POST', body })
       } catch (error) {
         // Network throw: the request may have reached and committed on the
-        // server — ambiguous, so burn.
+        // server — ambiguous, so burn. Retry within budget (critical AND
+        // non-critical) — a transient reset should not lose the event.
         lastDetail = error instanceof Error ? error.message : String(error)
         burnSequence = true
-        if (critical && attempt < attempts) {
+        if (attempt < attempts) {
           await sleep(2 ** (attempt - 1) * 50)
           continue
         }
@@ -337,7 +360,7 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
       if (response.ok) {
         nextSequence = sequence + 1
         recorded.push({ eventId, sequence, eventType, payload: redactedPayload })
-        return
+        return true
       }
       // Run gone/terminal server-side: seal and stop (Orizu records win).
       if (response.status === 404 || response.status === 410) {
@@ -357,9 +380,11 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
       }
       lastDetail = `status ${response.status}`
       // 5xx (server may have committed) or 409 (sequence taken/unusable): burn.
+      // Retry ONLY on a 5xx (transient); a 409 sequence-burn is never retried
+      // (retrying the same eventId cannot un-burn the sequence).
       if (response.status >= 500 || response.status === 409) {
         burnSequence = true
-        if (critical && response.status >= 500 && attempt < attempts) {
+        if (response.status >= 500 && attempt < attempts) {
           await sleep(2 ** (attempt - 1) * 50)
           continue
         }
@@ -375,15 +400,37 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
         `critical event ${eventType} undeliverable after ${attempts} attempts (${lastDetail})`
       )
     }
-    throw new Error(`run-event append failed (${lastDetail}) for ${eventType}`)
+    // Non-critical: DROP (never throw). A transient/persistent append failure
+    // must not fail a long headless run; the P2-4 burn rule already tolerates the
+    // resulting server-visible gap (ALI-1061).
+    diag(`non-critical event ${eventType} dropped after ${attempts} attempt(s) (${lastDetail}) — run continues`)
+    return false
   }
 
+  // REENTRANCY CONTRACT: flushTokens MUST run to completion before the next
+  // append()/flushTokens() begins — it is NOT safe to run concurrently with a
+  // token append. Coalescing correctness (and the `===` re-check below) relies on
+  // the caller awaiting each append/flush strictly sequentially, so no newer
+  // delta can mutate `tokenBuffer` mid-flush. If a timer-based flush is ever added
+  // (see the interface note above), it MUST serialize against append — e.g. share
+  // a mutex/queue — or the drop-preserving guarantee breaks.
   async function flushTokens(): Promise<void> {
     if (tokenBuffer.size === 0) return
+    // Snapshot the pending entries but DO NOT clear the buffer up front: only drop
+    // a messageId once its POST is CONFIRMED delivered. A transient failure now
+    // drops the non-critical append (postEvent returns false), so clearing before
+    // the POST would silently lose token text; instead the latest snapshot stays
+    // buffered and coalesces with the next delta / the next flush boundary
+    // (ALI-1061). Per the reentrancy contract above, a newer delta cannot arrive
+    // mid-flush, so the buffered value is still `text` on a successful delivery —
+    // and if a newer delta DID land (a future concurrent flush), the `===` guard
+    // keeps it buffered rather than dropping the fresher snapshot.
     const pending = [...tokenBuffer.entries()]
-    tokenBuffer.clear()
     for (const [messageId, text] of pending) {
-      await postEvent(AGENT_TOKEN_EVENT_TYPE, { messageId, text }, false)
+      const delivered = await postEvent(AGENT_TOKEN_EVENT_TYPE, { messageId, text }, false)
+      if (delivered && tokenBuffer.get(messageId) === text) {
+        tokenBuffer.delete(messageId)
+      }
     }
   }
 

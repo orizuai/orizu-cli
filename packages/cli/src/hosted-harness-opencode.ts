@@ -72,8 +72,10 @@ const DEFAULT_SSE_INACTIVITY_MS = 120_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 // Wall-clock ceiling on a single prompt (port of bridge.py PROMPT_MAX_DURATION,
 // 5400s). Runs alongside the inactivity deadline: inactivity catches a stalled
-// stream, this catches a stream that stays busy forever.
-const DEFAULT_PROMPT_MAX_DURATION_MS = 5_400_000
+// stream, this catches a stream that stays busy forever. Exported so the hosted
+// loop can use it as the FLOOR when deriving a duration-aware cap (ALI-1061):
+// the cap is never shortened below this default for short/undated runs.
+export const DEFAULT_PROMPT_MAX_DURATION_MS = 5_400_000
 
 // Placeholder titles OpenCode auto-assigns ("New session - <ISO8601>Z" /
 // "Child session - <ISO8601>Z"); noise, never forwarded (port of bridge.py

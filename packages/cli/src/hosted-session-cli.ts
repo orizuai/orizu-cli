@@ -543,6 +543,10 @@ export async function startHostedSession(
     messageId: `${runId}:task`,
     author: AGENT_GIT_IDENTITY,
     anthropicDummyKey: opts.modelApiKey ? ANTHROPIC_DUMMY_KEY : undefined,
+    // Same budget the sandbox timeout uses (line above): the loop derives the
+    // per-prompt max-duration cap from it so a long --duration run is not killed
+    // at the hard-coded 90-min prompt cap (ALI-1061).
+    sandboxBudgetMs: clampDuration(opts.durationMinutes) * 60 * 1000,
     // ALI-1017: skip the in-sandbox opencode install when the image ships it.
     prebaked: prebakedImage,
     egressCanaryHost,

@@ -327,6 +327,9 @@ export interface ResolvedSession {
   task: string
   model: string | null
   reasoningEffort: string | null
+  /** Session lifetime in minutes (from client_info), if the coordinator recorded
+   *  it — used to derive the per-prompt max-duration cap (ALI-1061). */
+  durationMinutes: number | null
   /** Most recent existing run id, if any (else the boot creates one). */
   runId: string | null
 }
@@ -349,6 +352,10 @@ async function bearerJson(
 
 function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function asPositiveNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 }
 
 /** GET the session (agent-capable, RLS-scoped) to learn its workspace, branch,
@@ -380,6 +387,7 @@ export async function resolveSession(opts: {
     task,
     model: asString(clientInfo.model),
     reasoningEffort: asString(clientInfo.reasoningEffort),
+    durationMinutes: asPositiveNumber(clientInfo.durationMinutes),
     runId,
   }
 }
@@ -711,6 +719,10 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
     messageId: `${runId}:task`,
     author: AGENT_GIT_IDENTITY,
     anthropicDummyKey: env.anthropicDummyKey ?? ANTHROPIC_DUMMY_KEY,
+    // Derive the per-prompt max-duration cap from the session duration so a long
+    // run is not killed at the hard-coded 90-min prompt cap (ALI-1061). Unset →
+    // the harness default (5400s) floor holds.
+    sandboxBudgetMs: session.durationMinutes != null ? session.durationMinutes * 60 * 1000 : undefined,
     prebaked: true,
     egressCanaryHost: DEFAULT_EGRESS_CANARY_HOST,
     runSetupHook: true,

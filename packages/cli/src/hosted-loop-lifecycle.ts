@@ -51,6 +51,14 @@ export interface HostedLoopContext {
    * — no `opencode` install/spawn happens on that path.
    */
   harness?: 'opencode' | 'claude-agent-sdk'
+  /**
+   * Total sandbox lifetime budget in ms (derived from the session `--duration`).
+   * The loop derives the per-prompt max-duration cap from this (budget minus a
+   * harvest margin, floored at the harness default) so a long `--duration` run is
+   * NOT killed at the hard-coded 90-min prompt cap while its sandbox still lives
+   * (ALI-1061). Unset for undated runs → the harness default (5400s) floor holds.
+   */
+  sandboxBudgetMs?: number
   opencodePort?: number
   opencodePinnedVersion?: string
   /**
