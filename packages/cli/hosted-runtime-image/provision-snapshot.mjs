@@ -7,27 +7,46 @@
  * A later session boots from it via `Sandbox.create({ source:{ type:'snapshot' }})`
  * (see vercel-sandbox-provider.ts) with no runtime egress and no install.
  *
- * FOUNDER-RUN ONLY. Needs the Vercel creds (VERCEL_TOKEN / VERCEL_PROJECT_ID /
- * VERCEL_TEAM_ID) — which exist — but NO Docker. Run it with `bun` (the provider is
- * loaded from TypeScript source, and the CLI bundle is built with `bun build`):
+ * TWO CLI-BAKE MODES (ALI-1078):
+ *   - PUBLISHED (canonical, CI): `--cli-version X.Y.Z` installs the PUBLISHED npm
+ *     package (`npm i -g orizu@X.Y.Z`) — used by publish-cli.yml after each
+ *     `cli-v*` tag publish, so the snapshot carries exactly the released CLI.
+ *   - FROM SOURCE (manual escape hatch): no `--cli-version` — `bun build`s the
+ *     current checkout into a bundle, for pre-publish/hotfix bakes.
+ *
+ * FOUNDER- or CI-RUN. Needs the Vercel creds (VERCEL_TOKEN / VERCEL_PROJECT_ID /
+ * VERCEL_TEAM_ID) but NO Docker. Run it with `bun` (the provider is loaded from
+ * TypeScript source, and the from-source mode builds the CLI with `bun build`):
  *
  *   bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
- *     [--label <tag>] [--duration <min>] [--expiration <ms>] [--dry-run]
+ *     [--cli-version <X.Y.Z>] [--label <tag>] [--duration <min>] \
+ *     [--expiration <ms>] [--id-file <path>] [--dry-run]
  *
- *   --label       label for the snapshot (DEFAULTS to `git describe --tags --always
- *                 --dirty` so the snapshot is traceable to a git ref/tag)
+ *   --cli-version published-package mode: bake `orizu@<X.Y.Z>` from npm instead of
+ *                 building from source
+ *   --label       label for the snapshot (DEFAULTS to `cli-v<version>` in published
+ *                 mode, else `git describe --tags --always --dirty`, so the snapshot
+ *                 is traceable to a release/git ref)
  *   --duration    provisioning sandbox lifetime in minutes (default 30)
  *   --expiration  snapshot TTL in ms (0 = never expire; omitted = SDK default)
+ *   --id-file     also write the resulting snapshot id to this file (CI handoff)
  *   --dry-run     print the plan (bundle build + in-sandbox steps) without touching
  *                 Vercel and without building the bundle
  *   --opencode-version / --claude-sdk-version
- *                 override the pinned externals (defaults mirror the Dockerfile)
+ *                 override the pinned externals (defaults mirror the Dockerfile).
+ *                 In published mode the Claude SDK ships as a dependency of the
+ *                 published package; the flag only annotates the marker.
+ *
+ * READINESS: unlike the Docker/VCR image path (which needs an async "Ready"
+ * variant preparation), a snapshot is usable as soon as `snapshot()` resolves —
+ * the returned id is immediately bootable via
+ * `Sandbox.create({ source: { type: 'snapshot', snapshotId } })`.
  *
  * SECURITY: the Vercel token is read from env by the provider and is NEVER printed.
  * This script logs step names + the resulting snapshot id only.
  */
 
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -43,6 +62,9 @@ export const DEFAULT_DURATION_MINUTES = 30
 // A conservative label shape (same as the image tag) — reject anything a registry
 // path or a shell could mis-parse.
 const LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+// Published-package mode versions: plain semver (optionally with a pre-release
+// suffix). Interpolated into a shell command, so keep it strict.
+const CLI_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.]+)?$/
 
 // In-sandbox layout — MUST match the Docker image so the runtime detects the bake
 // identically: `orizu` on PATH, the SDK a sibling of the bundle, marker at /opt.
@@ -78,10 +100,11 @@ function packageJson(gitVersion) {
   return `{\n  "name": "orizu",\n  "version": "${gitVersion}",\n  "type": "module"\n}\n`
 }
 
-function markerJson(gitVersion, opencodeVersion, claudeSdkVersion) {
+function markerJson({ cliVersion, cliSource, cliGitVersion, opencodeVersion, claudeSdkVersion }) {
+  const gitLine = cliGitVersion ? `  "cliGitVersion": "${cliGitVersion}",\n` : ''
   return (
-    `{\n  "cliVersion": "${gitVersion}",\n  "cliSource": "from-source",\n` +
-    `  "cliGitVersion": "${gitVersion}",\n  "opencodeVersion": "${opencodeVersion}",\n` +
+    `{\n  "cliVersion": "${cliVersion}",\n  "cliSource": "${cliSource}",\n` +
+    `${gitLine}  "opencodeVersion": "${opencodeVersion}",\n` +
     `  "claudeSdkVersion": "${claudeSdkVersion}",\n  "builtFor": "vercel-sandbox"\n}\n`
   )
 }
@@ -103,8 +126,35 @@ export function resolveCredsOrFail(env, fail) {
  * The ordered in-sandbox provisioning steps. Pure data (no I/O) so a test can
  * assert the plan without a sandbox. `sudo` assumes Vercel's passwordless-sudo
  * non-root sandbox user; drop it if the runtime ever runs as root.
+ *
+ * Passing `cliVersion` switches to PUBLISHED-PACKAGE mode: the CLI comes from
+ * `npm i -g orizu@<cliVersion>` (which carries its own pinned
+ * @anthropic-ai/claude-agent-sdk dependency) instead of a from-source bundle.
  */
-export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion, claudeSdkVersion }) {
+export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion, claudeSdkVersion, cliVersion = null }) {
+  if (cliVersion) {
+    return [
+      {
+        name: `install published orizu@${cliVersion} (global bin, carries the Claude SDK dep)`,
+        exec: `sudo npm install -g "orizu@${cliVersion}" && sudo npm cache clean --force`,
+      },
+      { name: 'install opencode-ai (global bin)', exec: `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force` },
+      {
+        name: 'stage prebaked marker',
+        writeFile: [
+          STAGE_MARKER,
+          markerJson({ cliVersion, cliSource: 'published-npm', cliGitVersion: null, opencodeVersion, claudeSdkVersion }),
+        ],
+      },
+      { name: 'install prebaked marker', exec: `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}` },
+      {
+        name: 'verify bake (orizu version + opencode + hosted-loop)',
+        exec:
+          `command -v orizu && command -v opencode && orizu --version | grep -F "${cliVersion}" && ` +
+          `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context'`,
+      },
+    ]
+  }
   return [
     { name: 'stage CLI bundle', writeFile: [STAGE_BUNDLE, bundleContent] },
     {
@@ -119,7 +169,13 @@ export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion
       exec: `cd ${CLI_DIR} && sudo npm install --no-save --omit=dev "@anthropic-ai/claude-agent-sdk@${claudeSdkVersion}" && sudo npm cache clean --force`,
     },
     { name: 'install opencode-ai (global bin)', exec: `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force` },
-    { name: 'stage prebaked marker', writeFile: [STAGE_MARKER, markerJson(gitVersion, opencodeVersion, claudeSdkVersion)] },
+    {
+      name: 'stage prebaked marker',
+      writeFile: [
+        STAGE_MARKER,
+        markerJson({ cliVersion: gitVersion, cliSource: 'from-source', cliGitVersion: gitVersion, opencodeVersion, claudeSdkVersion }),
+      ],
+    },
     { name: 'install prebaked marker', exec: `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}` },
     {
       name: 'verify bake (orizu + opencode + hosted-loop)',
@@ -154,8 +210,17 @@ export async function runProvisionSnapshot(opts = {}) {
   const args = parseArgs(argv)
   const dryRun = args.flags.has('dry-run')
 
-  const label = args.values.label ?? gitVersion
+  // Published-package mode (ALI-1078): bake `orizu@<version>` from npm instead of
+  // building the current checkout from source.
+  const cliVersion = args.values['cli-version'] ?? null
+  if (cliVersion !== null && !CLI_VERSION_RE.test(cliVersion)) {
+    fail(`invalid --cli-version "${cliVersion}" — expected a semver like 0.6.0`)
+  }
+
+  const label = args.values.label ?? (cliVersion ? `cli-v${cliVersion}` : gitVersion)
   if (!LABEL_RE.test(label)) fail(`invalid label "${label}" — must match ${LABEL_RE}`)
+
+  const idFile = args.values['id-file'] ?? null
 
   const durationMinutes = Number(args.values.duration ?? DEFAULT_DURATION_MINUTES)
   if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) fail('--duration must be a positive number of minutes')
@@ -175,28 +240,45 @@ export async function runProvisionSnapshot(opts = {}) {
 
   if (failed) return { ok: false }
 
-  out(`Snapshot label (git-describe, baked from source): ${label}\n`)
-  out(`CLI provenance: ${gitVersion}\n`)
+  if (cliVersion) {
+    out(`Snapshot label (published-package bake): ${label}\n`)
+    out(`CLI provenance: orizu@${cliVersion} (published npm package)\n`)
+  } else {
+    out(`Snapshot label (git-describe, baked from source): ${label}\n`)
+    out(`CLI provenance: ${gitVersion}\n`)
+  }
   out(`Provisioning sandbox lifetime: ${durationMinutes}m\n`)
   out(`Pinned externals: opencode-ai@${opencodeVersion}, @anthropic-ai/claude-agent-sdk@${claudeSdkVersion}\n\n`)
 
-  const stepsPlan = buildProvisionSteps({ bundleContent: '<bundle>', gitVersion, opencodeVersion, claudeSdkVersion })
+  const stepsPlan = buildProvisionSteps({ bundleContent: '<bundle>', gitVersion, opencodeVersion, claudeSdkVersion, cliVersion })
   out('Plan:\n')
-  out('  1. bun build → self-contained CLI bundle (from source)\n')
-  out('  2. create base sandbox (OPEN network — provision-time npm installs need egress)\n')
-  stepsPlan.forEach((step, i) => out(`  ${i + 3}. ${step.name}\n`))
-  out(`  ${stepsPlan.length + 3}. snapshot() → capture snapshot id${expiration !== undefined ? ` (expiration ${expiration}ms)` : ''}\n\n`)
+  let planStep = 1
+  if (!cliVersion) {
+    out(`  ${planStep}. bun build → self-contained CLI bundle (from source)\n`)
+    planStep += 1
+  }
+  out(`  ${planStep}. create base sandbox (OPEN network — provision-time npm installs need egress)\n`)
+  planStep += 1
+  stepsPlan.forEach(step => {
+    out(`  ${planStep}. ${step.name}\n`)
+    planStep += 1
+  })
+  out(`  ${planStep}. snapshot() → capture snapshot id${expiration !== undefined ? ` (expiration ${expiration}ms)` : ''}\n\n`)
 
   if (dryRun) {
     out('--dry-run: not building the bundle, not creating a sandbox, not snapshotting.\n')
-    return { ok: true, dryRun: true, label, snapshotId: null }
+    return { ok: true, dryRun: true, label, snapshotId: null, cliVersion }
   }
 
-  // 1. Bake the CLI from source into a temp bundle, then read it for upload.
+  // 1. Resolve the CLI payload: published mode installs from npm inside the
+  //    sandbox (no local build); from-source mode bakes a bundle for upload.
   const bundleFile = resolve(HERE, 'dist', 'orizu.js')
-  out('Baking the CLI from source (bun build)…\n')
-  buildBundle(bundleFile)
-  const bundleContent = readFileSync(bundleFile, 'utf8')
+  let bundleContent = null
+  if (!cliVersion) {
+    out('Baking the CLI from source (bun build)…\n')
+    buildBundle(bundleFile)
+    bundleContent = readFileSync(bundleFile, 'utf8')
+  }
 
   // 2. Boot a base sandbox with OPEN network (omit egressPolicy → Vercel default is
   //    full internet) so the provision-time installs can reach npm.
@@ -206,7 +288,7 @@ export async function runProvisionSnapshot(opts = {}) {
   out(`sandbox ${session.id}\n`)
 
   try {
-    const steps = buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion, claudeSdkVersion })
+    const steps = buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion, claudeSdkVersion, cliVersion })
     for (const step of steps) {
       out(`- ${step.name}\n`)
       if (step.writeFile) {
@@ -231,7 +313,11 @@ export async function runProvisionSnapshot(opts = {}) {
     out('Use it (zero-Docker prebaked runtime):\n')
     out(`  ORIZU_HOSTED_SNAPSHOT=${snapshotId} orizu session start --hosted --task "…"\n`)
     out(`  # or: orizu session start --hosted --snapshot ${snapshotId} --task "…"\n`)
-    return { ok: true, snapshotId, label }
+    if (idFile) {
+      writeFileSync(idFile, `${snapshotId}\n`)
+      out(`Snapshot id written to ${idFile}\n`)
+    }
+    return { ok: true, snapshotId, label, cliVersion }
   } catch (error) {
     // Best-effort teardown so a failed provision does not leak a paid sandbox.
     try {

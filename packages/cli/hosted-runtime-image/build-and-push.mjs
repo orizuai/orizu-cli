@@ -34,7 +34,8 @@
  *   --dry-run   print the plan (bundle build + buildx command) without running it
  *   --opencode-version / --claude-sdk-version / --node-major
  *               override the pinned build ARGs (defaults live in the Dockerfile).
- *               The CLI is baked FROM SOURCE — there is no --cli-version anymore.
+ *               The Docker/VCR image path still bakes the CLI FROM SOURCE; the
+ *               published-package `--cli-version` mode is snapshot-only.
  */
 
 import { spawnSync } from 'node:child_process'

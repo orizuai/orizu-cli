@@ -15,35 +15,43 @@ are **mutually exclusive** (setting both is a hard error):
 | **Docker / VCR image** | reproducible long-term image | **yes** (`docker buildx`) | `build-and-push.mjs` | durable, versioned artifact |
 | **Vercel snapshot** | filesystem snapshot of a base sandbox | **no** (Vercel creds only) | `provision-snapshot.mjs` | zero-Docker **v0 live path** |
 
-## The Orizu CLI is baked FROM SOURCE (not npm)
+## How the CLI gets into the runtime: published package (canonical) or from source
 
-Both paths bake the CLI by **`bun build`-ing the current source into one
-self-contained bundle** — NOT `npm i -g orizu@<v>`. Why: the just-merged
-hosted-session commands (`orizu internal hosted-loop`) are **not in a published CLI
-tag yet**, so a pinned npm install can't reliably carry them (and an unpublished
-version 404s the build). Baking from source guarantees the runtime CLI **always
-matches this checkout**.
+The snapshot path has **two CLI-bake modes** (ALI-1078):
 
-The bundle is safe as a single file because `packages/cli` statically imports **no
-npm package** (only Node built-ins + type-only imports); every heavyweight dep is
-reached through a **lazy, non-literal dynamic `import()`** resolved at runtime. So
-the bundle needs no `node_modules` to *start*; only `@anthropic-ai/claude-agent-sdk`
-is installed **as a sibling of the bundle** so its lazy import resolves, and
-`opencode` is a **global bin** the loop *spawns* (never imports).
+- **Published package (canonical, automated):** `provision-snapshot.mjs
+  --cli-version X.Y.Z` installs the **published npm package** (`npm i -g
+  orizu@X.Y.Z`). This is what CI does — see "Canonical flow" below.
+- **From source (manual escape hatch):** without `--cli-version`, the script
+  `bun build`s the current checkout into one self-contained bundle. Use it for
+  pre-publish testing or when a fix has not shipped in a tag yet. (The Docker/VCR
+  image path is from-source only.)
 
-### Canonical long-term flow (bake-from-source is the pre-publish BRIDGE)
+The from-source bundle is safe as a single file because `packages/cli` statically
+imports **no npm package** (only Node built-ins + type-only imports); every
+heavyweight dep is reached through a **lazy, non-literal dynamic `import()`**
+resolved at runtime. So the bundle needs no `node_modules` to *start*; only
+`@anthropic-ai/claude-agent-sdk` is installed **as a sibling of the bundle** so its
+lazy import resolves (the published package carries the SDK as a normal
+dependency instead), and `opencode` is a **global bin** the loop *spawns* (never
+imports).
 
-Baking from source is the bridge until the hosted commands ship in a published tag.
-The destination is the project-wide **git-tag** versioning scheme:
+### Canonical flow (automated on every `cli-v*` tag)
+
+The project-wide **git-tag** versioning scheme drives the runtime:
 
 1. **Cut a git tag** (e.g. `cli-vX.Y.Z`).
 2. **`publish-cli.yml`** publishes the CLI (with the hosted commands) for that tag.
-3. The image/snapshot can then **pin that published tagged version** instead of
-   building from source (swap the CLI bake step for `npm i -g orizu@<tag-version>`).
+3. The same workflow's **`bake-hosted-snapshot` job** then bakes a fresh snapshot
+   **from that published version** (`provision-snapshot.mjs --cli-version X.Y.Z`),
+   deploys `workers/session-coordinator` with the new `ORIZU_HOSTED_SNAPSHOT`, and
+   opens a PR recording the wrangler.toml bump on main (**a human merges it**).
+   Required repo secrets are documented in the workflow header.
 
-Until then, the built runtime is **labelled by git** — the image `--tag` and the
-snapshot `--label` DEFAULT to `git describe --tags --always --dirty`, so every
-artifact is traceable to a git ref/tag.
+From-source runtimes are **labelled by git** — the image `--tag` and the snapshot
+`--label` DEFAULT to `git describe --tags --always --dirty`; published-mode
+snapshots default to `cli-v<version>`. Every artifact is traceable to a
+release/git ref.
 
 ## What is baked in
 
@@ -54,7 +62,7 @@ artifact is traceable to a git ref/tag.
 | Node | 24.x (NodeSource) | `NODE_MAJOR` build ARG |
 | Bun | latest stable | `bun.sh/install` |
 | git | AL2023 repo | — |
-| **Orizu CLI** | **from source** (`git describe`) | this checkout — `bun build src/index.ts` |
+| **Orizu CLI** | **published `orizu@X.Y.Z`** (CI snapshot bake) or **from source** (`git describe`, escape hatch) | `cli-v*` tag → publish-cli.yml, or this checkout — `bun build src/index.ts` |
 | OpenCode | `opencode-ai@1.14.41` | `OPENCODE_PINNED_VERSION` (`hosted-harness-opencode.ts`) — npm-pinned |
 | Claude Agent SDK | `@anthropic-ai/claude-agent-sdk@0.3.201` | `packages/cli/package.json` deps — npm-pinned |
 
@@ -128,15 +136,21 @@ snapshot id.
 # Dry run — prints the provisioning plan, touches nothing:
 bun packages/cli/hosted-runtime-image/provision-snapshot.mjs --dry-run
 
-# Real provision (label DEFAULTS to git-describe; prints the snapshot id at the end):
+# PUBLISHED-PACKAGE mode (what CI runs): bake the released orizu@X.Y.Z from npm.
+bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
+  --cli-version X.Y.Z --expiration 0 [--id-file /tmp/snapshot-id]
+
+# FROM-SOURCE mode (manual escape hatch; label DEFAULTS to git-describe):
 bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
   --duration 30 --expiration 0
 ```
 
-`--expiration 0` = never expire (omit for the SDK default). Pin overrides:
-`--opencode-version`, `--claude-sdk-version`. The Vercel token is read from env by
-the provider and is **never printed** — the script logs step names + the snapshot id
-only.
+`--expiration 0` = never expire (omit for the SDK default). `--id-file` also
+writes the snapshot id to a file (CI handoff). Pin overrides:
+`--opencode-version`, `--claude-sdk-version` (in published mode the Claude SDK
+ships inside the package; the flag only annotates the marker). The Vercel token is
+read from env by the provider and is **never printed** — the script logs step
+names + the snapshot id only.
 
 The exact create-from-snapshot call the runtime later makes (verified against
 `@vercel/sandbox@1.10.2`) is `Sandbox.create({ source: { type: 'snapshot',
@@ -197,10 +211,10 @@ Pre-baking does **not** disable G5 — the egress canary still runs.
 
 ## How to bump
 
-- **CLI**: it is baked **from source**, so just rebuild — the runtime tracks this
-  checkout automatically (git-describe labels it). No version bump needed. (Once the
-  hosted commands ship in a published tag, switch to pinning that published version —
-  see "Canonical long-term flow" above.)
+- **CLI**: cut a `cli-vX.Y.Z` tag — publish-cli.yml publishes the package AND
+  re-bakes the snapshot from it automatically (see "Canonical flow" above). For a
+  pre-publish/hotfix runtime, use the from-source escape hatch (no version bump
+  needed; git-describe labels it).
 - **OpenCode / Claude SDK**: change `OPENCODE_PINNED_VERSION` / the package.json dep,
   update the matching `ARG` default in the `Dockerfile` (and the snapshot script's
   `DEFAULT_*` constants) + the table above.

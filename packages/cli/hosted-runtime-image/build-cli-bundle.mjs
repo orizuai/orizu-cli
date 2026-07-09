@@ -6,13 +6,11 @@
  *   - `build-and-push.mjs`   (Docker/VCR image — stages the bundle into dist/)
  *   - `provision-snapshot.mjs` (Vercel snapshot — uploads the bundle into a box)
  *
- * WHY BAKE FROM SOURCE (not `npm i -g orizu@<v>`)
- * The hosted-session commands (`orizu internal hosted-loop`) are not in a
- * PUBLISHED CLI tag yet, so a pinned npm install can't reliably carry them, and
- * an unpublished version 404s the build. Building the CURRENT source guarantees
- * the runtime CLI always matches this checkout. Once a git tag ships the hosted
- * commands via publish-cli.yml, the image/snapshot can instead pin that published
- * version (see README "Canonical long-term flow").
+ * WHY THIS HELPER STILL BAKES FROM SOURCE
+ * The Docker/VCR image path still stages a source-built bundle, and the snapshot
+ * path keeps that same source-built mode as the manual escape hatch. The canonical
+ * publish-cli.yml release flow now uses provision-snapshot.mjs --cli-version to
+ * bake a snapshot from the published npm package instead.
  *
  * HOW THE BUNDLE IS BUILT
  * `bun build src/index.ts --target node --packages external` — the CLI's own 39
