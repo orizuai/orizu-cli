@@ -1442,6 +1442,8 @@ orizu apps preview \
 
 The command validates the same app contract and allowed import registry as upload, validates the sample row against `input.json`, serves a temporary static preview page, passes `inputData`, `initialValues`, and `onComplete`, then uses Playwright to render it. Add `--headed` for visible Chromium review, and `--keep-open` when you want to inspect the local page manually. In the Orizu web checkout, preview uses the live component tree and global Tailwind CSS; in the mirrored/published CLI package, it uses the bundled preview runtime snapshot so the workflow remains available without the site source tree.
 
+The published CLI itself does not install the preview tooling (`esbuild`, `react`, `react-dom`, `@playwright/test`, Tailwind) — run preview inside a project that provides them or from an Orizu checkout. When they are missing the command exits with an actionable error; the plain-`node` smoke test (`scripts/test-app.mjs`) still works everywhere in the meantime.
+
 For coding agents: do not treat a passing contract check as enough. After generating or editing an app, run `orizu apps preview` with a representative row, inspect the screenshot, and compare the rendered workflow to the user's likely intent: are the right fields visible, is the primary judgment obvious, do controls fit, and would a human reviewer know what to do? If the screenshot looks wrong, revise the app and preview again before publishing.
 
 ---

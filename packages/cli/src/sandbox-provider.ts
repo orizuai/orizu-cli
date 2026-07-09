@@ -220,8 +220,14 @@ export interface DaytonaProviderDeps {
 // tree) is never loaded into the running process unless `runDaytonaSlice`
 // actually selects the `daytona` provider; (3) `bun install`'s resolve-time
 // cost is a one-time developer/CI tax on this package, not a runtime or
-// shipped-artifact cost. Re-evaluate if @daytonaio/sdk ever becomes a
-// dependency of a package that IS shipped to end users.
+// shipped-artifact cost.
+//
+// SHIPPED-FOOTPRINT NOTE (ALI-1071, realizing ALI-1050): the SDK is a
+// devDependency — NOT a dependency or optionalDependency — so `npm i -g
+// orizu` never installs it on customer machines. The founder-only daytona
+// path relies on the graceful `loadDaytonaModule` error below when the SDK
+// is absent; a checkout install (`bun install --cwd packages/cli`) still
+// gets the exact pin via devDependencies.
 //
 // The specifier is ASSEMBLED at runtime (join, not a literal) so a bundler that
 // reaches this module through the shared `lib/hosted-runtime/` surface (ALI-1015:

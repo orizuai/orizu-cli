@@ -161,6 +161,19 @@ export async function runLocalAppPreview(options: AppPreviewOptions): Promise<Ap
       )
     }
 
+    const nodePaths = [
+      ...(repoRoot ? [join(repoRoot, 'node_modules')] : []),
+      ...(cliPackageRoot ? findNodeModuleDirs(cliPackageRoot) : []),
+    ]
+    const missingRuntimeDeps = findMissingPreviewRuntimeDeps(nodePaths)
+    if (missingRuntimeDeps.length > 0) {
+      throw new Error(
+        `Local preview requires ${missingRuntimeDeps.join(' and ')} to be installed nearby ` +
+          '(run inside a project that has them, `npm install react react-dom` next to your app, ' +
+          'or run from an Orizu checkout after `bun install`).'
+      )
+    }
+
     await esbuild.build({
       entryPoints: [entryPath],
       bundle: true,
@@ -176,10 +189,7 @@ export async function runLocalAppPreview(options: AppPreviewOptions): Promise<Ap
         '.ts': 'ts',
       },
       absWorkingDir: repoRoot || cliPackageRoot || process.cwd(),
-      nodePaths: [
-        ...(repoRoot ? [join(repoRoot, 'node_modules')] : []),
-        ...(cliPackageRoot ? findNodeModuleDirs(cliPackageRoot) : []),
-      ],
+      nodePaths,
       alias: repoRoot ? { '@': repoRoot } : undefined,
       plugins: repoRoot ? undefined : [createPreviewSnapshotPlugin()],
       logLevel: 'silent',
@@ -513,6 +523,19 @@ function findCliPackageRoot(): string | null {
     current = parent
   }
   return null
+}
+
+/**
+ * ALI-1071: react/react-dom are no longer dependencies of the PUBLISHED CLI
+ * (app-grade packages were moved to devDependencies), so a bare global install
+ * may not carry them. Detect that BEFORE esbuild surfaces a raw
+ * `Could not resolve "react"` build error, so the preview command can fail with
+ * an actionable message instead. Exported for tests.
+ */
+export function findMissingPreviewRuntimeDeps(nodeModuleDirs: string[]): string[] {
+  return ['react', 'react-dom'].filter(
+    name => !nodeModuleDirs.some(dir => existsSync(join(dir, name, 'package.json')))
+  )
 }
 
 function findNodeModuleDirs(start: string): string[] {
