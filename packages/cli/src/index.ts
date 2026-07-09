@@ -26,7 +26,6 @@ import { parseDatasetReference } from './dataset-download.js'
 import { extractErrorMessage } from './error-response.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
-import { zipDirectoryToBase64 } from './artifact-archive.js'
 import { runLocalAppPreview } from './preview-runtime.js'
 import { readAssignmentManifestJsonlFile } from './task-assignment-manifest.js'
 import { assertSecureTokenTransport, authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js'
@@ -68,6 +67,9 @@ import { workbenchCommand } from './workbench-cli.js'
 import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredential } from './git-credential.js'
+import { pushPromptDraft } from './prompt-draft-push.js'
+import { runScorersRegister } from './scorer-draft-push.js'
+import { runZipArtifactPush } from './zip-draft-push.js'
 import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
 import {
   reportCommentsCommand,
@@ -1469,39 +1471,12 @@ async function listScorers() {
   printScorerSummaries(data.scorers)
 }
 
+// Command body lives in scorer-draft-push.ts (CLI line ratchet, ALI-976).
 async function registerScorer() {
-  const project = getArg('--project') || await resolveProjectSlug(null)
-  const name = getArg('--name')
-  const manifestPath = getArg('--manifest')
-
-  if (!name || !manifestPath) {
-    throw new Error('Usage: orizu scorers register --project <team/project> --name <name> --manifest <manifest.json> [--prompt-version <id>] [--runner-version <id>] [--label <label>] [--json]')
-  }
-
-  const manifest = readJsonFile(manifestPath)
-  const response = await authedFetch(`/api/cli/scorers?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name,
-      manifest,
-      promptVersionId: getArg('--prompt-version') || undefined,
-      runnerVersionId: getArg('--runner-version') || undefined,
-      label: getArg('--label') || undefined,
-    }),
+  return runScorersRegister({
+    getArg, resolveProjectSlug, readJsonFile, hasJsonFlag, printJson, printLine,
+    parseJsonResponse: (response, label) => parseJsonResponse<Record<string, unknown>>(response, label),
   })
-
-  if (!response.ok) {
-    throw new Error(`Failed to register scorer: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Scorer register')
-  if (hasJsonFlag()) {
-    printJson(data)
-    return
-  }
-
-  printLine(`Registered scorer ${sanitizeTerminalText(name)} (${sanitizeTerminalText(String(data.scorer_version_id || 'unknown version'))})`)
 }
 
 async function showScorerDetail() {
@@ -1556,46 +1531,13 @@ async function setScorerLabel() {
   printLine(`Moved ${sanitizeTerminalText(label)} to ${sanitizeTerminalText(scorerVersionId)}`)
 }
 
+// Command body lives in zip-draft-push.ts (CLI line ratchet, ALI-976).
 async function pushRunnerArtifact(kind: 'runner' | 'optimizer') {
-  const artifactDir = getPositionalArg(2)
-  const project = getArg('--project') || await resolveProjectSlug(null)
-  const name = getArg('--name')
-  const label = getArg('--label') || undefined
-
-  if (!artifactDir) {
-    throw new Error(`Usage: orizu ${kind === 'runner' ? 'runners' : 'optimizers'} push <dir> --project <team/project> [--name <name>] [--label <label>] [--json]`)
-  }
-
-  const manifest = readManifestFile(artifactDir)
-  const artifactName = name || (typeof manifest.name === 'string' ? manifest.name : basename(expandHomePath(artifactDir)))
-  const description = typeof manifest.description === 'string' ? manifest.description : undefined
-  const { zipBase64, contentSha256 } = zipDirectoryToBase64(artifactDir)
-  const endpoint = kind === 'runner' ? 'runners' : 'optimizers'
-  const response = await authedFetch(`/api/cli/${endpoint}?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: artifactName,
-      description,
-      label,
-      manifest,
-      zipBase64,
-      contentSha256,
-    }),
+  return runZipArtifactPush(kind, {
+    getArg, getPositionalArg, resolveProjectSlug, readManifestFile, expandHomePath,
+    hasJsonFlag, printJson, printLine,
+    parseJsonResponse: (response, label) => parseJsonResponse<Record<string, unknown>>(response, label),
   })
-
-  if (!response.ok) {
-    throw new Error(`Failed to push ${kind}: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(response, `${kind} push`)
-  if (hasJsonFlag()) {
-    printJson(data)
-    return
-  }
-
-  const versionId = kind === 'runner' ? data.runner_version_id : data.optimizer_version_id
-  printLine(`Pushed ${kind} ${sanitizeTerminalText(String(artifactName))} (${sanitizeTerminalText(String(versionId || 'unknown version'))})`)
 }
 
 async function pushPromptArtifact(kind: 'prompt' | 'judge') {
@@ -1603,9 +1545,11 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const runnerVersionArg = getArg('--runner-version')
   const parentVersionId = getArg('--parent') || undefined
+  const sessionId = getArg('--session') || undefined
+  const usage = `Usage: orizu ${kind === 'judge' ? 'judges' : 'prompts'} push <dir> --project <team/project> [--runner-version <id>] [--parent <version-id>] [--session <session-id>] [--json]`
 
   if (!promptDir) {
-    throw new Error(`Usage: orizu ${kind === 'judge' ? 'judges' : 'prompts'} push <dir> --project <team/project> [--runner-version <id>] [--parent <version-id>] [--json]`)
+    throw new Error(usage)
   }
 
   const promptRoot = expandHomePath(promptDir)
@@ -1616,9 +1560,25 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
     (isRecord(manifest.runner) ? stringFromRecord(manifest.runner, 'version_id') : undefined)
   const runnerVersionId = runnerVersionArg || runnerFromManifest
   if (!runnerVersionId) {
-    throw new Error(`Usage: orizu ${kind === 'judge' ? 'judges' : 'prompts'} push <dir> --project <team/project> [--runner-version <id>] [--parent <version-id>] [--json]`)
+    throw new Error(usage)
   }
   const baseBundle = isRecord(manifest.bundle) ? manifest.bundle : {}
+
+  // ADR-007 P4 (ALI-1074): in a session the version is a COMMIT-FIRST git
+  // draft (pins repo_path/content_sha/commit_sha) — see prompt-draft-push.ts.
+  if (sessionId) {
+    const { data, message } = await pushPromptDraft({
+      kind, project, sessionId, manifest, sidecars, runnerVersionId, parentVersionId,
+      displayName: String(manifest.name || promptDir),
+      bodyKind: primaryText.bodyKind, primaryBody: primaryText.body,
+    })
+    if (hasJsonFlag()) printJson(data)
+    else printLine(message)
+    return
+  }
+
+  // LEGACY SESSIONLESS PATH (no branch to commit to; the server dual-writes
+  // the DB body). TODO(ALI-1074 P6): retire when sessionless goes git.
   const endpoint = kind === 'judge' ? 'judges' : 'prompts'
   const response = await authedFetch(`/api/cli/${endpoint}?project=${encodeURIComponent(project)}`, {
     method: 'POST',

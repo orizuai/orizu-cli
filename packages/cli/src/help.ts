@@ -343,8 +343,8 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['prompts', 'push'],
-    usage: 'orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]',
-    summary: 'Push a local prompt artifact directory as a new version.',
+    usage: 'orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--session <session-id>] [--json]',
+    summary: 'Push a local prompt artifact directory as a new version (with --session: a commit-first git draft).',
     group: 'Prompts and judges',
   },
   {
@@ -379,8 +379,8 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['judges', 'push'],
-    usage: 'orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--json]',
-    summary: 'Push a local judge artifact directory as a new version.',
+    usage: 'orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--session <session-id>] [--json]',
+    summary: 'Push a local judge artifact directory as a new version (with --session: a commit-first git draft).',
     group: 'Prompts and judges',
   },
   {

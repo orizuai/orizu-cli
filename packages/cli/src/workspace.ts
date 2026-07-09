@@ -45,7 +45,9 @@ export const PROJECT_PRIMITIVE_DIRS = [
   'apps',
   'tasks',
   'prompts',
+  'judges',
   'scorers',
+  'runners',
   'optimizations',
 ] as const
 
