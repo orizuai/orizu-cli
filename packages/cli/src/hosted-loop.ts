@@ -166,8 +166,8 @@ export interface RunHostedLoopOptions {
   harvestExec?: HarvestExec
   /**
    * Idle watchdog window (ALI-1037): abort the prompt + fail the run
-   * `agent_stalled` if NO harness event arrives for this many ms. Default: env
-   * `ORIZU_AGENT_IDLE_TIMEOUT_MS` or 10 minutes. <= 0 disables the watchdog.
+   * `agent_stalled` if NO progress event arrives for this many ms. Default: env
+   * `ORIZU_AGENT_IDLE_TIMEOUT_MS` or 25 minutes. <= 0 disables the watchdog.
    */
   idleTimeoutMs?: number
 }
@@ -555,6 +555,18 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     if (signal.aborted) promptController.abort()
     else signal.addEventListener('abort', () => promptController.abort(), { once: true })
     const annotated = annotateHeadlessQuestions(harness.runPrompt(prompt, promptController.signal))
+    if (idleTimeoutMs <= 0) {
+      // <= 0 explicitly DISABLES the watchdog (e.g. ORIZU_AGENT_IDLE_TIMEOUT_MS=0):
+      // a stalled prompt will hang until the sandbox/prompt hard cap. Record it so
+      // a run that never progresses isn't a silent mystery in the timeline (ALI-1069).
+      await sink.append({
+        kind: 'artifact',
+        payload: {
+          step: 'idle_watchdog_disabled',
+          detail: 'idle watchdog disabled (idle timeout <= 0); a stalled prompt will not auto-fail agent_stalled',
+        },
+      })
+    }
     const drivenStream =
       idleTimeoutMs > 0
         ? withIdleWatchdog(annotated, {
@@ -563,6 +575,11 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
               promptController.abort()
               await harness.stop()
             },
+            // The `question` tool is DENIED headless, so a model stuck retrying it
+            // emits a stream of synthetic `question_auto_answered` events. Those are
+            // NOT progress — excluding them lets a deny/retry loop trip agent_stalled
+            // instead of resetting the idle timer forever (ALI-1069).
+            isProgress: event => event.kind !== 'question_auto_answered',
           })
         : annotated
     const status = await drainHarnessToSink(drivenStream, sink, {

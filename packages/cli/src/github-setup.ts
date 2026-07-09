@@ -15,7 +15,7 @@
  */
 
 import { spawnSync } from 'child_process'
-import { mkdirSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
 import { authedFetch } from './http.js'
@@ -237,6 +237,10 @@ export interface HostedAttachIo {
   git: GitRunner
   /** Overridable for tests; defaults to creating `.orizu/` on disk. */
   ensureOrizuDir?: (repoDir: string) => void
+  /** True when `targetDir` already holds the cloned workbench repo (an
+   *  idempotent `orizu setup` re-run). Overridable for tests; defaults to a
+   *  `.git` presence check. */
+  repoAlreadyCloned?: (targetDir: string) => boolean
 }
 
 export interface HostedAttachOptions {
@@ -312,6 +316,25 @@ export async function runHostedAttach(
 
   const cleanUrl = `https://github.com/${repoFullName}.git`
 
+  const ensureOrizuDir = io.ensureOrizuDir ?? ((repoDir: string) => mkdirSync(join(repoDir, '.orizu'), { recursive: true }))
+
+  // Idempotent re-run (ALI-1069): `orizu setup` in an ALREADY-attached workspace
+  // reaches here with `targetDir` holding the prior clone (its `.git` plus the
+  // committed orizu.team.json — `assertWorkspaceDirUsable` deliberately exempts
+  // that dir as the idempotent case). `git clone` refuses ANY non-empty dir, so
+  // an unconditional clone would abort the re-run with a misleading "not an empty
+  // directory" error. Short-circuit: re-affirm the credential helper config
+  // (idempotent) and return without recloning.
+  const repoAlreadyCloned = io.repoAlreadyCloned ?? ((dir: string) => existsSync(join(dir, '.git')))
+  if (repoAlreadyCloned(options.targetDir)) {
+    io.print('   Workbench repo already attached — skipping clone.')
+    gitOrThrow(io.git, ['config', 'credential.helper', CREDENTIAL_HELPER], { cwd: options.targetDir })
+    gitOrThrow(io.git, ['config', 'credential.useHttpPath', 'true'], { cwd: options.targetDir })
+    ensureOrizuDir(options.targetDir)
+    io.print('   Attached. Configured the Orizu credential helper for git.')
+    return { repoFullName, provisioned, targetDir: options.targetDir }
+  }
+
   io.print(`   Cloning ${repoFullName}...`)
   // Clone with the helper inline + the workspace id in the env so the token is
   // brokered on demand and never materializes in the URL or on disk.
@@ -332,7 +355,6 @@ export async function runHostedAttach(
   gitOrThrow(io.git, ['config', 'credential.helper', CREDENTIAL_HELPER], { cwd: options.targetDir })
   gitOrThrow(io.git, ['config', 'credential.useHttpPath', 'true'], { cwd: options.targetDir })
 
-  const ensureOrizuDir = io.ensureOrizuDir ?? ((repoDir: string) => mkdirSync(join(repoDir, '.orizu'), { recursive: true }))
   ensureOrizuDir(options.targetDir)
 
   io.print('   Attached. Configured the Orizu credential helper for git.')

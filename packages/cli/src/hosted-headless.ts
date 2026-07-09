@@ -30,39 +30,54 @@ export class AgentStalledError extends Error {
 }
 
 /** Render the idle window for the error message. Minutes (the operator-facing
- *  unit; default window is 10m), rounded to one decimal so sub-minute test
+ *  unit; default window is 25m), rounded to one decimal so sub-minute test
  *  windows still read sensibly. */
 export function formatIdleWindow(ms: number): string {
   const minutes = Math.round((ms / 60000) * 10) / 10
   return `${minutes}m`
 }
 
-export interface IdleWatchdogOptions {
+export interface IdleWatchdogOptions<T> {
   /** No harness event within this many ms aborts the prompt. <= 0 disables. */
   timeoutMs: number
   /** Invoked once on idle (the loop aborts the harness) before the throw. */
   onTimeout: () => Promise<void> | void
+  /**
+   * Whether a value counts as PROGRESS (resets the idle timer). Values passed
+   * through as non-progress are still yielded downstream but do NOT extend the
+   * idle deadline. Defaults to treating every value as progress. Used to exclude
+   * synthetic deny-path events (e.g. `question_auto_answered`) so a model stuck
+   * in a denied-question retry loop still trips `agent_stalled` (ALI-1069).
+   */
+  isProgress?: (value: T) => boolean
 }
 
 const IDLE_SENTINEL = Symbol('idle')
 
 /**
- * Wrap `source` so that if no value arrives within `timeoutMs`, `onTimeout` runs
- * and `AgentStalledError` is thrown. The idle timer resets on EVERY value, so it
- * measures gaps between events (progress), not total duration. The still-pending
- * `next()` is not left as an unhandled rejection, and the underlying iterator is
+ * Wrap `source` so that if no PROGRESS arrives within `timeoutMs`, `onTimeout`
+ * runs and `AgentStalledError` is thrown. The idle deadline advances only on
+ * values `opts.isProgress` accepts (default: all), so it measures gaps between
+ * real progress events, not total duration — a stream of non-progress values
+ * (e.g. `question_auto_answered` deny-path events) passes through WITHOUT
+ * resetting the timer, so a stuck loop still stalls. The still-pending `next()`
+ * is not left as an unhandled rejection, and the underlying iterator is
  * returned/closed on any early exit.
  */
 export async function* withIdleWatchdog<T>(
   source: AsyncIterable<T>,
-  opts: IdleWatchdogOptions
+  opts: IdleWatchdogOptions<T>
 ): AsyncGenerator<T> {
   const iterator = source[Symbol.asyncIterator]()
+  const isProgress = opts.isProgress ?? ((): boolean => true)
+  // Absolute deadline so a non-progress value can be yielded WITHOUT extending
+  // the window (each iteration arms the timer for whatever remains).
+  let deadline = Date.now() + opts.timeoutMs
   try {
     for (;;) {
       let timer: ReturnType<typeof setTimeout> | undefined
       const idle = new Promise<typeof IDLE_SENTINEL>(resolve => {
-        timer = setTimeout(() => resolve(IDLE_SENTINEL), opts.timeoutMs)
+        timer = setTimeout(() => resolve(IDLE_SENTINEL), Math.max(0, deadline - Date.now()))
       })
       const nextResult = iterator.next()
       let raced: IteratorResult<T> | typeof IDLE_SENTINEL
@@ -79,6 +94,9 @@ export async function* withIdleWatchdog<T>(
         throw new AgentStalledError(opts.timeoutMs)
       }
       if (raced.done) return
+      // Only genuine progress pushes the deadline out; non-progress values are
+      // relayed but leave the existing deadline intact.
+      if (isProgress(raced.value)) deadline = Date.now() + opts.timeoutMs
       yield raced.value
     }
   } finally {

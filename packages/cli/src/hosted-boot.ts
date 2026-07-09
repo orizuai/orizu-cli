@@ -418,8 +418,7 @@ export async function ensureRun(opts: {
 }
 
 /** Mint a session_read repo token to learn the repo full name, then build the
- *  GitHub clone URL (mirrors the operator path's `defaultResolveRepo`). The
- *  minted token is best-effort revoked — the credential helper mints its own. */
+ *  GitHub clone URL (mirrors the operator path's `defaultResolveRepo`). */
 export async function resolveRepo(opts: {
   baseUrl: string
   workspaceId: string
@@ -435,19 +434,13 @@ export async function resolveRepo(opts: {
   })
   const repoFullName = asString(minted.repo)
   if (!repoFullName) throw new Error('repo-token response carried no repo')
-  const token = asString(minted.token)
-  const mintId = asString(minted.mintId)
-  if (token && mintId) {
-    try {
-      await opts.fetchImpl(url, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.bearer}` },
-        body: JSON.stringify({ mintId, token }),
-      })
-    } catch {
-      // best-effort revoke — the short TTL is the backstop.
-    }
-  }
+  // We deliberately do NOT early-revoke this probe token (ALI-1069): the
+  // repo-token DELETE route is HUMAN-ONLY (`requireCliSupabase` default-denies
+  // agent bearers), so an agent-bearer revoke would always 401 — a guaranteed
+  // failed request per boot, not a real revoke. Let the short (~60-min)
+  // session_read TTL expire on its own; the credential helper mints its own
+  // per-op tokens for the actual clone/fetch/push, so this probe token is never
+  // reused after we read `repo` from it.
   return { repoFullName, cloneUrl: `https://github.com/${repoFullName}.git` }
 }
 
