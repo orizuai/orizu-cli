@@ -254,14 +254,20 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
     if (subcommand === 'reject' && manifest.actionType === 'repo_merge') {
       const outcome = asRecord(manifest.outcome)
       const branch = asRecord(manifest.proposedState).branch
+      // Terse server-provided reason for a failed reap (ALI-1043) — shown so
+      // the operator knows WHY manual cleanup is needed.
+      const cause =
+        typeof outcome.branchDeleteError === 'string' && outcome.branchDeleteError.length > 0
+          ? ` (${outcome.branchDeleteError})`
+          : ''
       if (outcome.branchDeleted === true) {
         lines.push('session branch deleted')
       } else if (typeof branch === 'string' && branch.length > 0) {
         lines.push(
-          `warning: the session branch could not be deleted — remove it with: git push origin --delete ${branch}`
+          `warning: the session branch could not be deleted${cause} — remove it with: git push origin --delete ${branch}`
         )
       } else {
-        lines.push('warning: the session branch could not be deleted (branch name unavailable)')
+        lines.push(`warning: the session branch could not be deleted${cause} (branch name unavailable)`)
       }
     }
     emit(io, { manifest }, lines.join('\n'))
