@@ -142,10 +142,6 @@ interface WorkspaceSetupPlan {
   exists: boolean
 }
 
-function hasAllowedValue(values: readonly string[], value: unknown): value is string {
-  return typeof value === 'string' && values.includes(value)
-}
-
 function normalizeSlug(value: string | null | undefined, fallback: string): string {
   const normalized = (value || fallback)
     .trim()
@@ -253,6 +249,10 @@ function formatJson(value: Record<string, unknown>): string {
   return `${JSON.stringify(value, null, 2)}\n`
 }
 
+// ALI-1075 / ADR-007: manifests carry machine-readable ids only. The old
+// `canonical`/`repoState` liveness fields are no longer emitted — the DB
+// production label is the sole production pointer. Legacy manifests that
+// still contain them are tolerated (ignored), never rewritten.
 function createTeamManifest(options: {
   teamSlug: string
   teamId: string | null
@@ -269,16 +269,6 @@ function createTeamManifest(options: {
     defaultObjectStore: {
       provider: 'supabase',
       bucket: 'orizu-artifacts',
-    },
-    canonical: {
-      owner: 'repo',
-      repoState: 'source',
-      serviceId: options.attachWorkspaceId,
-      versionId: null,
-      contentSha256: null,
-      lastPulledAt: null,
-      objectRef: null,
-      notes: null,
     },
     setup: {
       setupVersion: WORKSPACE_SETUP_VERSION,
@@ -299,19 +289,6 @@ function createProjectManifest(teamSlug: string, project: WorkspaceProjectSeed):
     projectId: project.id || null,
     teamSlug,
     sourceRepos: [],
-    policies: {
-      defaultRepoState: 'draft',
-    },
-    canonical: {
-      owner: 'repo',
-      repoState: 'draft',
-      serviceId: null,
-      versionId: null,
-      contentSha256: null,
-      lastPulledAt: null,
-      objectRef: null,
-      notes: null,
-    },
   })
 }
 
@@ -347,16 +324,16 @@ Before changing anything, read:
 - \`README.md\` for the team workbench overview.
 - \`Memory.md\` for durable team preferences and decisions.
 - \`projects/*/README.md\` and \`projects/*/memory.md\` for project context.
-- \`orizu.*.json\` manifests for machine-readable ids, ownership, source-of-truth
-  state, commands, and object refs.
+- \`orizu.*.json\` manifests for machine-readable ids, commands, and object
+  refs.
 
 Use \`orizu --help\`, \`orizu <command> --help\`, and
 \`orizu capabilities --json\` to discover exact CLI behavior. Do not duplicate
 Orizu runtime behavior in repo scripts; go through the CLI.
 
-Treat Git-tracked files as source/context or explicit snapshots. Live Orizu
-state remains in Orizu DB/storage unless a manifest says a repo file is the
-source of truth. Treat \`.orizu/\`, raw logs, raw transcripts, bulky datasets,
+Treat Git-tracked files as source/context or explicit snapshots. What is live
+in production is answered by Orizu (the DB production label), never by a repo
+file. Treat \`.orizu/\`, raw logs, raw transcripts, bulky datasets,
 and local source checkouts as ignored cache or object-backed state unless
 explicitly promoted.
 
@@ -862,19 +839,10 @@ function validateManifest(path: string, findings: WorkspaceFinding[]) {
     findings.push(finding('error', 'missing_manifest_identity', 'Manifest must include slug, runId, or sessionId.', path, false))
   }
 
-  const canonical = parsed.canonical
-  if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) {
-    findings.push(finding('error', 'missing_canonical', 'Manifest must include canonical owner and repoState.', path, false))
-    return
-  }
-
-  const canonicalRecord = canonical as Record<string, unknown>
-  if (!hasAllowedValue(CANONICAL_OWNERS, canonicalRecord.owner)) {
-    findings.push(finding('error', 'invalid_canonical_owner', `canonical.owner must be one of ${CANONICAL_OWNERS.join(', ')}.`, path, false))
-  }
-  if (!hasAllowedValue(REPO_STATES, canonicalRecord.repoState)) {
-    findings.push(finding('error', 'invalid_repo_state', `canonical.repoState must be one of ${REPO_STATES.join(', ')}.`, path, false))
-  }
+  // ALI-1075 / ADR-007: the manifest `canonical` block (owner/repoState
+  // liveness fields) is no longer part of the contract and is not validated.
+  // Legacy manifests may still carry it — its presence (with any values) is
+  // deliberately ignored so existing workbench repos keep validating.
 
   if (parsed.kind === 'team') {
     const setup = parsed.setup

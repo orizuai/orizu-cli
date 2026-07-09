@@ -66,17 +66,17 @@ export function seedLocalBareRepo(baseDir: string, config: SliceConfig): SeededB
   gitOrThrow(['init', '--initial-branch=main', work])
   const ident = ['-c', 'user.email=seed@orizu.local', '-c', 'user.name=Seed']
 
+  // ALI-1075: no `canonical`/`repoState` liveness fields — manifests carry
+  // machine-readable ids only; the DB label is the sole production pointer.
   const teamManifest = {
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     kind: 'team',
     slug: config.teamSlug,
-    canonical: { owner: 'repo', repoState: 'source', objectRef: null },
   }
   const projectManifest = {
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     kind: 'project',
     slug: config.projectSlug,
-    canonical: { owner: 'repo', repoState: 'draft', objectRef: null },
   }
   writeFileSync(join(work, 'orizu.team.json'), `${JSON.stringify(teamManifest, null, 2)}\n`)
   writeFileSync(join(work, '.gitignore'), '# Orizu workspace policy\n.orizu/\n')

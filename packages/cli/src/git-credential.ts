@@ -60,18 +60,21 @@ export function resolveAttachedWorkspaceId(cwd: string): string | null {
     const manifestPath = join(dir, 'orizu.team.json')
     if (existsSync(manifestPath)) {
       const manifest = readJsonManifest(manifestPath)
-      const canonical = manifest?.canonical
-      const serviceId =
-        canonical && typeof canonical === 'object' && !Array.isArray(canonical)
-          ? (canonical as Record<string, unknown>).serviceId
-          : null
-      if (typeof serviceId === 'string' && serviceId) return serviceId
+      // `setup.attachedWorkspaceId` is the attachment id; `canonical.serviceId`
+      // is a legacy duplicate kept only as a read fallback for old repos
+      // (ALI-1075: fresh manifests carry no `canonical` block).
       const setup = manifest?.setup
       const attached =
         setup && typeof setup === 'object' && !Array.isArray(setup)
           ? (setup as Record<string, unknown>).attachedWorkspaceId
           : null
-      return typeof attached === 'string' && attached ? attached : null
+      if (typeof attached === 'string' && attached) return attached
+      const canonical = manifest?.canonical
+      const serviceId =
+        canonical && typeof canonical === 'object' && !Array.isArray(canonical)
+          ? (canonical as Record<string, unknown>).serviceId
+          : null
+      return typeof serviceId === 'string' && serviceId ? serviceId : null
     }
     const parent = dirname(dir)
     if (parent === dir) return null

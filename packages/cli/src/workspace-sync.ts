@@ -463,13 +463,20 @@ function patchCanonical(absPath: string, patch: Record<string, unknown>): void {
   writeManifest(absPath, { ...manifest, canonical })
 }
 
+// Attach writes ONLY `setup.attachedWorkspaceId` (ALI-1075: fresh manifests
+// carry no `canonical` block and attach must not resurrect one). A legacy
+// manifest that still has `canonical.serviceId` gets it updated in place so
+// the two ids can never disagree; it is never created.
 function patchTeamWorkspaceId(root: string, workspaceId: string): void {
   const absPath = join(root, 'orizu.team.json')
   const manifest = readJsonManifest(absPath) ?? {}
-  const canonical = { ...readCanonical(manifest), serviceId: workspaceId }
+  const legacyCanonical = readCanonical(manifest)
+  const canonicalPatch = 'serviceId' in legacyCanonical
+    ? { canonical: { ...legacyCanonical, serviceId: workspaceId } }
+    : {}
   const setupRaw = manifest.setup
   const setup = { ...(setupRaw && typeof setupRaw === 'object' && !Array.isArray(setupRaw) ? setupRaw : {}), attachedWorkspaceId: workspaceId }
-  writeManifest(absPath, { ...manifest, canonical, setup })
+  writeManifest(absPath, { ...manifest, ...canonicalPatch, setup })
 }
 
 // ---- HTTP helpers ---------------------------------------------------------
