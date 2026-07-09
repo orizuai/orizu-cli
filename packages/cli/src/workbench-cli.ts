@@ -6,8 +6,10 @@
  * parsing and human/JSON output.
  */
 
+import { spawnSync } from 'child_process'
+
 import { authedFetch } from './http.js'
-import { getWorkspaceRoot } from './workspace.js'
+import { getWorkspaceRoot, workspaceExists } from './workspace.js'
 import { attachedWorkspaceId, stringOrNull } from './workspace-sync.js'
 
 export interface WorkbenchFetcher {
@@ -72,16 +74,79 @@ export interface CommonWorkbenchOptions {
   cwd?: string
 }
 
+// -- Local session-branch ergonomics (ALI-1028) ------------------------------
+// `session start` cuts `orizu/session-<id>` REMOTELY; a human still needs the
+// branch fetched + checked out locally, exact next commands, and a finish-time
+// warning when local work has not reached the remote branch. All of it is
+// best-effort convenience for the NON-hosted human path: git failures degrade
+// to hints, never to a failed session command (except the explicit opt-in
+// `finish --push`, which must fail loudly rather than silently drop work).
+
+export interface SessionGitResult {
+  status: number
+  stdout: string
+  stderr: string
+}
+
+/** Injectable git seam (tests use a recording fake; prod spawns git). */
+export type SessionGitRunner = (args: string[], opts?: { cwd?: string }) => SessionGitResult
+
+function defaultSessionGit(args: string[], opts?: { cwd?: string }): SessionGitResult {
+  try {
+    // Strip repo-context env (set by git when running inside hooks) so the
+    // child git is scoped strictly to cwd/args (same pattern as github-setup).
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    delete env.GIT_DIR
+    delete env.GIT_WORK_TREE
+    delete env.GIT_INDEX_FILE
+    const result = spawnSync('git', args, { cwd: opts?.cwd, encoding: 'utf8', env })
+    return {
+      status: result.status ?? 1,
+      stdout: typeof result.stdout === 'string' ? result.stdout : '',
+      stderr: typeof result.stderr === 'string' ? result.stderr : '',
+    }
+  } catch {
+    return { status: 1, stdout: '', stderr: 'git is not available' }
+  }
+}
+
+/** True when `root` is the workbench clone: contract marker + a git repo. */
+function isWorkbenchClone(root: string, git: SessionGitRunner): boolean {
+  return workspaceExists(root) && git(['rev-parse', '--git-dir'], { cwd: root }).status === 0
+}
+
+export interface SessionCheckout {
+  branch: string
+  state: 'checked-out' | 'skipped'
+  detail: string
+}
+
+export interface SessionBranchSync {
+  branch: string
+  /** Local-only commit count vs origin/<branch>; null when not computable. */
+  ahead: number | null
+  /** origin/<branch>-only commit count; null when not computable. */
+  behind: number | null
+}
+
 export interface SessionStartOptions extends CommonWorkbenchOptions {
   workspaceId?: string | null
   projectSlug?: string | null
   clientInfo?: Record<string, unknown>
+  git?: SessionGitRunner
+  /**
+   * Opt-in local ergonomics (ALI-1028): fetch + check out the session branch
+   * when cwd is the workbench clone. Off by default so library callers (e.g.
+   * smoke) never mutate the local checkout; the human CLI path turns it on.
+   */
+  localCheckout?: boolean
 }
 
 export interface SessionStatusOptions extends CommonWorkbenchOptions {
   workspaceId?: string | null
   sessionId?: string | null
   status?: string | null
+  git?: SessionGitRunner
 }
 
 export interface SessionEndOptions {
@@ -93,6 +158,12 @@ export interface SessionFinishOptions {
   fetcher?: WorkbenchFetcher
   sessionId: string
   projectSlug?: string | null
+  cwd?: string
+  git?: SessionGitRunner
+  /** Opt-in: stage/commit/push local session-branch work before finishing. */
+  push?: boolean
+  /** Commit message for --push; a default is used when omitted. */
+  message?: string | null
 }
 
 export interface SessionFinishResult {
@@ -100,15 +171,23 @@ export interface SessionFinishResult {
   branch?: string
   branchDeleted?: boolean
   manifest?: Record<string, unknown>
+  /** Local uncommitted/unpushed work detected at finish time (ALI-1028). */
+  localWarnings?: string[]
+  /** True when --push staged/committed/pushed local work before finishing. */
+  pushed?: boolean
 }
 
 export interface SessionStartResult {
   session: WorkbenchSession
+  /** Local checkout attempt for the session branch; null when the session has no branch. */
+  checkout?: SessionCheckout | null
 }
 
 export interface SessionStatusResult {
   session?: WorkbenchSession
   sessions?: WorkbenchSession[]
+  /** Local ahead/behind vs the remote session branch (single-session status only). */
+  branchSync?: SessionBranchSync | null
 }
 
 export interface SessionEndResult {
@@ -162,6 +241,8 @@ export interface WorkbenchCommandIo {
   print: (line: string) => void
   fetcher?: WorkbenchFetcher
   sleep?: WorkbenchSleep
+  /** Injectable git for the session-branch ergonomics (ALI-1028). */
+  git?: SessionGitRunner
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
@@ -267,6 +348,75 @@ function eventsFrom(data: Record<string, unknown>): WorkbenchRunEvent[] {
   return Array.isArray(data.events) ? data.events as WorkbenchRunEvent[] : []
 }
 
+/**
+ * Fetch the freshly-cut remote session branch and check out a local tracking
+ * branch, so a human can start committing immediately. Best-effort by design:
+ * every failure (not the clone, no git, fetch/checkout error) returns a
+ * 'skipped' result with a human-usable detail — it NEVER throws, because
+ * checkout ergonomics must never fail a successfully started session.
+ */
+function checkoutSessionBranchLocally(
+  cwd: string | undefined,
+  branch: string,
+  git: SessionGitRunner
+): SessionCheckout {
+  const root = getWorkspaceRoot(cwd)
+  try {
+    if (!isWorkbenchClone(root, git)) {
+      return { branch, state: 'skipped', detail: 'not inside the workbench clone' }
+    }
+    if (git(['fetch', 'origin', branch], { cwd: root }).status !== 0) {
+      return { branch, state: 'skipped', detail: `could not fetch origin/${branch}` }
+    }
+    const haveLocal =
+      git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: root }).status === 0
+    const checkout = haveLocal
+      ? git(['checkout', branch], { cwd: root })
+      : git(['checkout', '-b', branch, '--track', `origin/${branch}`], { cwd: root })
+    if (checkout.status !== 0) {
+      const reason = checkout.stderr.trim() || `exit ${checkout.status}`
+      return { branch, state: 'skipped', detail: `checkout failed: ${reason}` }
+    }
+    return {
+      branch,
+      state: 'checked-out',
+      detail: haveLocal ? `switched to existing local branch ${branch}` : `tracking origin/${branch}`,
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    return { branch, state: 'skipped', detail: reason }
+  }
+}
+
+/** Local ahead/behind vs origin/<branch>; counts are null when not computable. */
+function computeSessionBranchSync(
+  cwd: string | undefined,
+  branch: string,
+  git: SessionGitRunner
+): SessionBranchSync {
+  const root = getWorkspaceRoot(cwd)
+  try {
+    if (!isWorkbenchClone(root, git)) {
+      return { branch, ahead: null, behind: null }
+    }
+    const counts = git(
+      ['rev-list', '--left-right', '--count', `origin/${branch}...${branch}`],
+      { cwd: root }
+    )
+    if (counts.status !== 0) {
+      return { branch, ahead: null, behind: null }
+    }
+    // `--left-right --count origin/b...b` prints "<origin-only>\t<local-only>".
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(counts.stdout)
+    if (!match) {
+      return { branch, ahead: null, behind: null }
+    }
+    return { branch, ahead: Number(match[2]), behind: Number(match[1]) }
+  } catch {
+    return { branch, ahead: null, behind: null }
+  }
+}
+
 export async function runSessionStart(opts: SessionStartOptions = {}): Promise<SessionStartResult> {
   const fetcher = fetcherFrom(opts)
   const workspaceId = resolveAttachedWorkspaceId(opts)
@@ -286,7 +436,16 @@ export async function runSessionStart(opts: SessionStartOptions = {}): Promise<S
   })
   await assertOk(response, 'Session start')
   const data = await readJson(response)
-  return { session: sessionFrom(data, 'Session start') }
+  const session = sessionFrom(data, 'Session start')
+  // The session is started; local checkout is best-effort ergonomics only,
+  // and only when explicitly requested (the CLI human path).
+  const branch = stringOrNull(session.repoBranch)
+  const checkout = branch && opts.localCheckout
+    ? checkoutSessionBranchLocally(opts.cwd, branch, opts.git ?? defaultSessionGit)
+    : branch
+      ? { branch, state: 'skipped' as const, detail: 'local checkout not requested' }
+      : null
+  return { session, checkout }
 }
 
 export async function runSessionStatus(opts: SessionStatusOptions = {}): Promise<SessionStatusResult> {
@@ -296,7 +455,12 @@ export async function runSessionStatus(opts: SessionStatusOptions = {}): Promise
     const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(sessionId)}`)
     await assertOk(response, 'Session status')
     const data = await readJson(response)
-    return { session: sessionFrom(data, 'Session status') }
+    const session = sessionFrom(data, 'Session status')
+    const branch = stringOrNull(session.repoBranch)
+    const branchSync = branch
+      ? computeSessionBranchSync(opts.cwd, branch, opts.git ?? defaultSessionGit)
+      : null
+    return { session, branchSync }
   }
 
   const workspaceId = resolveAttachedWorkspaceId(opts)
@@ -326,11 +490,101 @@ export async function runSessionEnd(opts: SessionEndOptions): Promise<SessionEnd
   }
 }
 
+/**
+ * Finish-time local checks (ALI-1028): when run inside the workbench clone
+ * with the session branch checked out, uncommitted or unpushed local work is
+ * reported (it would silently miss the manifest otherwise), and the opt-in
+ * `--push` stages/commits/pushes it first. Raw git remains the default
+ * workflow — without --push nothing local is mutated.
+ */
+async function prepareLocalSessionBranch(
+  opts: SessionFinishOptions,
+  fetcher: WorkbenchFetcher
+): Promise<{ localWarnings: string[]; pushed: boolean }> {
+  const git = opts.git ?? defaultSessionGit
+  const root = getWorkspaceRoot(opts.cwd)
+  const localWarnings: string[] = []
+
+  if (!isWorkbenchClone(root, git)) {
+    if (opts.push) {
+      throw new Error(
+        'session finish --push must run inside the workbench clone (it stages, commits, and pushes the session branch checkout)'
+      )
+    }
+    return { localWarnings, pushed: false }
+  }
+
+  // Learn the session branch name (the finish call itself does not return it
+  // until after the branch is finished).
+  const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(opts.sessionId)}`)
+  if (!response.ok) {
+    // Best-effort: the finish call right after will surface the real error.
+    return { localWarnings, pushed: false }
+  }
+  const branch = stringOrNull(sessionFrom(await readJson(response), 'Session status').repoBranch)
+  if (!branch) {
+    return { localWarnings, pushed: false }
+  }
+
+  const head = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: root })
+  const onSessionBranch = head.status === 0 && head.stdout.trim() === branch
+  if (!onSessionBranch) {
+    if (opts.push) {
+      const current = head.status === 0 ? head.stdout.trim() : '(unknown)'
+      throw new Error(
+        `session finish --push requires the session branch checkout: HEAD is ${current}, not ${branch}`
+      )
+    }
+    return { localWarnings, pushed: false }
+  }
+
+  const status = git(['status', '--porcelain'], { cwd: root })
+  const hasUncommitted = status.status === 0 && status.stdout.trim() !== ''
+
+  if (opts.push) {
+    if (hasUncommitted) {
+      const add = git(['add', '-A'], { cwd: root })
+      if (add.status !== 0) {
+        throw new Error(`session finish --push: git add failed: ${add.stderr.trim() || `exit ${add.status}`}`)
+      }
+      const message = stringOrNull(opts.message) ?? `Session ${opts.sessionId} work (orizu session finish --push)`
+      const commit = git(['commit', '-m', message], { cwd: root })
+      if (commit.status !== 0) {
+        throw new Error(`session finish --push: git commit failed: ${commit.stderr.trim() || `exit ${commit.status}`}`)
+      }
+    }
+    const push = git(['push', 'origin', branch], { cwd: root })
+    if (push.status !== 0) {
+      throw new Error(`session finish --push: git push failed: ${push.stderr.trim() || `exit ${push.status}`}`)
+    }
+    return { localWarnings, pushed: true }
+  }
+
+  if (hasUncommitted) {
+    localWarnings.push(
+      `uncommitted changes in your ${branch} checkout — they won't be in the manifest. ` +
+        `Commit and push them first (git add/commit/push), or re-run with --push.`
+    )
+  }
+  const counts = git(['rev-list', '--count', `origin/${branch}..${branch}`], { cwd: root })
+  const unpushed = counts.status === 0 ? Number.parseInt(counts.stdout.trim(), 10) : 0
+  if (Number.isFinite(unpushed) && unpushed > 0) {
+    localWarnings.push(
+      `${unpushed} unpushed commit${unpushed === 1 ? '' : 's'} on ${branch} — they won't be in the manifest. ` +
+        `Run \`git push origin ${branch}\` first, or re-run with --push.`
+    )
+  }
+  return { localWarnings, pushed: false }
+}
+
 export async function runSessionFinish(opts: SessionFinishOptions): Promise<SessionFinishResult> {
   const fetcher = fetcherFrom(opts)
   if (!stringOrNull(opts.sessionId)) {
-    throw new Error('Usage: orizu session finish --session <id> [--project <team/project>] [--json]')
+    throw new Error(
+      'Usage: orizu session finish --session <id> [--project <team/project>] [--push [--message <text>]] [--json]'
+    )
   }
+  const { localWarnings, pushed } = await prepareLocalSessionBranch(opts, fetcher)
   const body: Record<string, unknown> = {}
   const projectSlug = normalizeProjectSlug(opts.projectSlug)
   if (projectSlug) {
@@ -352,6 +606,8 @@ export async function runSessionFinish(opts: SessionFinishOptions): Promise<Sess
     branch: stringOrNull(data.branch) ?? undefined,
     branchDeleted: typeof data.branchDeleted === 'boolean' ? data.branchDeleted : undefined,
     manifest,
+    localWarnings: localWarnings.length > 0 ? localWarnings : undefined,
+    pushed: pushed || undefined,
   }
 }
 
@@ -538,9 +794,39 @@ function emit(io: WorkbenchCommandIo, human: string, payload: Record<string, unk
   io.print(io.json ? JSON.stringify(payload) : human)
 }
 
+/**
+ * Human output for `session start`: always name the branch and the exact next
+ * commands (ALI-1028) — checked-out, skipped-with-hint, or no-branch.
+ */
+function formatSessionStart(result: SessionStartResult): string {
+  const lines = [`session started: ${result.session.id}`]
+  const checkout = result.checkout
+  if (checkout) {
+    if (checkout.state === 'checked-out') {
+      lines.push(`branch: ${checkout.branch} (checked out locally, ${checkout.detail})`)
+    } else {
+      lines.push(`branch: ${checkout.branch} (not checked out locally: ${checkout.detail})`)
+      lines.push(`  check it out with: git fetch origin ${checkout.branch} && git checkout ${checkout.branch}`)
+    }
+    lines.push('next steps:')
+    lines.push('  git add <files> && git commit -m "<what changed>"')
+    lines.push(`  git push origin ${checkout.branch}`)
+    lines.push(`  orizu session finish --session ${result.session.id}`)
+  }
+  return lines.join('\n')
+}
+
 function formatSessionStatus(result: SessionStatusResult): string {
   if (result.session) {
     const lines = [`session ${result.session.id}  ${result.session.status}`]
+    const sync = result.branchSync
+    if (sync) {
+      lines.push(
+        sync.ahead !== null && sync.behind !== null
+          ? `  branch ${sync.branch}  ahead ${sync.ahead}, behind ${sync.behind} (vs origin/${sync.branch})`
+          : `  branch ${sync.branch}`
+      )
+    }
     for (const run of result.session.runs ?? []) {
       lines.push(`  run ${run.id}  ${run.status}`)
     }
@@ -551,6 +837,19 @@ function formatSessionStatus(result: SessionStatusResult): string {
 }
 
 function formatSessionFinish(result: SessionFinishResult): string {
+  const prefix: string[] = []
+  for (const warning of result.localWarnings ?? []) {
+    prefix.push(`warning: ${warning}`)
+  }
+  if (result.pushed) {
+    prefix.push('pushed local session-branch work to origin before finishing')
+  }
+  return prefix.length > 0
+    ? `${prefix.join('\n')}\n${formatSessionFinishOutcome(result)}`
+    : formatSessionFinishOutcome(result)
+}
+
+function formatSessionFinishOutcome(result: SessionFinishResult): string {
   if (result.outcome === 'no-changes') {
     const branch = result.branch ?? 'the session branch'
     return result.branchDeleted === false
@@ -618,13 +917,19 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
   const fetcher = io.fetcher
 
   if (group === 'session') {
+    // `--workspace <dir>`: the workbench clone directory when the command is
+    // not run from inside it (defaults to cwd).
+    const workspaceDir = argValue(args, '--workspace') ?? undefined
     if (subcommand === 'start') {
       const result = await runSessionStart({
         fetcher,
+        cwd: workspaceDir,
+        git: io.git,
+        localCheckout: true,
         projectSlug: argValue(args, '--project'),
         clientInfo: { source: 'orizu-cli' },
       })
-      emit(io, `session started: ${result.session.id}`, result as unknown as Record<string, unknown>)
+      emit(io, formatSessionStart(result), result as unknown as Record<string, unknown>)
       return 0
     }
     if (subcommand === 'status') {
@@ -632,7 +937,13 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
       if (status && !SESSION_STATUSES.has(status)) {
         throw new Error('Usage: orizu session status [--session <id> | --status active|ended] [--json]')
       }
-      const result = await runSessionStatus({ fetcher, sessionId: argValue(args, '--session'), status })
+      const result = await runSessionStatus({
+        fetcher,
+        cwd: workspaceDir,
+        git: io.git,
+        sessionId: argValue(args, '--session'),
+        status,
+      })
       emit(io, formatSessionStatus(result), result as unknown as Record<string, unknown>)
       return 0
     }
@@ -646,10 +957,19 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
       return 0
     }
     if (subcommand === 'finish') {
+      const message = argValue(args, '--message')
+      const push = hasFlag(args, '--push')
+      if (message && !push) {
+        throw new Error('`--message` only applies with `--push` (orizu session finish --session <id> --push --message <text>)')
+      }
       const result = await runSessionFinish({
         fetcher,
+        cwd: workspaceDir,
+        git: io.git,
         sessionId: argValue(args, '--session') || '',
         projectSlug: argValue(args, '--project'),
+        push,
+        message,
       })
       emit(io, formatSessionFinish(result), result as unknown as Record<string, unknown>)
       return 0

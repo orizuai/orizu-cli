@@ -772,23 +772,27 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['session', 'start'],
-    usage: 'orizu session start [--project <team/project>] [--json]',
-    summary: 'Start a durable workspace session for the attached workspace and print the session id for later resume.',
+    usage: 'orizu session start [--project <team/project>] [--workspace <dir>] [--json]',
+    summary:
+      'Start a durable workspace session and print the session id. When run inside the workbench clone (or with --workspace), the remote session branch is fetched and checked out locally, and the exact next git commands are printed.',
     group: 'Sessions',
     options: [
       { name: '--project <team/project>', help: 'Optionally scope the session to a project in the attached workspace.' },
+      { name: '--workspace <dir>', help: 'Workbench clone directory when not running from inside it.' },
       { name: '--json', help: 'Emit the machine-readable session payload.' },
     ],
     examples: ['orizu session start', 'orizu session start --project highlight/hip --json'],
   },
   {
     path: ['session', 'status'],
-    usage: 'orizu session status [--session <id> | --status active|ended] [--json]',
-    summary: 'Inspect one session by id, including run summaries, or list sessions for the attached workspace.',
+    usage: 'orizu session status [--session <id> | --status active|ended] [--workspace <dir>] [--json]',
+    summary:
+      'Inspect one session by id (including run summaries and, when run inside the workbench clone, the session branch with local ahead/behind vs origin), or list sessions for the attached workspace.',
     group: 'Sessions',
     options: [
       { name: '--session <id>', help: 'Resume by session id; does not require the original terminal.' },
       { name: '--status <status>', help: 'Filter attached-workspace sessions when --session is omitted.', choices: ['active', 'ended'] },
+      { name: '--workspace <dir>', help: 'Workbench clone directory when not running from inside it.' },
       { name: '--json', help: 'Emit the machine-readable session or session-list payload.' },
     ],
     examples: ['orizu session status --session sess_123 --json', 'orizu session status --status active'],
@@ -806,16 +810,19 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['session', 'finish'],
-    usage: 'orizu session finish --session <id> [--project <team/project>] [--json]',
+    usage: 'orizu session finish --session <id> [--project <team/project>] [--push [--message <text>]] [--workspace <dir>] [--json]',
     summary:
-      'Finish a hosted session branch: no changes deletes the branch; changes create a repo_merge promotion manifest to review and approve (no GitHub PR).',
+      'Finish a hosted session branch: no changes deletes the branch; changes create a repo_merge promotion manifest to review and approve (no GitHub PR). Warns when your local session-branch checkout has uncommitted/unpushed work; --push stages, commits, and pushes it first.',
     group: 'Sessions',
     options: [
       { name: '--session <id>', help: 'Session id whose branch to finish.', required: true },
       { name: '--project <team/project>', help: 'Project scope for the manifest when the session is not already project-scoped.' },
+      { name: '--push', help: 'Opt-in: stage, commit, and push local session-branch work before finishing (raw git stays the default workflow).' },
+      { name: '--message <text>', help: 'Commit message for --push (a default is used when omitted).' },
+      { name: '--workspace <dir>', help: 'Workbench clone directory when not running from inside it.' },
       { name: '--json', help: 'Emit the machine-readable outcome (no-changes or the created manifest).' },
     ],
-    examples: ['orizu session finish --session sess_123', 'orizu session finish --session sess_123 --project highlight/hip --json'],
+    examples: ['orizu session finish --session sess_123', 'orizu session finish --session sess_123 --push --message "tune judge prompt"'],
   },
   {
     path: ['run', 'start'],
