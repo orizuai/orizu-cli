@@ -374,12 +374,20 @@ function readReportCommentAnchorInput(ctx: ReportCommentsCliContext): ReportComm
     }
   }
 
-  if (!anchor && startLine === null) {
+  // Mirrors parseReportCommentAnchor in lib/report-comments.ts (trim, collapse
+  // whitespace, 1000-char cap) — keep the two in sync. Over-long text is
+  // rejected here so the server's cap never silently truncates it.
+  const text = anchor ? anchor.trim().replace(/\s+/g, ' ') : ''
+  if (text.length > 1000) {
+    throw new Error('--anchor text must be 1000 characters or fewer')
+  }
+
+  if (!text && startLine === null) {
     return null
   }
 
   return {
-    text: anchor ? anchor.trim() : null,
+    text: text || null,
     startLine,
     endLine,
   }
