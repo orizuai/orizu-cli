@@ -19,9 +19,27 @@ export interface ManifestsCommandIo {
   print: (line: string) => void
   fetcher?: CliFetcher
   resolveProjectSlug?: (arg: string | null) => Promise<string>
+  /** Injectable sleeper for the apply auto-retry loop (tests). */
+  sleep?: (ms: number) => Promise<void>
 }
 
 const MANIFEST_ACTIONS = new Set(['approve', 'reject', 'apply', 'revert'])
+
+// -- Apply auto-retry (ALI-1084 D5) -------------------------------------------
+// A repo_merge apply now runs a one-shot merge sandbox server-side; past the
+// route's bounded wait it answers a RETRYABLE 409 "merge job in progress;
+// re-run apply" — the re-apply ATTACHES to the running job (never restarts
+// it), so retrying is free and idempotent. The CLI absorbs that contract with
+// a bounded auto-retry loop (~2 min total) and clear progress output.
+
+const APPLY_RETRY_BUDGET_MS = 120_000
+const APPLY_RETRY_INTERVAL_MS = 5_000
+const MERGE_IN_PROGRESS_MARKER = 'merge job in progress'
+
+async function isMergeJobInProgress(response: Response): Promise<boolean> {
+  if (response.status !== 409) return false
+  return (await responseMessage(response)).toLowerCase().includes(MERGE_IN_PROGRESS_MARKER)
+}
 
 async function responseMessage(response: Response): Promise<string> {
   try {
@@ -292,11 +310,35 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
       throw new Error(`Usage: orizu manifests ${subcommand} <id> [--json]`)
     }
     const id = await resolveManifestId(io, args, idArg)
-    const response = await fetcherFrom(io)(`/api/cli/promotion-manifests/${encodeURIComponent(id)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: subcommand }),
-    })
+    const postAction = () =>
+      fetcherFrom(io)(`/api/cli/promotion-manifests/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: subcommand }),
+      })
+    let response = await postAction()
+    if (subcommand === 'apply') {
+      // Bounded auto-retry for the in-flight merge job (ALI-1084 D5): apply
+      // is idempotent and a re-apply attaches to the SAME job, so retrying
+      // the documented "merge job in progress" 409 is always safe.
+      const sleep =
+        io.sleep ?? ((ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms)))
+      const startedAt = Date.now()
+      let attempt = 1
+      while (
+        (await isMergeJobInProgress(response)) &&
+        Date.now() - startedAt + APPLY_RETRY_INTERVAL_MS <= APPLY_RETRY_BUDGET_MS
+      ) {
+        if (!io.json) {
+          io.print(
+            `merge job in progress (attempt ${attempt}); retrying apply in ${APPLY_RETRY_INTERVAL_MS / 1000}s…`
+          )
+        }
+        await sleep(APPLY_RETRY_INTERVAL_MS)
+        attempt += 1
+        response = await postAction()
+      }
+    }
     const data = await requireOk(response, `Manifest ${subcommand}`)
     const manifest = (data.manifest ?? {}) as Record<string, unknown>
     const lines = [manifestLine(manifest)]
