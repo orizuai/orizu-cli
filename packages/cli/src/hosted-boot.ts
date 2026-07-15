@@ -164,7 +164,10 @@ export function redactBootReason(reason: string, bootSecret: string): string {
 export async function postBootStatus(opts: {
   bootStatusUrl: string
   bootSecret: string
-  status: 'ready' | 'failed'
+  /** 'ready' | 'failed' are the ALI-1060 liveness signals; 'complete' is the
+   *  ALI-1064 terminal signal — the loop finished (after auto-harvest), so the
+   *  DO ends the workspace session and stops instead of extending to 24h. */
+  status: 'ready' | 'failed' | 'complete'
   runId: string | null
   reason?: string | null
   fetchImpl: BootFetch
@@ -748,6 +751,25 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
       bearerProvider: () => readFile(bearerFileAbs).trim(),
     })
     log(`hosted-loop finished: ${result.status}`)
+    // ALI-1064: the loop is TERMINAL — the auto-harvest (ALI-1036) and the
+    // run's terminal seal already ran INSIDE runHostedLoop, so it is safe to
+    // hand the session back. Report `complete` so the DO ends the workspace
+    // session server-side and stops/destroys the sandbox NOW instead of
+    // extending it until the 24h cap (live 2026-07-15: zombie boxes burned
+    // 2×CPU/4GiB for hours after their loops finished). This fires for a
+    // failed loop too — the run is terminal either way, and the loop already
+    // owns its own run-level terminal state (never a `failed` boot-status
+    // here; that would misreport a run failure as a bootstrap failure).
+    // Best-effort: the DO's duration/24h caps are the backstop.
+    await postBootStatus({
+      bootStatusUrl: env.bootStatusUrl,
+      bootSecret: env.bootSecret,
+      status: 'complete',
+      runId,
+      reason: result.error ? redactBootReason(result.error, env.bootSecret) : null,
+      fetchImpl,
+      log,
+    })
     return { ok: !result.error, runId, loopStatus: result.status, error: result.error }
   } finally {
     rotation.stop()
