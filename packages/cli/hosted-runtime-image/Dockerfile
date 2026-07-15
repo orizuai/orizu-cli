@@ -42,11 +42,16 @@ ARG OPENCODE_VERSION=1.14.41
 ARG CLAUDE_SDK_VERSION=0.3.201
 ARG NODE_MAJOR=24
 
-# --- OS packages + git --------------------------------------------------------
+# --- OS packages + git + ssh ---------------------------------------------------
+# openssh-clients: the merge-sandbox-job (ALI-1084) runs the deploy-key merge
+# over git+SSH inside a one-shot sandbox from this runtime — the ssh client is a
+# hard requirement, verified in the same layer (fail the bake, not the first
+# prod merge).
 RUN dnf -y update \
-  && dnf -y install git tar gzip xz which shadow-utils ca-certificates \
+  && dnf -y install git openssh-clients tar gzip xz which shadow-utils ca-certificates \
   && dnf clean all \
-  && rm -rf /var/cache/dnf
+  && rm -rf /var/cache/dnf \
+  && git --version && ssh -V
 
 # --- Node 24 (NodeSource) -----------------------------------------------------
 RUN curl -fsSL "https://rpm.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \

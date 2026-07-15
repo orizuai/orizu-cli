@@ -148,6 +148,13 @@ export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion
       },
       { name: 'install prebaked marker', exec: `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}` },
       {
+        // Merge-sandbox-job Phase 0 (ALI-1084): the one-shot merge sandbox
+        // needs a REAL git + ssh client. git rode the bake already; ssh was
+        // never verified — fail the bake here rather than the first prod merge.
+        name: 'verify git + ssh client present (merge-job runtime requirement)',
+        exec: 'command -v ssh >/dev/null 2>&1 || sudo dnf -y install openssh-clients; git --version && ssh -V',
+      },
+      {
         name: 'verify bake (orizu version + opencode + hosted-loop)',
         exec:
           `command -v orizu && command -v opencode && orizu --version | grep -F "${cliVersion}" && ` +
@@ -177,6 +184,12 @@ export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion
       ],
     },
     { name: 'install prebaked marker', exec: `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}` },
+    {
+      // Merge-sandbox-job Phase 0 (ALI-1084): fail the bake if git/ssh are
+      // absent — the merge job cannot run without them (see published mode).
+      name: 'verify git + ssh client present (merge-job runtime requirement)',
+      exec: 'git --version && ssh -V',
+    },
     {
       name: 'verify bake (orizu + opencode + hosted-loop)',
       exec: `command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context'`,
