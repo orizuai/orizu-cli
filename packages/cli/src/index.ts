@@ -19,7 +19,13 @@ import { homedir, tmpdir } from 'os'
 import { createInterface } from 'readline/promises'
 import { emitKeypressEvents } from 'readline'
 import { stdin as input, stdout as output } from 'process'
-import { clearServerCredentials, getServerCredentials, saveServerCredentials } from './credentials.js'
+import {
+  clearServerCredentials,
+  getServerCredentials,
+  hasResolvableAuth,
+  resolveAuthTokenForBaseUrl,
+  saveServerCredentials,
+} from './credentials.js'
 import { parseDatasetFile } from './file-parser.js'
 import { streamJsonlRowChunks } from './jsonl-stream.js'
 import { parseDatasetReference } from './dataset-download.js'
@@ -505,15 +511,6 @@ export async function parseJsonResponse<T>(response: Response, context: string):
 
 function shellQuote(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-}
-
-function getStoredAuthTokenForBaseUrl(baseUrl: string): string {
-  const credentials = getServerCredentials(baseUrl)
-  if (!credentials) {
-    throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
-  }
-
-  return 'accessToken' in credentials ? credentials.accessToken : credentials.apiKey
 }
 
 function printPromptSummaries(items: PromptSummary[], emptyMessage: string) {
@@ -1180,7 +1177,10 @@ async function login() {
   const baseUrl = hasArg('--no-prompt-if-logged-in') ? getBaseUrl() : resolveLoginBaseUrl()
   assertSecureTokenTransport(baseUrl)
 
-  if (hasArg('--no-prompt-if-logged-in') && getServerCredentials(baseUrl)) {
+  // hasResolvableAuth (ALI-1090): an env bearer (ORIZU_TOKEN / ORIZU_TOKEN_FILE)
+  // counts as logged in — a pre-authenticated hosted sandbox must not fall into
+  // the interactive browser flow.
+  if (hasArg('--no-prompt-if-logged-in') && hasResolvableAuth(baseUrl)) {
     if (hasJsonFlag()) {
       printJson({ status: 'already-logged-in', server: baseUrl })
       return
@@ -1351,7 +1351,10 @@ async function logout() {
 
 async function printEnv() {
   const baseUrl = getBaseUrl()
-  const token = getStoredAuthTokenForBaseUrl(baseUrl)
+  // Uniform resolution (ALI-1090): env bearer (ORIZU_TOKEN / ORIZU_TOKEN_FILE)
+  // wins over credentials.json, so `orizu env` works in hosted sandboxes that
+  // never ran `orizu login`.
+  const token = resolveAuthTokenForBaseUrl(baseUrl)
   const projectArg = getArg('--project')
   const project = projectArg ? await resolveProjectSelection(projectArg) : null
   const projectId = project?.id || getArg('--project-id') || process.env.ORIZU_PROJECT_ID || ''
@@ -2643,7 +2646,10 @@ function bundledOrizuGepaPythonPath(): string | null {
 async function runGepaOptimization() {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const baseUrl = getBaseUrl()
-  const token = getStoredAuthTokenForBaseUrl(baseUrl)
+  // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
+  // credentials.json so hosted sandboxes can run optimizations. Read at spawn
+  // time — the child gets the freshest bearer available at launch.
+  const token = resolveAuthTokenForBaseUrl(baseUrl)
   const python = getArg('--python') || process.env.PYTHON || 'python3'
   const bundledPythonPath = bundledOrizuGepaPythonPath()
   let forwardedArgs = removeFlagWithValue(cliArgs.slice(2), '--python')
@@ -3552,7 +3558,8 @@ function findExecutable(name: string): string | null {
 function describeSetupAuthState(): { state: 'signed-in' | 'signed-out', baseUrl: string } {
   const baseUrl = getBaseUrl()
   return {
-    state: getServerCredentials(baseUrl) ? 'signed-in' : 'signed-out',
+    // ALI-1090: an env bearer (ORIZU_TOKEN / ORIZU_TOKEN_FILE) is signed-in too.
+    state: hasResolvableAuth(baseUrl) ? 'signed-in' : 'signed-out',
     baseUrl,
   }
 }

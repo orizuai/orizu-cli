@@ -33,6 +33,7 @@ Behavior:
 - `orizu logout` revokes the current PAT remotely when possible and then clears local credentials.
 - PATs can also be revoked from the Personal Tokens page in Orizu.
 - PAT authorization follows the owning user's current team/project roles, so demotion or removal takes effect without rotating the token.
+- Hosted sandboxes are pre-authenticated via `ORIZU_TOKEN_FILE` (no `orizu login` needed); an explicit `ORIZU_TOKEN` env var overrides both the token file and stored credentials when set.
 
 ### Agent Setup
 

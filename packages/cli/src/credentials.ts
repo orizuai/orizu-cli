@@ -256,6 +256,46 @@ export function resolveEnvBearerToken(): string | null {
   return null
 }
 
+/**
+ * THE uniform bearer resolution for every CLI command (ALI-1090). Exactly the
+ * order `authedFetch` uses: `ORIZU_TOKEN` env → `ORIZU_TOKEN_FILE` (both via
+ * resolveEnvBearerToken, read FRESH per call — never cached, so hosted token
+ * rotations are picked up) → stored credentials.json. Commands that need a raw
+ * bearer (`orizu env`, the run-gepa wrapper) MUST use this instead of reading
+ * credentials.json directly, or they break in hosted sandboxes that are
+ * pre-authenticated via ORIZU_TOKEN_FILE and never ran `orizu login`.
+ */
+export function resolveAuthTokenForBaseUrl(baseUrl: string): string {
+  const envBearer = resolveEnvBearerToken()
+  if (envBearer) {
+    return envBearer
+  }
+
+  const credentials = getServerCredentials(baseUrl)
+  if (!credentials) {
+    throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
+  }
+
+  return 'accessToken' in credentials ? credentials.accessToken : credentials.apiKey
+}
+
+/**
+ * Non-throwing "is any auth available?" check (login --no-prompt-if-logged-in,
+ * setup status). Mirrors resolveAuthTokenForBaseUrl's order so an env bearer
+ * counts as signed in. A misconfigured ORIZU_TOKEN_FILE reports false here —
+ * actual requests still fail loudly via resolveEnvBearerToken.
+ */
+export function hasResolvableAuth(baseUrl: string): boolean {
+  try {
+    if (resolveEnvBearerToken()) {
+      return true
+    }
+  } catch {
+    // fall through to stored credentials
+  }
+  return getServerCredentials(baseUrl) !== null
+}
+
 export function setActiveBaseUrl(baseUrl: string | null) {
   const config = loadCredentialsConfigForWrite()
   config.activeBaseUrl = baseUrl

@@ -41,6 +41,7 @@ Skip this skill when:
 - Clear local credentials and revoke the current CLI token: `orizu logout`.
 - Revoke other CLI tokens from the Personal Tokens page in Orizu.
 - Auth failure loop: `orizu login` → `orizu whoami` → rerun the original command.
+- Hosted sandboxes are pre-authenticated via `ORIZU_TOKEN_FILE` (no `orizu login` needed); an explicit `ORIZU_TOKEN` env var overrides both the token file and stored credentials when set.
 
 ## Teams and projects
 
