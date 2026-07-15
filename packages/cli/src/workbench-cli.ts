@@ -20,7 +20,20 @@ export interface WorkbenchSleep {
   (ms: number): Promise<void>
 }
 
-export interface WorkbenchRunSummary {
+// Per-run model cost/token totals (ALI-1089), aggregated server-side from
+// agent_step_finish event payloads. Null/absent = "no cost data reported"
+// (distinct from a genuine $0 run).
+export interface WorkbenchRunCosts {
+  modelCostUsd?: number | null
+  tokensInput?: number | null
+  tokensOutput?: number | null
+  tokensCacheRead?: number | null
+  tokensCacheWrite?: number | null
+  tokensReasoning?: number | null
+  costUpdatedAt?: string | null
+}
+
+export interface WorkbenchRunSummary extends WorkbenchRunCosts {
   id: string
   status: string
 }
@@ -38,10 +51,12 @@ export interface WorkbenchSession {
   createdAt?: string
   updatedAt?: string
   runs?: WorkbenchRunSummary[]
+  /** Session rollup: sum of the runs' server-aggregated cost totals (ALI-1089). */
+  costs?: WorkbenchRunCosts
   [key: string]: unknown
 }
 
-export interface WorkbenchRun {
+export interface WorkbenchRun extends WorkbenchRunCosts {
   id: string
   workspaceSessionId?: string
   workspaceId?: string
@@ -816,9 +831,87 @@ function formatSessionStart(result: SessionStartResult): string {
   return lines.join('\n')
 }
 
+// -- Cost/duration rendering (ALI-1089) ---------------------------------------
+
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function formatUsd(value: number): string {
+  return `$${value.toFixed(4)}`
+}
+
+/** `tokens: in 2, out 181, cache-read 126968, ...` — only the reported fields. */
+function formatTokenBreakdown(costs: WorkbenchRunCosts): string | null {
+  const parts: string[] = []
+  const push = (label: string, value: unknown) => {
+    const parsed = finiteOrNull(value)
+    if (parsed !== null) {
+      parts.push(`${label} ${parsed}`)
+    }
+  }
+  push('in', costs.tokensInput)
+  push('out', costs.tokensOutput)
+  push('cache-read', costs.tokensCacheRead)
+  push('cache-write', costs.tokensCacheWrite)
+  push('reasoning', costs.tokensReasoning)
+  return parts.length > 0 ? `tokens: ${parts.join(', ')}` : null
+}
+
+/** `cost $0.0697  tokens: ...` or null when nothing was reported. */
+function formatCostSummary(costs: WorkbenchRunCosts): string | null {
+  const cost = finiteOrNull(costs.modelCostUsd)
+  const tokens = formatTokenBreakdown(costs)
+  if (cost === null && tokens === null) {
+    return null
+  }
+  const parts: string[] = []
+  if (cost !== null) {
+    parts.push(`cost ${formatUsd(cost)}`)
+  }
+  if (tokens) {
+    parts.push(tokens)
+  }
+  return parts.join('  ')
+}
+
+function formatDurationMs(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+/**
+ * Session wall-clock from the existing startedAt/endedAt columns — no cost
+ * math, just duration (infra $ estimation is a later phase). Active sessions
+ * measure up to `now` and say so.
+ */
+function formatSessionDuration(session: WorkbenchSession, now = Date.now()): string | null {
+  const startedAt = typeof session.startedAt === 'string' ? Date.parse(session.startedAt) : Number.NaN
+  if (!Number.isFinite(startedAt)) {
+    return null
+  }
+  const endedAt = typeof session.endedAt === 'string' ? Date.parse(session.endedAt) : Number.NaN
+  return Number.isFinite(endedAt)
+    ? `duration ${formatDurationMs(endedAt - startedAt)}`
+    : `duration ${formatDurationMs(now - startedAt)} (so far)`
+}
+
 function formatSessionStatus(result: SessionStatusResult): string {
   if (result.session) {
     const lines = [`session ${result.session.id}  ${result.session.status}`]
+    const duration = formatSessionDuration(result.session)
+    if (duration) {
+      lines.push(`  ${duration}`)
+    }
+    const rollup = result.session.costs ? formatCostSummary(result.session.costs) : null
+    if (rollup) {
+      lines.push(`  ${rollup}`)
+    }
     const sync = result.branchSync
     if (sync) {
       lines.push(
@@ -828,7 +921,9 @@ function formatSessionStatus(result: SessionStatusResult): string {
       )
     }
     for (const run of result.session.runs ?? []) {
-      lines.push(`  run ${run.id}  ${run.status}`)
+      const cost = finiteOrNull(run.modelCostUsd)
+      const suffix = cost !== null ? `  ${formatUsd(cost)}` : ''
+      lines.push(`  run ${run.id}  ${run.status}${suffix}`)
     }
     return lines.join('\n')
   }
@@ -868,7 +963,8 @@ function formatSessionFinishOutcome(result: SessionFinishResult): string {
 
 function formatRunStatus(run: WorkbenchRun): string {
   const sequence = typeof run.latestSequence === 'number' ? `  latestSequence=${run.latestSequence}` : ''
-  return `run ${run.id}  ${run.status}${sequence}`
+  const costLine = formatCostSummary(run)
+  return `run ${run.id}  ${run.status}${sequence}${costLine ? `\n  ${costLine}` : ''}`
 }
 
 function formatEventLine(event: WorkbenchRunEvent): string {
