@@ -54,6 +54,7 @@ import { createVercelProvider } from './vercel-sandbox-provider.js'
 import { buildEgressPolicy, DEFAULT_EGRESS_CANARY_HOST } from './egress-policy.js'
 import { hostedLoopCommand, type HostedLoopContext } from './hosted-loop.js'
 import { hostedBootCommand } from './hosted-boot.js'
+import { mergeJobCommand } from './merge-job.js'
 import { authedFetch } from './http.js'
 import { resolveBaseUrl } from './http.js'
 import { getWorkspaceRoot } from './workspace.js'
@@ -926,7 +927,11 @@ export async function hostedCommand(
     if (positional[1] === 'hosted-boot') {
       return hostedBootCommand(io)
     }
-    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot>')
+    // ALI-1084: the one-shot merge sandbox entrypoint (MergeJobCoordinator DO).
+    if (positional[1] === 'merge-job') {
+      return mergeJobCommand(io)
+    }
+    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot | merge-job>')
     return 1
   }
 

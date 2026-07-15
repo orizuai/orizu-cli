@@ -46,6 +46,14 @@ export type GitCommandRunner = (
 
 export interface MergeBranchWithDeployKeyDeps {
   runGit?: GitCommandRunner
+  /**
+   * D8 pre-push gate (merge-sandbox-job Phase 2): called IMMEDIATELY before
+   * `git push`, after the merge commit exists locally. Returning `false`
+   * aborts WITHOUT pushing (`superseded: true` in the result) — a manifest
+   * rejected while the job was in flight must never reach `main`. Absent
+   * (the local/server executor), the merge pushes unconditionally as before.
+   */
+  prePushGate?: () => Promise<boolean>
 }
 
 /**
@@ -62,6 +70,9 @@ export interface DeployKeyMergeResult {
   alreadyMerged: boolean
   /** true when git reported a merge conflict (409 equivalent). */
   conflict: boolean
+  /** true when the D8 pre-push gate refused the push (manifest no longer
+   *  appliable) — the merge commit was built but NEVER pushed. */
+  superseded?: boolean
   status: number
 }
 
@@ -298,6 +309,17 @@ export async function mergeBranchWithDeployKey(
     }
 
     const mergeSha = (await gitOk(['rev-parse', 'HEAD'], 'git rev-parse merge')).stdout.trim()
+
+    // D8 pre-push gate: the LAST check before anything reaches the default
+    // branch. A refused gate aborts with superseded — no push, no side effect
+    // (the temp worktree dies with this callback).
+    if (deps.prePushGate) {
+      const proceed = await deps.prePushGate()
+      if (!proceed) {
+        return { merged: false, sha: null, alreadyMerged: false, conflict: false, superseded: true, status: 409 }
+      }
+    }
+
     await gitOk(['push', 'origin', `HEAD:refs/heads/${input.base}`], 'git push default branch')
     return { merged: true, sha: mergeSha, alreadyMerged: false, conflict: false, status: 201 }
   })
