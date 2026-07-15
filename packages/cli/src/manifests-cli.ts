@@ -3,6 +3,11 @@
  * Pure command logic with an injected fetcher and project resolver; the entry
  * point owns argument parsing and human/JSON output. apply is idempotent on the
  * server — re-applying returns the stored outcome.
+ *
+ * Every id-taking subcommand accepts a short-id PREFIX (ALI-1038/ALI-1092): a
+ * leading hex slice of the manifest UUID is resolved CLI-side against the
+ * project's manifest list — unique match wins, none/ambiguous is a clear error,
+ * never a server 500.
  */
 
 import { authedFetch } from './http.js'
@@ -72,6 +77,50 @@ async function requireProjectSlug(io: ManifestsCommandIo, args: string[]): Promi
     throw new Error('Project resolver unavailable')
   }
   return io.resolveProjectSlug(argValue(args, '--project'))
+}
+
+// -- short-id prefix resolution (ALI-1092; `show` parity with approve/reject) --
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+// A candidate short id: a leading hex slice of a UUID (dashes allowed), shorter
+// than the full 36 chars. Anything else (full UUIDs, non-hex ids in tests/fixtures)
+// is passed to the server untouched.
+const UUID_PREFIX_RE = /^[0-9a-f][0-9a-f-]{0,34}$/i
+
+/**
+ * Resolve a manifest id argument shared by show/approve/reject/apply/revert.
+ * Full UUIDs (and non-prefix-shaped ids) pass through. A short-id prefix is
+ * matched against the project's manifest list: exactly one hit resolves; zero
+ * or multiple hits throw a clean, actionable error instead of letting a
+ * non-UUID id reach the server and 500.
+ */
+async function resolveManifestId(io: ManifestsCommandIo, args: string[], id: string): Promise<string> {
+  if (UUID_RE.test(id) || !UUID_PREFIX_RE.test(id)) {
+    return id
+  }
+
+  const projectSlug = await requireProjectSlug(io, args)
+  const response = await fetcherFrom(io)(
+    `/api/cli/promotion-manifests?project=${encodeURIComponent(projectSlug)}`
+  )
+  const data = await requireOk(response, 'Manifest lookup')
+  const manifests = Array.isArray(data.manifests) ? (data.manifests as Record<string, unknown>[]) : []
+  const needle = id.toLowerCase()
+  const matches = manifests
+    .map(manifest => (typeof manifest.id === 'string' ? manifest.id : ''))
+    .filter(candidate => candidate.toLowerCase().startsWith(needle))
+
+  if (matches.length === 1) {
+    return matches[0]
+  }
+  if (matches.length === 0) {
+    throw new Error(
+      `No manifest matching '${id}' found in ${projectSlug}. Run \`orizu manifests list\` to see ids.`
+    )
+  }
+  throw new Error(
+    `Manifest id '${id}' is ambiguous — it matches ${matches.length} manifests (${matches.join(', ')}). Use a longer prefix.`
+  )
 }
 
 function emit(io: ManifestsCommandIo, payload: Record<string, unknown>, human: string) {
@@ -222,10 +271,11 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
   }
 
   if (subcommand === 'show') {
-    const id = positional[1]
-    if (!id) {
+    const idArg = positional[1]
+    if (!idArg) {
       throw new Error('Usage: orizu manifests show <id> [--json]')
     }
+    const id = await resolveManifestId(io, args, idArg)
     const response = await fetcherFrom(io)(`/api/cli/promotion-manifests/${encodeURIComponent(id)}`)
     const data = await requireOk(response, 'Manifest show')
     const manifest = (data.manifest ?? {}) as Record<string, unknown>
@@ -237,10 +287,11 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
   }
 
   if (subcommand && MANIFEST_ACTIONS.has(subcommand)) {
-    const id = positional[1]
-    if (!id) {
+    const idArg = positional[1]
+    if (!idArg) {
       throw new Error(`Usage: orizu manifests ${subcommand} <id> [--json]`)
     }
+    const id = await resolveManifestId(io, args, idArg)
     const response = await fetcherFrom(io)(`/api/cli/promotion-manifests/${encodeURIComponent(id)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
