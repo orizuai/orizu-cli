@@ -112,13 +112,27 @@ export function assertCommitPreservingMergeArgs(args: readonly string[]): void {
 
 const LOCAL_BASE_REF = 'refs/heads/__orizu_merge_base'
 const LOCAL_SOURCE_REF = 'refs/remotes/origin/__orizu_merge_source'
-// GitHub's published SSH host keys:
+// GitHub's published SSH host keys (PINNED — never ssh-keyscan'd at runtime):
 // https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
-const GITHUB_KNOWN_HOSTS = [
-  'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl',
-  'github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=',
-  'github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=',
-].join('\n') + '\n'
+// (canonically republished at https://api.github.com/meta `ssh_keys`).
+const GITHUB_HOST_KEYS = [
+  'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl',
+  'ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=',
+  'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=',
+] as const
+
+// Both SSH endpoints GitHub serves git over: the standard port AND the
+// SSH-over-the-HTTPS-port endpoint (docs.github.com "Using SSH over the
+// HTTPS port") the merge sandbox uses — its egress firewall enforces at
+// SNI/CIDR level and raw SSH on :22 was reset in the first live run
+// (ALI-1084 live-fire, 2026-07-15). GitHub publishes ONE key set for both
+// hosts; OpenSSH matches a non-22 port with the `[host]:port` known_hosts
+// form, so the 443 endpoint needs its own lines. Pinning discipline is
+// unchanged: same keys, one more host alias.
+const GITHUB_KNOWN_HOSTS =
+  GITHUB_HOST_KEYS.flatMap(key => [`github.com ${key}`, `[ssh.github.com]:443 ${key}`]).join(
+    '\n'
+  ) + '\n'
 
 /**
  * Strip git's repo-context env vars from a child git's environment. Git
@@ -168,6 +182,22 @@ export function sshRemote(repoFullName: string): string {
     throw new Error(`Invalid repo full name: ${repoFullName}`)
   }
   return `git@github.com:${repoFullName}.git`
+}
+
+/**
+ * The SSH-over-the-HTTPS-port remote (GitHub-supported: `ssh.github.com:443`
+ * speaks the same SSH protocol, same auth, same host-key set). The MERGE core
+ * uses this endpoint because the merge sandbox's egress firewall enforces at
+ * the SNI/CIDR layer and reset raw SSH on :22 in the first live run
+ * (ALI-1084); :443 within GitHub's published git CIDRs is the compatible
+ * path. Equivalent from dev machines, so local/sandbox parity holds (D6).
+ * The push/read paths (D9/Phase 6) keep `sshRemote` untouched.
+ */
+export function sshRemoteOverHttpsPort(repoFullName: string): string {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoFullName)) {
+    throw new Error(`Invalid repo full name: ${repoFullName}`)
+  }
+  return `ssh://git@ssh.github.com:443/${repoFullName}.git`
 }
 
 function shellQuote(value: string): string {
@@ -260,7 +290,10 @@ export async function mergeBranchWithDeployKey(
   const runGit = deps.runGit ?? defaultRunGit
   return withDeployKeyGit(input.privateKeyPem, runGit, 'orizu-merge-', async ({ git, gitOk }) => {
     await gitOk(['init'], 'git init')
-    await gitOk(['remote', 'add', 'origin', sshRemote(repoFullName)], 'git remote add')
+    // SSH over the HTTPS port (ALI-1084 live-fire fix): the merge sandbox's
+    // egress firewall reset raw SSH on github.com:22; ssh.github.com:443 is
+    // the GitHub-supported equivalent (same protocol, same pinned host keys).
+    await gitOk(['remote', 'add', 'origin', sshRemoteOverHttpsPort(repoFullName)], 'git remote add')
     await gitOk(
       ['fetch', '--no-tags', 'origin', `refs/heads/${input.base}:${LOCAL_BASE_REF}`],
       'git fetch default branch'
