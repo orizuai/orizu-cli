@@ -135,10 +135,20 @@ export interface VercelSdkModule {
 // same discipline as the ALI-1031 server provider.
 const VERCEL_SDK_SPECIFIER = ['@vercel', 'sandbox'].join('/')
 
-async function loadVercelModule(): Promise<VercelSdkModule> {
+/**
+ * Injectable dynamic-import seam: tests pass an importer that throws so the
+ * SDK-absent path is exercised deterministically, regardless of whether
+ * `@vercel/sandbox` happens to be resolvable on the host machine. Production
+ * callers never pass one — the default is a real dynamic `import()`.
+ */
+export type VercelSdkImporter = (specifier: string) => Promise<unknown>
+
+export async function loadVercelModule(
+  importModule: VercelSdkImporter = specifier => import(specifier)
+): Promise<VercelSdkModule> {
   try {
     const specifier: string = VERCEL_SDK_SPECIFIER
-    const mod = (await import(specifier)) as unknown as VercelSdkModule
+    const mod = (await importModule(specifier)) as VercelSdkModule
     if (!mod || typeof mod.Sandbox?.create !== 'function') {
       throw new Error('module did not export a Sandbox class with create()')
     }
