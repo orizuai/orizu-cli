@@ -162,6 +162,27 @@ export class CriticalDeliveryError extends Error {
 }
 
 /**
+ * Raised when `finish()` itself is undeliverable (ALI-1065 finding 2): a
+ * CriticalDeliveryError thrown WHILE DELIVERING A TERMINAL TRANSITION, carrying
+ * the intended status + finish options so the caller can retry the delivery
+ * with the ORIGINAL outcome. Before this, the error surfaced as a bare
+ * CriticalDeliveryError and the loop's generic catch re-finished the run
+ * 'failed' — a ~1s transport blip on the SUCCESS terminal recorded a succeeded
+ * run as failed. Subclasses CriticalDeliveryError so existing classification
+ * (drop-vs-surface) is unchanged.
+ */
+export class TerminalDeliveryError extends CriticalDeliveryError {
+  readonly intendedStatus: TerminalStatus
+  readonly finishOptions: FinishOptions | undefined
+  constructor(message: string, intendedStatus: TerminalStatus, finishOptions?: FinishOptions) {
+    super(message)
+    this.name = 'TerminalDeliveryError'
+    this.intendedStatus = intendedStatus
+    this.finishOptions = finishOptions
+  }
+}
+
+/**
  * Raised on a 403 from the RunAPI. Named for what a 403 actually is — NOT "the
  * run is terminal" (that is 404/410). A 403 means the caller may no longer write
  * this run: the session bearer was revoked, OR the agent lost access to the run
@@ -534,17 +555,31 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
       diag(`finish(${status}) called on an already-sealed sink — ignored (idempotent)`)
       return
     }
-    // Pre-terminal appends (still writable): flush coalesced tokens, then the
-    // bounded transcript tail (the seal below refuses any later append).
-    await flushTokens()
-    if (opts?.transcript) {
-      await postEvent(
-        AGENT_TRANSCRIPT_EVENT_TYPE,
-        { text: tail(opts.transcript, TRANSCRIPT_TAIL_MAX_CHARS), truncated: opts.transcript.length > TRANSCRIPT_TAIL_MAX_CHARS },
-        true
-      )
+    // ALI-1065 finding 2: a delivery failure ANYWHERE inside finish (the
+    // transcript tail is a critical append; the terminal PATCH is the
+    // transition itself) must carry the INTENDED status out to the caller.
+    // Without this, the loop's generic catch converted an undeliverable
+    // SUCCESS terminal into a recorded 'failed'. RunTerminalError/RunAuthError
+    // pass through unchanged — they are classifications, not delivery
+    // failures.
+    try {
+      // Pre-terminal appends (still writable): flush coalesced tokens, then the
+      // bounded transcript tail (the seal below refuses any later append).
+      await flushTokens()
+      if (opts?.transcript) {
+        await postEvent(
+          AGENT_TRANSCRIPT_EVENT_TYPE,
+          { text: tail(opts.transcript, TRANSCRIPT_TAIL_MAX_CHARS), truncated: opts.transcript.length > TRANSCRIPT_TAIL_MAX_CHARS },
+          true
+        )
+      }
+      await patchTerminal(status, opts)
+    } catch (error) {
+      if (error instanceof CriticalDeliveryError && !(error instanceof TerminalDeliveryError)) {
+        throw new TerminalDeliveryError(error.message, status, opts)
+      }
+      throw error
     }
-    await patchTerminal(status, opts)
   }
 
   return {
@@ -661,6 +696,39 @@ export async function drainHarnessToSink(
     beforeFinishRan = true
     if (opts.beforeFinish) await opts.beforeFinish()
   }
+  // ALI-1065 finding 3: the server now rejects appends to a terminal run with
+  // 410 (the run was cancelled/finished out from under this writer). The sink
+  // seals itself and raises RunTerminalError; the drain must treat that as a
+  // clean server-side termination — stop consuming and report 'cancelled' —
+  // not crash the loop into a spurious re-finish (Orizu records win; the
+  // stored status is whatever the server committed). The hook still runs so
+  // partial work is harvested, but with a sealed sink its own appends no-op.
+  const handleServerTerminal = async (): Promise<TerminalStatus> => {
+    await runBeforeFinish()
+    return 'cancelled'
+  }
+  // finish() can ALSO surface RunTerminalError (its pre-terminal token flush /
+  // transcript append hits the 410 before the PATCH ever runs) — accept the
+  // server's termination the same way instead of crashing the drain. A finish
+  // whose PATCH meets an already-terminal run does NOT throw (patchTerminal
+  // seals on a terminal 409), so this wrapper changes nothing on that path.
+  //
+  // SEALED-BEFORE-FINISH: the beforeFinish hook's own best-effort appends
+  // (auto-harvest events) swallow errors — including the RunTerminalError of a
+  // 410 that SEALED the sink. finish() on a sealed sink is an idempotent no-op,
+  // so without this check the drain would report the intended status as
+  // delivered when in fact the server terminated the run out from under us.
+  const finishAccepting = async (status: TerminalStatus, finishOpts: FinishOptions): Promise<TerminalStatus> => {
+    await runBeforeFinish()
+    if (sink.sealed) return 'cancelled'
+    try {
+      await sink.finish(status, finishOpts)
+      return status
+    } catch (error) {
+      if (error instanceof RunTerminalError) return 'cancelled'
+      throw error
+    }
+  }
   for await (const event of events) {
     if (event.kind === 'execution_complete') {
       // A prompt the caller/agent stopped is a cancellation, not a failure: the
@@ -668,40 +736,39 @@ export async function drainHarnessToSink(
       // and stop()-initiated paths. A genuine failure (success:false, no abort
       // flag) still lands 'failed'.
       if (event.payload.aborted === true) {
-        await runBeforeFinish()
-        await sink.finish('cancelled', {
+        return finishAccepting('cancelled', {
           summary: opts.summary,
           evidence: opts.evidence,
           transcript: opts.transcript,
         })
-        return 'cancelled'
       }
       const success = event.payload.success !== false
       const status: TerminalStatus = success ? 'succeeded' : 'failed'
       const summary = success
         ? opts.summary
         : { ...(opts.summary ?? {}), error: event.payload.error ?? 'execution failed' }
-      await runBeforeFinish()
-      await sink.finish(status, { summary, evidence: opts.evidence, transcript: opts.transcript })
-      return status
+      return finishAccepting(status, { summary, evidence: opts.evidence, transcript: opts.transcript })
     }
     if (event.kind === 'error') {
-      await runBeforeFinish()
-      await sink.finish('failed', {
+      return finishAccepting('failed', {
         summary: { ...(opts.summary ?? {}), error: event.payload.error ?? 'agent error' },
         evidence: opts.evidence,
         transcript: opts.transcript,
       })
-      return 'failed'
     }
-    await sink.append(event)
+    try {
+      await sink.append(event)
+    } catch (error) {
+      if (error instanceof RunTerminalError) return handleServerTerminal()
+      throw error
+    }
   }
   // The harness contract guarantees a terminal event; reaching here means the
   // stream ended abnormally. Fail closed so the run never dangles non-terminal.
   await runBeforeFinish()
-  await sink.finish('failed', {
+  if (sink.sealed) return 'cancelled'
+  return finishAccepting('failed', {
     summary: { ...(opts.summary ?? {}), error: 'harness stream ended without a terminal event' },
     transcript: opts.transcript,
   })
-  return 'failed'
 }

@@ -60,6 +60,8 @@ import { createClaudeAgentHarness } from './hosted-harness-claude.js'
 import {
   drainHarnessToSink,
   resumeRunEventSink,
+  RunTerminalError,
+  TerminalDeliveryError,
   type HostedFetch,
   type TerminalStatus,
 } from './hosted-run-event-sink.js'
@@ -170,6 +172,9 @@ export interface RunHostedLoopOptions {
    * `ORIZU_AGENT_IDLE_TIMEOUT_MS` or 25 minutes. <= 0 disables the watchdog.
    */
   idleTimeoutMs?: number
+  /** Injectable sleep for the terminal-delivery retry backoff (ALI-1065
+   *  finding 2). Tests pass a no-op to avoid real delays. */
+  sleepImpl?: (ms: number) => Promise<void>
 }
 
 export interface HostedLoopResult {
@@ -210,6 +215,16 @@ function resolveIdleTimeoutMs(override: number | undefined): number {
   }
   return DEFAULT_AGENT_IDLE_TIMEOUT_MS
 }
+
+/**
+ * Loop-level retry schedule for an undeliverable TERMINAL transition (ALI-1065
+ * finding 2). Each entry is a pause before one more full sink delivery cycle
+ * (which itself retries ~4 times over ~350ms), so a transport blip of a few
+ * seconds recovers with the ORIGINAL status instead of being re-recorded as
+ * 'failed'. Bounded: a persistently unreachable control plane fails the
+ * DELIVERY visibly (result.error) without recording a wrong outcome.
+ */
+export const TERMINAL_DELIVERY_RETRY_DELAYS_MS: readonly number[] = [2_000, 8_000]
 
 /** Model-key env vars whose value must be scrubbed from every run event. */
 const MODEL_KEY_ENV_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']
@@ -591,10 +606,58 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     return { status, agentSessionId, installOk, error: null }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    // Fail closed: never leave the run non-terminal. finish() is idempotent and
-    // no-ops when the drain already sealed the sink. Harvest FIRST (partial work
-    // is valuable, incl. an idle-watchdog abort) — before the terminal seals.
+    // Harvest FIRST on every abnormal path (partial work is valuable, incl. an
+    // idle-watchdog abort) — before any terminal write seals the sink.
     await runAutoHarvest()
+
+    // ALI-1065 finding 2: an undeliverable TERMINAL transition must NEVER be
+    // re-recorded as 'failed' — the run's outcome was already decided; only its
+    // DELIVERY failed. Retry the delivery with the ORIGINAL status (spaced past
+    // the sink's own ~350ms retry window, so a ~1s transport blip recovers),
+    // and if it still cannot land, fail the DELIVERY visibly: return the
+    // intended status with a non-null error, which the boot reports via its
+    // boot-status callback, and the coordinator's session-end finalizer sweeps
+    // the still-'running' row server-side with an explicit marker.
+    if (error instanceof TerminalDeliveryError) {
+      const sleep = opts.sleepImpl ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+      for (const delayMs of TERMINAL_DELIVERY_RETRY_DELAYS_MS) {
+        if (sink.sealed) break
+        await sleep(delayMs)
+        try {
+          await sink.finish(error.intendedStatus, error.finishOptions)
+          return { status: error.intendedStatus, agentSessionId, installOk, error: null }
+        } catch (retryError) {
+          // The run went terminal server-side while we were retrying: accept
+          // the server record (Orizu records win) instead of retrying further.
+          if (retryError instanceof RunTerminalError) {
+            return { status: 'cancelled', agentSessionId, installOk, error: null }
+          }
+          // Otherwise keep retrying within the bounded schedule; never change
+          // the status.
+        }
+      }
+      if (sink.sealed) {
+        // A concurrent/preceding delivery landed after all — the record is
+        // terminal server-side with our intended status semantics preserved.
+        return { status: error.intendedStatus, agentSessionId, installOk, error: null }
+      }
+      return {
+        status: error.intendedStatus,
+        agentSessionId,
+        installOk,
+        error: `terminal delivery failed (intended status preserved): ${message}`,
+      }
+    }
+
+    // The run went terminal SERVER-side (cancel/finish out from under this
+    // writer): the sink sealed itself; accept the server record (Orizu records
+    // win) instead of fabricating a local failure.
+    if (error instanceof RunTerminalError) {
+      return { status: 'cancelled', agentSessionId, installOk, error: null }
+    }
+
+    // Fail closed: never leave the run non-terminal. finish() is idempotent and
+    // no-ops when the drain already sealed the sink.
     if (!sink.sealed) {
       try {
         await sink.finish('failed', { summary: { error: message } })
