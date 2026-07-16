@@ -1286,6 +1286,57 @@ class OptimizerTests(unittest.TestCase):
         )
         self.assertEqual(legacy_custom, custom)
 
+    def test_reflection_prompt_examples_use_scorer_feedback_contract(self):
+        prompt = build_reflection_prompt(
+            "old text",
+            [RowEvaluation(
+                row_id="row-1",
+                row={
+                    "planner": {
+                        "iterations": [{
+                            "input": {"system_prompt": "RAW_ROW_SENTINEL"}
+                        }],
+                    },
+                },
+                output={"model_response": "RAW_OUTPUT_SENTINEL"},
+                score=0.2,
+                feedback="FEEDBACK_SENTINEL",
+                error=None,
+            )],
+            TextGepaConfig(
+                reflection_prompt_template=(
+                    "<current_candidate>\n<EVAL>\n<evaluation_data>\n</EVAL>"
+                )
+            ),
+        )
+
+        payload_text = prompt.split("<EVAL>\n", 1)[1].split("\n</EVAL>", 1)[0]
+        payload = json.loads(payload_text)
+        example = payload["examples"][0]
+        self.assertEqual(list(example), ["row_id", "score", "feedback", "error"])
+        self.assertEqual(example["feedback"], "FEEDBACK_SENTINEL")
+        self.assertNotIn("RAW_ROW_SENTINEL", prompt)
+        self.assertNotIn("RAW_OUTPUT_SENTINEL", prompt)
+
+    def test_reflection_prompt_requires_nonempty_scorer_feedback(self):
+        for feedback in (None, "", "   "):
+            with self.subTest(feedback=feedback):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Scorer feedback is required for reflection row row-1",
+                ):
+                    build_reflection_prompt(
+                        "old text",
+                        [RowEvaluation(
+                            row_id="row-1",
+                            row={"input": "hello"},
+                            output={"answer": "bad"},
+                            score=0.2,
+                            feedback=feedback,
+                        )],
+                        TextGepaConfig(),
+                    )
+
     def test_extract_candidate_text_uses_verbatim_response_by_default(self):
         self.assertEqual(extract_candidate_text("```text\nnew text\n```"), "```text\nnew text\n```")
         self.assertEqual(extract_candidate_text("<candidate>new text</candidate>"), "<candidate>new text</candidate>")

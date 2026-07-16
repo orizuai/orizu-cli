@@ -22,7 +22,7 @@ The current parameter value is:
 <current_candidate>
 ```
 
-Below is evaluation data showing how this parameter value performed across multiple test cases. The data contains performance metrics, model outputs, judge feedback, and any relevant diagnostic information from the evaluation:
+Below is evaluation data showing how this parameter value performed across multiple test cases. The data contains performance metrics, scorer feedback, errors, and any relevant diagnostic information from the evaluation:
 ```
 <evaluation_data>
 ```
@@ -1867,10 +1867,12 @@ def optimize_loaded_text_candidate(
 def build_reflection_prompt(parent_text: str, parent_results: list[RowEvaluation], config: TextGepaConfig) -> str:
     examples = []
     for result in parent_results:
+        if result.feedback is None or not result.feedback.strip():
+            raise ValueError(
+                f"Scorer feedback is required for reflection row {result.row_id}"
+            )
         examples.append({
             "row_id": result.row_id,
-            "input": result.row,
-            "output": result.output,
             "score": result.score,
             "feedback": result.feedback,
             "error": result.error,
