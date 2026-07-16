@@ -513,6 +513,9 @@ export interface RunHostedBootOptions {
     context: HostedLoopContext
     taskPrompt: string
     bearerProvider: () => string
+    /** Verbatim secrets the loop's event redaction must scrub (ALI-1062: the
+     *  boot secret — bare hex, so no shape pattern would ever catch it). */
+    redactSecretsList: readonly string[]
   }) => Promise<HostedLoopResult>
   now?: () => number
   log?: (line: string) => void
@@ -564,6 +567,17 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   const readFile = opts.readFile ?? ((path: string): string => readFileSync(path, 'utf8'))
   const log = opts.log ?? ((): void => {})
   const now = opts.now ?? ((): number => Date.now())
+
+  // 0 — ENV HYGIENE (ALI-1062): the boot secret is the DO path's only durable
+  // credential (it mints agent bearers at the internet-reachable agent-token
+  // route for up to 24h), and `env.bootSecret` is already captured — so scrub
+  // the raw value from the process env NOW, before anything downstream can
+  // inherit it: the opencode/agent process is spawned with `{...process.env}`
+  // (nodeChildSpawner) and the customer `.orizu/setup.sh` hook inherits the
+  // env too. Nothing reads it from the env after this point — the rotation /
+  // boot-status closures hold `env.bootSecret`, and the git credential helper
+  // reads the 0600 run-dir boot-secret FILE (written in step 4).
+  delete processEnv.ORIZU_BOOT_SECRET
 
   // 1 — Pull the agent bearer (retry/backoff — the DO may still be arming).
   const bearer = await pullAgentBearer({
@@ -738,10 +752,20 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
     const runLoop =
       opts.runLoop ??
       ((input): Promise<HostedLoopResult> =>
-        runHostedLoop({ context: input.context, taskPrompt: input.taskPrompt, bearerProvider: input.bearerProvider }))
+        runHostedLoop({
+          context: input.context,
+          taskPrompt: input.taskPrompt,
+          bearerProvider: input.bearerProvider,
+          redactSecretsList: input.redactSecretsList,
+        }))
     const result = await runLoop({
       context: loopContext,
       taskPrompt: session.task,
+      // ALI-1062 exact-value redaction: the boot secret is 64 bare hex chars —
+      // no TOKEN_SHAPE_PATTERNS rule can catch it, so it MUST ride the loop's
+      // verbatim redaction list or an echoed env dump would land it in
+      // workbench_run_events.
+      redactSecretsList: [env.bootSecret],
       // Read the bearer FILE fresh per request (review F1): `startBearerRotation`
       // rewrites `bearerFileAbs` before the current bearer expires, so a run
       // exceeding the ~60-min TTL (DO cap is 24h) keeps a valid bearer. A frozen
