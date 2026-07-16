@@ -51,8 +51,10 @@ import { annotateHeadlessQuestions, withIdleWatchdog } from './hosted-headless.j
 import {
   DEFAULT_PROMPT_MAX_DURATION_MS,
   OPENCODE_PINNED_VERSION,
+  awaitOpenCodeModelResolvable,
   createOpenCodeHarness,
   spawnOpenCode,
+  type ModelValidationOutcome,
   type SpawnOpenCodeOptions,
   type SpawnedOpenCode,
 } from './hosted-harness-opencode.js'
@@ -82,6 +84,7 @@ import {
 // coordinator. Re-exported here so this module's public surface is unchanged.
 export {
   DEFAULT_EGRESS_CANARY_HOST,
+  DEFAULT_HOSTED_MODEL,
   buildOpenCodeSpawnEnv,
   egressCanaryAllowedHost,
   runEgressCanary,
@@ -142,6 +145,16 @@ export interface RunHostedLoopOptions {
   createClaudeHarness?: () => AgentHarness
   spawnOpenCode?: (opts: SpawnOpenCodeOptions) => SpawnedOpenCode | Promise<SpawnedOpenCode>
   installOpenCode?: () => Promise<InstallResult>
+  /**
+   * Pre-prompt model validation against the RUNNING opencode's resolvable
+   * catalog (ALI-1086). Default: `awaitOpenCodeModelResolvable`, which polls
+   * `GET /config/providers` briefly so the boot-time models.dev refresh can
+   * land. An `unresolvable` outcome fails the run BEFORE the first prompt with
+   * an error naming the requested id and the resolvable alternatives; a
+   * `skipped` outcome (catalog endpoint unreachable) proceeds — opencode's own
+   * `session.error` remains the backstop. Injectable for tests.
+   */
+  validateModel?: (input: { baseUrl: string; model: string }) => Promise<ModelValidationOutcome>
   now?: () => number
   signal?: AbortSignal
   /** Extra verbatim secrets to redact (the bearer is added by the sink itself). */
@@ -528,6 +541,43 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
           kind: 'artifact',
           payload: { step: 'opencode_ready', ok: true, waitedMs: spawned.readyAfterMs },
         })
+      }
+
+      // Fail-fast model validation (ALI-1086): ask the RUNNING opencode whether
+      // the requested model is resolvable BEFORE the first prompt. The pinned
+      // opencode's bundled catalog is stale (predates claude-opus-4-8) and only
+      // a boot-time models.dev fetch (#1392 allowlists it) refreshes it — when
+      // that fetch is blocked, the first prompt used to die inside the SSE
+      // stream with an opaque `run_failed: Model not found`. Now the run fails
+      // immediately with a structured artifact + an error naming the requested
+      // id AND the resolvable alternatives. Fail-open on validator
+      // infrastructure: an unreachable catalog endpoint (`skipped`) proceeds
+      // silently — opencode's own session.error remains the backstop. Healthy
+      // and skipped runs append NO event, so the ALI-929 cross-harness
+      // stream-identity invariant is untouched (validation exists only on the
+      // opencode path; the Claude-SDK driver resolves models itself).
+      const validateModel = opts.validateModel ?? awaitOpenCodeModelResolvable
+      const validation = await validateModel({ baseUrl: spawned.baseUrl, model: context.model })
+      if (validation.kind === 'unresolvable') {
+        await sink.append({
+          kind: 'artifact',
+          payload: {
+            step: 'model_validation',
+            ok: false,
+            requestedModel: validation.requested,
+            resolvableAlternatives: validation.alternatives,
+            providerKnown: validation.providerKnown,
+            opencodeVersion: pinnedVersion,
+            waitedMs: validation.waitedMs,
+          },
+        })
+        throw new Error(
+          `requested model ${validation.requested} is not resolvable by the pinned ` +
+            `opencode runtime (opencode-ai@${pinnedVersion}); resolvable alternatives: ` +
+            `${validation.alternatives.join(', ') || '(none)'} — retry with --model ` +
+            `set to one of these (stale bundled catalog + blocked models.dev refresh; ` +
+            `see ALI-1086, durable fix ALI-929)`
+        )
       }
 
       // Derive the per-prompt max-duration cap from the sandbox budget so a long

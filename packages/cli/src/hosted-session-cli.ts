@@ -52,7 +52,7 @@ import { resumeRunEventSink } from './hosted-run-event-sink.js'
 import { AGENT_GIT_IDENTITY, BEARER_BASENAME } from './hosted-runtime-assets.js'
 import { createVercelProvider } from './vercel-sandbox-provider.js'
 import { buildEgressPolicy, DEFAULT_EGRESS_CANARY_HOST } from './egress-policy.js'
-import { hostedLoopCommand, type HostedLoopContext } from './hosted-loop.js'
+import { DEFAULT_HOSTED_MODEL, hostedLoopCommand, type HostedLoopContext } from './hosted-loop.js'
 import { hostedBootCommand } from './hosted-boot.js'
 import { mergeJobCommand } from './merge-job.js'
 import { authedFetch } from './http.js'
@@ -61,7 +61,9 @@ import { getWorkspaceRoot } from './workspace.js'
 import { attachedWorkspaceId } from './workspace-sync.js'
 import { tailWorkbenchRun } from './workbench-cli.js'
 
-export const DEFAULT_HOSTED_MODEL = 'anthropic/claude-opus-4-8'
+// Default hosted model — SINGLE source of truth in hosted-loop-lifecycle.ts
+// (ALI-1086); re-exported here so existing importers keep working.
+export { DEFAULT_HOSTED_MODEL }
 export const DEFAULT_DURATION_MINUTES = 60
 export const MAX_DURATION_MINUTES = 24 * 60
 export const DEFAULT_ROTATION_INTERVAL_MS = 55 * 60 * 1000

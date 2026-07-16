@@ -25,6 +25,27 @@
 import type { HarnessEvent } from './hosted-harness.js'
 
 /**
+ * Default provider-qualified hosted model — the SINGLE source of truth
+ * (ALI-1086). Imported by both the operator-path session CLI
+ * (`hosted-session-cli.ts`) and the DO-path boot (`hosted-boot.ts`); never
+ * re-inline it.
+ *
+ * PIN CONSTRAINT: the hosted OpenCode runtime is HARD-PINNED to
+ * `opencode-ai@1.14.41` (`OPENCODE_PINNED_VERSION`, SSE-fragile — do not bump)
+ * whose BUNDLED model catalog predates this model (newest bundled anthropic
+ * opus: claude-opus-4-7). Verified empirically on ALI-1086: 1.14.41 DOES fetch
+ * `https://models.dev/api.json` at boot when reachable (cached to
+ * `~/.cache/opencode/models.json`, refreshed when stale, disabled only by
+ * `OPENCODE_DISABLE_MODELS_FETCH`), so with models.dev on the sandbox egress
+ * allowlist (#1392, `ORIZU_HOSTED_EGRESS_ALLOWLIST`) this id resolves in new
+ * sandboxes. If the catalog fetch is blocked/stale anyway, the loop's
+ * pre-prompt validation (`awaitOpenCodeModelResolvable`) fails the run fast,
+ * naming the resolvable alternatives. The durable fix for the stale bundled
+ * catalog is the ALI-929 harness swap.
+ */
+export const DEFAULT_HOSTED_MODEL = 'anthropic/claude-opus-4-8'
+
+/**
  * The run-scoped context the host orchestrator writes for the loop. Paths are
  * ABSOLUTE (or sandbox-root-relative) so the loop resolves them regardless of
  * cwd. NO secret lives here — the bearer is read from `bearerFile` (0600).

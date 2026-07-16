@@ -50,7 +50,7 @@ import {
   type HostedLoopContext,
   type HostedLoopResult,
 } from './hosted-loop.js'
-import { DEFAULT_EGRESS_CANARY_HOST } from './hosted-loop-lifecycle.js'
+import { DEFAULT_EGRESS_CANARY_HOST, DEFAULT_HOSTED_MODEL } from './hosted-loop-lifecycle.js'
 import { resumeRunEventSink } from './hosted-run-event-sink.js'
 import { stageOrizuSkill } from './hosted-skill-staging.js'
 
@@ -62,8 +62,6 @@ export type BootFetch = (url: string, init?: RequestInit) => Promise<Response>
  *  DO-path `workers/session-coordinator/src/bootstrap.ts`); kept in sync by
  *  grep. Inlined (not imported) to avoid a hosted-session-cli import cycle. */
 const ANTHROPIC_DUMMY_KEY = 'sk-ant-orizu-proxy-broker-placeholder'
-/** Default hosted model — mirrors hosted-session-cli.ts `DEFAULT_HOSTED_MODEL`. */
-const DEFAULT_HOSTED_MODEL = 'anthropic/claude-opus-4-8'
 
 // -- Frozen env contract ------------------------------------------------------
 

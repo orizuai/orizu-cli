@@ -155,6 +155,23 @@ const ANTHROPIC_ADAPTIVE_THINKING_MODELS = new Set([
 ])
 const ANTHROPIC_ADAPTIVE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 
+/**
+ * Split a possibly provider-qualified model string into provider + model id.
+ * SINGLE-SLASH ids ("anthropic/claude-opus-4-8") are the assumed form; a bare
+ * id defaults to provider "anthropic". This is THE shared parse — consumed by
+ * BOTH the prompt path (`buildPromptRequestBody`) and the pre-prompt
+ * validation (`awaitOpenCodeModelResolvable`), so the two can never drift:
+ * parity is exactly what makes the validation meaningful (ALI-1086).
+ * KNOWN LIMIT: `split('/', 2)` drops everything after the second slash, so a
+ * 3-part id ("openrouter/anthropic/claude-x") misparses to provider
+ * "openrouter" + model "anthropic" — identically in both places (today's
+ * pre-existing prompt-path behavior, now shared rather than duplicated).
+ */
+export function qualifyHostedModel(model: string): { providerId: string; modelId: string } {
+  const [providerId, modelId] = model.includes('/') ? model.split('/', 2) : ['anthropic', model]
+  return { providerId, modelId }
+}
+
 export function buildPromptRequestBody(
   content: string,
   model: string | undefined,
@@ -167,7 +184,9 @@ export function buildPromptRequestBody(
   }
   if (!model) return body
 
-  const [providerId, modelId] = model.includes('/') ? model.split('/', 2) : ['anthropic', model]
+  // Shared parse (see qualifyHostedModel): keeps the prompt path and the
+  // ALI-1086 pre-prompt validation in lockstep by construction.
+  const { providerId, modelId } = qualifyHostedModel(model)
   const modelSpec: Record<string, unknown> = { providerID: providerId, modelID: modelId }
 
   if (reasoningEffort) {
@@ -755,6 +774,190 @@ async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void
 function errorEvent(messageId: string, error: unknown): HarnessEvent {
   const message = error instanceof Error ? error.message : String(error)
   return { kind: 'error', messageId, critical: true, payload: { error: message } }
+}
+
+// -- Pre-prompt model validation (ALI-1086) -----------------------------------
+//
+// The pinned OpenCode (see OPENCODE_PINNED_VERSION) resolves model ids against
+// a catalog that is its BUNDLED snapshot merged with a runtime fetch of
+// https://models.dev/api.json (verified empirically on ALI-1086: fetched at
+// boot when reachable, cached to <cache>/opencode/models.json, refreshed when
+// stale). When models.dev is unreachable the bundled snapshot is stale
+// (predates claude-opus-4-8) and the FIRST prompt dies inside the SSE stream
+// with an opaque `run_failed: Model not found`. These helpers let the hosted
+// loop ask the RUNNING `opencode serve` — `GET /config/providers` is the
+// runtime's actual resolvable catalog — whether the requested model resolves,
+// BEFORE the prompt is posted, and fail fast naming the alternatives.
+
+/** provider id → model ids the RUNNING opencode instance can resolve. */
+export type OpenCodeModelCatalog = ReadonlyMap<string, readonly string[]>
+
+const MODEL_CATALOG_REQUEST_TIMEOUT_MS = 10_000
+
+/**
+ * Read the resolvable catalog from a running `opencode serve` via
+ * `GET /config/providers` (shape: `{ providers: [{ id, models: { <id>: … } }] }`,
+ * verified against opencode-ai@1.14.41). Returns null on ANY transport/shape
+ * failure — the caller treats that as "cannot validate", never as "invalid".
+ */
+export async function fetchOpenCodeModelCatalog(
+  baseUrl: string,
+  fetchImpl: HarnessFetch = globalThis.fetch as HarnessFetch,
+  timeoutMs: number = MODEL_CATALOG_REQUEST_TIMEOUT_MS
+): Promise<OpenCodeModelCatalog | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/config/providers`, {
+      signal: controller.signal,
+    })
+    if (!res.ok) return null
+    const data = asRecord(await res.json())
+    if (!Array.isArray(data.providers)) return null
+    const catalog = new Map<string, string[]>()
+    for (const entry of data.providers) {
+      const provider = asRecord(entry)
+      const id = typeof provider.id === 'string' ? provider.id : null
+      if (!id) continue
+      catalog.set(id, Object.keys(asRecord(provider.models)))
+    }
+    return catalog
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function sharedPrefixLength(a: string, b: string): number {
+  const max = Math.min(a.length, b.length)
+  let i = 0
+  while (i < max && a[i] === b[i]) i += 1
+  return i
+}
+
+/** Rank candidate model ids by similarity to the requested id (longest shared
+ *  prefix first, ties broken lexicographically DESCENDING so the newest of a
+ *  versioned family leads) and cap the list — the fail-fast error should lead
+ *  with the closest/newest substitutes, not a full catalog dump. */
+export function rankModelAlternatives(
+  requested: string,
+  candidates: readonly string[],
+  limit = 8
+): string[] {
+  return [...new Set(candidates)]
+    .sort((a, b) => {
+      const byPrefix = sharedPrefixLength(requested, b) - sharedPrefixLength(requested, a)
+      return byPrefix !== 0 ? byPrefix : b.localeCompare(a)
+    })
+    .slice(0, limit)
+}
+
+export type ModelValidationOutcome =
+  | { kind: 'resolvable'; waitedMs: number }
+  | {
+      kind: 'unresolvable'
+      /** Provider-qualified requested model, e.g. "anthropic/claude-opus-4-8". */
+      requested: string
+      /** Provider-qualified resolvable substitutes, closest first. */
+      alternatives: string[]
+      /** False when the PROVIDER itself is unknown to the runtime. */
+      providerKnown: boolean
+      waitedMs: number
+    }
+  | { kind: 'skipped'; reason: string }
+
+export interface AwaitModelResolvableOptions {
+  /** Base URL of the running `opencode serve`. */
+  baseUrl: string
+  /** Requested model, provider-qualified or bare (bare → "anthropic"). */
+  model: string
+  fetchImpl?: HarnessFetch
+  /**
+   * Total budget to wait for the model to become resolvable. OpenCode's
+   * models.dev refresh runs in the BACKGROUND at boot, so the catalog can be
+   * bundled-only for the first seconds after the server answers HTTP; polling
+   * bridges that window instead of failing a run the refresh would have fixed.
+   */
+  timeoutMs?: number
+  pollMs?: number
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
+}
+
+const MODEL_RESOLVE_TIMEOUT_MS = 30_000
+const MODEL_RESOLVE_POLL_MS = 2_000
+
+/**
+ * Decide whether the requested model is resolvable by the RUNNING opencode,
+ * polling briefly so the boot-time models.dev refresh has time to land.
+ * Fail-open on validator infrastructure, with a DELIBERATE asymmetry on null
+ * catalog reads:
+ *   - null BEFORE any successful read → `skipped` immediately (dead/absent
+ *     endpoint; opencode's own `session.error` remains the backstop, and the
+ *     early exit keeps absent-endpoint runs — and tests — cheap);
+ *   - null AFTER at least one successful read → a transient boot-window blip
+ *     (5xx/drop): sleep and keep polling within the budget; a budget that
+ *     ends in that state returns `skipped`, NEVER a false `unresolvable` off
+ *     a flaky read.
+ * Only a HEALTHY catalog that never lists the model within the budget yields
+ * `unresolvable`, with ranked, provider-qualified alternatives.
+ */
+export async function awaitOpenCodeModelResolvable(
+  opts: AwaitModelResolvableOptions
+): Promise<ModelValidationOutcome> {
+  const timeoutMs = opts.timeoutMs ?? MODEL_RESOLVE_TIMEOUT_MS
+  const pollMs = opts.pollMs ?? MODEL_RESOLVE_POLL_MS
+  const sleep = opts.sleep ?? ((ms: number): Promise<void> => new Promise(r => setTimeout(r, ms)))
+  const now = opts.now ?? ((): number => Date.now())
+  const { providerId, modelId } = qualifyHostedModel(opts.model)
+  const requested = `${providerId}/${modelId}`
+
+  const startedAt = now()
+  let lastGoodCatalog: OpenCodeModelCatalog | null = null
+  let sawTransientFailure = false
+  for (;;) {
+    const catalog = await fetchOpenCodeModelCatalog(opts.baseUrl, opts.fetchImpl)
+    if (catalog === null) {
+      if (lastGoodCatalog === null) {
+        // Never answered — the endpoint is dead/absent, not blipping. Skip
+        // immediately rather than invent a failure mode (or a slow wait) the
+        // run would not otherwise have.
+        return { kind: 'skipped', reason: 'opencode /config/providers unavailable' }
+      }
+      // Transient failure after a successful read (boot-window 5xx/drop) —
+      // keep polling within the budget.
+      sawTransientFailure = true
+    } else {
+      lastGoodCatalog = catalog
+      sawTransientFailure = false
+      if ((catalog.get(providerId) ?? []).includes(modelId)) {
+        return { kind: 'resolvable', waitedMs: now() - startedAt }
+      }
+      // Deliberately NOT failing fast when the provider itself is unknown:
+      // the models.dev refresh can add whole providers too, so the poll runs
+      // the full budget either way.
+    }
+    if (now() - startedAt >= timeoutMs) break
+    await sleep(pollMs)
+  }
+
+  if (sawTransientFailure || lastGoodCatalog === null) {
+    // The budget ended on a flaky read — never declare `unresolvable` off it.
+    return { kind: 'skipped', reason: 'opencode /config/providers became unavailable mid-poll' }
+  }
+
+  const providerKnown = lastGoodCatalog.has(providerId)
+  const candidates = providerKnown
+    ? (lastGoodCatalog.get(providerId) ?? []).map(id => `${providerId}/${id}`)
+    : [...lastGoodCatalog.entries()].flatMap(([pid, ids]) => ids.map(id => `${pid}/${id}`))
+  return {
+    kind: 'unresolvable',
+    requested,
+    alternatives: rankModelAlternatives(requested, candidates),
+    providerKnown,
+    waitedMs: now() - startedAt,
+  }
 }
 
 // -- spawnOpenCode: the P3.5 in-sandbox launch helper ------------------------
