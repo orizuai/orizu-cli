@@ -44,6 +44,7 @@ import {
   type DeployKeyMergeResult,
   type GitCommandRunner,
 } from './deploy-key-merge-core.js'
+import { assertSecureTokenTransport } from './http.js'
 import { redactSecrets } from './secret-redaction.js'
 
 export type MergeJobFetch = (url: string, init?: RequestInit) => Promise<Response>
@@ -67,7 +68,7 @@ export interface MergeJobEnv {
 
 export function resolveMergeJobEnv(
   env: Record<string, string | undefined>
-): { ok: true; value: MergeJobEnv } | { ok: false; missing: string[] } {
+): { ok: true; value: MergeJobEnv } | { ok: false; missing: string[]; invalid: string[] } {
   const missing: string[] = []
   const req = (name: string): string => {
     const value = env[name]?.trim()
@@ -78,7 +79,25 @@ export function resolveMergeJobEnv(
   const jobKey = req('ORIZU_MERGE_JOB_ID')
   const coordinatorUrl = req('ORIZU_COORDINATOR_URL')
   const baseUrl = req('ORIZU_BASE_URL')
-  if (missing.length > 0) return { ok: false, missing }
+  if (missing.length > 0) return { ok: false, missing, invalid: [] }
+
+  const origins = [
+    ['ORIZU_COORDINATOR_URL', coordinatorUrl],
+    ['ORIZU_BASE_URL', baseUrl],
+  ] as const
+  const invalid = origins.flatMap(([name, value]) => {
+    try {
+      const parsed = new URL(value)
+      // Userinfo is never accepted, including on loopback: rejecting it at the
+      // env boundary keeps configured credentials out of every retry/error path.
+      if (parsed.username || parsed.password) return [name]
+      assertSecureTokenTransport(value)
+      return []
+    } catch {
+      return [name]
+    }
+  })
+  if (invalid.length > 0) return { ok: false, missing: [], invalid }
   return {
     ok: true,
     value: {
@@ -445,10 +464,10 @@ export interface MergeJobCommandIo {
 export async function mergeJobCommand(io: MergeJobCommandIo): Promise<number> {
   const resolved = resolveMergeJobEnv(process.env)
   if (!resolved.ok) {
-    io.printErr?.(
-      `merge-job: missing required env: ${resolved.missing.join(', ')} ` +
-        '(the MergeJobCoordinator sandbox env contract)'
-    )
+    const detail = resolved.missing.length > 0
+      ? `missing required env: ${resolved.missing.join(', ')}`
+      : `invalid or insecure origin env: ${resolved.invalid.join(', ')}`
+    io.printErr?.(`merge-job: ${detail} (the MergeJobCoordinator sandbox env contract)`)
     return 1
   }
   const log = (line: string): void => io.printErr?.(`[merge-job] ${line}`)
