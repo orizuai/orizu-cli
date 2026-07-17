@@ -56,7 +56,37 @@ export interface GithubLinkResult {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2000
-const DEFAULT_POLL_TIMEOUT_MS = 180000
+// ALI-1141: long enough for a slow org-picker + repo-selection walk, but the
+// wait MUST be finite — when the App is already installed in the target org,
+// GitHub only offers "Configure" and never redirects to our setup callback, so
+// an unbounded poll would spin forever. (Still under the server's 15-minute
+// nonce TTL, so the poll times out before the server would report `expired`.)
+const DEFAULT_POLL_TIMEOUT_MS = 600000
+// ALI-1141: after this long with no callback, the likeliest cause is the
+// already-installed org above — surface it instead of heartbeating silently.
+const ALREADY_INSTALLED_HINT_MS = 90000
+
+/**
+ * Why the poll can never succeed when the App is already installed in the org
+ * (ALI-1141): GitHub's `installations/new?state=` page then only offers
+ * "Configure", and completing configuration does NOT redirect to the App's
+ * Setup URL with our state nonce — the callback that flips the row out of
+ * `pending` never fires. Printed as a mid-poll hint and folded into the
+ * timeout error so the user is never left with an unexplained hang.
+ */
+function alreadyInstalledHintLines(teamSlug: string): string[] {
+  return [
+    '   ⚠ GitHub has not called back yet. The most likely cause: the Orizu GitHub',
+    '     App is ALREADY INSTALLED in that org — GitHub then only offers',
+    '     "Configure", and finishing configuration never notifies Orizu, so this',
+    '     wait cannot succeed. Remedies:',
+    '     • Install the App into a DIFFERENT GitHub org for this team (each org',
+    '       installation can be linked to exactly one Orizu team).',
+    '     • If the org is not linked to any Orizu team, uninstall the Orizu App',
+    '       from the org (GitHub → org Settings → GitHub Apps) and re-run',
+    `       \`orizu github link --team ${teamSlug}\` to do a fresh install.`,
+  ]
+}
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -118,10 +148,12 @@ export async function runGithubLink(teamSlug: string, io: GithubLinkIo): Promise
   const sleep = io.sleep ?? defaultSleep
   const interval = io.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const timeout = io.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS
-  const deadline = now() + timeout
+  const started = now()
+  const deadline = started + timeout
   // Periodic heartbeat so a long install does not look hung; never echoes state.
   const HEARTBEAT_MS = 15000
-  let lastHeartbeat = now()
+  let lastHeartbeat = started
+  let printedAlreadyInstalledHint = false
 
   for (;;) {
     const poll = await fetcher(`/api/cli/github/link?state=${encodeURIComponent(state)}`)
@@ -149,10 +181,22 @@ export async function runGithubLink(teamSlug: string, io: GithubLinkIo): Promise
       // status 'pending' → keep waiting.
     }
     if (now() >= deadline) {
+      // Same actionable message as the mid-poll hint: an already-installed org
+      // is the one known way to reach this timeout with nothing else wrong.
       throw new Error(
-        'Timed out waiting for the GitHub App install to complete. ' +
+        `Timed out waiting for the GitHub App install to complete after ${Math.round(timeout / 60000)} minutes. ` +
+          'If the Orizu GitHub App is already installed in that org, GitHub never notifies Orizu when you finish the "Configure" flow — ' +
+          'install the App into a DIFFERENT GitHub org for this team (or uninstall it from the org first if no other Orizu team uses it). ' +
           `Resume with \`orizu github link --team ${teamSlug}\` after finishing the install.`
       )
+    }
+    if (!printedAlreadyInstalledHint && now() - started >= ALREADY_INSTALLED_HINT_MS) {
+      for (const line of alreadyInstalledHintLines(teamSlug)) io.print(line)
+      io.print(
+        `   Still waiting (Ctrl+C to abort; resume later with \`orizu github link --team ${teamSlug}\`)…`
+      )
+      printedAlreadyInstalledHint = true
+      lastHeartbeat = now()
     }
     if (now() - lastHeartbeat >= HEARTBEAT_MS) {
       io.print('   …still waiting for the GitHub install to complete.')
