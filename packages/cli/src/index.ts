@@ -3607,14 +3607,30 @@ async function resolveSetupTeam(teamSlugArg: string | null, noInput: boolean, dr
   return createTeamOnServer(name)
 }
 
-async function resolveSetupProjects(team: Team): Promise<Project[]> {
+async function resolveSetupProjects(team: Team, noInput: boolean, dryRun: boolean): Promise<Project[]> {
   const projects = await fetchProjects(team.slug)
 
-  if (projects.length === 0) {
-    throw new Error(`Team '${team.slug}' has no projects. Create a project before running setup.`)
+  if (projects.length > 0) {
+    return projects
   }
 
-  return projects
+  // ALI-1140: a just-created team (or a pre-existing empty one) has no projects
+  // by definition — continue the wizard into creating the first project instead
+  // of dead-ending on the path setup itself offered.
+  if (noInput || dryRun) {
+    throw new Error(
+      `Team '${team.slug}' has no projects. Create one with \`orizu projects create --name <name> --team ${team.slug}\`, then re-run setup.`
+    )
+  }
+
+  printLine(`   Team '${sanitizeTerminalText(team.slug)}' has no projects yet. Let's create the first one.`)
+  const name = await askText('   Project name?', '')
+  if (!name) {
+    throw new Error('Project name is required to create a project.')
+  }
+  const project = await createProjectOnServer(team.slug, name)
+  printLine(`   Created project ${sanitizeTerminalText(`${project.teamSlug}/${project.slug}`)}`)
+  return [project]
 }
 
 function projectSeedsFromProjects(projects: Project[]): WorkspaceProjectSeed[] {
@@ -3757,7 +3773,7 @@ async function setupCommand() {
 
       if (auth.state === 'signed-in' && !validateOnly) {
         const team = await resolveSetupTeam(teamSlug, noInput, dryRun)
-        const serverProjects = await resolveSetupProjects(team)
+        const serverProjects = await resolveSetupProjects(team, noInput, dryRun)
         teamSlug = team.slug
         teamId = team.id
         projects = projectSeedsFromProjects(serverProjects)
