@@ -19,7 +19,7 @@ import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
 import { authedFetch } from './http.js'
-import { assertWorkspaceDirUsable } from './workspace.js'
+import { assertWorkspaceDirUsable, workspaceExists } from './workspace.js'
 
 export type SetupFetcher = (path: string, init?: RequestInit) => Promise<Response>
 
@@ -382,8 +382,7 @@ export async function runHostedAttach(
   io.print(`   Cloning ${repoFullName}...`)
   // Clone with the helper inline + the workspace id in the env so the token is
   // brokered on demand and never materializes in the URL or on disk.
-  gitOrThrow(
-    io.git,
+  const clone = io.git(
     [
       '-c',
       `credential.helper=${CREDENTIAL_HELPER}`,
@@ -395,6 +394,22 @@ export async function runHostedAttach(
     ],
     { env: { ORIZU_WORKSPACE_ID: options.workspaceId } }
   )
+  if (clone.status !== 0) {
+    const detail = clone.stderr || `exit ${clone.status}`
+    // A local-only workspace (`orizu setup --local`) has orizu.team.json but no
+    // `.git`, so it passes `assertWorkspaceDirUsable` yet fails the clone —
+    // `git clone` refuses the non-empty dir up front and writes nothing, so
+    // every byte in there is the user's workspace, not an incomplete clone.
+    // Never advise deleting it.
+    if (workspaceExists(options.targetDir)) {
+      throw new Error(
+        `git clone failed: ${detail} ${options.targetDir} already holds a local Orizu workspace (orizu.team.json) without a hosted clone, so the workbench repo can't be cloned into it. Don't delete it — move it aside or re-run \`orizu setup\` with \`--workspace <empty-path>\` (or keep it local with \`--local\`).`
+      )
+    }
+    throw new Error(
+      `git clone failed: ${detail} Remove or empty the incomplete clone directory ${options.targetDir}, then re-run \`orizu setup\`.`
+    )
+  }
   // Persist the helper repo-locally for future pull/push (cwd-resolved).
   gitOrThrow(io.git, ['config', 'credential.helper', CREDENTIAL_HELPER], { cwd: options.targetDir })
   gitOrThrow(io.git, ['config', 'credential.useHttpPath', 'true'], { cwd: options.targetDir })
