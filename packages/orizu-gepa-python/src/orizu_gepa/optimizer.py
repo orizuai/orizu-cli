@@ -116,6 +116,10 @@ class RowEvaluation:
     cost_usd: float | None = None
     error: str | None = None
     cached: bool = False
+    # ALI-1158 review (codex): which side produced `error` — "candidate" or
+    # "scorer". The degeneracy check must not blame the scorer contract for a
+    # candidate runner that fails on every row.
+    error_source: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -131,6 +135,7 @@ class RowEvaluation:
             "token_out": self.token_out,
             "cost_usd": self.cost_usd,
             "error": self.error,
+            "error_source": self.error_source,
             "cached": self.cached,
         }
 
@@ -144,6 +149,139 @@ class ReflectionResult:
 
 class RetryableReflectionError(RuntimeError):
     """Raised when a transient reflection-provider failure remains after retries."""
+
+
+class CandidateRunnerError(RuntimeError):
+    """A candidate-runner invocation raised (ALI-1158 review, codex round 3).
+
+    Tagging the origin at the call site keeps the seed-launch probe from
+    mis-diagnosing a candidate-runner crash (missing dependency, non-zero
+    subprocess exit) as a scorer-contract mismatch. Subclasses RuntimeError so
+    every pre-existing broad handler still catches it.
+    """
+
+
+class ScorerContractError(RuntimeError):
+    """Launch-time scorer-runner contract validation failure (ALI-1158).
+
+    Raised before the first iteration when scoring the seed candidate produced
+    a degenerate result: the scorer errored on every row, returned nothing
+    parseable, or scored every seed validation row at the worst possible value.
+    A uniformly-worst seed is almost always a harness bug — typically a judge
+    runner written for the flat-row score-run contract being handed GEPA's
+    {source_row, candidate_output} shape — not a legitimately terrible prompt.
+    """
+
+
+SCORER_CONTRACT_GUIDANCE = (
+    "GEPA hands the scorer runner a row shaped {source_row, candidate_id, "
+    "candidate_output, candidate_raw_response, candidate_error}. A judge "
+    "runner written for flat-row score runs (`orizu runners exec "
+    "--scorer-version`) reads the dataset row fields directly, so under GEPA "
+    "it sees an empty draft/output in every field it inspects and scores "
+    "everything 0. If this scorer runner speaks the flat-row contract, re-run "
+    "with --scorer-input-contract flat_row (add --scorer-candidate-field "
+    "<row-field> when the judge reads the candidate output from a specific "
+    "row field, e.g. 'draft'), or declare scorer_input_contract / "
+    "candidate_output_field in the runner manifest and push a new runner "
+    "version. If the seed genuinely deserves the worst score on every "
+    "validation row, re-run with --allow-degenerate-seed."
+)
+
+
+def _seed_degeneracy_reason(
+    seed_results: list["RowEvaluation"],
+    higher_is_better: bool,
+) -> str | None:
+    """Classify a seed validation set as degenerate, or return None.
+
+    The line we can draw within the contract: a scorer that errors on EVERY
+    row, or scores EVERY row at the worst possible bound (0.0 for
+    higher-is-better, 1.0 for lower-is-better), gives GEPA no gradient and is
+    overwhelmingly a harness/contract bug. Partial zeros or low-but-mixed
+    seeds are legitimate scores and pass.
+    """
+    if not seed_results:
+        return None
+    if all(result.error for result in seed_results):
+        # ALI-1158 review (codex): a candidate runner that fails on every row
+        # is a candidate-side failure — scorer-contract guidance would send
+        # the user to the wrong component. Only blame the scorer contract when
+        # at least one error actually came from the scorer side.
+        # Intentional heuristic: ANY scorer-side error keeps the contract
+        # framing below — only an all-candidate failure set redirects.
+        if all(result.error_source == "candidate" for result in seed_results):
+            return (
+                "every seed validation row failed in the CANDIDATE runner "
+                "(the scorer was never the problem)"
+            )
+        return "every seed validation row returned a runner/scorer error"
+    worst = 0.0 if higher_is_better else 1.0
+    # Scores are clamped to [0, 1] in _score_from_scorer, so a true worst-case
+    # lands exactly on the bound — but the score is still a float we do not
+    # produce ourselves, so compare with a tolerance rather than exact
+    # equality (ALI-1158 review): a scorer emitting 0.9999999999 under
+    # lower-is-better is the worst bound in every sense that matters.
+    if all(math.isclose(result.score, worst, abs_tol=1e-9) for result in seed_results):
+        direction = "higher-is-better" if higher_is_better else "lower-is-better"
+        return (
+            f"every seed validation row scored the worst possible value "
+            f"({worst} for this {direction} scorer)"
+        )
+    # ALI-1158 review (codex round 3): under LOWER-is-better, 0.0 is the
+    # PERFECT bound — so a flat-row scorer silently zeroing on the wrong input
+    # shape (the exact mismatch this validation exists to catch) would sail
+    # through as a flawless seed and burn the run. A uniformly-0.0 seed under
+    # lower-is-better is either that mismatch or a seed with nothing left to
+    # optimize; refuse either way, with the same opt-out. Higher-is-better
+    # uniformly-perfect seeds are deliberately NOT refused here: 1.0 is not a
+    # plausible silent-mismatch artifact, and "already perfect" is a
+    # legitimate (if pointless) launch.
+    if not higher_is_better and all(
+        math.isclose(result.score, 0.0, abs_tol=1e-9) for result in seed_results
+    ):
+        return (
+            "every seed validation row scored 0.0 under a lower-is-better "
+            "scorer — the perfect bound, which is also exactly what a scorer "
+            "silently zeroing on the wrong input shape looks like; GEPA has "
+            "no gradient either way"
+        )
+    return None
+
+
+def _seed_degeneracy_message(
+    reason: str,
+    seed_results: list["RowEvaluation"],
+) -> str:
+    sample_feedback = next(
+        (result.feedback for result in seed_results if result.feedback),
+        None,
+    )
+    sample_error = next(
+        (result.error for result in seed_results if result.error),
+        None,
+    )
+    details = []
+    if sample_feedback:
+        details.append(f"first scorer feedback: {str(sample_feedback)[:300]!r}")
+    if sample_error:
+        details.append(f"first error: {str(sample_error)[:300]!r}")
+    detail_text = f" ({'; '.join(details)})" if details else ""
+    if "CANDIDATE runner" in reason:
+        # Candidate-side failure: scorer-contract remediation would misdirect.
+        return (
+            f"Seed validation failed at optimization launch: {reason}"
+            f"{detail_text}. Fix the candidate runner (--candidate-runner-dir / "
+            "its registered version) before optimizing; the scorer input "
+            "contract is not implicated. Re-run with --allow-degenerate-seed "
+            "only if erroring rows are genuinely expected."
+        )
+    return (
+        f"Scorer contract validation failed at optimization launch: {reason}"
+        f"{detail_text}. A degenerate seed is almost always a scorer-runner "
+        "contract mismatch, not a bad prompt — refusing to iterate. "
+        + SCORER_CONTRACT_GUIDANCE
+    )
 
 
 def _dspy_auto_metric_budget(
@@ -372,6 +510,10 @@ class TextGepaConfig:
     log_row_snapshots: bool = False
     cache_evaluations: bool = True
     skip_perfect_parent_reflection: bool = True
+    # ALI-1158: opt-out for the launch-time degenerate-seed refusal, for the
+    # rare case where the seed legitimately deserves the worst score on every
+    # validation row.
+    allow_degenerate_seed: bool = False
 
 
 @dataclass(frozen=True)
@@ -434,6 +576,10 @@ Reflector = Callable[[str, list[RowEvaluation], TextGepaConfig], ReflectionResul
 def _score_from_scorer(result: RunnerCallResult) -> tuple[float, str | None]:
     source: Any = result.extra
     if "score" not in source and isinstance(result.model_response, dict):
+        # `extra` (the runner's TOP-LEVEL output keys) intentionally wins over
+        # `model_response` on collision: top-level `score`/`feedback` are the
+        # authoritative output-contract locations; model_response is only a
+        # fallback when the top level carried no score at all.
         source = {**result.model_response, **result.extra}
     score_value = source.get("score")
     if isinstance(score_value, str):
@@ -995,8 +1141,31 @@ def evaluate_candidate(
 
     def run_uncached_row(index: int, row: DatasetRow, cache_key: str | None) -> tuple[int, str | None, RowEvaluation]:
         started = time.time()
-        candidate_result = candidate_runner(candidate_text, row, prompt_context, candidate_id)
-        scorer_result = scorer_runner(row, candidate_result, scorer_context, candidate_id)
+        try:
+            candidate_result = candidate_runner(candidate_text, row, prompt_context, candidate_id)
+        except Exception as error:
+            # Tag candidate-side raises so launch-time diagnosis does not send
+            # the user to the scorer (ALI-1158 review, codex round 3). Any
+            # Exception counts — an OSError/KeyError crash is just as much a
+            # candidate failure, and an un-tagged one would regress to the
+            # opaque wrong-component guidance this PR removes.
+            raise CandidateRunnerError(
+                f"candidate runner failed on row {row.id}: {error}"
+            ) from error
+        try:
+            scorer_result = scorer_runner(row, candidate_result, scorer_context, candidate_id)
+        except Exception as error:
+            if candidate_result.error:
+                # ALI-1158 review (codex round 5): the candidate failed SOFTLY
+                # (error field, no raise) and the scorer then choked on its
+                # null/errored output — the root cause is candidate-side; no
+                # valid scorer contract was ever probed.
+                raise CandidateRunnerError(
+                    f"candidate runner failed on row {row.id} "
+                    f"({candidate_result.error}); scoring its errored output "
+                    f"then raised: {error}"
+                ) from error
+            raise
         score, feedback = _score_from_scorer(scorer_result)
         latency_ms = None
         if candidate_result.latency_ms is not None or scorer_result.latency_ms is not None:
@@ -1019,6 +1188,10 @@ def evaluate_candidate(
             cost_usd=(candidate_result.cost_usd or 0.0) + (scorer_result.cost_usd or 0.0)
             if candidate_result.cost_usd is not None or scorer_result.cost_usd is not None else None,
             error=candidate_result.error or scorer_result.error,
+            error_source=(
+                "candidate" if candidate_result.error
+                else ("scorer" if scorer_result.error else None)
+            ),
         )
         return index, cache_key, evaluation
 
@@ -1161,19 +1334,78 @@ def optimize_loaded_text_candidate(
             event_layer="extension",
             candidate_id="seed",
         )
-        seed_results = evaluate_candidate(
-            candidate_text=seed_text,
-            candidate_id="seed",
-            rows=valset,
-            split="validation",
-            prompt_context=prompt_context,
-            scorer_context=scorer_context,
-            candidate_runner=candidate_runner,
-            scorer_runner=scorer_runner,
-            budget=budget,
-            evaluation_cache=evaluation_cache,
-            num_threads=num_threads_plan.resolved,
-        )
+        try:
+            seed_results = evaluate_candidate(
+                candidate_text=seed_text,
+                candidate_id="seed",
+                rows=valset,
+                split="validation",
+                prompt_context=prompt_context,
+                scorer_context=scorer_context,
+                candidate_runner=candidate_runner,
+                scorer_runner=scorer_runner,
+                budget=budget,
+                evaluation_cache=evaluation_cache,
+                num_threads=num_threads_plan.resolved,
+            )
+        except ScorerContractError:
+            raise
+        except CandidateRunnerError as error:
+            # ALI-1158 review (codex round 3): a candidate-runner crash during
+            # the seed pass is NOT a scorer-contract problem — do not send the
+            # user to the scorer. Same structured-event discipline, accurate
+            # source.
+            message = (
+                "Seed validation failed at optimization launch: the CANDIDATE "
+                f"runner raised while generating the seed output: {error}. Fix "
+                "the candidate runner (--candidate-runner-dir / its registered "
+                "version); the scorer input contract is not implicated."
+            )
+            event_sink.log_event(
+                "seed_validation_failed",
+                {
+                    "source": "candidate_runner",
+                    "message": message,
+                    "error": str(error)[:500],
+                },
+                event_layer="extension",
+                candidate_id="seed",
+            )
+            raise RuntimeError(message) from error
+        except Exception as error:
+            # ALI-1158: the seed evaluation doubles as the launch-time scorer
+            # contract probe — a scorer that crashes or returns nothing
+            # parseable while scoring the seed is a harness bug, so surface
+            # the contract diagnosis instead of a bare parse error. Any
+            # Exception counts (codex round 4): a scorer subprocess that
+            # exits without output.json or a missing executable raises
+            # FileNotFoundError/OSError, and candidate-side raises were
+            # already tagged CandidateRunnerError above — everything reaching
+            # this branch is scorer-side seed-probe failure.
+            message = (
+                "Scorer contract validation failed at optimization launch: "
+                f"scoring the seed candidate failed with: {error}. "
+                + SCORER_CONTRACT_GUIDANCE
+            )
+            # ALI-1158 review (codex): crash/unparseable refusals must leave
+            # the same structured event the degenerate-seed path does — the
+            # outer generic run_failed alone loses the diagnosis.
+            event_sink.log_event(
+                "scorer_contract_check_failed",
+                {
+                    "reason": "seed evaluation crashed or returned unparseable scorer output",
+                    "message": message,
+                    "error": str(error)[:500],
+                    "scorer_version_id": scorer_version_id,
+                    "decision_rule": (
+                        "a scorer that crashes or returns nothing parseable "
+                        "while scoring the seed is a harness/contract bug"
+                    ),
+                },
+                event_layer="extension",
+                candidate_id="seed",
+            )
+            raise ScorerContractError(message) from error
         if local_logger is not None:
             local_logger.append_evaluations(
                 stage="seed_val_set",
@@ -1201,6 +1433,47 @@ def optimize_loaded_text_candidate(
             event_layer="extension",
             candidate_id="seed",
         )
+
+        # ALI-1158: refuse to iterate on a degenerate seed (uniform worst
+        # score or all-errored rows) unless explicitly allowed — it is almost
+        # always a scorer-runner contract mismatch silently zeroing every
+        # candidate, and it gives GEPA no gradient either way.
+        degeneracy_reason = _seed_degeneracy_reason(seed_results, higher_is_better)
+        if degeneracy_reason is not None and not config.allow_degenerate_seed:
+            message = _seed_degeneracy_message(degeneracy_reason, seed_results)
+            payload = {
+                "reason": degeneracy_reason,
+                "message": message,
+                "seed_score_mean": seed_score,
+                "row_count": len(seed_results),
+                "errored_row_count": sum(1 for result in seed_results if result.error),
+                "higher_is_better": higher_is_better,
+                "scorer_version_id": scorer_version_id,
+                "decision_rule": (
+                    "a seed that scores the worst possible value on every "
+                    "validation row (or errors on every row) is treated as "
+                    "a harness/contract bug unless --allow-degenerate-seed"
+                ),
+            }
+            # ALI-1158 review (codex round 4): when the degeneracy is
+            # candidate-side, the EVENT TYPE and EXCEPTION CLASS must not
+            # blame the scorer either — dashboards/automation key off those,
+            # not the message text.
+            if "CANDIDATE runner" in degeneracy_reason:
+                event_sink.log_event(
+                    "seed_validation_failed",
+                    {**payload, "source": "candidate_runner"},
+                    event_layer="extension",
+                    candidate_id="seed",
+                )
+                raise RuntimeError(message)
+            event_sink.log_event(
+                "scorer_contract_check_failed",
+                payload,
+                event_layer="extension",
+                candidate_id="seed",
+            )
+            raise ScorerContractError(message)
 
         best_candidate_id, best_score, pareto = _pareto_payload(
             val_scores_by_candidate,

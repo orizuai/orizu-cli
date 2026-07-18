@@ -205,6 +205,24 @@ For Orizu-managed workflows:
 
 When you re-export labels (e.g. after annotating more data), re-run validation. Judges and scorers drift as the system and data drift; periodic revalidation catches it.
 
+## Reusing a judge runner in GEPA optimization
+
+A judge runner you built for flat-row score runs (`runners exec
+--scorer-version`: flat dataset row + `model_output`) does NOT natively speak
+GEPA's scorer-runner contract (`row` = `{source_row, candidate_id,
+candidate_output, …}`). Fed the GEPA shape it sees an empty output and
+silently scores everything 0.
+
+You do not need to write an adapter runner. When wiring the judge into
+`orizu optimizations run-gepa`, pass `--scorer-input-contract flat_row`, and
+`--scorer-candidate-field <row-field>` if your judge reads the candidate
+output from a named row field (e.g. `draft`). Runners you author from now on
+can also self-describe with `"scorer_input_contract"` and
+`"candidate_output_field"` in `manifest.json`. `run-gepa` additionally
+validates the contract against the seed at launch and fails loudly on a
+uniformly-worst seed. Details: `prompt-control-plane.md`
+("Scorer-Runner Input Contracts").
+
 ## Checklist
 
 Before declaring a judge production-ready:

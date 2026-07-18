@@ -182,7 +182,7 @@ class OptimizerTests(unittest.TestCase):
             scorer_runner=scorer_runner,
             reflector=reflector,
             event_sink=sink,
-            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3),
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3, allow_degenerate_seed=True),
         )
 
         event_types = [event["event_type"] for event in sink.events]
@@ -470,7 +470,7 @@ class OptimizerTests(unittest.TestCase):
                 scorer_runner=scorer_runner,
                 reflector=reflector,
                 event_sink=sink,
-                config=TextGepaConfig(max_iterations=1, minibatch_size=1),
+                config=TextGepaConfig(max_iterations=1, minibatch_size=1, allow_degenerate_seed=True),
                 local_logger=logger,
             )
             logger.write_result(result)
@@ -856,7 +856,7 @@ class OptimizerTests(unittest.TestCase):
             scorer_runner=scorer_runner,
             reflector=reflector,
             event_sink=sink,
-            config=TextGepaConfig(max_iterations=2, minibatch_size=2, max_metric_calls=3),
+            config=TextGepaConfig(max_iterations=2, minibatch_size=2, max_metric_calls=3, allow_degenerate_seed=True),
         )
 
         event_types = [event["event_type"] for event in sink.events]
@@ -898,7 +898,7 @@ class OptimizerTests(unittest.TestCase):
             scorer_runner=scorer_runner,
             reflector=reflector,
             event_sink=sink,
-            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3, auto_promote=True),
+            config=TextGepaConfig(max_iterations=1, minibatch_size=2, max_metric_calls=3, auto_promote=True, allow_degenerate_seed=True),
         )
 
         event_types = [event["event_type"] for event in sink.events]

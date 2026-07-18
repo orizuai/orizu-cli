@@ -11,7 +11,7 @@ from .client import OrizuClient, OrizuEventSink
 from .local_log import LocalOptimizationLogger
 from .optimizer import TextGepaConfig, optimize_loaded_text_candidate
 from .reflection import reflect_with_provider
-from .runner import make_candidate_runner, make_scorer_runner
+from .runner import make_candidate_runner, make_scorer_runner, resolve_scorer_input_contract
 
 BUDGET_OPTION_FLAGS = ("--budget", "--max-metric-calls", "--max-full-evals", "--max-iterations")
 
@@ -97,6 +97,35 @@ def main() -> None:
     parser.add_argument("--scorer-version-id", required=True)
     parser.add_argument("--scorer-runner-version-id", required=True)
     parser.add_argument("--scorer-runner-dir", required=True)
+    parser.add_argument(
+        "--scorer-input-contract",
+        choices=["gepa", "flat_row"],
+        help=(
+            "Input shape the scorer runner expects. 'gepa' (default) sends the "
+            "{source_row, candidate_output} wrapper row; 'flat_row' adapts to the "
+            "score-run shape (flat dataset row + model_output) so judge runners "
+            "built for `runners exec --scorer-version` work without a hand-written "
+            "adapter. Overrides the runner manifest's scorer_input_contract."
+        ),
+    )
+    parser.add_argument(
+        "--scorer-candidate-field",
+        help=(
+            "Row field the flat_row adapter injects the candidate output into "
+            "(default model_output; e.g. 'draft' for judges that read the "
+            "candidate from a named row field). Overrides the runner manifest's "
+            "candidate_output_field."
+        ),
+    )
+    parser.add_argument(
+        "--allow-degenerate-seed",
+        action="store_true",
+        help=(
+            "Proceed even when the seed scores the worst possible value on every "
+            "validation row. By default that pattern is refused at launch as a "
+            "scorer-runner contract mismatch (ALI-1158)."
+        ),
+    )
     parser.add_argument("--dataset-version-id", required=True)
     parser.add_argument("--split-set-id", required=True)
     parser.add_argument("--train-split", default="train")
@@ -209,6 +238,7 @@ def main() -> None:
         promotion_label=args.promotion_label,
         cache_evaluations=not args.disable_evaluation_cache,
         log_row_snapshots=args.log_row_snapshots,
+        allow_degenerate_seed=args.allow_degenerate_seed,
     )
     client = OrizuClient.from_env()
     prompt_context, trainset = client.fetch_exec_context(
@@ -233,8 +263,21 @@ def main() -> None:
         split=args.val_split,
     )
 
+    # ALI-1158 review (codex): resolve the scorer input contract BEFORE
+    # start_run — a contract-setup refusal here must exit while no server run
+    # record exists, not strand one as 'running' (the event sink and the
+    # optimizer's failure handler are not entered yet at this point).
+    # make_scorer_runner re-resolves the same deterministic inputs below.
+    scorer_input_contract, scorer_candidate_output_field = resolve_scorer_input_contract(
+        Path(args.scorer_runner_dir),
+        input_contract=args.scorer_input_contract,
+        candidate_field=args.scorer_candidate_field,
+    )
+
     run_metadata = {
         **metadata,
+        "scorer_input_contract": scorer_input_contract,
+        "scorer_candidate_output_field": scorer_candidate_output_field,
         "optimizer_package": "orizu-gepa-python",
         "optimizer_family": "gepa",
         "mode": "text-candidate",
@@ -286,7 +329,12 @@ def main() -> None:
         trainset=trainset,
         valset=valset,
         candidate_runner=make_candidate_runner(Path(args.candidate_runner_dir), run_id),
-        scorer_runner=make_scorer_runner(Path(args.scorer_runner_dir), run_id),
+        scorer_runner=make_scorer_runner(
+            Path(args.scorer_runner_dir),
+            run_id,
+            input_contract=args.scorer_input_contract,
+            candidate_field=args.scorer_candidate_field,
+        ),
         reflector=reflect_with_provider,
         event_sink=OrizuEventSink(
             client,

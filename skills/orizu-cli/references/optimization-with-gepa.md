@@ -68,7 +68,9 @@ Full command syntax and event contracts: `prompt-control-plane.md`.
 
 ## Step 1: Wrap your application as an Orizu runner
 
-For Orizu-tracked optimization, the candidate runner receives one dataset row and one candidate text body through the file contract. The scorer runner receives the source row plus candidate output and returns a score and feedback. See `prompt-control-plane.md` for the exact runner I/O shape.
+For Orizu-tracked optimization, the candidate runner receives one dataset row and one candidate text body through the file contract. The scorer runner, by default, receives a GEPA-shaped `row` — `{source_row, candidate_id, candidate_output, candidate_raw_response, candidate_error}` — and returns a score and feedback. See `prompt-control-plane.md` ("Scorer-Runner Input Contracts") for the exact runner I/O shapes.
+
+**Contract warning:** the GEPA scorer contract differs from the flat-row score-run contract used by `orizu runners exec --scorer-version`. A judge runner written for flat-row score runs will find no output to judge in the GEPA shape and silently score every candidate 0. Do not hand-write a wrapper runner: pass `--scorer-input-contract flat_row` (plus `--scorer-candidate-field <row-field>` if the judge reads the candidate output from a named row field such as `draft`) and `run-gepa` adapts the payload for you while keeping the registered runner bytes unchanged. `run-gepa` also validates the contract on the seed at launch and refuses a uniformly-worst-scoring seed with a diagnosis instead of burning budget.
 
 Keep the runner close to the production inference path: same model family, temperature, tools, parsing, and output schema wherever possible.
 

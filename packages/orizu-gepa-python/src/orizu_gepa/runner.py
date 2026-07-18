@@ -103,6 +103,7 @@ def run_file_contract_runner(
     runner_version_id: str,
     run_id: str | None,
     timeout_seconds: int = DEFAULT_RUNNER_TIMEOUT_SECONDS,
+    extra_payload: dict[str, Any] | None = None,
 ) -> RunnerCallResult:
     runner_path = Path(runner_dir)
     manifest = read_manifest(runner_path)
@@ -113,7 +114,10 @@ def run_file_contract_runner(
     with tempfile.TemporaryDirectory(prefix="orizu-gepa-call-") as temp_dir:
         input_path = Path(temp_dir) / "input.json"
         output_path = Path(temp_dir) / "output.json"
+        # Extra payload first: the core file-contract keys are authoritative
+        # and never overridable by adapter-supplied companions.
         input_path.write_text(json.dumps({
+            **(extra_payload or {}),
             "row": row,
             "prompt": {
                 "body": prompt_body,
@@ -185,15 +189,135 @@ def make_candidate_runner(runner_dir: str | Path, run_id: str | None):
     return _run
 
 
-def make_scorer_runner(runner_dir: str | Path, run_id: str | None):
+# ALI-1158: the two scorer-runner input contracts.
+# - "gepa" (default): the historical GEPA shape — `row` is a wrapper object
+#   {source_row, candidate_id, candidate_output, candidate_raw_response,
+#   candidate_error}.
+# - "flat_row": the score-run shape used by `orizu runners exec
+#   --scorer-version` — `row` is the flat dataset row with the candidate
+#   output injected, plus the top-level `model_output`/`subject`/`scorer`
+#   companions. This is the official adapter for judge runners written for
+#   flat-row score runs: it applies at launch (CLI flag or runner manifest)
+#   without changing the registered runner bytes, so it composes with the
+#   ALI-1159 `--scorer-runner-dir` sha verification.
+SCORER_INPUT_CONTRACTS = ("gepa", "flat_row")
+DEFAULT_CANDIDATE_OUTPUT_FIELD = "model_output"
+
+
+def resolve_scorer_input_contract(
+    runner_dir: str | Path,
+    *,
+    input_contract: str | None = None,
+    candidate_field: str | None = None,
+) -> tuple[str, str]:
+    """Resolve the scorer input contract and candidate-output row field.
+
+    Precedence: explicit CLI value > runner manifest (`scorer_input_contract`,
+    `candidate_output_field`) > defaults ("gepa", "model_output").
+    """
+    manifest = read_manifest(runner_dir)
+    # ALI-1158 review: resolve by PRESENCE, not truthiness — an empty-string
+    # manifest value must fail the validation below, not silently fall back to
+    # the default and recreate the wrong-shape silent-zero class.
+    if input_contract is not None:
+        contract = input_contract
+    else:
+        manifest_contract = manifest.get("scorer_input_contract")
+        contract = manifest_contract if manifest_contract is not None else "gepa"
+    if contract not in SCORER_INPUT_CONTRACTS:
+        raise RuntimeError(
+            f"Unknown scorer input contract {contract!r}; expected one of: "
+            + ", ".join(SCORER_INPUT_CONTRACTS)
+        )
+    if candidate_field is not None:
+        explicit_field = candidate_field
+    else:
+        explicit_field = manifest.get("candidate_output_field")
+    if contract == "gepa" and explicit_field is not None:
+        # ALI-1158 review: a candidate-output field only means something under
+        # flat_row. Silently ignoring it here would recreate the silent-no-op
+        # failure class this ticket exists to remove, so refuse loudly.
+        source = "--scorer-candidate-field" if candidate_field else "manifest candidate_output_field"
+        raise RuntimeError(
+            f"A candidate output field ({explicit_field!r} via {source}) was provided, but the "
+            "active scorer input contract is 'gepa', which ignores it. Pass "
+            "--scorer-input-contract flat_row (or declare scorer_input_contract: \"flat_row\" "
+            "in the runner manifest) to use the field, or drop it."
+        )
+    field = explicit_field if explicit_field is not None else DEFAULT_CANDIDATE_OUTPUT_FIELD
+    if not isinstance(field, str) or not field.strip():
+        raise RuntimeError(
+            "candidate output field must be a non-empty string "
+            f"(got {field!r} via --scorer-candidate-field / manifest candidate_output_field)"
+        )
+    if field == "candidate_error":
+        # Reserved companion: the adapter always injects the candidate's error
+        # under this key AFTER the candidate output, so naming it as the
+        # output field would silently hand the judge the error instead of the
+        # draft (ALI-1158 review, codex round 6).
+        raise RuntimeError(
+            "candidate output field 'candidate_error' is reserved for the "
+            "adapter's error companion; choose a different row field"
+        )
+    return contract, field
+
+
+def make_scorer_runner(
+    runner_dir: str | Path,
+    run_id: str | None,
+    *,
+    input_contract: str | None = None,
+    candidate_field: str | None = None,
+):
+    contract, resolved_candidate_field = resolve_scorer_input_contract(
+        runner_dir,
+        input_contract=input_contract,
+        candidate_field=candidate_field,
+    )
+
     def _run(row: DatasetRow, candidate_result: RunnerCallResult, scorer_context: PromptContext, candidate_id: str) -> RunnerCallResult:
-        scorer_row = {
-            "source_row": row.row,
-            "candidate_id": candidate_id,
-            "candidate_output": candidate_result.model_response,
-            "candidate_raw_response": candidate_result.raw_api_response,
-            "candidate_error": candidate_result.error,
-        }
+        extra_payload: dict[str, Any] | None = None
+        if contract == "flat_row":
+            source_row = row.row if isinstance(row.row, dict) else {"value": row.row}
+            scorer_row = {
+                **source_row,
+                resolved_candidate_field: candidate_result.model_response,
+                # ALI-1158 review: candidate errors are first-class in the row
+                # under BOTH contracts — a candidate that errored during
+                # generation must be inspectable by the judge, not judged as
+                # if it produced an empty draft.
+                "candidate_error": candidate_result.error,
+            }
+            scorer_version_id = scorer_context.scorer_version_id or scorer_context.prompt_version_id
+            extra_payload = {
+                "model_output": candidate_result.model_response,
+                "subject": {
+                    "type": "scorer_row",
+                    "row_id": row.id,
+                    "scorer_version_id": scorer_version_id,
+                    "prompt_version_id": scorer_context.prompt_version_id,
+                },
+                "scorer": {
+                    "version_id": scorer_version_id,
+                    "metric_key": scorer_context.metric_key or "score",
+                    "higher_is_better": scorer_context.higher_is_better,
+                },
+                # GEPA provenance for adapters that want it, namespaced so it
+                # cannot collide with dataset row fields.
+                "gepa": {
+                    "candidate_id": candidate_id,
+                    "candidate_raw_response": candidate_result.raw_api_response,
+                    "candidate_error": candidate_result.error,
+                },
+            }
+        else:
+            scorer_row = {
+                "source_row": row.row,
+                "candidate_id": candidate_id,
+                "candidate_output": candidate_result.model_response,
+                "candidate_raw_response": candidate_result.raw_api_response,
+                "candidate_error": candidate_result.error,
+            }
         return run_file_contract_runner(
             runner_dir=runner_dir,
             row=scorer_row,
@@ -203,5 +327,6 @@ def make_scorer_runner(runner_dir: str | Path, run_id: str | None):
             prompt_version_id=scorer_context.prompt_version_id,
             runner_version_id=scorer_context.runner_version_id,
             run_id=run_id,
+            extra_payload=extra_payload,
         )
     return _run

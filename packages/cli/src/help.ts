@@ -475,8 +475,8 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['optimizations', 'run-gepa'],
-    usage: 'orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--budget auto|light|medium|heavy | --max-metric-calls <n> | --max-full-evals <n> | --max-iterations <n>] [--num-threads auto|N] [--reflection-retry-attempts N] [--reflection-http-timeout-seconds N] [--log-dir logs]',
-    summary: 'Run the bundled GEPA-style optimizer locally and stream events.',
+    usage: 'orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> [--scorer-input-contract gepa|flat_row] [--scorer-candidate-field <row-field>] [--allow-degenerate-seed] --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--budget auto|light|medium|heavy | --max-metric-calls <n> | --max-full-evals <n> | --max-iterations <n>] [--num-threads auto|N] [--reflection-retry-attempts N] [--reflection-http-timeout-seconds N] [--log-dir logs]',
+    summary: 'Run the bundled GEPA-style optimizer locally and stream events. Validates the scorer contract on the seed before iterating; judge runners built for flat-row score runs need --scorer-input-contract flat_row (ALI-1158).',
     group: 'Optimizations',
   },
   {

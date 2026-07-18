@@ -258,12 +258,13 @@ For prompts, judges, runners, run submission, optimizer artifacts, live event lo
 Optimization trace commands:
 
 ```bash
-orizu optimizations run-gepa ... [--num-threads auto|N] [--reflection-retry-attempts 3] [--reflection-http-timeout-seconds 180] [--log-dir logs] [--no-local-log]
+orizu optimizations run-gepa ... [--scorer-input-contract gepa|flat_row] [--scorer-candidate-field <row-field>] [--allow-degenerate-seed] [--num-threads auto|N] [--reflection-retry-attempts 3] [--reflection-http-timeout-seconds 180] [--log-dir logs] [--no-local-log]
 orizu optimizations export <optimization-run-id> --out ./optimization.json
 orizu optimizations export <optimization-run-id> --json
 ```
 
 Behavior:
+- `run-gepa` sends the scorer runner a GEPA-shaped row (`{source_row, candidate_output, …}`) by default. Judge runners written for flat-row score runs (`runners exec --scorer-version`) need `--scorer-input-contract flat_row` (plus `--scorer-candidate-field <row-field>` when the judge reads the candidate output from a named row field) or they silently score everything 0. `run-gepa` validates the contract on the seed at launch and refuses a uniformly-worst seed unless `--allow-degenerate-seed` is set. See `prompt-control-plane.md` ("Scorer-Runner Input Contracts").
 - `run-gepa` defaults `--num-threads` to `auto`, resolving a row-evaluation parallelism cap from mini-batch size, validation-set size, 2x CPU count, memory estimate, file-descriptor limit, and a 64-thread default ceiling. Set `ORIZU_GEPA_AUTO_THREADS_MAX` or use `--num-threads <n>` only when the runner/provider capacity is known.
 - `run-gepa` retries transient reflection-provider failures by default. If retries are exhausted, it logs `reflection_failed`, counts that reflection proposal against budget, and continues with the next iteration.
 - `run-gepa` writes a complete local trace under `logs/<optimization_run_id>` by default.

@@ -92,6 +92,79 @@ Output shape:
 
 Exit non-zero only for infrastructure failures. Row-level model or parsing errors should usually be represented in the output JSON with `error`.
 
+### Scorer-Runner Input Contracts (flat-row vs GEPA)
+
+There are TWO distinct input shapes a scorer/judge runner can receive, and
+mixing them up silently zeroes every score (the judge sees an empty output in
+every field it reads and scores 0 without erroring). Know which one your
+runner speaks before wiring it anywhere.
+
+**Flat-row score-run contract** — what `orizu runners exec --scorer-version`
+sends. `row` is the flat dataset row; the candidate output lives at the
+top-level `model_output` (taken from `row.model_output` / `row.modelOutput` /
+`row.output`) and usually also inside the row itself:
+
+```json
+{
+  "row": { "brief": "…", "reference_sent_text": "…", "draft": "…the output to judge…" },
+  "prompt": { "body": "judge prompt", "body_kind": "text", "provider_settings": {} },
+  "subject": { "type": "scorer_row", "row_id": "row-1", "scorer_version_id": "uuid", "prompt_version_id": "uuid" },
+  "scorer": { "version_id": "uuid", "metric_key": "score", "higher_is_better": true },
+  "model_output": "…the output to judge…",
+  "prompt_version_id": "uuid",
+  "runner_version_id": "uuid",
+  "run_id": null
+}
+```
+
+**GEPA scorer-runner contract** — what `orizu optimizations run-gepa` sends by
+default. `row` is a wrapper around the dataset row plus the freshly generated
+candidate output:
+
+```json
+{
+  "row": {
+    "source_row": { "…the dataset row…": "…" },
+    "candidate_id": "iter-3-child-…",
+    "candidate_output": "…the candidate's generated output…",
+    "candidate_raw_response": {},
+    "candidate_error": null
+  },
+  "prompt": { "body": "judge prompt", "body_kind": "text", "provider_settings": {} },
+  "prompt_version_id": "uuid",
+  "runner_version_id": "uuid",
+  "run_id": "uuid"
+}
+```
+
+**The official adapter:** a judge runner written for the flat-row contract can
+be used by GEPA as-is — pass `--scorer-input-contract flat_row` to `run-gepa`.
+The optimizer then flattens `source_row` into `row`, injects the candidate
+output at `model_output` (or the row field named by
+`--scorer-candidate-field <field>`, e.g. `draft` for a judge that reads the
+candidate from `row.draft`), and adds the `subject`/`scorer`/`model_output`
+companions, exactly like a score run. The candidate's `candidate_error` is
+kept first-class in the flat row too, so a candidate that errored during
+generation is inspectable instead of being judged as an empty draft. GEPA
+provenance stays available under a top-level `gepa` key. Specifying a
+candidate field while the active contract is `gepa` is refused at launch
+rather than silently ignored. Because the adapter is applied by the optimizer harness,
+the registered runner bytes are unchanged — this composes with the
+`--scorer-runner-dir` content-sha verification (bytes must match the
+registered runner version). New runners can instead self-describe by declaring
+`"scorer_input_contract": "flat_row"` (and optionally
+`"candidate_output_field": "<field>"`) in `manifest.json` and pushing a new
+runner version.
+
+**Launch-time validation:** `run-gepa` validates the scorer contract on the
+seed before iterating. If the seed scores the worst possible value on every
+validation row (0.0 for higher-is-better, 1.0 for lower-is-better), errors on
+every row, or returns nothing parseable, the run fails loudly with a
+contract-mismatch diagnosis instead of silently burning budget on zeroed
+candidates. A uniformly-worst seed is almost always a harness bug, not a bad
+prompt; override with `--allow-degenerate-seed` only when the seed genuinely
+deserves the worst score everywhere.
+
 ### Prompt Or Judge Directory
 
 Required files: `orizu.prompt.json` plus the body file referenced by `body_file`.
@@ -625,6 +698,8 @@ orizu --local optimizations run-gepa \
 
 Useful GEPA flags:
 
+- `--scorer-input-contract gepa|flat_row` selects the scorer-runner input shape. Use `flat_row` to reuse a judge runner written for `runners exec --scorer-version` without a hand-written adapter; add `--scorer-candidate-field <row-field>` when that judge reads the candidate output from a specific row field (e.g. `draft`). Passing a candidate field under the `gepa` contract is refused at launch, not silently ignored. See "Scorer-Runner Input Contracts" above.
+- `--allow-degenerate-seed` opts out of the launch-time refusal when the seed scores the worst possible value on every validation row. Leave it off by default — a uniformly-worst seed is almost always a scorer contract mismatch.
 - Budget controls are mutually exclusive: choose at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, or `--max-iterations <n>`. With none provided, `run-gepa` defaults to `--budget auto`, the balanced medium preset.
 - `--minibatch-size <n>` defaults to 3.
 - `--num-threads auto|N` defaults to `auto`; auto caps row-evaluation concurrency from mini-batch size, validation-set size, 2x CPU count, memory estimate, file-descriptor limit, and a 64-thread default ceiling. Set `ORIZU_GEPA_AUTO_THREADS_MAX` or use `--num-threads <n>` only when the runner/provider capacity is known.
