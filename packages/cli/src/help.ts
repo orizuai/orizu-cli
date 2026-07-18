@@ -440,7 +440,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   {
     path: ['runners', 'exec'],
     usage: 'orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>',
-    summary: 'Execute a runner locally against a dataset split and write row results.',
+    summary: 'Execute a runner locally against a dataset split and write row results. --runner-dir bytes must match the registered runner version (ADR-007) — register with `orizu runners push` first.',
     group: 'Scorers and runners',
   },
   {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -82,7 +83,12 @@ def apply_budget_defaults(args: argparse.Namespace, raw_args: list[str]) -> None
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="orizu-gepa")
+    # allow_abbrev=False (ALI-1159): the orizu CLI wrapper verifies the
+    # runner-dir/version flag pairs by scanning this argv before launch;
+    # argparse prefix abbreviations (e.g. --candidate-runner-di) would slip
+    # past that scan while still parsing here — executing an unverified
+    # runner dir. Exact flag spellings only.
+    parser = argparse.ArgumentParser(prog="orizu-gepa", allow_abbrev=False)
     parser.add_argument("--project", required=True)
     parser.add_argument("--optimizer-version-id", required=True)
     parser.add_argument("--candidate-version-id", required=True)
@@ -152,6 +158,29 @@ def main() -> None:
         apply_budget_defaults(args, raw_args)
     except ValueError as error:
         parser.error(str(error))
+
+    # Runner-dir integrity handshake (ALI-1159): the `orizu optimizations
+    # run-gepa` wrapper verifies each local runner dir against its registered
+    # runner version (deterministic content sha), materializes a snapshot of
+    # the verified bytes, and exports the snapshot paths in
+    # ORIZU_VERIFIED_RUNNER_DIRS. This entrypoint refuses runner dirs outside
+    # that list so a direct `orizu-gepa` / `python -m orizu_gepa.cli`
+    # invocation cannot ACCIDENTALLY execute unregistered bytes under
+    # registered runner version ids. HONEST LIMIT: this is a handshake, not
+    # attestation — a deliberate in-sandbox caller can fabricate the env var;
+    # durable enforcement would be server-side attestation of runner bytes at
+    # record ingest (out of scope here, tracked as an ALI-1159 residual).
+    verified_dirs = json.loads(os.environ.get("ORIZU_VERIFIED_RUNNER_DIRS", "[]"))
+    for flag, value in (
+        ("--candidate-runner-dir", args.candidate_runner_dir),
+        ("--scorer-runner-dir", args.scorer_runner_dir),
+    ):
+        if value not in verified_dirs:
+            raise SystemExit(
+                f"{flag} {value!r} was not verified against a registered runner version. "
+                "Launch through `orizu optimizations run-gepa`, which verifies runner bytes "
+                "and provides the ORIZU_VERIFIED_RUNNER_DIRS handshake (ADR-007 / ALI-1159)."
+            )
 
     metadata = json.loads(args.metadata)
     if not isinstance(metadata, dict):

@@ -74,6 +74,7 @@ import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredential } from './git-credential.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
+import { verifyGepaRunnerDirsFromArgs, verifyRunnerDirRegistered } from './runner-dir-verify.js'
 import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
 import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
@@ -2646,13 +2647,25 @@ function bundledOrizuGepaPythonPath(): string | null {
 async function runGepaOptimization() {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const baseUrl = getBaseUrl()
-  // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
-  // credentials.json so hosted sandboxes can run optimizations. Read at spawn
-  // time — the child gets the freshest bearer available at launch.
-  const token = resolveAuthTokenForBaseUrl(baseUrl)
   const python = getArg('--python') || process.env.PYTHON || 'python3'
   const bundledPythonPath = bundledOrizuGepaPythonPath()
   let forwardedArgs = removeFlagWithValue(cliArgs.slice(2), '--python')
+
+  // ALI-1159 (ADR-007): GEPA executes ad-hoc local runner dirs while
+  // attributing records to registered runner version ids — verify the bytes
+  // ARE those versions before the optimizer spawns. Scans the forwarded argv
+  // itself (both argparse flag forms), fail-closed on half-populated pairs,
+  // and REWRITES the dir flags to verified snapshots (the exact hashed bytes)
+  // so a post-hash mutation of the original dirs cannot change what runs.
+  const verified = await verifyGepaRunnerDirsFromArgs(forwardedArgs)
+  forwardedArgs = verified.args
+
+  // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
+  // credentials.json so hosted sandboxes can run optimizations. Read at spawn
+  // time — AFTER the verification awaits above, so a hosted token-file
+  // rotation crossing the hash + lookup round-trips cannot hand the child a
+  // stale bearer.
+  const token = resolveAuthTokenForBaseUrl(baseUrl)
 
   if (!forwardedArgs.includes('--project')) {
     forwardedArgs = ['--project', project, ...forwardedArgs]
@@ -2663,17 +2676,25 @@ async function runGepaOptimization() {
     process.env.PYTHONPATH,
   ].filter((entry): entry is string => Boolean(entry))
 
-  const result = spawnSync(python, ['-m', 'orizu_gepa.cli', ...forwardedArgs], {
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      ORIZU_API_URL: baseUrl,
-      ORIZU_TOKEN: token,
-      ORIZU_PROJECT: project,
-      PYTHONPATH: pythonPathEntries.join(delimiter),
-      PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
-    },
-  })
+  let result
+  try {
+    result = spawnSync(python, ['-m', 'orizu_gepa.cli', ...forwardedArgs], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        ORIZU_API_URL: baseUrl,
+        ORIZU_TOKEN: token,
+        ORIZU_PROJECT: project,
+        // Integrity handshake (ALI-1159): the Python entrypoint refuses
+        // runner dirs that are not in this wrapper-verified list.
+        ORIZU_VERIFIED_RUNNER_DIRS: JSON.stringify(verified.verifiedDirs),
+        PYTHONPATH: pythonPathEntries.join(delimiter),
+        PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
+      },
+    })
+  } finally {
+    verified.cleanup()
+  }
 
   if (result.error) {
     throw result.error
@@ -6049,13 +6070,28 @@ async function runnersExec() {
   }
 
   const context = await parseJsonResponse<RunnerExecContext>(contextResponse, 'Runner exec context')
+  const resolvedRunnerVersionId = runnerVersion || context.prompt.runnerVersionId
+  if (!resolvedRunnerVersionId) {
+    throw new Error('Runner exec context did not resolve a runner version id; pass --runner-version explicitly')
+  }
+  // ALI-1159 (ADR-007): results stamp the registered runner_version_id, so
+  // ad-hoc --runner-dir bytes must BE that registered version — and execution
+  // runs the verified SNAPSHOT (exact hashed bytes), never the mutable dir.
   const materializedRunner = runnerDirArg
-    ? { runnerDir: expandHomePath(runnerDirArg), cleanup: () => {} }
-    : await materializeRunnerVersion(runnerVersion || context.prompt.runnerVersionId)
+    ? await (async () => {
+        const verified = await verifyRunnerDirRegistered({
+          runnerVersionId: resolvedRunnerVersionId,
+          dir: runnerDirArg,
+          flag: '--runner-dir',
+        })
+        return { runnerDir: verified.snapshotDir, cleanup: verified.cleanup }
+      })()
+    : await materializeRunnerVersion(resolvedRunnerVersionId)
   const runnerDir = materializedRunner.runnerDir
-  const manifest = readRunnerManifest(runnerDir)
 
   try {
+    // Inside the try (codex round-6 P3): a bad manifest must not leak the dir.
+    const manifest = readRunnerManifest(runnerDir)
     if (manifest.supports_body_kind && !manifest.supports_body_kind.includes(context.prompt.bodyKind)) {
       throw new Error(
         `Runner does not support prompt body kind '${context.prompt.bodyKind}'. Supported kinds: ${manifest.supports_body_kind.join(', ')}`

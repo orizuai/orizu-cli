@@ -5,6 +5,13 @@ import { join } from 'path'
 export interface StoredZipEntry {
   path: string
   data: Buffer
+  /**
+   * Original file mode (ALI-1159, codex round 7): NOT part of the archive or
+   * the content hash (the deterministic zip stores fixed attributes), but the
+   * verified-snapshot materialization carries it over so an executable
+   * `./run.sh` runner keeps its +x bit when executed from the snapshot.
+   */
+  mode?: number
 }
 
 export interface ArtifactArchive {
@@ -24,7 +31,9 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error
 }
 
-function expandHomePath(path: string): string {
+/** Exported for runner-dir-verify (ALI-1159): the pre-exec scan must resolve
+ * the same directory this module hashes and the runner later executes. */
+export function expandHomePath(path: string): string {
   if (path.startsWith('~/')) {
     const home = process.env.HOME || ''
     return `${home}/${path.slice(2)}`
@@ -152,7 +161,13 @@ export function createStoredZip(entries: StoredZipEntry[]): Buffer {
   return Buffer.concat([...localParts, centralDirectory, endOfCentralDirectory])
 }
 
-export function zipDirectoryToBase64(dirArg: string): ArtifactArchive {
+/**
+ * Read the exact entry set the deterministic archive covers (sorted relative
+ * paths + bytes). Exported for runner-dir-verify (ALI-1159): the verified
+ * snapshot must be materialized from the SAME in-memory bytes that were
+ * hashed, so a post-hash mutation of the directory cannot change what runs.
+ */
+export function readArtifactEntries(dirArg: string): StoredZipEntry[] {
   const sourceDir = expandHomePath(dirArg)
   try {
     const stats = statSync(sourceDir)
@@ -171,12 +186,22 @@ export function zipDirectoryToBase64(dirArg: string): ArtifactArchive {
     throw new Error(`Directory contains no artifact files: ${sourceDir}`)
   }
 
-  const bytes = createStoredZip(files.map(relativePath => ({
+  return files.map(relativePath => ({
     path: relativePath,
     data: readFileSync(join(sourceDir, relativePath)),
-  })))
+    mode: statSync(join(sourceDir, relativePath)).mode,
+  }))
+}
+
+/** Deterministic archive of an already-read entry set. */
+export function archiveArtifactEntries(entries: StoredZipEntry[]): ArtifactArchive {
+  const bytes = createStoredZip(entries)
   return {
     zipBase64: bytes.toString('base64'),
     contentSha256: createHash('sha256').update(bytes).digest('hex'),
   }
+}
+
+export function zipDirectoryToBase64(dirArg: string): ArtifactArchive {
+  return archiveArtifactEntries(readArtifactEntries(dirArg))
 }
