@@ -9,6 +9,7 @@
 import { spawnSync } from 'child_process'
 
 import { authedFetch } from './http.js'
+import { findUnknownOption } from './option-validation.js'
 import { getWorkspaceRoot, workspaceExists } from './workspace.js'
 import { attachedWorkspaceId, stringOrNull } from './workspace-sync.js'
 
@@ -269,6 +270,19 @@ const DEFAULT_TAIL_INTERVAL_SECONDS = 2
 // hot-spin against the API while a non-terminal run is quiet. Draining full
 // pages intentionally skips the sleep — that is catch-up, not polling.
 const MIN_TAIL_INTERVAL_MS = 500
+const SESSION_START_OPTIONS = new Set(['--project', '--workspace', '--json'])
+const WORKBENCH_VALUE_OPTIONS = new Set([
+  '--after',
+  '--interval',
+  '--message',
+  '--project',
+  '--run',
+  '--session',
+  '--status',
+  '--summary',
+  '--title',
+  '--workspace',
+])
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -774,11 +788,19 @@ function hasFlag(args: string[], flag: string): boolean {
 }
 
 function argValue(args: string[], flag: string): string | null {
-  const index = args.indexOf(flag)
-  if (index === -1 || index + 1 >= args.length || args[index + 1].startsWith('--')) {
-    return null
+  const inlinePrefix = `${flag}=`
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg.startsWith(inlinePrefix)) {
+      return arg.slice(inlinePrefix.length)
+    }
+    if (arg === flag) {
+      return index + 1 < args.length && !args[index + 1].startsWith('--')
+        ? args[index + 1]
+        : null
+    }
   }
-  return args[index + 1]
+  return null
 }
 
 function numberArg(args: string[], flag: string): number | undefined {
@@ -795,7 +817,7 @@ function positionalArgs(args: string[]): string[] {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
     if (arg.startsWith('--')) {
-      if (argValue(args, arg) !== null) {
+      if (!arg.includes('=') && WORKBENCH_VALUE_OPTIONS.has(arg) && argValue(args.slice(i), arg) !== null) {
         i += 1
       }
       continue
@@ -1017,6 +1039,13 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
     // not run from inside it (defaults to cwd).
     const workspaceDir = argValue(args, '--workspace') ?? undefined
     if (subcommand === 'start') {
+      const unknownOption = findUnknownOption(args, SESSION_START_OPTIONS, WORKBENCH_VALUE_OPTIONS)
+      if (unknownOption) {
+        return emitJsonError(
+          io,
+          `unknown option ${unknownOption}\nUsage: orizu session start [--project <team/project>] [--workspace <dir>] [--json]`
+        )
+      }
       const result = await runSessionStart({
         fetcher,
         cwd: workspaceDir,

@@ -772,16 +772,28 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['session', 'start'],
-    usage: 'orizu session start [--project <team/project>] [--workspace <dir>] [--json]',
+    usage: 'orizu session start [--project <team/project>] [--workspace <dir>] [--json] | orizu session start --hosted (--task <prompt> | --task-file <path>) [--duration <min>] [--project <team/project>] [--tail]',
     summary:
-      'Start a durable workspace session and print the session id. When run inside the workbench clone (or with --workspace), the remote session branch is fetched and checked out locally, and the exact next git commands are printed.',
+      'Start a durable workspace session, or add --hosted with a task prompt to start a coordinator-managed hosted agent. Plain sessions check out their remote session branch locally when run inside the workbench clone (or with --workspace).',
     group: 'Sessions',
     options: [
       { name: '--project <team/project>', help: 'Optionally scope the session to a project in the attached workspace.' },
       { name: '--workspace <dir>', help: 'Workbench clone directory when not running from inside it.' },
+      { name: '--hosted', help: 'Start a coordinator-managed hosted agent session instead of a plain durable session.' },
+      { name: '--task <prompt>', help: 'Hosted agent task prompt. Mutually exclusive with --task-file.' },
+      { name: '--task-file <path>', help: 'Read the hosted agent task prompt from a UTF-8 file. Mutually exclusive with --task.' },
+      { name: '--duration <min>', help: 'Hosted sandbox duration in minutes (default 60, maximum 1440).' },
+      { name: '--model <provider/model>', help: 'Optional hosted model override.' },
+      { name: '--reasoning-effort <level>', help: 'Optional hosted model reasoning-effort override.' },
+      { name: '--title <title>', help: 'Optional hosted run title.' },
+      { name: '--tail', help: 'Follow the hosted run until it reaches a terminal state.' },
       { name: '--json', help: 'Emit the machine-readable session payload.' },
     ],
-    examples: ['orizu session start', 'orizu session start --project highlight/hip --json'],
+    examples: [
+      'orizu session start',
+      'orizu session start --project highlight/hip --json',
+      'orizu session start --hosted --task-file ./task.md --project highlight/hip --duration 90',
+    ],
   },
   {
     path: ['session', 'status'],

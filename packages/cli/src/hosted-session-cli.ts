@@ -35,6 +35,8 @@
  * local-sim end-to-end test.
  */
 
+import { readFileSync } from 'fs'
+
 import {
   createLocalSimProvider,
   type SandboxEgressPolicy,
@@ -57,6 +59,7 @@ import { hostedBootCommand } from './hosted-boot.js'
 import { mergeJobCommand } from './merge-job.js'
 import { authedFetch } from './http.js'
 import { resolveBaseUrl } from './http.js'
+import { findUnknownOption } from './option-validation.js'
 import { getWorkspaceRoot } from './workspace.js'
 import { attachedWorkspaceId } from './workspace-sync.js'
 import { tailWorkbenchRun } from './workbench-cli.js'
@@ -75,6 +78,13 @@ export const DEFAULT_AGENT_TOKEN_TTL_MINUTES = 60
  *  before declaring the detached launch a failure. */
 export const DEFAULT_READINESS_TIMEOUT_MS = 30 * 1000
 export const DEFAULT_READINESS_POLL_MS = 500
+/** Must match the coordinator Worker's session-start request ceiling. */
+export const MAX_HOSTED_START_BODY_BYTES = 128 * 1024
+/** `workspace_sessions.id` and `workbench_runs.id` are PostgreSQL UUIDs. The
+ *  server creates both before its coordinator poke, and the Worker injects the
+ *  session id into the final DO body. A representative UUID makes the local
+ *  projection byte-exact without creating either server-side row. */
+const GENERATED_HOSTED_UUID_PLACEHOLDER = '00000000-0000-4000-8000-000000000000'
 /** Non-secret placeholder OpenCode uses to form requests; the firewall proxy
  *  overrides the real Anthropic header (model-key brokering). NEVER a real key. */
 export const ANTHROPIC_DUMMY_KEY = 'sk-ant-orizu-proxy-broker-placeholder'
@@ -787,6 +797,10 @@ export interface HostedCommandIo {
 }
 
 function argVal(args: readonly string[], flag: string): string | null {
+  const inlinePrefix = `${flag}=`
+  const inlineArg = args.find(arg => arg.startsWith(inlinePrefix))
+  if (inlineArg) return inlineArg.slice(inlinePrefix.length)
+
   const index = args.indexOf(flag)
   if (index === -1 || index + 1 >= args.length) return null
   const value = args[index + 1]
@@ -794,7 +808,7 @@ function argVal(args: readonly string[], flag: string): string | null {
 }
 
 function hasFlag(args: readonly string[], flag: string): boolean {
-  return args.includes(flag)
+  return args.some(arg => arg === flag || arg.startsWith(`${flag}=`))
 }
 
 function numFlag(args: readonly string[], flag: string): number | undefined {
@@ -805,7 +819,7 @@ function numFlag(args: readonly string[], flag: string): number | undefined {
 }
 
 const HOSTED_USAGE =
-  'Usage: orizu session start --hosted --task "<prompt>" [--duration <min> (default 60, max 1440)] ' +
+  'Usage: orizu session start --hosted (--task "<prompt>" | --task-file <path>) [--duration <min> (default 60, max 1440)] ' +
   '[--model <provider/model>] [--reasoning-effort <level>] [--project <team/project>] ' +
   '[--title <title>] [--tail]\n' +
   'Default: the Orizu server provisions the sandbox (no VERCEL_* or model key needed on your machine); ' +
@@ -815,6 +829,42 @@ const HOSTED_USAGE =
   'Removal is planned after DO-coordinator validation (ALI-1055).\n' +
   'Note (v0, --operator only): if you disconnect, the agent token expires within its TTL (<=60m) and the run ' +
   'finishes cleanly; reconnect with `orizu run tail --run <id>`. The sandbox timeout is independent (up to 24h).'
+
+const HOSTED_START_OPTIONS = new Set([
+  '--hosted',
+  '--task',
+  '--task-file',
+  '--workspace',
+  '--duration',
+  '--model',
+  '--reasoning-effort',
+  '--project',
+  '--title',
+  '--tail',
+  '--operator',
+  '--provider',
+  '--runtime',
+  '--image',
+  '--snapshot',
+  '--model-key',
+  '--json',
+])
+
+const HOSTED_START_VALUE_OPTIONS = new Set([
+  '--task',
+  '--task-file',
+  '--workspace',
+  '--duration',
+  '--model',
+  '--reasoning-effort',
+  '--project',
+  '--title',
+  '--provider',
+  '--runtime',
+  '--image',
+  '--snapshot',
+  '--model-key',
+])
 
 /** Printed on EVERY `--operator` use (founder-locked: deprecate NOW, remove
  *  after Phase 6 validation). Loud on purpose. */
@@ -836,21 +886,65 @@ export async function startHostedViaServer(
   io: HostedCommandIo,
   fetcher: HostFetcher = (path, init) => authedFetch(path, init)
 ): Promise<number> {
+  const durationMinutes = numFlag(args, '--duration')
+  const model = argVal(args, '--model') ?? undefined
+  const reasoningEffort = argVal(args, '--reasoning-effort') ?? undefined
+  const projectSlug = argVal(args, '--project') ?? undefined
+  const title = argVal(args, '--title') ?? undefined
   const payload: Record<string, unknown> = {
     workspaceId,
     task,
-    durationMinutes: numFlag(args, '--duration'),
-    model: argVal(args, '--model') ?? undefined,
-    reasoningEffort: argVal(args, '--reasoning-effort') ?? undefined,
-    projectSlug: argVal(args, '--project') ?? undefined,
-    title: argVal(args, '--title') ?? undefined,
+    durationMinutes,
+    model,
+    reasoningEffort,
+    projectSlug,
+    title,
+  }
+  const serializedPayload = JSON.stringify(payload)
+  const payloadBytes = new TextEncoder().encode(serializedPayload).byteLength
+  if (payloadBytes > MAX_HOSTED_START_BODY_BYTES) {
+    const message =
+      `Hosted task prompt is too large: request body is ${payloadBytes} bytes; ` +
+      `maximum is ${MAX_HOSTED_START_BODY_BYTES} bytes (128 KiB).`
+    if (io.json) io.print(JSON.stringify({ ok: false, error: message }))
+    else io.printErr?.(message)
+    return 1
+  }
+
+  // Mirror the exact JSON shape that reaches the session Durable Object after
+  // the API creates its UUID run/session rows, normalizes optional strings, and
+  // the Worker injects sessionId. This second guard keeps near-boundary prompts
+  // from triggering server-side state that would only be compensated after a
+  // coordinator 413. Keep this field list in sync with pokeCoordinatorStart in
+  // app/api/cli/hosted-sessions/route.ts.
+  const normalizedModel = model?.trim() || undefined
+  const normalizedReasoningEffort = reasoningEffort?.trim() || undefined
+  const coordinatorPayload = JSON.stringify({
+    runId: GENERATED_HOSTED_UUID_PLACEHOLDER,
+    task,
+    durationMinutes:
+      durationMinutes !== undefined && durationMinutes > 0
+        ? durationMinutes
+        : undefined,
+    model: normalizedModel,
+    reasoningEffort: normalizedReasoningEffort,
+    sessionId: GENERATED_HOSTED_UUID_PLACEHOLDER,
+  })
+  const coordinatorPayloadBytes = new TextEncoder().encode(coordinatorPayload).byteLength
+  if (coordinatorPayloadBytes > MAX_HOSTED_START_BODY_BYTES) {
+    const message =
+      `Hosted task prompt is too large: coordinator request body would be ${coordinatorPayloadBytes} bytes ` +
+      `after generated run/session IDs; maximum is ${MAX_HOSTED_START_BODY_BYTES} bytes (128 KiB).`
+    if (io.json) io.print(JSON.stringify({ ok: false, error: message }))
+    else io.printErr?.(message)
+    return 1
   }
   let response: Response
   try {
     response = await fetcher('/api/cli/hosted-sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: serializedPayload,
     })
   } catch (error) {
     io.printErr?.(`hosted session request failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -937,7 +1031,44 @@ export async function hostedCommand(
     return 1
   }
 
-  const task = argVal(args, '--task')
+  const unknownOption = findUnknownOption(args, HOSTED_START_OPTIONS, HOSTED_START_VALUE_OPTIONS)
+  if (unknownOption) {
+    const followsTaskFlag = args.some(
+      (arg, index) =>
+        arg === '--task' &&
+        (args[index + 1] === unknownOption || args[index + 1]?.startsWith(`${unknownOption}=`))
+    )
+    const taskValueHint = followsTaskFlag
+      ? '\nTask text beginning with a dash must use --task=<prompt> or --task-file <path>.'
+      : ''
+    io.printErr?.(`unknown option ${unknownOption}${taskValueHint}\n${HOSTED_USAGE}`)
+    return 1
+  }
+
+  const inlineTask = argVal(args, '--task')
+  const taskFile = argVal(args, '--task-file')
+  if (hasFlag(args, '--task') && hasFlag(args, '--task-file')) {
+    io.printErr?.(`Use either --task or --task-file, not both.\n${HOSTED_USAGE}`)
+    return 1
+  }
+
+  let task = inlineTask
+  if (taskFile) {
+    try {
+      task = readFileSync(taskFile, 'utf8')
+    } catch (error) {
+      io.printErr?.(
+        `Could not read task file '${taskFile}': ${error instanceof Error ? error.message : String(error)}`
+      )
+      return 1
+    }
+    if (task.trim().length === 0) {
+      io.printErr?.(
+        `Task file '${taskFile}' is empty or contains only whitespace. Add a task prompt and try again.`
+      )
+      return 1
+    }
+  }
   if (!task) {
     io.printErr?.(HOSTED_USAGE)
     return 1
