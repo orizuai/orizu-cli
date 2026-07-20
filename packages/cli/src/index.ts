@@ -2660,24 +2660,24 @@ async function runGepaOptimization() {
   const verified = await verifyGepaRunnerDirsFromArgs(forwardedArgs)
   forwardedArgs = verified.args
 
-  // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
-  // credentials.json so hosted sandboxes can run optimizations. Read at spawn
-  // time — AFTER the verification awaits above, so a hosted token-file
-  // rotation crossing the hash + lookup round-trips cannot hand the child a
-  // stale bearer.
-  const token = resolveAuthTokenForBaseUrl(baseUrl)
-
-  if (!forwardedArgs.includes('--project')) {
-    forwardedArgs = ['--project', project, ...forwardedArgs]
-  }
-
-  const pythonPathEntries = [
-    bundledPythonPath,
-    process.env.PYTHONPATH,
-  ].filter((entry): entry is string => Boolean(entry))
-
   let result
   try {
+    // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
+    // credentials.json so hosted sandboxes can run optimizations. Read at spawn
+    // time — AFTER the verification awaits above, so a hosted token-file
+    // rotation crossing the hash + lookup round-trips cannot hand the child a
+    // stale bearer.
+    const token = resolveAuthTokenForBaseUrl(baseUrl)
+
+    if (!forwardedArgs.includes('--project')) {
+      forwardedArgs = ['--project', project, ...forwardedArgs]
+    }
+
+    const pythonPathEntries = [
+      bundledPythonPath,
+      process.env.PYTHONPATH,
+    ].filter((entry): entry is string => Boolean(entry))
+
     result = spawnSync(python, ['-m', 'orizu_gepa.cli', ...forwardedArgs], {
       stdio: 'inherit',
       env: {
