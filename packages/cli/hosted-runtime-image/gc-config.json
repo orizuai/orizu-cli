@@ -1,0 +1,4 @@
+{
+  "note": "ALI-1170 fail-closed guard: gc-snapshots.mjs refuses to run unless the resolved VERCEL_PROJECT_ID equals expectedProjectId, so wrong-project credentials can never GC an unrelated project's snapshots. GC only ever runs against the dedicated hosted-runtime snapshot project (the one publish-cli.yml bakes into). Non-secret: a Vercel project id is an identifier, not a credential.",
+  "expectedProjectId": "prj_IqQ6bqPgDgLJOHHuyAkN4EVAv3RF"
+}
