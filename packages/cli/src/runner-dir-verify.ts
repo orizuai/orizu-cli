@@ -77,6 +77,20 @@ function scanRunnerDir(dir: string, relativeDir = ''): RunnerDirScan {
   return result
 }
 
+function scanSnapshotSymlinks(dir: string, relativeDir = ''): string[] {
+  const absoluteDir = relativeDir ? join(dir, relativeDir) : dir
+  const symlinks: string[] = []
+  for (const entry of readdirSync(absoluteDir, { withFileTypes: true })) {
+    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
+    if (entry.isSymbolicLink()) {
+      symlinks.push(relativePath)
+    } else if (entry.isDirectory()) {
+      symlinks.push(...scanSnapshotSymlinks(dir, relativePath))
+    }
+  }
+  return symlinks
+}
+
 export interface VerifiedRunnerSnapshot {
   /**
    * Temp directory holding EXACTLY the verified file set, materialized from
@@ -818,6 +832,13 @@ function assertNoCommandStringPayload(command: unknown[], flag: string): void {
  * runner that could never execute.
  */
 export function assertSnapshotManifestConfined(snapshotDir: string, flag: string): void {
+  const symlinks = scanSnapshotSymlinks(snapshotDir)
+  if (symlinks.length > 0) {
+    throw new Error(
+      `Verified runner bytes for ${flag} contain symlinks (${symlinks.join(', ')}) — ` +
+      'symlinks can resolve to executable or loaded bytes outside the verified snapshot (ADR-007).'
+    )
+  }
   const manifestPath = join(snapshotDir, 'manifest.json')
   let raw: string
   try {
