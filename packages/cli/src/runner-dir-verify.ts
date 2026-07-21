@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { dirname, isAbsolute, join, normalize } from 'path'
+import { basename, dirname, isAbsolute, join, normalize } from 'path'
 
 import {
   archiveArtifactEntries,
@@ -195,6 +195,620 @@ const LOADER_STYLE_OPTIONS = new Set([
   '--experimental-preload', '-X', '-m', '--preload',
 ])
 
+// Audited against Node 24's getCLIOptionsInfo metadata. These options accept
+// a separate value, which must not be mistaken for Node's script boundary.
+const NODE_OPTION_OPERANDS = new Set([
+  '-C', '--conditions',
+  '-r', '--require', '--import', '--loader', '--experimental-loader',
+  '--allow-fs-read', '--allow-fs-write',
+  '--build-snapshot-config',
+  '--cpu-prof-dir', '--cpu-prof-interval', '--cpu-prof-name',
+  '--debug-port', '--diagnostic-dir', '--disable-proto', '--disable-warning', '--dns-result-order',
+  '--env-file', '--env-file-if-exists',
+  '--experimental-config-file', '--experimental-sea-config',
+  '--heap-prof-dir', '--heap-prof-interval', '--heap-prof-name',
+  '--heapsnapshot-near-heap-limit', '--heapsnapshot-signal',
+  '--icu-data-dir', '--input-type',
+  '--inspect-port', '--inspect-publish-uid',
+  '--localstorage-file', '--max-http-header-size',
+  '--max-old-space-size', '--max-old-space-size-percentage', '--max-semi-space-size',
+  '--network-family-autoselection-attempt-timeout',
+  '--openssl-config', '--redirect-warnings',
+  '--report-dir', '--report-directory', '--report-filename', '--report-signal',
+  '--secure-heap', '--secure-heap-min', '--security-revert', '--snapshot-blob', '--stack-trace-limit',
+  '--test-concurrency', '--test-coverage-branches', '--test-coverage-exclude',
+  '--test-coverage-functions', '--test-coverage-include', '--test-coverage-lines',
+  '--test-global-setup', '--test-isolation', '--test-name-pattern', '--test-reporter',
+  '--test-reporter-destination', '--test-rerun-failures', '--test-shard',
+  '--test-skip-pattern', '--test-timeout',
+  '--title', '--tls-cipher-list', '--tls-keylog',
+  '--trace-event-categories', '--trace-event-file-pattern', '--trace-require-module',
+  '--unhandled-rejections', '--use-largepages', '--v8-pool-size',
+  '--watch-kill-signal', '--watch-path',
+])
+
+const COMMAND_STRING_OPTIONS: ReadonlyArray<{
+  executables: RegExp
+  options: ReadonlySet<string>
+  caseInsensitive?: boolean
+  clusteredOptions?: ReadonlySet<string>
+  optionOperands?: ReadonlySet<string>
+  programFileOptions?: ReadonlySet<string>
+  scriptBoundaryOptions?: ReadonlySet<string>
+  powershellPrefixes?: boolean
+  commandStrings?: ReadonlySet<string>
+  positionalCommandString?: boolean
+}> = [
+  {
+    executables: /^(?:(?:ba|da|a|k|z)?sh)(?:\.exe)?$/i,
+    options: new Set(['-c']),
+    clusteredOptions: new Set(['c']),
+    optionOperands: new Set(['-O', '-o', '--rcfile', '--init-file']),
+  },
+  { executables: /^fish(?:\.exe)?$/i, options: new Set(['-c', '--command', '-C', '--init-command']) },
+  {
+    executables: /^node(?:js)?(?:\.exe)?$/i,
+    options: new Set(['-e', '--eval', '-p', '--print', '--run']),
+    clusteredOptions: new Set(['e', 'p']),
+    optionOperands: NODE_OPTION_OPERANDS,
+  },
+  {
+    executables: /^bun(?:\.exe)?$/i,
+    options: new Set(['-e', '--eval', '-p', '--print']),
+    clusteredOptions: new Set(['e', 'p']),
+    commandStrings: new Set(['exec']),
+  },
+  {
+    executables: /^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$/i,
+    options: new Set(['-c']),
+    clusteredOptions: new Set(['c']),
+    optionOperands: new Set(['-W', '-X', '--check-hash-based-pycs']),
+  },
+  {
+    executables: /^ruby(?:\d+(?:\.\d+)*)?(?:\.exe)?$/i,
+    options: new Set(['-e']),
+    clusteredOptions: new Set(['e']),
+    optionOperands: new Set(['-C', '-E']),
+  },
+  {
+    executables: /^perl(?:\d+(?:\.\d+)*)?(?:\.exe)?$/i,
+    options: new Set(['-e', '-E']),
+    clusteredOptions: new Set(['e', 'E']),
+    optionOperands: new Set(['-I']),
+  },
+  {
+    executables: /^php(?:\d+(?:\.\d+)*)?(?:\.exe)?$/i,
+    options: new Set(['-r', '-B', '-R', '-E']),
+    clusteredOptions: new Set(['r', 'B', 'R', 'E']),
+    optionOperands: new Set(['-d', '--define']),
+  },
+  {
+    executables: /^(?:awk|gawk|mawk|nawk)(?:\.exe)?$/i,
+    options: new Set(['-e', '--source']),
+    optionOperands: new Set([
+      '-F', '--field-separator',
+      '-v', '--assign',
+      '-W',
+      '-i', '--include',
+      '-l', '--load',
+    ]),
+    programFileOptions: new Set(['-f', '--file']),
+    scriptBoundaryOptions: new Set(['-E', '--exec']),
+    positionalCommandString: true,
+  },
+  {
+    executables: /^(?:pwsh|powershell)(?:\.exe)?$/i,
+    options: new Set(),
+    caseInsensitive: true,
+    powershellPrefixes: true,
+    optionOperands: new Set(['-ExecutionPolicy']),
+    scriptBoundaryOptions: new Set(['-File']),
+  },
+  { executables: /^cmd(?:\.exe)?$/i, options: new Set(['/c', '/k']), caseInsensitive: true },
+]
+
+function commandStringError(flag: string, entry: string, executable: string): Error {
+  return new Error(
+    `Runner manifest command for ${flag} uses ${JSON.stringify(entry)} with ${JSON.stringify(executable)} — ` +
+    'shell/eval command-string payloads can execute paths that are not visible to snapshot confinement ' +
+    '(ADR-007). Put executable code in a registered snapshot file and invoke that file instead.'
+  )
+}
+
+function normalizePolicyEntry(
+  policy: (typeof COMMAND_STRING_OPTIONS)[number],
+  entry: string
+): string {
+  return policy.caseInsensitive ? entry.toLowerCase() : entry
+}
+
+function optionOperandMatch(
+  policy: (typeof COMMAND_STRING_OPTIONS)[number],
+  entry: string,
+  options: ReadonlySet<string> | undefined
+): 'separate' | 'attached' | null {
+  const normalizedEntry = normalizePolicyEntry(policy, entry)
+  for (const option of options ?? []) {
+    const normalizedOption = normalizePolicyEntry(policy, option)
+    if (normalizedEntry === normalizedOption) {
+      return 'separate'
+    }
+    if (
+      normalizedEntry.startsWith(`${normalizedOption}=`) ||
+      (normalizedOption.length === 2 && normalizedEntry.startsWith(normalizedOption) && normalizedEntry.length > 2)
+    ) {
+      return 'attached'
+    }
+  }
+  return null
+}
+
+function isEnvAssignment(entry: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(entry)
+}
+
+function isPathResolvedExecutable(entry: string): boolean {
+  return !entry.includes('/') && !entry.includes('\\')
+}
+
+function isEnvSplitStringOption(entry: string): boolean {
+  if (entry === '-S' || entry.startsWith('-S') || entry.startsWith('--split-string')) {
+    return true
+  }
+  return entry.startsWith('-') && !entry.startsWith('--') && entry.slice(1).includes('S')
+}
+
+function nextEnvCommandIndex(command: unknown[], executableIndex: number, flag: string): number | null {
+  const executable = command[executableIndex]
+  if (typeof executable !== 'string') {
+    return null
+  }
+  for (let index = executableIndex + 1; index < command.length; index += 1) {
+    const entry = command[index]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    if (entry === '--') {
+      return index + 1 < command.length ? index + 1 : null
+    }
+    if (isEnvSplitStringOption(entry)) {
+      throw new Error(
+        `Runner manifest command for ${flag} uses ${JSON.stringify(entry)} with ${JSON.stringify(executable)} — ` +
+        'wrapper split-string payloads can hide shell/eval commands from snapshot confinement (ADR-007).'
+      )
+    }
+    if (entry === '-' || entry === '-i' || entry === '--ignore-environment' || entry === '-0' || entry === '--null') {
+      continue
+    }
+    if (entry === '-u' || entry === '--unset' || entry === '-C' || entry === '--chdir') {
+      index += 1
+      continue
+    }
+    if (entry.startsWith('--unset=') || entry.startsWith('--chdir=')) {
+      continue
+    }
+    if (entry.startsWith('-')) {
+      continue
+    }
+    if (isEnvAssignment(entry)) {
+      continue
+    }
+    return index
+  }
+  return null
+}
+
+function nextOptionWrappedCommandIndex(command: unknown[], executableIndex: number): number | null {
+  for (let index = executableIndex + 1; index < command.length; index += 1) {
+    const entry = command[index]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    if (entry === '--') {
+      return index + 1 < command.length ? index + 1 : null
+    }
+    if (
+      entry === '-n' || entry === '--adjustment' ||
+      entry === '-k' || entry === '--kill-after' || entry === '-s' || entry === '--signal'
+    ) {
+      index += 1
+      continue
+    }
+    if (
+      entry.startsWith('-n') ||
+      entry.startsWith('--adjustment=') ||
+      entry.startsWith('--signal=') ||
+      entry.startsWith('--kill-after=') ||
+      entry.startsWith('-k') ||
+      entry.startsWith('-s')
+    ) {
+      continue
+    }
+    if (entry.startsWith('-')) {
+      continue
+    }
+    return index
+  }
+  return null
+}
+
+function nextTimeoutCommandIndex(command: unknown[], executableIndex: number): number | null {
+  const durationIndex = nextOptionWrappedCommandIndex(command, executableIndex)
+  return durationIndex === null || durationIndex + 1 >= command.length ? null : durationIndex + 1
+}
+
+function nextStdbufCommandIndex(command: unknown[], executableIndex: number): number | null {
+  for (let index = executableIndex + 1; index < command.length; index += 1) {
+    const entry = command[index]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    if (entry === '--') {
+      return index + 1 < command.length ? index + 1 : null
+    }
+    if (
+      entry === '-i' || entry === '--input' ||
+      entry === '-o' || entry === '--output' ||
+      entry === '-e' || entry === '--error'
+    ) {
+      index += 1
+      continue
+    }
+    if (
+      entry.startsWith('-i') ||
+      entry.startsWith('-o') ||
+      entry.startsWith('-e') ||
+      entry.startsWith('--input=') ||
+      entry.startsWith('--output=') ||
+      entry.startsWith('--error=')
+    ) {
+      continue
+    }
+    if (entry.startsWith('-')) {
+      continue
+    }
+    return index
+  }
+  return null
+}
+
+function nextFlagOnlyWrappedCommandIndex(command: unknown[], executableIndex: number): number | null {
+  for (let index = executableIndex + 1; index < command.length; index += 1) {
+    const entry = command[index]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    if (entry === '--') {
+      return index + 1 < command.length ? index + 1 : null
+    }
+    if (entry.startsWith('-')) {
+      continue
+    }
+    return index
+  }
+  return null
+}
+
+function nextFindCommandIndexes(command: unknown[], executableIndex: number): number[] {
+  const commandIndexes: number[] = []
+  const executionActions = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+  for (let index = executableIndex + 1; index < command.length; index += 1) {
+    const entry = command[index]
+    if (typeof entry !== 'string' || !executionActions.has(entry)) {
+      continue
+    }
+    if (typeof command[index + 1] === 'string') {
+      commandIndexes.push(index + 1)
+    }
+    // The launched command ends at find's required ';' or '+' action
+    // delimiter. Resume after it so multiple execution actions are checked
+    // without mistaking arguments to the launched program for find actions.
+    while (index + 1 < command.length) {
+      index += 1
+      if (command[index] === ';' || command[index] === '+') {
+        break
+      }
+    }
+  }
+  return commandIndexes
+}
+
+function nextXargsCommandIndex(command: unknown[], executableIndex: number): number | null {
+  const separateOperandOptions = new Set([
+    '-a', '--arg-file',
+    '-d', '--delimiter',
+    '-E',
+    '-I', '--replace',
+    '-L', '--max-lines',
+    '-n', '--max-args',
+    '-P', '--max-procs',
+    '-s', '--max-chars',
+    '--process-slot-var',
+  ])
+  const attachedOperandPrefixes = [
+    '-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s',
+    '--arg-file=',
+    '--delimiter=',
+    '--eof=',
+    '--replace=',
+    '--max-lines=',
+    '--max-args=',
+    '--max-procs=',
+    '--max-chars=',
+    '--process-slot-var=',
+  ]
+  for (let index = executableIndex + 1; index < command.length; index += 1) {
+    const entry = command[index]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    if (entry === '--') {
+      return index + 1 < command.length ? index + 1 : null
+    }
+    if (separateOperandOptions.has(entry)) {
+      index += 1
+      continue
+    }
+    if (attachedOperandPrefixes.some(prefix => entry.startsWith(prefix) && entry.length > prefix.length)) {
+      continue
+    }
+    if (entry.startsWith('-')) {
+      continue
+    }
+    return index
+  }
+  return null
+}
+
+function nextWrappedCommandIndex(command: unknown[], executableIndex: number, flag: string): number | null {
+  const executable = command[executableIndex]
+  if (typeof executable !== 'string' || !isPathResolvedExecutable(executable)) {
+    return null
+  }
+  const name = basename(executable).toLowerCase()
+  if (/^env(?:\.exe)?$/.test(name)) {
+    return nextEnvCommandIndex(command, executableIndex, flag)
+  }
+  if (/^(?:nice|nohup)(?:\.exe)?$/.test(name)) {
+    return nextOptionWrappedCommandIndex(command, executableIndex)
+  }
+  if (/^timeout(?:\.exe)?$/.test(name)) {
+    return nextTimeoutCommandIndex(command, executableIndex)
+  }
+  if (/^stdbuf(?:\.exe)?$/.test(name)) {
+    return nextStdbufCommandIndex(command, executableIndex)
+  }
+  if (/^setsid(?:\.exe)?$/.test(name)) {
+    return nextFlagOnlyWrappedCommandIndex(command, executableIndex)
+  }
+  if (/^busybox(?:\.exe)?$/.test(name)) {
+    return executableIndex + 1 < command.length ? executableIndex + 1 : null
+  }
+  if (/^xargs(?:\.exe)?$/.test(name)) {
+    return nextXargsCommandIndex(command, executableIndex)
+  }
+  return null
+}
+
+function executableCandidateIndexes(command: unknown[], flag: string): number[] {
+  const indexes: number[] = []
+  const seen = new Set<number>()
+  const pending = [0]
+  while (pending.length > 0) {
+    const index = pending.shift() as number
+    if (index >= command.length || seen.has(index)) {
+      continue
+    }
+    const entry = command[index]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    indexes.push(index)
+    seen.add(index)
+    const name = basename(entry).toLowerCase()
+    if (isPathResolvedExecutable(entry) && /^find(?:\.exe)?$/.test(name)) {
+      pending.push(...nextFindCommandIndexes(command, index))
+      continue
+    }
+    const next = nextWrappedCommandIndex(command, index, flag)
+    if (next !== null && next > index) {
+      pending.push(next)
+    }
+  }
+  return indexes
+}
+
+function isNpmCommandStringOption(entry: string): boolean {
+  return entry === '-c' || entry.startsWith('-c') ||
+    entry === '--call' || entry.startsWith('--call=')
+}
+
+function assertNpmExecHasNoCommandStringPayload(
+  command: unknown[],
+  executableIndex: number,
+  flag: string
+): void {
+  const executable = command[executableIndex] as string
+  const globalOptionsWithOperands = new Set([
+    '-w', '--workspace',
+    '--cache', '--globalconfig', '--location', '--loglevel', '--prefix',
+    '--registry', '--scope', '--script-shell', '--userconfig',
+  ])
+  let subcommandIndex: number | null = null
+  for (let index = executableIndex + 1; index < command.length; index += 1) {
+    const entry = command[index]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    if (entry === '--') {
+      return
+    }
+    if (globalOptionsWithOperands.has(entry)) {
+      index += 1
+      continue
+    }
+    if (entry.startsWith('-')) {
+      continue
+    }
+    if (entry === 'exec' || entry === 'x') {
+      subcommandIndex = index
+    }
+    break
+  }
+  if (subcommandIndex === null) {
+    return
+  }
+  for (let optionIndex = subcommandIndex + 1; optionIndex < command.length; optionIndex += 1) {
+    const entry = command[optionIndex]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    if (entry === '--') {
+      break
+    }
+    if (isNpmCommandStringOption(entry)) {
+      throw commandStringError(flag, entry, executable)
+    }
+  }
+}
+
+function assertNpxHasNoCommandStringPayload(
+  command: unknown[],
+  executableIndex: number,
+  flag: string
+): void {
+  const executable = command[executableIndex] as string
+  const optionsWithOperands = new Set([
+    '-p', '--package',
+    '-w', '--workspace',
+    '--cache', '--globalconfig', '--location', '--loglevel', '--prefix',
+    '--registry', '--scope', '--script-shell', '--userconfig',
+  ])
+  for (let optionIndex = executableIndex + 1; optionIndex < command.length; optionIndex += 1) {
+    const entry = command[optionIndex]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    if (entry === '--') {
+      break
+    }
+    if (isNpmCommandStringOption(entry)) {
+      throw commandStringError(flag, entry, executable)
+    }
+    if (optionsWithOperands.has(entry)) {
+      optionIndex += 1
+      continue
+    }
+    if (!entry.startsWith('-')) {
+      break
+    }
+  }
+}
+
+function assertPolicyHasNoCommandStringPayload(
+  command: unknown[],
+  executableIndex: number,
+  policy: (typeof COMMAND_STRING_OPTIONS)[number],
+  flag: string
+): void {
+  const executable = command[executableIndex] as string
+  const executableName = basename(executable)
+  let hasProgramFile = false
+  for (let optionIndex = executableIndex + 1; optionIndex < command.length; optionIndex += 1) {
+    const entry = command[optionIndex]
+    if (typeof entry !== 'string') {
+      continue
+    }
+    // Interpreter option parsing ends at the script operand. Flags after
+    // that point belong to registered runner code, not the interpreter.
+    const isCmdOption = /^cmd(?:\.exe)?$/i.test(executableName) && entry.startsWith('/')
+    const normalizedEntry = normalizePolicyEntry(policy, entry)
+    if (entry === '--') {
+      if (policy.positionalCommandString) {
+        if (hasProgramFile) {
+          break
+        }
+        continue
+      }
+      break
+    }
+    if (policy.commandStrings?.has(normalizedEntry)) {
+      throw new Error(
+        `Runner manifest command for ${flag} uses command-string entrypoint ${JSON.stringify(entry)} with ` +
+        `${JSON.stringify(executable)} — opaque shell commands bypass snapshot confinement (ADR-007).`
+      )
+    }
+    if (!entry.startsWith('-') && !isCmdOption) {
+      if (policy.positionalCommandString) {
+        if (hasProgramFile) {
+          break
+        }
+        throw commandStringError(flag, entry, executable)
+      }
+      break
+    }
+    const programFileMatch = optionOperandMatch(policy, entry, policy.programFileOptions)
+    if (programFileMatch) {
+      hasProgramFile = true
+      if (programFileMatch === 'separate') {
+        optionIndex += 1
+      }
+      continue
+    }
+    if (optionOperandMatch(policy, entry, policy.scriptBoundaryOptions)) {
+      break
+    }
+    const operandMatch = optionOperandMatch(policy, entry, policy.optionOperands)
+    if (operandMatch) {
+      if (operandMatch === 'separate') {
+        optionIndex += 1
+      }
+      continue
+    }
+    const matched = [...policy.options].some(option => {
+      const normalizedOption = normalizePolicyEntry(policy, option)
+      return normalizedEntry === normalizedOption ||
+        normalizedEntry.startsWith(`${normalizedOption}=`) ||
+        (normalizedOption.length === 2 && normalizedEntry.startsWith(normalizedOption))
+    }) || (
+      entry.startsWith('-') && !entry.startsWith('--') &&
+      [...(policy.clusteredOptions ?? [])].some(option => entry.slice(1).includes(option))
+    ) || Boolean(policy.powershellPrefixes && (() => {
+      const optionName = normalizedEntry.split('=', 1)[0]
+      return optionName.length >= 2 && (
+        '-command'.startsWith(optionName) || '-encodedcommand'.startsWith(optionName)
+      )
+    })())
+    if (matched) {
+      throw commandStringError(flag, entry, executable)
+    }
+  }
+}
+
+function assertNoCommandStringPayload(command: unknown[], flag: string): void {
+  for (const executableIndex of executableCandidateIndexes(command, flag)) {
+    const executable = command[executableIndex]
+    if (typeof executable !== 'string') {
+      continue
+    }
+    if (!isPathResolvedExecutable(executable)) {
+      continue
+    }
+    const executableName = basename(executable)
+    if (/^npm(?:\.cmd|\.exe)?$/i.test(executableName)) {
+      assertNpmExecHasNoCommandStringPayload(command, executableIndex, flag)
+    }
+    if (/^npx(?:\.cmd|\.exe)?$/i.test(executableName)) {
+      assertNpxHasNoCommandStringPayload(command, executableIndex, flag)
+    }
+    const policy = COMMAND_STRING_OPTIONS.find(candidate => candidate.executables.test(executableName))
+    if (!policy) {
+      continue
+    }
+    assertPolicyHasNoCommandStringPayload(command, executableIndex, policy, flag)
+  }
+}
+
 /**
  * The runner contract executes `manifest.json`'s `command` with cwd at the
  * artifact root. Every command entry must stay INSIDE the snapshot: absolute
@@ -203,7 +817,7 @@ const LOADER_STYLE_OPTIONS = new Set([
  * or malformed manifests are refused here too, so no snapshot can outlive a
  * runner that could never execute.
  */
-function assertSnapshotManifestConfined(snapshotDir: string, flag: string): void {
+export function assertSnapshotManifestConfined(snapshotDir: string, flag: string): void {
   const manifestPath = join(snapshotDir, 'manifest.json')
   let raw: string
   try {
@@ -221,6 +835,7 @@ function assertSnapshotManifestConfined(snapshotDir: string, flag: string): void
   if (!Array.isArray(command)) {
     return
   }
+  assertNoCommandStringPayload(command, flag)
   for (let index = 0; index < command.length; index += 1) {
     const entry = command[index]
     if (typeof entry !== 'string') {

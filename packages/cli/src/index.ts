@@ -74,7 +74,7 @@ import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredential } from './git-credential.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
-import { verifyGepaRunnerDirsFromArgs, verifyRunnerDirRegistered } from './runner-dir-verify.js'
+import { assertSnapshotManifestConfined, verifyGepaRunnerDirsFromArgs, verifyRunnerDirRegistered } from './runner-dir-verify.js'
 import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
 import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
@@ -6019,10 +6019,7 @@ async function materializeRunnerVersion(runnerVersionId: string): Promise<{ runn
     throw new Error(`unzip failed: ${sanitizeTerminalText(result.stderr || result.stdout || '')}`)
   }
 
-  return {
-    runnerDir,
-    cleanup: () => rmSync(tempDir, { recursive: true, force: true }),
-  }
+  return { runnerDir, cleanup: () => rmSync(tempDir, { recursive: true, force: true }) }
 }
 
 async function runnersExec() {
@@ -6090,6 +6087,7 @@ async function runnersExec() {
   const runnerDir = materializedRunner.runnerDir
 
   try {
+    assertSnapshotManifestConfined(runnerDir, runnerDirArg ? '--runner-dir' : '--runner-version')
     // Inside the try (codex round-6 P3): a bad manifest must not leak the dir.
     const manifest = readRunnerManifest(runnerDir)
     if (manifest.supports_body_kind && !manifest.supports_body_kind.includes(context.prompt.bodyKind)) {
