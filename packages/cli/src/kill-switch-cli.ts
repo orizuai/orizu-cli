@@ -8,6 +8,16 @@
  * (killed sessions stay ended). Human ADMIN only: the server rejects agent
  * bearers and non-admins. Pure command logic with an injected fetcher so the
  * entry point owns argument parsing and human/JSON output.
+ *
+ * Containment (ALI-1166): the guarantee is session-end + per-request
+ * verification + token-row revocation at engage — a bearer bound to an ended
+ * session can never verify again, and ended sessions are terminal
+ * (DB-enforced; no post-kill resurrection).
+ * `tokensRevoked` in the summary counts the persisted agent token rows the
+ * engage revoked (trigger cascade + belt, one transaction); it may include
+ * expired or already-ended-session stragglers that were never live bearers at
+ * kill time. `--json` output is the server's summary passed through, including
+ * `containment: "session-end"`.
  */
 
 import { authedFetch } from './http.js'

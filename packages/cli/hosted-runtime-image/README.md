@@ -65,6 +65,19 @@ release/git ref.
 | **Orizu CLI** | **published `orizu@X.Y.Z`** (CI snapshot bake) or **from source** (`git describe`, escape hatch) | `cli-v*` tag → publish-cli.yml, or this checkout — `bun build src/index.ts` |
 | OpenCode | `opencode-ai@1.14.41` | `OPENCODE_PINNED_VERSION` (`hosted-harness-opencode.ts`) — npm-pinned |
 | Claude Agent SDK | `@anthropic-ai/claude-agent-sdk@0.3.201` | `packages/cli/package.json` deps — npm-pinned |
+| Python | `python3.11` (+ `pip`); `/usr/local/bin/python3` → `python3.11` | AL2023 repo (system python is 3.9 — too old for braintrust, which needs ≥3.10). The symlink wins by PATH precedence so plain `python3` (what the GEPA runner manifest and the CLI launch) resolves to 3.11 and can import braintrust; dnf's absolute-shebang `/usr/bin/python3` scripts stay on 3.9 |
+| Braintrust (python) | `braintrust[cli]==0.30.0` (PyPI; the `[cli]` extra carries the CLI's deps) | `DEFAULT_BRAINTRUST_PY_VERSION` (`provision-snapshot.mjs`) / `BRAINTRUST_PY_VERSION` ARG — ALI-1048 |
+| Braintrust (npm) | `braintrust@3.23.1` | `DEFAULT_BRAINTRUST_NPM_VERSION` (`provision-snapshot.mjs`) / `BRAINTRUST_NPM_VERSION` ARG — ALI-1048 |
+
+Both Braintrust packages ship a `braintrust` bin; the **python** CLI owns the PATH
+name **deterministically** (Highlight's eval harness is python): npm installs
+first and its `braintrust` bin is removed — resolved via `command -v braintrust`,
+which at that instant can only be npm's (pip has not run yet) — before pip
+installs the python entry point; the bake-verify's anchored shebang check is the
+net if the removal ever misses. The npm CLI stays reachable as
+**`bt`**. The global npm install is CLI prebaking only — workspace code that
+wants the TS SDK adds `braintrust` as a dependency (global installs are not on
+the module-resolution path).
 
 The provenance + pins are written to **`/opt/orizu/prebaked.json`**:
 
@@ -75,6 +88,8 @@ The provenance + pins are written to **`/opt/orizu/prebaked.json`**:
   "cliGitVersion": "cli-v0.4.1-51-gedbe8d42",
   "opencodeVersion": "1.14.41",
   "claudeSdkVersion": "0.3.201",
+  "braintrustPyVersion": "0.30.0",
+  "braintrustNpmVersion": "3.23.1",
   "builtFor": "vercel-sandbox"
 }
 ```
@@ -112,8 +127,9 @@ node packages/cli/hosted-runtime-image/build-and-push.mjs \
 
 Env-var form: `ORIZU_VCR_TEAM`, `ORIZU_VCR_PROJECT`, `ORIZU_HOSTED_IMAGE_TAG`.
 The CLI is baked **from source** — there is no `--cli-version`. Remaining pin
-overrides: `--opencode-version`, `--claude-sdk-version`, `--node-major` (defaults
-live in the `Dockerfile`). The underlying command is:
+overrides: `--opencode-version`, `--claude-sdk-version`, `--braintrust-py-version`,
+`--braintrust-npm-version`, `--node-major` (defaults live in the `Dockerfile`).
+The underlying command is:
 
 ```bash
 docker buildx build --platform linux/amd64 \
@@ -128,7 +144,8 @@ Founder-run only, but needs **no Docker** — only the Vercel creds (`VERCEL_TOK
 `VERCEL_PROJECT_ID`, `VERCEL_TEAM_ID`), which exist. Run it with **`bun`** (it loads
 the provider from TypeScript source and builds the CLI with `bun build`). It boots a
 base sandbox with **OPEN network**, installs the same runtime into it (the CLI
-bundle via `writeFile`, `@anthropic-ai/claude-agent-sdk` + `opencode-ai` via npm),
+bundle via `writeFile`, `@anthropic-ai/claude-agent-sdk` + `opencode-ai` +
+`braintrust` via npm, `python3.11` via dnf + `braintrust` via pip),
 writes the marker, verifies the bake, then `snapshot()`s the sandbox and prints the
 snapshot id.
 
@@ -148,7 +165,10 @@ bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
 `--expiration 0` = never expire (omit for the SDK default). `--id-file` also
 writes the snapshot id to a file (CI handoff). Pin overrides:
 `--opencode-version`, `--claude-sdk-version` (in published mode the Claude SDK
-ships inside the package; the flag only annotates the marker). The Vercel token is
+ships inside the package; the flag only annotates the marker), and
+`--braintrust-py-version` / `--braintrust-npm-version` (ALI-1048; strictly
+validated — a value-less flag or a malformed version is an error, PyPI and npm
+version shapes each). The Vercel token is
 read from env by the provider and is **never printed** — the script logs step
 names + the snapshot id only.
 

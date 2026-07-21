@@ -96,6 +96,14 @@ export interface PrebakedMarker {
   cliVersion: string
   opencodeVersion: string
   claudeSdkVersion: string
+  /**
+   * Braintrust eval tooling pins (ALI-1048) — OPTIONAL because pre-ALI-1048
+   * markers do not carry them (older snapshots stay valid). Py = the PyPI
+   * `braintrust` package (Highlight's python eval harness), Npm = the npm
+   * `braintrust` package (TS SDK + `bt` CLI).
+   */
+  braintrustPyVersion?: string
+  braintrustNpmVersion?: string
   builtFor: 'vercel-sandbox'
 }
 
@@ -124,7 +132,12 @@ export function parsePrebakedMarker(raw: string): PrebakedMarker | null {
   ) {
     return null
   }
-  return { cliVersion, opencodeVersion, claudeSdkVersion, builtFor: 'vercel-sandbox' }
+  const marker: PrebakedMarker = { cliVersion, opencodeVersion, claudeSdkVersion, builtFor: 'vercel-sandbox' }
+  // Optional Braintrust pins (ALI-1048): carried through when present as strings;
+  // absent/odd-typed values are simply omitted (never invalidate the marker).
+  if (typeof rec.braintrustPyVersion === 'string') marker.braintrustPyVersion = rec.braintrustPyVersion
+  if (typeof rec.braintrustNpmVersion === 'string') marker.braintrustNpmVersion = rec.braintrustNpmVersion
+  return marker
 }
 
 /**

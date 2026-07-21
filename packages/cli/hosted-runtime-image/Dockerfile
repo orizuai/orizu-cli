@@ -36,10 +36,17 @@ FROM amazonlinux:2023
 #                            recorded in the marker as the runtime's provenance)
 #   OPENCODE_VERSION       → OPENCODE_PINNED_VERSION (hosted-harness-opencode.ts)
 #   CLAUDE_SDK_VERSION     → @anthropic-ai/claude-agent-sdk (package.json deps)
+#   BRAINTRUST_PY_VERSION  → PyPI `braintrust` (ALI-1048, python eval harness);
+#                            mirrored by DEFAULT_BRAINTRUST_PY_VERSION in
+#                            provision-snapshot.mjs — keep them in sync
+#   BRAINTRUST_NPM_VERSION → npm `braintrust` (TS SDK + `bt` CLI); mirrored by
+#                            DEFAULT_BRAINTRUST_NPM_VERSION in provision-snapshot.mjs
 #   NODE_MAJOR             → Node major line to install (24)
 ARG ORIZU_CLI_GIT_VERSION=source-unknown
 ARG OPENCODE_VERSION=1.14.41
 ARG CLAUDE_SDK_VERSION=0.3.201
+ARG BRAINTRUST_PY_VERSION=0.30.0
+ARG BRAINTRUST_NPM_VERSION=3.23.1
 ARG NODE_MAJOR=24
 
 # --- OS packages + git + ssh ---------------------------------------------------
@@ -104,17 +111,69 @@ RUN cd /opt/orizu/cli \
   && node /opt/orizu/cli/dist/_sdk_probe.mjs \
   && rm -f /opt/orizu/cli/dist/_sdk_probe.mjs
 
+# --- Braintrust eval tooling (ALI-1048) ---------------------------------------
+# Highlight's eval workflow needs Braintrust in the snapshot (runtime egress is
+# default-deny, so nothing can be installed in-session). The PYTHON package is
+# the primary surface (adapter eval harness, `evaluate_files`, `braintrust push`);
+# braintrust on PyPI requires python>=3.10 and AL2023's system python is 3.9, so
+# python3.11 (+pip) comes from the distro repos. The [cli] extra is REQUIRED — a
+# bare `braintrust==X` imports fine but the CLI fails (boto3/uv/etc. live behind
+# the extra). The npm package is baked for its CLI: both packages ship a
+# `braintrust` bin and the PYTHON one must own the PATH name, so npm installs
+# FIRST and its `braintrust` bin is REMOVED (keeping the second bin `bt`) before
+# pip installs the python entry point — deterministic ownership, not a PATH-order
+# accident. The removal resolves via `command -v braintrust` — the SAME
+# resolution the install just produced (at that instant the only `braintrust` on
+# PATH is npm's; pip has not run yet); resolving npm's prefix separately could
+# differ (env/npmrc) and silently no-op. If the removal ever misses anyway, the
+# ANCHORED shebang verify below fails the bake loudly. PEP 668: the system-wide
+# pip install relies on AL2023's pip (22.3.1) predating EXTERNALLY-MANAGED
+# enforcement; if the base image ever bumps to an enforcing pip this layer fails
+# loudly at bake time (then add --break-system-packages or move to a venv). The
+# global npm install is CLI prebaking only: workspace code that wants the TS SDK
+# adds `braintrust` as a dependency (global installs are not on the
+# module-resolution path).
+# DEFAULT-python3 visibility: the GEPA runner manifest launches plain `python3`
+# (packages/orizu-gepa-python/manifest.json) and the CLI spawns
+# `process.env.PYTHON || 'python3'` — but /usr/bin/python3 stays 3.9 and cannot
+# import braintrust. /usr/local/bin/python3 -> /usr/bin/python3.11 wins by PATH
+# precedence for user-launched processes (hosted-loop spawns inherit the ambient
+# PATH; nothing constructs its own) while dnf's absolute-shebang scripts keep
+# using the untouched /usr/bin/python3.
+RUN npm install -g "braintrust@${BRAINTRUST_NPM_VERSION}" \
+  && npm cache clean --force \
+  && rm -f "$(command -v braintrust)" \
+  && dnf -y install python3.11 python3.11-pip \
+  && dnf clean all \
+  && rm -rf /var/cache/dnf \
+  && python3.11 -m pip install --no-cache-dir "braintrust[cli]==${BRAINTRUST_PY_VERSION}" \
+  && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
+  && ln -sf /usr/bin/pip3.11 /usr/local/bin/pip3 \
+  # Fail the bake, not Highlight's first eval run: both CLIs resolve AND execute,
+  # the PATH `braintrust` is the python one (ANCHORED shebang check), the DEFAULT
+  # `python3` resolves to 3.11 and imports braintrust (runner processes launch
+  # plain python3), and the python package imports at the pinned version.
+  && command -v braintrust \
+  && command -v bt \
+  && head -1 "$(command -v braintrust)" | grep -Eq '^#!.*/python3\.11$' \
+  && braintrust --help >/dev/null \
+  && bt --help >/dev/null \
+  && python3 --version | grep -F "Python 3.11" \
+  && python3 -c "import braintrust" \
+  && python3.11 -c "import braintrust; from importlib.metadata import version; assert version('braintrust') == '${BRAINTRUST_PY_VERSION}'"
+
 # --- Pre-baked marker ---------------------------------------------------------
 # The runtime DETECTS it is pre-baked from this file (belt) + the boot-context
 # `prebaked` flag (braces). hosted-runtime-assets.ts `parsePrebakedMarker` parses
-# `cliVersion / opencodeVersion / claudeSdkVersion / builtFor`. Because the CLI is
+# `cliVersion / opencodeVersion / claudeSdkVersion / builtFor` (+ the OPTIONAL
+# `braintrustPyVersion` / `braintrustNpmVersion` pins, ALI-1048). Because the CLI is
 # baked FROM SOURCE, `cliVersion` records the git PROVENANCE string (not an npm
 # version), and extra `cliSource` / `cliGitVersion` fields make that explicit (the
 # parser ignores unknown fields). Written via printf so the values are captured
 # verbatim from the build ARGs above.
 RUN mkdir -p /opt/orizu \
-  && printf '{\n  "cliVersion": "%s",\n  "cliSource": "from-source",\n  "cliGitVersion": "%s",\n  "opencodeVersion": "%s",\n  "claudeSdkVersion": "%s",\n  "builtFor": "vercel-sandbox"\n}\n' \
-    "${ORIZU_CLI_GIT_VERSION}" "${ORIZU_CLI_GIT_VERSION}" "${OPENCODE_VERSION}" "${CLAUDE_SDK_VERSION}" \
+  && printf '{\n  "cliVersion": "%s",\n  "cliSource": "from-source",\n  "cliGitVersion": "%s",\n  "opencodeVersion": "%s",\n  "claudeSdkVersion": "%s",\n  "braintrustPyVersion": "%s",\n  "braintrustNpmVersion": "%s",\n  "builtFor": "vercel-sandbox"\n}\n' \
+    "${ORIZU_CLI_GIT_VERSION}" "${ORIZU_CLI_GIT_VERSION}" "${OPENCODE_VERSION}" "${CLAUDE_SDK_VERSION}" "${BRAINTRUST_PY_VERSION}" "${BRAINTRUST_NPM_VERSION}" \
     > /opt/orizu/prebaked.json \
   && cat /opt/orizu/prebaked.json
 

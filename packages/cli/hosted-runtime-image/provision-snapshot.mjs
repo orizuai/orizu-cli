@@ -36,6 +36,10 @@
  *                 override the pinned externals (defaults mirror the Dockerfile).
  *                 In published mode the Claude SDK ships as a dependency of the
  *                 published package; the flag only annotates the marker.
+ *   --braintrust-py-version / --braintrust-npm-version
+ *                 override the pinned Braintrust eval tooling (ALI-1048): the
+ *                 PyPI `braintrust` package (+ python3.11, AL2023's system python
+ *                 is too old for it) and the npm `braintrust` package.
  *
  * READINESS: unlike the Docker/VCR image path (which needs an async "Ready"
  * variant preparation), a snapshot is usable as soon as `snapshot()` resolves —
@@ -57,6 +61,26 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 // Pins mirrored from the Dockerfile (source-of-truth for the npm-pinned externals).
 export const DEFAULT_OPENCODE_VERSION = '1.14.41'
 export const DEFAULT_CLAUDE_SDK_VERSION = '0.3.201'
+// Braintrust eval tooling (ALI-1048): the PYTHON package is the primary surface
+// (Highlight's harness — adapter evals, `evaluate_files`, the `braintrust` CLI);
+// the npm package is baked alongside for its CLI (available as `bt`). NOTE a
+// global npm install is NOT on the module-resolution path — workspace code that
+// wants the TS SDK must add `braintrust` as a dependency; the global install is
+// CLI prebaking only. Two registries, two version lines — pin each explicitly.
+export const DEFAULT_BRAINTRUST_PY_VERSION = '0.30.0'
+export const DEFAULT_BRAINTRUST_NPM_VERSION = '3.23.1'
+// Strict version shapes for the braintrust pins — interpolated into shell
+// commands, so reject anything malformed with a clear error instead of letting
+// the bake fail (or worse, mis-parse) inside the sandbox. Shared with
+// build-and-push.mjs so BOTH recipes validate identically.
+// Numeric identifiers are CANONICAL-only (`0|[1-9]\d*` — no leading zeros):
+//   PyPI: restricted PEP 440 subset — N.N[.N] plus one optional aN/bN/rcN/.postN/.devN
+//   npm:  exact semver — pre-release identifiers non-empty, numeric ids without
+//         leading zeros (alphanumeric ids must contain a non-digit, per spec)
+export const BRAINTRUST_PY_VERSION_RE =
+  /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?(?:(?:a|b|rc)(?:0|[1-9][0-9]*)|\.post(?:0|[1-9][0-9]*)|\.dev(?:0|[1-9][0-9]*))?$/
+export const BRAINTRUST_NPM_VERSION_RE =
+  /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$/
 export const DEFAULT_DURATION_MINUTES = 30
 
 // A conservative label shape (same as the image tag) — reject anything a registry
@@ -100,12 +124,85 @@ function packageJson(gitVersion) {
   return `{\n  "name": "orizu",\n  "version": "${gitVersion}",\n  "type": "module"\n}\n`
 }
 
-function markerJson({ cliVersion, cliSource, cliGitVersion, opencodeVersion, claudeSdkVersion }) {
+function markerJson({ cliVersion, cliSource, cliGitVersion, opencodeVersion, claudeSdkVersion, braintrustPyVersion, braintrustNpmVersion }) {
   const gitLine = cliGitVersion ? `  "cliGitVersion": "${cliGitVersion}",\n` : ''
   return (
     `{\n  "cliVersion": "${cliVersion}",\n  "cliSource": "${cliSource}",\n` +
     `${gitLine}  "opencodeVersion": "${opencodeVersion}",\n` +
-    `  "claudeSdkVersion": "${claudeSdkVersion}",\n  "builtFor": "vercel-sandbox"\n}\n`
+    `  "claudeSdkVersion": "${claudeSdkVersion}",\n` +
+    `  "braintrustPyVersion": "${braintrustPyVersion}",\n` +
+    `  "braintrustNpmVersion": "${braintrustNpmVersion}",\n  "builtFor": "vercel-sandbox"\n}\n`
+  )
+}
+
+/**
+ * Braintrust eval-tooling steps (ALI-1048), IDENTICAL in both bake modes.
+ * Both packages ship a `braintrust` bin, and the PYTHON CLI must own the PATH
+ * name (Highlight's eval harness is python: adapter evals, `evaluate_files`,
+ * `braintrust push`). Install order alone only wins when both write the same
+ * bin dir — on the hosted sandbox npm's global prefix can differ from python's
+ * scripts dir, so ownership is made DETERMINISTIC: npm installs first and its
+ * `braintrust` bin is removed (keeping `bt`, the npm CLI's second bin) before
+ * pip installs the python entry point. The removal resolves the bin via
+ * `command -v braintrust` — the SAME resolution the install just produced —
+ * because at that instant the ONLY `braintrust` on PATH is npm's (pip has not
+ * run yet); resolving via `npm prefix -g` could differ under sudo env/npmrc
+ * and silently no-op. If the removal ever misses anyway, the ANCHORED shebang
+ * verify below fails the bake loudly. The global npm install is CLI prebaking
+ * only — workspace code that wants the TS SDK adds `braintrust` as a
+ * dependency (global installs are not on the module resolution path).
+ */
+function braintrustSteps({ braintrustPyVersion, braintrustNpmVersion }) {
+  return [
+    {
+      name: `install braintrust npm CLI @${braintrustNpmVersion} (global; kept as \`bt\`, \`braintrust\` link removed)`,
+      exec:
+        `sudo npm install -g "braintrust@${braintrustNpmVersion}" && sudo npm cache clean --force && ` +
+        `sudo rm -f "$(command -v braintrust)"`,
+    },
+    {
+      // AL2023's system python is 3.9 (present for dnf itself); braintrust on
+      // PyPI requires >=3.10, so install python3.11 (+pip) from the distro repos
+      // and the pinned package system-wide (entry point lands on PATH). The
+      // [cli] extra is REQUIRED: a bare `braintrust==X` imports fine but the
+      // CLI (`braintrust push`) fails — boto3/uv/etc. live behind the extra.
+      // PEP 668: the system-wide pip install relies on AL2023's pip (22.3.1)
+      // predating EXTERNALLY-MANAGED enforcement; if the base image ever bumps
+      // to an enforcing pip this step fails loudly at bake time (then add
+      // --break-system-packages or move to a venv).
+      // DEFAULT-python3 visibility: the GEPA runner manifest launches plain
+      // `python3` (packages/orizu-gepa-python/manifest.json) and the CLI spawns
+      // `process.env.PYTHON || 'python3'` — but /usr/bin/python3 stays 3.9 and
+      // cannot import braintrust. /usr/local/bin/python3 -> /usr/bin/python3.11
+      // wins by PATH precedence for user-launched processes (hosted-loop spawns
+      // inherit the ambient PATH; nothing constructs its own) while dnf's
+      // absolute-shebang scripts keep using the untouched /usr/bin/python3.
+      name: `install python3.11 + braintrust[cli]==${braintrustPyVersion} (python eval harness; python3 -> 3.11 via /usr/local/bin)`,
+      exec:
+        `sudo dnf -y install python3.11 python3.11-pip && sudo dnf clean all && ` +
+        `sudo python3.11 -m pip install --no-cache-dir "braintrust[cli]==${braintrustPyVersion}" && ` +
+        `sudo ln -sf /usr/bin/python3.11 /usr/local/bin/python3 && sudo ln -sf /usr/bin/pip3.11 /usr/local/bin/pip3`,
+    },
+  ]
+}
+
+/**
+ * Bake-verification suffix for the Braintrust tooling (both modes): both CLIs
+ * resolve AND execute, the PATH `braintrust` is the python one (shebang check,
+ * ANCHORED to a shebang line ending in /python3.11 so a lookalike path cannot
+ * pass — a silent npm/pip bin-dir mixup must fail the bake, not Highlight's
+ * first eval), the DEFAULT `python3` resolves to 3.11 and imports braintrust
+ * (the runner exec context launches plain `python3` — this runs in the same
+ * ambient PATH the runner spawns inherit, so a precedence surprise fails the
+ * bake here), and the python package imports at the pinned version.
+ */
+function braintrustVerify(braintrustPyVersion) {
+  return (
+    `command -v braintrust && command -v bt && ` +
+    `head -1 "$(command -v braintrust)" | grep -Eq '^#!.*/python3\\.11$' && ` +
+    `braintrust --help >/dev/null && bt --help >/dev/null && ` +
+    `python3 --version | grep -F "Python 3.11" && python3 -c 'import braintrust' && ` +
+    `python3.11 -c 'import braintrust; from importlib.metadata import version; assert version("braintrust") == "${braintrustPyVersion}"'`
   )
 }
 
@@ -131,7 +228,15 @@ export function resolveCredsOrFail(env, fail) {
  * `npm i -g orizu@<cliVersion>` (which carries its own pinned
  * @anthropic-ai/claude-agent-sdk dependency) instead of a from-source bundle.
  */
-export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion, claudeSdkVersion, cliVersion = null }) {
+export function buildProvisionSteps({
+  bundleContent,
+  gitVersion,
+  opencodeVersion,
+  claudeSdkVersion,
+  braintrustPyVersion = DEFAULT_BRAINTRUST_PY_VERSION,
+  braintrustNpmVersion = DEFAULT_BRAINTRUST_NPM_VERSION,
+  cliVersion = null,
+}) {
   if (cliVersion) {
     return [
       {
@@ -139,11 +244,12 @@ export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion
         exec: `sudo npm install -g "orizu@${cliVersion}" && sudo npm cache clean --force`,
       },
       { name: 'install opencode-ai (global bin)', exec: `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force` },
+      ...braintrustSteps({ braintrustPyVersion, braintrustNpmVersion }),
       {
         name: 'stage prebaked marker',
         writeFile: [
           STAGE_MARKER,
-          markerJson({ cliVersion, cliSource: 'published-npm', cliGitVersion: null, opencodeVersion, claudeSdkVersion }),
+          markerJson({ cliVersion, cliSource: 'published-npm', cliGitVersion: null, opencodeVersion, claudeSdkVersion, braintrustPyVersion, braintrustNpmVersion }),
         ],
       },
       { name: 'install prebaked marker', exec: `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}` },
@@ -155,10 +261,11 @@ export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion
         exec: 'command -v ssh >/dev/null 2>&1 || sudo dnf -y install openssh-clients; git --version && ssh -V',
       },
       {
-        name: 'verify bake (orizu version + opencode + hosted-loop)',
+        name: 'verify bake (orizu version + opencode + hosted-loop + braintrust)',
         exec:
           `command -v orizu && command -v opencode && orizu --version | grep -F "${cliVersion}" && ` +
-          `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context'`,
+          `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
+          braintrustVerify(braintrustPyVersion),
       },
     ]
   }
@@ -176,11 +283,12 @@ export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion
       exec: `cd ${CLI_DIR} && sudo npm install --no-save --omit=dev "@anthropic-ai/claude-agent-sdk@${claudeSdkVersion}" && sudo npm cache clean --force`,
     },
     { name: 'install opencode-ai (global bin)', exec: `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force` },
+    ...braintrustSteps({ braintrustPyVersion, braintrustNpmVersion }),
     {
       name: 'stage prebaked marker',
       writeFile: [
         STAGE_MARKER,
-        markerJson({ cliVersion: gitVersion, cliSource: 'from-source', cliGitVersion: gitVersion, opencodeVersion, claudeSdkVersion }),
+        markerJson({ cliVersion: gitVersion, cliSource: 'from-source', cliGitVersion: gitVersion, opencodeVersion, claudeSdkVersion, braintrustPyVersion, braintrustNpmVersion }),
       ],
     },
     { name: 'install prebaked marker', exec: `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}` },
@@ -191,8 +299,10 @@ export function buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion
       exec: 'git --version && ssh -V',
     },
     {
-      name: 'verify bake (orizu + opencode + hosted-loop)',
-      exec: `command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context'`,
+      name: 'verify bake (orizu + opencode + hosted-loop + braintrust)',
+      exec:
+        `command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
+        braintrustVerify(braintrustPyVersion),
     },
   ]
 }
@@ -246,6 +356,18 @@ export async function runProvisionSnapshot(opts = {}) {
 
   const opencodeVersion = args.values['opencode-version'] ?? DEFAULT_OPENCODE_VERSION
   const claudeSdkVersion = args.values['claude-sdk-version'] ?? DEFAULT_CLAUDE_SDK_VERSION
+  // Braintrust eval tooling pins (ALI-1048). Interpolated into shell commands →
+  // strict version shapes only, and a value-less flag is an ERROR (the parser
+  // would otherwise treat it as a boolean and silently fall back to the default).
+  const braintrustPyVersion = args.values['braintrust-py-version'] ?? DEFAULT_BRAINTRUST_PY_VERSION
+  const braintrustNpmVersion = args.values['braintrust-npm-version'] ?? DEFAULT_BRAINTRUST_NPM_VERSION
+  for (const [flag, value, re, example] of [
+    ['braintrust-py-version', braintrustPyVersion, BRAINTRUST_PY_VERSION_RE, '0.30.0'],
+    ['braintrust-npm-version', braintrustNpmVersion, BRAINTRUST_NPM_VERSION_RE, '3.23.1'],
+  ]) {
+    if (args.flags.has(flag)) fail(`--${flag} requires a value (e.g. ${example})`)
+    else if (!re.test(value)) fail(`invalid --${flag} "${value}" — expected a version like ${example}`)
+  }
 
   // Credentials are required for a real run (never printed). Skip the hard check on
   // --dry-run so the plan can be inspected without creds.
@@ -261,9 +383,12 @@ export async function runProvisionSnapshot(opts = {}) {
     out(`CLI provenance: ${gitVersion}\n`)
   }
   out(`Provisioning sandbox lifetime: ${durationMinutes}m\n`)
-  out(`Pinned externals: opencode-ai@${opencodeVersion}, @anthropic-ai/claude-agent-sdk@${claudeSdkVersion}\n\n`)
+  out(
+    `Pinned externals: opencode-ai@${opencodeVersion}, @anthropic-ai/claude-agent-sdk@${claudeSdkVersion}, ` +
+      `braintrust[cli]==${braintrustPyVersion} (PyPI), braintrust@${braintrustNpmVersion} (npm)\n\n`
+  )
 
-  const stepsPlan = buildProvisionSteps({ bundleContent: '<bundle>', gitVersion, opencodeVersion, claudeSdkVersion, cliVersion })
+  const stepsPlan = buildProvisionSteps({ bundleContent: '<bundle>', gitVersion, opencodeVersion, claudeSdkVersion, braintrustPyVersion, braintrustNpmVersion, cliVersion })
   out('Plan:\n')
   let planStep = 1
   if (!cliVersion) {
@@ -301,7 +426,7 @@ export async function runProvisionSnapshot(opts = {}) {
   out(`sandbox ${session.id}\n`)
 
   try {
-    const steps = buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion, claudeSdkVersion, cliVersion })
+    const steps = buildProvisionSteps({ bundleContent, gitVersion, opencodeVersion, claudeSdkVersion, braintrustPyVersion, braintrustNpmVersion, cliVersion })
     for (const step of steps) {
       out(`- ${step.name}\n`)
       if (step.writeFile) {

@@ -33,6 +33,7 @@
  *   --tag       override the default git-describe tag (still slug-validated)
  *   --dry-run   print the plan (bundle build + buildx command) without running it
  *   --opencode-version / --claude-sdk-version / --node-major
+ *   --braintrust-py-version / --braintrust-npm-version
  *               override the pinned build ARGs (defaults live in the Dockerfile).
  *               The Docker/VCR image path still bakes the CLI FROM SOURCE; the
  *               published-package `--cli-version` mode is snapshot-only.
@@ -43,6 +44,12 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { buildCliBundle, resolveGitVersion } from './build-cli-bundle.mjs'
+// Shared strict version shapes (ALI-1048) — BOTH bake recipes validate
+// identically (the values land in docker --build-arg here). The npm shape
+// doubles as the validator for every npm-pinned override (opencode / Claude
+// SDK), not just the braintrust one. Importing provision-snapshot.mjs is
+// side-effect free (its main() is guarded by import.meta.main).
+import { BRAINTRUST_NPM_VERSION_RE, BRAINTRUST_PY_VERSION_RE } from './provision-snapshot.mjs'
 
 const IMAGE_NAME = 'orizu-hosted-runtime'
 const REGISTRY_HOST = 'vcr.vercel.com'
@@ -107,7 +114,25 @@ function main() {
   const argMap = {
     'opencode-version': 'OPENCODE_VERSION',
     'claude-sdk-version': 'CLAUDE_SDK_VERSION',
+    'braintrust-py-version': 'BRAINTRUST_PY_VERSION',
+    'braintrust-npm-version': 'BRAINTRUST_NPM_VERSION',
     'node-major': 'NODE_MAJOR',
+  }
+  // EVERY forwarded override is validated strictly (ALI-1048): a value-less
+  // flag is an error (the parser would treat it as a boolean and silently drop
+  // it), and the value must match the shape for its registry — npm semver for
+  // the npm pins, the restricted PyPI shape for the PyPI pin, a bare integer
+  // for --node-major. The values land in docker --build-arg.
+  for (const [flag, re, example] of [
+    ['braintrust-py-version', BRAINTRUST_PY_VERSION_RE, '0.30.0'],
+    ['braintrust-npm-version', BRAINTRUST_NPM_VERSION_RE, '3.23.1'],
+    ['opencode-version', BRAINTRUST_NPM_VERSION_RE, '1.14.41'],
+    ['claude-sdk-version', BRAINTRUST_NPM_VERSION_RE, '0.3.201'],
+    ['node-major', /^[0-9]+$/, '24'],
+  ]) {
+    if (args.flags.has(flag)) fail(`--${flag} requires a value (e.g. ${example})`)
+    const value = args.values[flag]
+    if (value !== undefined && !re.test(value)) fail(`invalid --${flag} "${value}" — expected a value like ${example}`)
   }
   for (const [flag, name] of Object.entries(argMap)) {
     const value = args.values[flag]
