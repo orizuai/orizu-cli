@@ -882,13 +882,34 @@ export const OPERATOR_DEPRECATION_WARNING =
  * route and let the Durable Object coordinator own the sandbox lifetime. The
  * CLI never reads VERCEL_* or a model key on this path — the server holds them.
  */
+/** Bounded reconcile of a start that the coordinator reported still-in-flight
+ *  (R7 P4). Each retry re-pokes the SAME session by its returned sessionId, so
+ *  a race that momentarily answers start_pending never spawns a duplicate.
+ *
+ *  R8 P2 — the retry budget must OUTLIVE a stale start lease. If a start-lease
+ *  owner crashed WITHOUT running its release, the lease lingers until its TTL
+ *  (the coordinator's START_LEASE_TTL_MS = 3 × CALLBACK_TIMEOUT_MS = 30s), and
+ *  every duplicate poke sees it and answers start_pending. So the CLI's OWN
+ *  cumulative backoff (independent of server-side watch time) must exceed that
+ *  TTL plus margin, so the CLI keeps polling until the lease expires and a
+ *  retry then wins — rather than giving up while the crashed owner's lease
+ *  still lingers. COORDINATOR_START_LEASE_TTL_MS mirrors the worker constant
+ *  and is pinned to it by a contract test in the CLI suite. */
+export const COORDINATOR_START_LEASE_TTL_MS = 30_000
+export const HOSTED_START_PENDING_RETRY_MS = 2_000
+const HOSTED_START_PENDING_TTL_MARGIN_MS = 6_000
+export const HOSTED_START_PENDING_MAX_RETRIES = Math.ceil(
+  (COORDINATOR_START_LEASE_TTL_MS + HOSTED_START_PENDING_TTL_MARGIN_MS) / HOSTED_START_PENDING_RETRY_MS
+)
+
 export async function startHostedViaServer(
   args: readonly string[],
   workspaceId: string,
   task: string,
   tail: boolean,
   io: HostedCommandIo,
-  fetcher: HostFetcher = (path, init) => authedFetch(path, init)
+  fetcher: HostFetcher = (path, init) => authedFetch(path, init),
+  sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms))
 ): Promise<number> {
   const durationMinutes = numFlag(args, '--duration')
   const model = argVal(args, '--model') ?? undefined
@@ -943,18 +964,39 @@ export async function startHostedViaServer(
     else io.printErr?.(message)
     return 1
   }
+  // R7 P4: the coordinator may momentarily answer start_pending (a start for
+  // this session is racing). It returns the sessionId so we RECONCILE the SAME
+  // session — re-poking by that id rather than blindly re-initing a duplicate.
   let response: Response
-  try {
-    response = await fetcher('/api/cli/hosted-sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: serializedPayload,
-    })
-  } catch (error) {
-    io.printErr?.(`hosted session request failed: ${error instanceof Error ? error.message : String(error)}`)
-    return 1
+  let body: Record<string, unknown> = {}
+  let reconcileSessionId: string | undefined
+  for (let attempt = 0; ; attempt++) {
+    const attemptBody = reconcileSessionId
+      ? JSON.stringify({ ...payload, sessionId: reconcileSessionId })
+      : serializedPayload
+    try {
+      response = await fetcher('/api/cli/hosted-sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: attemptBody,
+      })
+    } catch (error) {
+      io.printErr?.(`hosted session request failed: ${error instanceof Error ? error.message : String(error)}`)
+      return 1
+    }
+    body = (await response.json().catch(() => ({}))) as Record<string, unknown>
+    const stillPending =
+      response.status === 409 &&
+      body.coordinator === 'start_pending' &&
+      typeof body.sessionId === 'string' &&
+      body.sessionId.length > 0
+    if (stillPending && attempt < HOSTED_START_PENDING_MAX_RETRIES) {
+      reconcileSessionId = body.sessionId as string
+      await sleep(HOSTED_START_PENDING_RETRY_MS)
+      continue
+    }
+    break
   }
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>
   const errorMessage = typeof body.error === 'string' ? body.error : `${response.status}`
 
   if (response.status === 503) {
