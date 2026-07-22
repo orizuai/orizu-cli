@@ -6632,7 +6632,10 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
   if (command === 'team' && subcommand === 'egress-allowlist') {
-    process.exitCode = await egressAllowlistCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, printErr: printError })
+    // slice(2) drops BOTH 'team' and 'egress-allowlist' so firstPositional()
+    // reads the team slug, not the literal 'egress-allowlist' (matches the
+    // `team connectors` dispatch below).
+    process.exitCode = await egressAllowlistCommand(cliArgs.slice(2), { json: hasJsonFlag(), print: printLine, printErr: printError })
     return
   }
   if (command === 'team' && subcommand === 'connectors') {
