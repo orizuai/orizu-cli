@@ -63,6 +63,7 @@ import { findUnknownOption } from './option-validation.js'
 import { getWorkspaceRoot } from './workspace.js'
 import { attachedWorkspaceId } from './workspace-sync.js'
 import { tailWorkbenchRun } from './workbench-cli.js'
+import { formatRunEventDigest, formatRunEventTypeLine } from './run-event-digest.js'
 
 // Default hosted model — SINGLE source of truth in hosted-loop-lifecycle.ts
 // (ALI-1086); re-exported here so existing importers keep working.
@@ -821,7 +822,9 @@ function numFlag(args: readonly string[], flag: string): number | undefined {
 const HOSTED_USAGE =
   'Usage: orizu session start --hosted (--task "<prompt>" | --task-file <path>) [--duration <min> (default 60, max 1440)] ' +
   '[--model <provider/model>] [--reasoning-effort <level>] [--project <team/project>] ' +
-  '[--title <title>] [--tail]\n' +
+  '[--title <title>] [--tail [--quiet]]\n' +
+  '--tail streams compact per-event digests (agent text, tool calls + args, results); ' +
+  '--quiet restores the types-only stream; --json keeps full event payloads.\n' +
   'Default: the Orizu server provisions the sandbox (no VERCEL_* or model key needed on your machine); ' +
   'the session coordinator owns its lifetime (ALI-1055).\n' +
   'DEPRECATED escape hatch: --operator provisions from THIS machine (requires VERCEL_* + ANTHROPIC_API_KEY ' +
@@ -841,6 +844,7 @@ const HOSTED_START_OPTIONS = new Set([
   '--project',
   '--title',
   '--tail',
+  '--quiet',
   '--operator',
   '--provider',
   '--runtime',
@@ -980,6 +984,12 @@ export async function startHostedViaServer(
   }
 
   if (tail && runId) {
+    // ALI-1045: the attached tail renders the SAME compact per-event digests
+    // `run tail` uses (agent text, tool + args, result + first output line) so
+    // the operator watching live sees what is happening without a second
+    // terminal. `--quiet` keeps the old types-only stream; `--json` keeps full
+    // fidelity.
+    const quiet = hasFlag(args, '--quiet')
     await tailWorkbenchRun({
       fetcher,
       runId,
@@ -987,7 +997,9 @@ export async function startHostedViaServer(
         io.print(
           io.json
             ? JSON.stringify(event)
-            : `#${String((event as Record<string, unknown>).sequence ?? '?')} ${String((event as Record<string, unknown>).eventType ?? '')}`
+            : quiet
+              ? formatRunEventTypeLine(event)
+              : formatRunEventDigest(event)
         ),
     })
   }
@@ -1124,8 +1136,16 @@ export async function hostedCommand(
     // fail-fast in startHostedSession throws before any session/sandbox is made.
     modelApiKey: argVal(args, '--model-key') ?? (process.env.ANTHROPIC_API_KEY || undefined),
     logLine: line => io.print(line),
+    // ALI-1045: compact per-event digests (shared with `run tail`); `--quiet`
+    // keeps the old types-only stream, `--json` keeps full fidelity.
     onTailEvent: event =>
-      io.print(io.json ? JSON.stringify(event) : `#${String(event.sequence ?? '?')} ${String(event.eventType ?? '')}`),
+      io.print(
+        io.json
+          ? JSON.stringify(event)
+          : hasFlag(args, '--quiet')
+            ? formatRunEventTypeLine(event)
+            : formatRunEventDigest(event)
+      ),
     tailImpl: tail
       ? async ({ fetcher, runId, onEvent }) => {
           await tailWorkbenchRun({ fetcher, runId, onEvent: event => onEvent?.(event as Record<string, unknown>) })

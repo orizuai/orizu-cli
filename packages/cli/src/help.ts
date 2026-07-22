@@ -772,7 +772,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['session', 'start'],
-    usage: 'orizu session start [--project <team/project>] [--workspace <dir>] [--json] | orizu session start --hosted (--task <prompt> | --task-file <path>) [--duration <min>] [--project <team/project>] [--tail]',
+    usage: 'orizu session start [--project <team/project>] [--workspace <dir>] [--json] | orizu session start --hosted (--task <prompt> | --task-file <path>) [--duration <min>] [--project <team/project>] [--tail [--quiet]]',
     summary:
       'Start a durable workspace session, or add --hosted with a task prompt to start a coordinator-managed hosted agent. Plain sessions check out their remote session branch locally when run inside the workbench clone (or with --workspace).',
     group: 'Sessions',
@@ -786,7 +786,8 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
       { name: '--model <provider/model>', help: 'Optional hosted model override.' },
       { name: '--reasoning-effort <level>', help: 'Optional hosted model reasoning-effort override.' },
       { name: '--title <title>', help: 'Optional hosted run title.' },
-      { name: '--tail', help: 'Follow the hosted run until it reaches a terminal state.' },
+      { name: '--tail', help: 'Follow the hosted run until it reaches a terminal state, streaming compact per-event digests (agent text, tool calls with args, results).' },
+      { name: '--quiet', help: 'With --tail: stream event types only (the pre-digest output).' },
       { name: '--json', help: 'Emit the machine-readable session payload.' },
     ],
     examples: [
@@ -863,7 +864,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   {
     path: ['run', 'tail'],
     usage: 'orizu run tail --run <id> [--after <seq>] [--interval <seconds>] [--once] [--json]',
-    summary: 'Cursor-poll a workbench run event log; JSON mode emits one event object per line.',
+    summary: 'Cursor-poll a workbench run event log as compact per-event digest lines; JSON mode emits one full event object per line.',
     group: 'Workbench runs',
     options: [
       { name: '--run <id>', help: 'Workbench run id.', required: true },

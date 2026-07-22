@@ -10,6 +10,7 @@ import { spawnSync } from 'child_process'
 
 import { authedFetch } from './http.js'
 import { findUnknownOption } from './option-validation.js'
+import { formatRunEventDigest } from './run-event-digest.js'
 import { getWorkspaceRoot, workspaceExists } from './workspace.js'
 import { attachedWorkspaceId, stringOrNull } from './workspace-sync.js'
 
@@ -989,9 +990,10 @@ function formatRunStatus(run: WorkbenchRun): string {
   return `run ${run.id}  ${run.status}${sequence}${costLine ? `\n  ${costLine}` : ''}`
 }
 
+// ALI-1045: one compact digest line per event — shared with the attached
+// `session start --hosted --tail` stream. Full fidelity stays in `--json`.
 function formatEventLine(event: WorkbenchRunEvent): string {
-  const payload = event.payload && Object.keys(event.payload).length > 0 ? ` ${JSON.stringify(event.payload)}` : ''
-  return `${event.sequence} ${event.eventType}${payload}`
+  return formatRunEventDigest(event)
 }
 
 function terminalStatusForCommand(command: string): string | null {
