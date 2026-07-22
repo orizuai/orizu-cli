@@ -2,6 +2,7 @@ import { basename } from 'path'
 
 import { zipDirectoryToBase64 } from './artifact-archive.js'
 import { authedFetch } from './http.js'
+import { appendRegistrationTagWarning } from './registration-tag-warning.js'
 
 /**
  * ADR-007 P5 (ALI-1074): the session-scoped, commit-first runner/optimizer
@@ -170,8 +171,10 @@ export async function pushZipDraft(input: PushZipDraftInput): Promise<PushZipDra
 
   const versionId = sanitizeTerminalText(String(data[`${input.kind}_version_id`] || 'unknown version'))
   const commit = sanitizeTerminalText(String(data.commit_sha || 'unknown commit')).slice(0, 12)
-  const message =
+  const message = appendRegistrationTagWarning(
     `Pushed ${input.kind} ${sanitizeTerminalText(input.name)} as draft ${versionId} ` +
-    `(commit ${commit}); it seals when the session branch merges`
+      `(commit ${commit}); it seals when the session branch merges`,
+    data
+  )
   return { data, message }
 }

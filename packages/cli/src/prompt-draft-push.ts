@@ -1,4 +1,5 @@
 import { authedFetch } from './http.js'
+import { appendRegistrationTagWarning } from './registration-tag-warning.js'
 
 /**
  * ADR-007 P4 (ALI-1074): the session-scoped, commit-first prompt push.
@@ -136,8 +137,10 @@ export async function pushPromptDraft(input: PushPromptDraftInput): Promise<Push
 
   const versionId = sanitizeTerminalText(String(data.prompt_version_id || 'unknown version'))
   const commit = sanitizeTerminalText(String(data.commit_sha || 'unknown commit')).slice(0, 12)
-  const message =
+  const message = appendRegistrationTagWarning(
     `Pushed ${kind} ${sanitizeTerminalText(input.displayName)} as draft ${versionId} ` +
-    `(commit ${commit}); it seals when the session branch merges`
+      `(commit ${commit}); it seals when the session branch merges`,
+    data
+  )
   return { data, message }
 }

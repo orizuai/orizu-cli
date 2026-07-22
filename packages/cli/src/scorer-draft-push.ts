@@ -1,4 +1,5 @@
 import { authedFetch } from './http.js'
+import { appendRegistrationTagWarning } from './registration-tag-warning.js'
 
 /**
  * ADR-007 P5 (ALI-1074): the session-scoped, commit-first scorer push.
@@ -148,8 +149,10 @@ export async function pushScorerDraft(input: PushScorerDraftInput): Promise<Push
 
   const versionId = sanitizeTerminalText(String(data.scorer_version_id || 'unknown version'))
   const commit = sanitizeTerminalText(String(data.commit_sha || 'unknown commit')).slice(0, 12)
-  const message =
+  const message = appendRegistrationTagWarning(
     `Registered scorer ${sanitizeTerminalText(input.name)} as draft ${versionId} ` +
-    `(commit ${commit}); it seals when the session branch merges`
+      `(commit ${commit}); it seals when the session branch merges`,
+    data
+  )
   return { data, message }
 }
