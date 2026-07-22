@@ -420,6 +420,12 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Scorers and runners',
   },
   {
+    path: ['scores', 'accept'],
+    usage: 'orizu scores accept <score-run-id> [--project <team/project>] [--json]',
+    summary: 'Record a human curator acceptance of an agent-reported score as trusted evidence (human-only).',
+    group: 'Scorers and runners',
+  },
+  {
     path: ['runners', 'push'],
     usage: 'orizu runners push <dir> [--project <team/project>] [--name <name>] [--label <label>] [--json]',
     summary: 'Push a local runner artifact directory.',

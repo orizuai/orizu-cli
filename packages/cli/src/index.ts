@@ -67,6 +67,8 @@ import { connectorsCommand } from './connectors-cli.js'
 import { ARTIFACT_MAX_BYTES, runnerOptimizerCommand } from './artifact-pull.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
+import { acceptScoreRunCommand } from './scores-accept-cli.js'
+import { listOptimizationRunsCommand } from './optimizations-list-cli.js'
 import { teamConnectorsCommand } from './team-connectors-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
@@ -2128,6 +2130,7 @@ async function submitScoreResults() {
       id: string
       scoreValue: number | null
       rowResultsStoragePath?: string | null
+      provenance?: string | null
     }
   }>(response, 'Score submit')
   if (hasJsonFlag()) {
@@ -2135,9 +2138,11 @@ async function submitScoreResults() {
     return
   }
 
+  // ALI-1175: label the stored provenance — a submitted score is a client-reported claim.
   printLine(
     `Submitted score ${sanitizeTerminalText(data.scoreRun.id)} ` +
-    `(${formatPercent(data.scoreRun.scoreValue)})`
+    `(${formatPercent(data.scoreRun.scoreValue)})` +
+    (data.scoreRun.provenance ? ` [${sanitizeTerminalText(String(data.scoreRun.provenance).replace(/_/g, '-'))}]` : '')
   )
 }
 
@@ -2284,10 +2289,23 @@ async function execScorer() {
     : scoreResult
       ? scoreResult.scoreValue
       : null
+  // ALI-1175 (round 5 thread 6 + round 6 thread 2): a scorers-exec score is an
+  // agent-reported claim whether or not it was submitted — label both the
+  // submitted (scoreRun.provenance) and the --no-submit (top-level provenance)
+  // outputs, so a displayed value is never presented as unlabeled evidence.
+  const execProvenance =
+    scoreRun && typeof scoreRun.provenance === 'string'
+      ? scoreRun.provenance
+      : typeof data.provenance === 'string'
+        ? data.provenance
+        : null
+  const provenanceSuffix = execProvenance
+    ? ` [${sanitizeTerminalText(execProvenance.replace(/_/g, '-'))}]`
+    : ''
   if (scoreRun && typeof scoreRun.id === 'string') {
-    printLine(`Executed scorer ${sanitizeTerminalText(scorerVersionId)} -> score ${sanitizeTerminalText(scoreRun.id)} (${formatPercent(numberFromUnknown(scoreValue))})`)
+    printLine(`Executed scorer ${sanitizeTerminalText(scorerVersionId)} -> score ${sanitizeTerminalText(scoreRun.id)} (${formatPercent(numberFromUnknown(scoreValue))})${provenanceSuffix}`)
   } else {
-    printLine(`Executed scorer ${sanitizeTerminalText(scorerVersionId)} (${formatPercent(numberFromUnknown(scoreValue))})`)
+    printLine(`Executed scorer ${sanitizeTerminalText(scorerVersionId)} (${formatPercent(numberFromUnknown(scoreValue))})${provenanceSuffix}`)
   }
   if (outPath) {
     printLine(`Wrote scorer result to ${sanitizeTerminalText(outPath)}`)
@@ -2581,47 +2599,8 @@ async function exportOptimizationRun() {
   printLine(`Saved optimization export to ${sanitizeTerminalText(filename)}`)
 }
 
-interface OptimizationRunSummary {
-  id: string
-  status: string
-  optimizerVersionId: string | null
-  datasetVersionId: string | null
-  bestScore: number | null
-  resultPromptVersionId: string | null
-  createdAt: string | null
-}
-
-// ALI-1073: enumerate the project's optimization runs (id, status, refs, and the
-// promoted-version link if any) so an agent/human can discover a prior run.
-async function listOptimizationRuns() {
-  const project = getArg('--project') || await resolveProjectSlug(null)
-  const response = await authedFetch(`/api/cli/optimization-runs?project=${encodeURIComponent(project)}`)
-  if (!response.ok) {
-    throw new Error(`Failed to list optimization runs: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ optimizationRuns: OptimizationRunSummary[] }>(response, 'Optimization runs list')
-  if (hasJsonFlag()) {
-    printJson(data as unknown as Record<string, unknown>)
-    return
-  }
-
-  const rows = data.optimizationRuns || []
-  if (rows.length === 0) {
-    printLine('No optimization runs found for this project.')
-    return
-  }
-
-  const idWidth = Math.max(2, ...rows.map(row => String(row.id).length))
-  const statusWidth = Math.max(6, ...rows.map(row => String(row.status).length))
-  printLine(`${'ID'.padEnd(idWidth)}  ${'STATUS'.padEnd(statusWidth)}  BEST   PROMOTED_VERSION`)
-  printLine(`${'-'.repeat(idWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(5)}  ${'-'.repeat('PROMOTED_VERSION'.length)}`)
-  for (const row of rows) {
-    const best = row.bestScore === null || row.bestScore === undefined ? '-' : String(row.bestScore)
-    const promoted = row.resultPromptVersionId || '-'
-    printLine(`${String(row.id).padEnd(idWidth)}  ${String(row.status).padEnd(statusWidth)}  ${best.padEnd(5)}  ${promoted}`)
-  }
-}
+// ALI-1073 list moved to optimizations-list-cli.ts (line ratchet, ALI-976);
+// ALI-1175 labels its best scores as agent-reported evidence there.
 
 function removeFlagWithValue(args: string[], flag: string): string[] {
   const filtered: string[] = []
@@ -6459,6 +6438,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
+  if (command === 'scores' && subcommand === 'accept') {
+    await acceptScoreRunCommand(cliArgs.slice(2), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
+    return
+  }
+
   if (command === 'optimizations' && subcommand === 'start') {
     await startOptimizationRun()
     return
@@ -6475,7 +6459,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   if (command === 'optimizations' && subcommand === 'list') {
-    await listOptimizationRuns()
+    await listOptimizationRunsCommand(cliArgs.slice(2), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
     return
   }
 
