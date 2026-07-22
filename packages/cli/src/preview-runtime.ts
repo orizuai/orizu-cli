@@ -43,6 +43,7 @@ export const PREVIEW_ALLOWED_IMPORTS: Record<string, string[]> = {
   '@/components/base/content/Prose': ['Prose', 'default'],
   '@/components/base/behaviors/Annotatable': ['Annotatable', 'default'],
   '@/components/base/behaviors/Reactable': ['Reactable', 'default'],
+  '@/components/base/input/ChoiceGroup': ['ChoiceGroup'],
   '@/components/base/input/CommentBox': ['CommentBox'],
   '@/components/base/input/CriterionRating': ['CriterionRating'],
   '@/components/base/input/LikertScale': ['LikertScale'],
@@ -51,8 +52,10 @@ export const PREVIEW_ALLOWED_IMPORTS: Record<string, string[]> = {
   '@/components/base/input/StarRating': ['StarRating'],
   '@/components/base/input/TagPicker': ['TagPicker'],
   '@/components/base/input/ThumbsRating': ['ThumbsRating'],
+  '@/components/base/input/TrackedChangesEditor': ['TrackedChangesEditor'],
   '@/components/base/ui/ComparisonPanel': ['ComparisonPanel'],
   '@/components/base/ui/DraggableItem': ['DraggableItem'],
+  '@/components/base/ui/ShortcutButton': ['ShortcutButton'],
   '@/components/templates/classification/TagSelector': ['TagSelector'],
   '@/components/templates/comparison/SideBySideComparison': ['SideBySideComparison'],
   '@/components/templates/correction/CorrectionTask': ['CorrectionTask'],
@@ -824,6 +827,38 @@ export function Reactable({ children, className, reactions, ...props }) {
   const inputSource = `
 import React from 'react'
 function cn(...values) { return values.filter(Boolean).join(' ') }
+export function ChoiceGroup({ value, options = [], onChange, ariaLabel = 'Choose an option', className, disabled = false, readOnly = false, ...props }) {
+  const buttonRefs = React.useRef([])
+  const firstEnabledIndex = options.findIndex(option => !option.disabled)
+  const selectedEnabledIndex = options.findIndex(option => option.value === value && !option.disabled)
+  const tabStopIndex = selectedEnabledIndex >= 0 ? selectedEnabledIndex : firstEnabledIndex
+  const lastEnabledIndex = options.reduce((lastIndex, option, index) => option.disabled ? lastIndex : index, -1)
+  const handleKeyDown = (event, currentIndex) => {
+    if (disabled || readOnly) return
+    const direction = event.key === 'ArrowRight' || event.key === 'ArrowDown'
+      ? 1
+      : event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+        ? -1
+        : 0
+    let nextIndex = currentIndex
+    if (event.key === 'Home') nextIndex = firstEnabledIndex
+    if (event.key === 'End') nextIndex = lastEnabledIndex
+    if (direction !== 0) {
+      for (let offset = 1; offset <= options.length; offset += 1) {
+        const candidate = (currentIndex + direction * offset + options.length) % options.length
+        if (!options[candidate].disabled) {
+          nextIndex = candidate
+          break
+        }
+      }
+    }
+    if (nextIndex === currentIndex || nextIndex < 0) return
+    event.preventDefault()
+    onChange?.(options[nextIndex].value)
+    buttonRefs.current[nextIndex]?.focus()
+  }
+  return <div {...props} role="radiogroup" aria-label={ariaLabel} aria-disabled={disabled || undefined} aria-readonly={readOnly || undefined} className={cn('flex flex-wrap gap-2', disabled && 'opacity-60', className)}>{options.map((option, index) => { const selected = option.value === value; const isNativeDisabled = disabled || option.disabled; const isMutationLocked = isNativeDisabled || readOnly; return <button key={option.value} ref={element => { buttonRefs.current[index] = element }} type="button" role="radio" aria-checked={selected} disabled={isNativeDisabled} tabIndex={index === tabStopIndex ? 0 : -1} onKeyDown={event => handleKeyDown(event, index)} onClick={() => { if (!isMutationLocked) onChange?.(option.value) }} className={cn('rounded-md border px-3 py-2 text-sm', selected ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background')}>{option.label}</button> })}</div>
+}
 export function CommentBox({ value, onChange, placeholder, className, ...props }) {
   return <textarea {...props} value={value} placeholder={placeholder} onChange={(event) => onChange?.(event.target.value)} className={cn('min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm', className)} />
 }
@@ -842,6 +877,9 @@ export function CriterionRating({ criteria = [], value = {}, onChange, className
 export function TagPicker({ options = [], value = [], onChange, className, ...props }) {
   return <div {...props} className={cn('flex flex-wrap gap-2', className)}>{options.map(option => { const selected = value.includes(option); return <button key={option} type="button" onClick={() => onChange?.(selected ? value.filter(v => v !== option) : [...value, option])} className={cn('rounded-full border px-3 py-1 text-sm', selected && 'bg-primary text-primary-foreground')}>{option}</button> })}</div>
 }
+export function TrackedChangesEditor({ originalValue = '', value = '', onChange, readOnly, className, ...props }) {
+  return <div {...props} className={cn('space-y-3', className)}><textarea aria-label="Tracked changes editor" value={value} readOnly={readOnly} onChange={(event) => onChange?.(event.target.value)} className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" /><div className="whitespace-pre-wrap rounded-md border bg-muted p-3 text-sm">{value || originalValue}</div></div>
+}
 `
 
   const templateSource = `
@@ -857,6 +895,59 @@ export const CodeComparison = Template
 export const ContextualQA = Template
 export const RankingList = Template
 export const SingleItemRater = Template
+`
+
+  const shortcutButtonSource = `
+import React from 'react'
+function cn(...values) { return values.filter(Boolean).join(' ') }
+function labelFor(shortcut) {
+  const labels = { mod: '⌘', meta: '⌘', control: '⌃', ctrl: '⌃', shift: '⇧', alt: '⌥', enter: '↵', escape: 'Esc', arrowright: '→', arrowleft: '←', arrowup: '↑', arrowdown: '↓' }
+  return shortcut.split('+').map(part => labels[part.trim().toLowerCase()] || part.trim().toUpperCase()).join(' ')
+}
+const shortcutModifierNames = new Set(['alt', 'control', 'ctrl', 'meta', 'mod', 'shift'])
+function normalizeShortcutKey(key) {
+  const normalized = key.toLowerCase()
+  if (normalized === ' ') return 'space'
+  if (normalized === 'esc') return 'escape'
+  return normalized
+}
+function matchesShortcut(event, shortcut) {
+  const parts = shortcut.split('+').map(part => part.trim().toLowerCase()).filter(Boolean)
+  const modifiers = new Set(parts.filter(part => shortcutModifierNames.has(part)))
+  const shortcutKey = parts.find(part => !shortcutModifierNames.has(part))
+  if (!shortcutKey || normalizeShortcutKey(event.key) !== normalizeShortcutKey(shortcutKey)) return false
+  const expectsMod = modifiers.has('mod')
+  const expectedModifiers = {
+    alt: modifiers.has('alt'),
+    control: modifiers.has('control') || modifiers.has('ctrl'),
+    meta: modifiers.has('meta'),
+    shift: modifiers.has('shift'),
+  }
+  if (expectsMod && !event.metaKey && !event.ctrlKey) return false
+  if (!expectsMod && event.metaKey !== expectedModifiers.meta) return false
+  if (!expectsMod && event.ctrlKey !== expectedModifiers.control) return false
+  if (expectsMod && expectedModifiers.meta && !event.metaKey) return false
+  if (expectsMod && expectedModifiers.control && !event.ctrlKey) return false
+  if (event.altKey !== expectedModifiers.alt) return false
+  if (event.shiftKey !== expectedModifiers.shift) return false
+  return true
+}
+export function ShortcutButton({ shortcut, shortcutLabel, children, className, disabled, onClick, enableShortcut = true, allowInTextFields = false, ...props }) {
+  const ref = React.useRef(null)
+  React.useEffect(() => {
+    if (!enableShortcut || disabled) return
+    const handler = event => {
+      if (event.defaultPrevented || event.repeat) return
+      if (!allowInTextFields && event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+      if (!matchesShortcut(event, shortcut)) return
+      event.preventDefault()
+      ref.current?.click()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [allowInTextFields, disabled, enableShortcut, shortcut])
+  return <button {...props} ref={ref} disabled={disabled} onClick={onClick} className={cn('inline-flex items-center justify-between gap-3 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground', className)}><span>{children}</span><kbd className="rounded border border-border bg-background px-1.5 py-1 font-mono text-[10px] text-foreground">{shortcutLabel || labelFor(shortcut)}</kbd></button>
+}
 `
 
   return {
@@ -886,6 +977,7 @@ export const SingleItemRater = Template
     '@/components/base/content/Prose': proseSource,
     '@/components/base/behaviors/Annotatable': `${behaviorSource}\nexport default Annotatable`,
     '@/components/base/behaviors/Reactable': `${behaviorSource}\nexport default Reactable`,
+    '@/components/base/input/ChoiceGroup': inputSource,
     '@/components/base/input/CommentBox': inputSource,
     '@/components/base/input/CriterionRating': inputSource,
     '@/components/base/input/LikertScale': inputSource,
@@ -894,8 +986,10 @@ export const SingleItemRater = Template
     '@/components/base/input/StarRating': inputSource,
     '@/components/base/input/TagPicker': inputSource,
     '@/components/base/input/ThumbsRating': inputSource,
+    '@/components/base/input/TrackedChangesEditor': inputSource,
     '@/components/base/ui/ComparisonPanel': `${primitiveSource}\nexport const ComparisonPanel = primitive('div', 'grid gap-4 rounded-lg border bg-card p-4 md:grid-cols-2')`,
     '@/components/base/ui/DraggableItem': `${primitiveSource}\nexport const DraggableItem = primitive('div', 'cursor-grab rounded-md border bg-card p-3')`,
+    '@/components/base/ui/ShortcutButton': shortcutButtonSource,
     '@/components/templates/classification/TagSelector': templateSource,
     '@/components/templates/comparison/SideBySideComparison': templateSource,
     '@/components/templates/correction/CorrectionTask': templateSource,

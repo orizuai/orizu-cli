@@ -495,6 +495,7 @@ import { Reactable } from '@/components/base/behaviors/Reactable';
 
 // Input
 import { CommentBox } from '@/components/base/input/CommentBox';
+import { ChoiceGroup } from '@/components/base/input/ChoiceGroup';
 import { CriterionRating } from '@/components/base/input/CriterionRating';
 import { LikertScale } from '@/components/base/input/LikertScale';
 import { NumericRating } from '@/components/base/input/NumericRating';
@@ -502,10 +503,12 @@ import { RatingSelector } from '@/components/base/input/RatingSelector';
 import { StarRating } from '@/components/base/input/StarRating';
 import { TagPicker } from '@/components/base/input/TagPicker';
 import { ThumbsRating } from '@/components/base/input/ThumbsRating';
+import { TrackedChangesEditor } from '@/components/base/input/TrackedChangesEditor';
 
 // Base UI
 import { ComparisonPanel } from '@/components/base/ui/ComparisonPanel';
 import { DraggableItem } from '@/components/base/ui/DraggableItem';
+import { ShortcutButton } from '@/components/base/ui/ShortcutButton';
 
 // Templates
 import { TagSelector } from '@/components/templates/classification/TagSelector';
@@ -866,6 +869,39 @@ Wraps any child. Adds an on-hover affordance rail (thumbs, flag, configurable). 
 
 Capture feedback. Rating selectors, comments, criterion ratings, tags. These are the surfaces you slot inside a behavior.
 
+#### ChoiceGroup {#choicegroup}
+
+Generic select-one buttons with accessible radio semantics. Use this instead of visually exposing native radio controls.
+
+**Source:** [components/base/input/ChoiceGroup.tsx](https://orizu.ai/docs/components/ChoiceGroup/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ChoiceGroup } from "@/components/base/input/ChoiceGroup"`
+
+**Props:**
+- `value` * — `string | null`
+- `options` * — `ChoiceOption[]` — { value, label, description?, disabled? }
+- `ariaLabel` * — `string`
+- `onChange` — `(value: string) => void`
+- `layout` — `"responsive" | "horizontal" | "vertical"` (default: `"responsive"`)
+- `size` — `"sm" | "md" | "lg"` (default: `"md"`)
+- `selectedStyle` — `"solid" | "soft"` (default: `"solid"`)
+- `disabled` — `boolean` (default: `false`)
+- `readOnly` — `boolean` (default: `false`)
+- `equalWidth` — `boolean` (default: `true`)
+
+**Review in Storybook (Orizu checkout):**
+- [Choice group](http://localhost:6006/?path=/story/labeling-choice-group--variants-and-states) — unselected, solid selection, soft selection, descriptions, sizes, disabled, read-only
+
+**Minimal usage:**
+
+```jsx
+<ChoiceGroup
+  value={"..."}
+  options={[]}
+  ariaLabel={"..."}
+/>
+```
+
 #### RatingSelector {#ratingselector}
 
 One component, five rating mechanisms. Switch via the ratingType prop. Use this when you want the rating type to be configurable per task.
@@ -910,6 +946,10 @@ Hover-previewed star rating with configurable scale and active color.
 - `inactiveColor` — `string` (default: `"text-border"`)
 - `onChange` — `(rating: number) => void`
 
+**Review in Storybook (Orizu checkout):**
+- [Rating mechanisms](http://localhost:6006/?path=/story/labeling-inputs--rating-mechanisms) — interactive selection
+- [Rating variants and states](http://localhost:6006/?path=/story/labeling-inputs--rating-variants-and-states) — empty, selected, read-only, sizes, layouts, selection styles
+
 **Minimal usage:**
 
 ```jsx
@@ -933,6 +973,10 @@ Row of numbered buttons. The most legible scale at a glance — pick this when a
 - `size` — `"sm" | "md" | "lg"` (default: `"md"`)
 - `readOnly` — `boolean` (default: `false`)
 - `onChange` — `(rating: number) => void`
+
+**Review in Storybook (Orizu checkout):**
+- [Rating mechanisms](http://localhost:6006/?path=/story/labeling-inputs--rating-mechanisms) — interactive selection
+- [Rating variants and states](http://localhost:6006/?path=/story/labeling-inputs--rating-variants-and-states) — empty, selected, read-only, sizes, layouts, selection styles
 
 **Minimal usage:**
 
@@ -961,6 +1005,10 @@ Binary feedback. Three visual styles (filled / outline / icon) and an optional m
 - `downText` — `string` (default: `"Dislike"`)
 - `readOnly` — `boolean` (default: `false`)
 
+**Review in Storybook (Orizu checkout):**
+- [Rating mechanisms](http://localhost:6006/?path=/story/labeling-inputs--rating-mechanisms) — interactive selection
+- [Rating variants and states](http://localhost:6006/?path=/story/labeling-inputs--rating-variants-and-states) — empty, selected, read-only, sizes, layouts, selection styles
+
 **Minimal usage:**
 
 ```jsx
@@ -983,6 +1031,10 @@ Ordered radio scale with custom labels. Horizontal by default; verticalize for l
 - `horizontal` — `boolean` (default: `true`)
 - `readOnly` — `boolean` (default: `false`)
 - `onChange` — `(value: string) => void`
+
+**Review in Storybook (Orizu checkout):**
+- [Rating mechanisms](http://localhost:6006/?path=/story/labeling-inputs--rating-mechanisms) — interactive selection
+- [Rating variants and states](http://localhost:6006/?path=/story/labeling-inputs--rating-variants-and-states) — empty, selected, read-only, sizes, layouts, selection styles
 
 **Minimal usage:**
 
@@ -1010,6 +1062,9 @@ A single bordered criterion (label + optional collapsible description) with a ho
 - `initiallyExpanded` — `boolean` (default: `false`)
 - `readOnly` — `boolean` (default: `false`)
 - `onChange` — `(id, value) => void`
+
+**Review in Storybook (Orizu checkout):**
+- [Rubrics and tags](http://localhost:6006/?path=/story/labeling-inputs--rubrics-and-tags) — interactive criterion, grouped tags, custom tags
 
 **Minimal usage:**
 
@@ -1043,6 +1098,10 @@ Multiline text input with label, instructions, validation (min/max length), and 
 - `error` — `string` — Shown after blur.
 - `readOnly` — `boolean` (default: `false`)
 
+**Review in Storybook (Orizu checkout):**
+- [Comment states](http://localhost:6006/?path=/story/labeling-inputs--comment-states) — interactive, instructions, character limit
+- [Text and tag variants](http://localhost:6006/?path=/story/labeling-inputs--text-and-tag-variants-and-states) — empty, filled, invalid, grouped, single-select, read-only
+
 **Minimal usage:**
 
 ```jsx
@@ -1070,12 +1129,47 @@ Pill-shaped tag selector. Single or multi-select, optional category grouping, op
 - `onTagsChange` — `(ids: string[]) => void`
 - `onCustomTagAdd` — `(label: string) => void`
 
+**Review in Storybook (Orizu checkout):**
+- [Rubrics and tags](http://localhost:6006/?path=/story/labeling-inputs--rubrics-and-tags) — interactive criterion, grouped tags, custom tags
+- [Text and tag variants](http://localhost:6006/?path=/story/labeling-inputs--text-and-tag-variants-and-states) — empty, filled, invalid, grouped, single-select, read-only
+
 **Minimal usage:**
 
 ```jsx
 <TagPicker
   availableTags={[]}
   selectedTagIds={[]}
+/>
+```
+
+#### TrackedChangesEditor {#trackedchangeseditor}
+
+Editable text paired with a live added/removed diff. Reuse it anywhere reviewers correct content.
+
+**Source:** [components/base/input/TrackedChangesEditor.tsx](https://orizu.ai/docs/components/TrackedChangesEditor/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { TrackedChangesEditor } from "@/components/base/input/TrackedChangesEditor"`
+
+**Props:**
+- `originalValue` * — `string`
+- `value` * — `string`
+- `onChange` — `(value: string) => void`
+- `placeholder` — `string` (default: `"Edit the text…"`)
+- `readOnly` — `boolean` (default: `false`)
+- `isMonospace` — `boolean` (default: `false`)
+- `minHeight` — `number` (default: `220`)
+- `showLegend` — `boolean` (default: `true`)
+
+**Review in Storybook (Orizu checkout):**
+- [Tracked changes editor](http://localhost:6006/?path=/story/labeling-tracked-changes--editable) — interactive editing, added tokens, removed tokens
+- [Tracked changes states](http://localhost:6006/?path=/story/labeling-tracked-changes--variants-and-states) — changed, unchanged, read-only, monospace
+
+**Minimal usage:**
+
+```jsx
+<TrackedChangesEditor
+  originalValue={"..."}
+  value={"..."}
 />
 ```
 
@@ -1125,14 +1219,18 @@ A row that supports both native drag-and-drop and explicit up/down buttons. The 
 - `maxRank` — `number` (default: `0`)
 - `isDragging` — `boolean` (default: `false`)
 - `isDraggedOver` — `boolean` (default: `false`)
+- `dropPosition` — `"before" | "after" | null` (default: `null`)
 - `showControls` — `boolean` (default: `true`)
 - `disableControls` — `boolean` (default: `false`)
 - `onDragStart` — `(id) => void`
-- `onDragOver` — `(id) => void`
+- `onDragOver` — `(id, position) => void`
 - `onDrop` — `(id) => void`
 - `onDragEnd` — `() => void`
 - `onMoveUp` — `(id) => void`
 - `onMoveDown` — `(id) => void`
+
+**Review in Storybook (Orizu checkout):**
+- [Ordering states](http://localhost:6006/?path=/story/labeling-ordering--variants-and-states) — default, dragging, drop before, drop after, boundary, disabled
 
 **Minimal usage:**
 
@@ -1140,6 +1238,38 @@ A row that supports both native drag-and-drop and explicit up/down buttons. The 
 <DraggableItem
   id={"..."}
   children={<span />}
+/>
+```
+
+#### ShortcutButton {#shortcutbutton}
+
+A shared Button with a visible keycap anchored on the right and an optional working global shortcut.
+
+**Source:** [components/base/ui/ShortcutButton.tsx](https://orizu.ai/docs/components/ShortcutButton/source) — fetch this URL to read the implementation, or to copy it inline as a private fork if the registered props don't fit your task.
+
+**Import:** `import { ShortcutButton } from "@/components/base/ui/ShortcutButton"`
+
+**Props:**
+- `children` * — `ReactNode`
+- `shortcut` * — `string` — Key or chord, for example "1", "Shift+R", or "Mod+Enter".
+- `shortcutLabel` — `string` — Optional visible keycap override.
+- `enableShortcut` — `boolean` (default: `true`)
+- `allowInTextFields` — `boolean` (default: `false`) — By default shortcuts do not fire while typing.
+- `shortcutClassName` — `string`
+- `variant` — `Button variant` (default: `"default"`)
+- `size` — `"default" | "sm" | "lg" | "icon"` (default: `"default"`)
+- `disabled` — `boolean` (default: `false`)
+- `onClick` — `MouseEventHandler<HTMLButtonElement>`
+
+**Review in Storybook (Orizu checkout):**
+- [Shortcut button](http://localhost:6006/?path=/story/labeling-shortcut-button--variants-and-states) — variants, key forms, sizes, icons, disabled
+
+**Minimal usage:**
+
+```jsx
+<ShortcutButton
+  children={<span />}
+  shortcut={"..."}
 />
 ```
 
