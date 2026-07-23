@@ -974,7 +974,10 @@ class OptimizerTests(unittest.TestCase):
 
         client = FakeClient()
         context, rows = client.fetch_scorer_exec_context(
-            scorer_version_id="scorer-version-1",
+            # Older prompt pull manifests exposed this prompt-version ID as if
+            # it were an executable scorer version. The server resolves that
+            # alias and returns the canonical scorer ID in the context.
+            scorer_version_id="scorer-prompt-version-1",
             runner_version_id=None,
             dataset_version_id="dataset-version-1",
             split_set_id="split-set-1",

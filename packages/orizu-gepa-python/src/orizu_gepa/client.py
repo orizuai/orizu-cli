@@ -200,7 +200,10 @@ class OrizuClient:
             prompt_version_id=prompt["promptVersionId"],
             runner_version_id=prompt["runnerVersionId"],
             prompt_id=prompt.get("promptId"),
-            scorer_version_id=scorer_version_id,
+            # The request may use a legacy prompt-version alias. Persist and
+            # submit the canonical executable scorer version returned by the
+            # server so optimization runs never mix the two ID namespaces.
+            scorer_version_id=scorer.get("versionId") or scorer.get("version_id") or scorer_version_id,
             metric_key=scorer.get("metricKey") or scorer.get("metric_key"),
             higher_is_better=higher_is_better,
         ), rows

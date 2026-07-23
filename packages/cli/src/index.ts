@@ -29,6 +29,8 @@ import {
 import { parseDatasetFile } from './file-parser.js'
 import { streamJsonlRowChunks } from './jsonl-stream.js'
 import { parseDatasetReference } from './dataset-download.js'
+import { editDatasetRows as runEditDatasetRows } from './dataset-edit-rows.js'
+import { ensureDatasetUploadSnapshot } from './dataset-upload-snapshot.js'
 import { extractErrorMessage } from './error-response.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
@@ -226,6 +228,15 @@ interface DatasetUploadResponse {
     version_num: number
     created_at: string
   } | null
+}
+
+interface DatasetVersionResponse {
+  datasetVersion: {
+    id: string
+    rowCount: number
+    artifactFormat?: string
+    artifactStoragePath?: string
+  }
 }
 
 interface TeamMember {
@@ -1668,6 +1679,15 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
       bundle?: Record<string, unknown>
     }
     labels?: Array<{ label: string; promptVersionId: string }>
+    scorerVersionId?: string | null
+    scorerVersions?: Array<{
+      id: string
+      scorerId: string
+      promptVersionId: string
+      runnerVersionId: string
+      metricKey: string
+      higherIsBetter: boolean
+    }>
   }>(response, `${kind} pull`)
 
   const targetDir = expandHomePath(outDir)
@@ -1713,6 +1733,14 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
   const labels = (data.labels || [])
     .filter(item => item.promptVersionId === data.version.id)
     .map(item => item.label)
+  const scorerVersions = (data.scorerVersions || []).map(item => ({
+    id: item.id,
+    scorer_id: item.scorerId,
+    prompt_version_id: item.promptVersionId,
+    runner_version_id: item.runnerVersionId,
+    metric_key: item.metricKey,
+    higher_is_better: item.higherIsBetter,
+  }))
 
   const manifest: Record<string, unknown> = {
     schema_version: 'orizu.prompt.v1',
@@ -1726,6 +1754,8 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
     provider_settings: data.version.providerSettings || {},
     runner_version_id: data.version.runnerVersionId || undefined,
     version_id: data.version.id,
+    scorer_version_id: data.scorerVersionId || undefined,
+    scorer_versions: scorerVersions.length > 0 ? scorerVersions : undefined,
     version_number: data.version.versionNumber,
     version_label: data.version.versionLabel || undefined,
     labels,
@@ -1741,12 +1771,24 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
     printJson({
       prompt_id: data.prompt.id,
       prompt_version_id: data.version.id,
+      scorer_version_id: data.scorerVersionId || undefined,
+      scorer_version_ids: scorerVersions.map(item => item.id),
       path: targetDir,
     })
     return
   }
 
   printLine(`Pulled ${kind} ${sanitizeTerminalText(data.prompt.name)} to ${sanitizeTerminalText(targetDir)}`)
+  if (!data.scorerVersionId && scorerVersions.length > 1) {
+    printLine(
+      `Warning: prompt version ${sanitizeTerminalText(data.version.id)} maps to multiple scorer versions ` +
+      `(${scorerVersions.map(item => sanitizeTerminalText(item.id)).join(', ')}); choose an explicit scorer version ID.`
+    )
+  } else if (!data.scorerVersionId && kind === 'judge') {
+    printLine(
+      `Warning: prompt version ${sanitizeTerminalText(data.version.id)} does not map to an executable scorer version.`
+    )
+  }
 }
 
 async function setPromptLabel() {
@@ -1917,6 +1959,28 @@ async function resolveDatasetIdForProject(datasetRef: string, projectArg: string
   return matches[0].id
 }
 
+async function requestDatasetVersionSnapshot(
+  datasetId: string,
+  options: { versionLabel?: string | null; readmeMarkdown?: string | null } = {}
+): Promise<DatasetVersionResponse> {
+  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(options.versionLabel ? { versionLabel: options.versionLabel } : {}),
+      ...(options.readmeMarkdown !== undefined && options.readmeMarkdown !== null
+        ? { readmeMarkdown: options.readmeMarkdown }
+        : {}),
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to create dataset version: ${await extractErrorMessage(response)}`)
+  }
+
+  return parseJsonResponse<DatasetVersionResponse>(response, 'Dataset version create')
+}
+
 async function createDatasetVersion() {
   const datasetId = getPositionalArg(3) || getArg('--dataset')
   const versionLabel = getArg('--label') || getArg('--version-label') || null
@@ -1929,27 +1993,10 @@ async function createDatasetVersion() {
 
   const readmeMarkdown = readReadmeMarkdownFromArgs(usage)
   const resolvedDatasetId = await resolveDatasetIdForProject(datasetId, project)
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(resolvedDatasetId)}/versions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      versionLabel,
-      ...(readmeMarkdown !== null ? { readmeMarkdown } : {}),
-    }),
+  const data = await requestDatasetVersionSnapshot(resolvedDatasetId, {
+    versionLabel,
+    readmeMarkdown,
   })
-
-  if (!response.ok) {
-    throw new Error(`Failed to create dataset version: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    datasetVersion: {
-      id: string
-      rowCount: number
-      artifactFormat?: string
-      artifactStoragePath?: string
-    }
-  }>(response, 'Dataset version create')
 
   if (hasJsonFlag()) {
     printJson({
@@ -5268,11 +5315,11 @@ async function uploadJsonlDatasetInChunks(
     throw new Error('Dataset file contains no rows')
   }
 
-  if (hasJsonFlag()) {
-    printJson({ dataset })
-    return
-  }
+  const version = await ensureDatasetUploadSnapshot(dataset, hasJsonFlag(), requestDatasetVersionSnapshot)
+
+  if (hasJsonFlag()) return printJson({ dataset_id: dataset.id, dataset, dataset_version_id: version.datasetVersion.id })
   printLine(`Uploaded dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) with ${dataset.rowCount} rows.`)
+  printLine(`Created dataset version ${sanitizeTerminalText(version.datasetVersion.id)}.`)
   if (dataset.url) {
     printLine(`View dataset: ${formatTerminalLink(dataset.url)}`)
   }
@@ -5300,12 +5347,11 @@ async function uploadDataset() {
 
   const { rows, sourceType } = parseDatasetFile(file)
   const data = await createDatasetFromRows(project, datasetName, sourceType, rows, readmeMarkdown)
+  const version = await ensureDatasetUploadSnapshot(data.dataset, hasJsonFlag(), requestDatasetVersionSnapshot)
 
-  if (hasJsonFlag()) {
-    printJson({ dataset: data.dataset })
-    return
-  }
+  if (hasJsonFlag()) return printJson({ dataset_id: data.dataset.id, dataset: data.dataset, dataset_version_id: version.datasetVersion.id })
   printLine(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`)
+  printLine(`Created dataset version ${sanitizeTerminalText(version.datasetVersion.id)}.`)
   if (data.dataset.url) {
     printLine(`View dataset: ${formatTerminalLink(data.dataset.url)}`)
   }
@@ -5327,12 +5373,14 @@ async function pushDataset() {
   const datasetName = name || basename(file)
   const { rows, sourceType } = parseDatasetFile(file)
   const data = await createDatasetFromRows(project, datasetName, sourceType, rows, readmeMarkdown)
+  const version = await ensureDatasetUploadSnapshot(data.dataset, hasJsonFlag(), requestDatasetVersionSnapshot)
 
   if (hasJsonFlag()) {
     const payload: Record<string, unknown> = {
       dataset_id: data.dataset.id,
       name: data.dataset.name,
       row_count: data.dataset.rowCount,
+      dataset_version_id: version.datasetVersion.id,
     }
     if (data.readmeVersion?.id) {
       payload.readme_version_id = data.readmeVersion.id
@@ -5342,6 +5390,7 @@ async function pushDataset() {
   }
 
   printLine(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`)
+  printLine(`Created dataset version ${sanitizeTerminalText(version.datasetVersion.id)}.`)
   if (data.dataset.url) {
     printLine(`View dataset: ${formatTerminalLink(data.dataset.url)}`)
   }
@@ -5451,7 +5500,6 @@ async function downloadDataset() {
 
 const MAX_INPUT_FILE_SIZE_BYTES = 50 * 1024 * 1024 // 50 MB
 const APPEND_CHUNK_SIZE_ROWS = 500
-
 async function appendChunk(
   datasetId: string,
   rows: Array<Record<string, unknown>>
@@ -5638,51 +5686,14 @@ async function editDatasetRows() {
     datasetId = selected.datasetId
   }
 
-  const file = expandHomePath(fileArg)
-  const { rows } = parseDatasetFile(file)
-  if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error('Dataset edit file must contain at least one row')
-  }
-
-  const normalizedRows = rows.map((row, index) => {
-    if (typeof row !== 'object' || row === null || Array.isArray(row)) {
-      throw new Error(`Dataset edit file rows[${index}] must be an object`)
-    }
-
-    const rowRecord = row as Record<string, unknown>
-    const rowId = typeof rowRecord.id === 'string' ? rowRecord.id.trim() : ''
-    if (!rowId) {
-      throw new Error(`Dataset edit file rows[${index}] must include a non-empty string id`)
-    }
-
-    return {
-      ...rowRecord,
-      id: rowId,
-    }
+  await runEditDatasetRows({
+    datasetId,
+    file: expandHomePath(fileArg),
+    json: hasJsonFlag(),
+    printJson,
+    printLine,
+    sanitize: sanitizeTerminalText,
   })
-
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/rows`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rows: normalizedRows }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Edit rows failed: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    dataset: { id: string; name: string; rowCount: number }
-    updatedCount: number
-  }>(response, 'Dataset edit rows')
-
-  if (hasJsonFlag()) {
-    printJson({ dataset: data.dataset, updatedCount: data.updatedCount })
-    return
-  }
-  printLine(
-    `Updated ${data.updatedCount} rows in dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Current row count: ${data.dataset.rowCount}`
-  )
 }
 
 async function deleteDatasetRows() {

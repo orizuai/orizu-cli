@@ -294,7 +294,7 @@ def main() -> None:
         project=args.project,
         optimizer_version_id=args.optimizer_version_id,
         prompt_version_id=args.candidate_version_id,
-        scorer_version_id=args.scorer_version_id,
+        scorer_version_id=scorer_context.scorer_version_id or args.scorer_version_id,
         dataset_version_id=args.dataset_version_id,
         split_set_id=args.split_set_id,
         train_split=args.train_split,
