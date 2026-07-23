@@ -19,6 +19,8 @@
 
 import { appendFileSync } from 'fs'
 
+import { serveOnLoopback } from './loopback-serve.js'
+
 const RESERVED_EVENT_TYPES = new Set(['run_started', 'run_completed', 'run_failed', 'run_cancelled'])
 
 // Mirror the PRODUCTION route (app/api/cli/workspaces/[id]/repo-token/route.ts):
@@ -75,7 +77,7 @@ export function readBrokerConfigFromEnv(env: NodeJS.ProcessEnv): BrokerConfig {
     repoTokenStatus: env.HB_REPO_TOKEN_STATUS ? Number.parseInt(env.HB_REPO_TOKEN_STATUS, 10) : undefined,
     eventsStatus: env.HB_EVENTS_STATUS ? Number.parseInt(env.HB_EVENTS_STATUS, 10) : undefined,
     denyWrite: env.HB_DENY_WRITE === '1',
-    port: env.HB_PORT ? Number.parseInt(env.HB_PORT, 10) : 0,
+    port: env.HB_PORT ? Number.parseInt(env.HB_PORT, 10) : undefined,
     fullRunApi: env.HB_FULL_RUN_API === '1',
     sessionId: env.HB_SESSION_ID,
     sessionBranch: env.HB_SESSION_BRANCH,
@@ -124,150 +126,146 @@ export function startBrokerServer(config: BrokerConfig): { port: number; stop: (
     }
   }
 
-  return bun().serve({
-    port: config.port ?? 0,
-    hostname: '127.0.0.1',
-    async fetch(request) {
-      const url = new URL(request.url)
-      const method = request.method.toUpperCase()
-      if (!authOk(request.headers.get('authorization') ?? '')) {
-        return json({ error: 'Unauthorized' }, 401)
-      }
-      const body =
-        method === 'POST' || method === 'PATCH'
-          ? ((await request.json().catch(() => ({}))) as Record<string, unknown>)
-          : {}
+  return serveOnLoopback(bun(), config.port, async request => {
+    const url = new URL(request.url)
+    const method = request.method.toUpperCase()
+    if (!authOk(request.headers.get('authorization') ?? '')) {
+      return json({ error: 'Unauthorized' }, 401)
+    }
+    const body =
+      method === 'POST' || method === 'PATCH'
+        ? ((await request.json().catch(() => ({}))) as Record<string, unknown>)
+        : {}
 
-      // -- Full RunAPI + session + agent-token (E2E mode only) --------------
-      if (config.fullRunApi) {
-        const sessionsMatch = url.pathname.match(/^\/api\/cli\/workspaces\/([^/]+)\/sessions$/)
-        if (method === 'POST' && sessionsMatch) {
-          sessions += 1
-          const id = config.sessionId ?? `sess-e2e-${sessions}`
-          const repoBranch = config.sessionBranch ?? `orizu/session-${id}`
-          return json(
-            { session: { id, workspaceId: sessionsMatch[1], repoBranch, status: 'active' } },
-            201
-          )
-        }
-        const agentTokenMatch = url.pathname.match(/^\/api\/cli\/sessions\/([^/]+)\/agent-token$/)
-        if (method === 'POST' && agentTokenMatch) {
-          agentTokens += 1
-          const issued = `orizu_agent_e2e_${agentTokens}_${Math.random().toString(36).slice(2)}`
-          // A fresh mint rotates the current token: the previous one is now stale
-          // for agent-authenticated writes.
-          currentAgentToken = issued
-          return json(
-            {
-              token: issued,
-              agentUserId: 'agent-user-e2e',
-              sessionId: agentTokenMatch[1],
-              expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-            },
-            201
-          )
-        }
-        if (method === 'POST' && url.pathname === '/api/cli/workbench-runs') {
-          if (!agentWriteOk(request.headers.get('authorization') ?? '')) {
-            return json({ error: 'stale agent token' }, 401)
-          }
-          runs += 1
-          const runId = `run-e2e-${runs}`
-          runStatus.set(runId, 'running')
-          recordEvent(runId, { eventId: 'run_started', sequence: 1, eventType: 'run_started', payload: {} })
-          return json({ run: { id: runId, status: 'running' } }, 201)
-        }
-        const runEventsGet = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)\/events$/)
-        if (method === 'GET' && runEventsGet) {
-          const runId = runEventsGet[1]
-          const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10) || 0
-          const limit = Number.parseInt(url.searchParams.get('limit') ?? '500', 10) || 500
-          const all = runEvents.get(runId) ?? []
-          const page = all.filter(e => e.sequence > after).slice(0, limit)
-          const cursor = page.length > 0 ? page[page.length - 1].sequence : after
-          return json({ events: page, cursor, runStatus: runStatus.get(runId) ?? 'running' })
-        }
-        const runDetail = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)$/)
-        if (method === 'GET' && runDetail) {
-          return json({ run: { id: runDetail[1], status: runStatus.get(runDetail[1]) ?? 'running' } })
-        }
-        if (method === 'PATCH' && runDetail) {
-          if (!agentWriteOk(request.headers.get('authorization') ?? '')) {
-            return json({ error: 'stale agent token' }, 401)
-          }
-          const runId = runDetail[1]
-          const status = String(body.status ?? '')
-          if (!['succeeded', 'failed', 'cancelled'].includes(status)) {
-            return json({ error: 'invalid terminal status' }, 400)
-          }
-          const existing = runStatus.get(runId)
-          if (existing && ['succeeded', 'failed', 'cancelled'].includes(existing)) {
-            // Already terminal — Orizu records win (concurrent finisher).
-            return json({ error: `Run already ${existing}` }, 409)
-          }
-          runStatus.set(runId, status)
-          return json({ run: { id: runId, status } })
-        }
+    // -- Full RunAPI + session + agent-token (E2E mode only) --------------
+    if (config.fullRunApi) {
+      const sessionsMatch = url.pathname.match(/^\/api\/cli\/workspaces\/([^/]+)\/sessions$/)
+      if (method === 'POST' && sessionsMatch) {
+        sessions += 1
+        const id = config.sessionId ?? `sess-e2e-${sessions}`
+        const repoBranch = config.sessionBranch ?? `orizu/session-${id}`
+        return json(
+          { session: { id, workspaceId: sessionsMatch[1], repoBranch, status: 'active' } },
+          201
+        )
       }
-
-      const tokenMatch = url.pathname.match(/^\/api\/cli\/workspaces\/([^/]+)\/repo-token$/)
-      if (method === 'POST' && tokenMatch) {
-        if (config.repoTokenStatus && config.repoTokenStatus >= 400) {
-          return json({ error: 'forced broker failure' }, config.repoTokenStatus)
-        }
-        const purpose = String(body.purpose ?? '')
-        // Unknown purpose → 400 with the production route's exact error body.
-        if (!VALID_PURPOSES.has(purpose)) {
-          return json({ error: 'purpose must be "read", "write", "session_read", or "session_write"' }, 400)
-        }
-        // Simulate a read-only caller: known purpose, but unauthorized to write.
-        if (config.denyWrite && WRITE_PURPOSES.has(purpose)) {
-          return json({ error: 'Access denied' }, 403)
-        }
-        mints += 1
-        const mintId = `mint-${mints}`
-        const token = `ghs_sim_${purpose}_${mintId}_${Math.random().toString(36).slice(2)}`
-        if (config.tokensFile) appendFileSync(config.tokensFile, `${token}\n`)
-        return json({ token, expiresAt: new Date(Date.now() + 3600_000).toISOString(), repo: config.repo, mintId })
+      const agentTokenMatch = url.pathname.match(/^\/api\/cli\/sessions\/([^/]+)\/agent-token$/)
+      if (method === 'POST' && agentTokenMatch) {
+        agentTokens += 1
+        const issued = `orizu_agent_e2e_${agentTokens}_${Math.random().toString(36).slice(2)}`
+        // A fresh mint rotates the current token: the previous one is now stale
+        // for agent-authenticated writes.
+        currentAgentToken = issued
+        return json(
+          {
+            token: issued,
+            agentUserId: 'agent-user-e2e',
+            sessionId: agentTokenMatch[1],
+            expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          },
+          201
+        )
       }
-
-      const eventsMatch = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)\/events$/)
-      if (method === 'POST' && eventsMatch) {
-        // E2E: appending events is an agent-authenticated write — a rotated-out
-        // token is rejected so the honest rotation test can prove re-resolve.
-        if (config.fullRunApi && !agentWriteOk(request.headers.get('authorization') ?? '')) {
+      if (method === 'POST' && url.pathname === '/api/cli/workbench-runs') {
+        if (!agentWriteOk(request.headers.get('authorization') ?? '')) {
           return json({ error: 'stale agent token' }, 401)
         }
-        if (config.eventsStatus && config.eventsStatus >= 400) {
-          return json({ error: 'forced events failure' }, config.eventsStatus)
-        }
-        const eventType = String(body.eventType ?? '')
-        const sequence = body.sequence
-        const eventId = String(body.eventId ?? '')
-        if (!eventId) return json({ error: 'eventId is required' }, 400)
-        if (!Number.isInteger(sequence) || Number(sequence) <= 0) {
-          return json({ error: 'sequence must be a positive integer' }, 400)
-        }
-        if (!eventType) return json({ error: 'eventType is required' }, 400)
-        if (RESERVED_EVENT_TYPES.has(eventType)) return json({ error: `${eventType} is a lifecycle event` }, 400)
-        const runId = eventsMatch[1]
-        const seq = Number(sequence)
-        const existingForRun = runEvents.get(runId) ?? []
-        // Idempotent replay: same eventId → 201 without re-recording. Same
-        // sequence, different eventId → 409 (mirrors the ingest RPC contract).
-        if (existingForRun.some(e => e.eventId === eventId)) {
-          return json({ eventId, id: `stored-${eventId}`, inserted: false }, 201)
-        }
-        if (existingForRun.some(e => e.sequence === seq)) {
-          return json({ error: 'Workbench event sequence already exists for a different event_id' }, 409)
-        }
-        recordEvent(runId, { eventId, sequence: seq, eventType, payload: body.payload })
-        return json({ eventId, id: `stored-${eventId}` }, 201)
+        runs += 1
+        const runId = `run-e2e-${runs}`
+        runStatus.set(runId, 'running')
+        recordEvent(runId, { eventId: 'run_started', sequence: 1, eventType: 'run_started', payload: {} })
+        return json({ run: { id: runId, status: 'running' } }, 201)
       }
+      const runEventsGet = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)\/events$/)
+      if (method === 'GET' && runEventsGet) {
+        const runId = runEventsGet[1]
+        const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10) || 0
+        const limit = Number.parseInt(url.searchParams.get('limit') ?? '500', 10) || 500
+        const all = runEvents.get(runId) ?? []
+        const page = all.filter(e => e.sequence > after).slice(0, limit)
+        const cursor = page.length > 0 ? page[page.length - 1].sequence : after
+        return json({ events: page, cursor, runStatus: runStatus.get(runId) ?? 'running' })
+      }
+      const runDetail = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)$/)
+      if (method === 'GET' && runDetail) {
+        return json({ run: { id: runDetail[1], status: runStatus.get(runDetail[1]) ?? 'running' } })
+      }
+      if (method === 'PATCH' && runDetail) {
+        if (!agentWriteOk(request.headers.get('authorization') ?? '')) {
+          return json({ error: 'stale agent token' }, 401)
+        }
+        const runId = runDetail[1]
+        const status = String(body.status ?? '')
+        if (!['succeeded', 'failed', 'cancelled'].includes(status)) {
+          return json({ error: 'invalid terminal status' }, 400)
+        }
+        const existing = runStatus.get(runId)
+        if (existing && ['succeeded', 'failed', 'cancelled'].includes(existing)) {
+          // Already terminal — Orizu records win (concurrent finisher).
+          return json({ error: `Run already ${existing}` }, 409)
+        }
+        runStatus.set(runId, status)
+        return json({ run: { id: runId, status } })
+      }
+    }
 
-      return json({ error: `unexpected ${method} ${url.pathname}` }, 404)
-    },
-  })
+    const tokenMatch = url.pathname.match(/^\/api\/cli\/workspaces\/([^/]+)\/repo-token$/)
+    if (method === 'POST' && tokenMatch) {
+      if (config.repoTokenStatus && config.repoTokenStatus >= 400) {
+        return json({ error: 'forced broker failure' }, config.repoTokenStatus)
+      }
+      const purpose = String(body.purpose ?? '')
+      // Unknown purpose → 400 with the production route's exact error body.
+      if (!VALID_PURPOSES.has(purpose)) {
+        return json({ error: 'purpose must be "read", "write", "session_read", or "session_write"' }, 400)
+      }
+      // Simulate a read-only caller: known purpose, but unauthorized to write.
+      if (config.denyWrite && WRITE_PURPOSES.has(purpose)) {
+        return json({ error: 'Access denied' }, 403)
+      }
+      mints += 1
+      const mintId = `mint-${mints}`
+      const token = `ghs_sim_${purpose}_${mintId}_${Math.random().toString(36).slice(2)}`
+      if (config.tokensFile) appendFileSync(config.tokensFile, `${token}\n`)
+      return json({ token, expiresAt: new Date(Date.now() + 3600_000).toISOString(), repo: config.repo, mintId })
+    }
+
+    const eventsMatch = url.pathname.match(/^\/api\/cli\/workbench-runs\/([^/]+)\/events$/)
+    if (method === 'POST' && eventsMatch) {
+      // E2E: appending events is an agent-authenticated write — a rotated-out
+      // token is rejected so the honest rotation test can prove re-resolve.
+      if (config.fullRunApi && !agentWriteOk(request.headers.get('authorization') ?? '')) {
+        return json({ error: 'stale agent token' }, 401)
+      }
+      if (config.eventsStatus && config.eventsStatus >= 400) {
+        return json({ error: 'forced events failure' }, config.eventsStatus)
+      }
+      const eventType = String(body.eventType ?? '')
+      const sequence = body.sequence
+      const eventId = String(body.eventId ?? '')
+      if (!eventId) return json({ error: 'eventId is required' }, 400)
+      if (!Number.isInteger(sequence) || Number(sequence) <= 0) {
+        return json({ error: 'sequence must be a positive integer' }, 400)
+      }
+      if (!eventType) return json({ error: 'eventType is required' }, 400)
+      if (RESERVED_EVENT_TYPES.has(eventType)) return json({ error: `${eventType} is a lifecycle event` }, 400)
+      const runId = eventsMatch[1]
+      const seq = Number(sequence)
+      const existingForRun = runEvents.get(runId) ?? []
+      // Idempotent replay: same eventId → 201 without re-recording. Same
+      // sequence, different eventId → 409 (mirrors the ingest RPC contract).
+      if (existingForRun.some(e => e.eventId === eventId)) {
+        return json({ eventId, id: `stored-${eventId}`, inserted: false }, 201)
+      }
+      if (existingForRun.some(e => e.sequence === seq)) {
+        return json({ error: 'Workbench event sequence already exists for a different event_id' }, 409)
+      }
+      recordEvent(runId, { eventId, sequence: seq, eventType, payload: body.payload })
+      return json({ eventId, id: `stored-${eventId}` }, 201)
+    }
+
+    return json({ error: `unexpected ${method} ${url.pathname}` }, 404)
+  }, 'broker server')
 }
 
 // When executed directly (`bun hosted-broker-server.ts`), start the server and

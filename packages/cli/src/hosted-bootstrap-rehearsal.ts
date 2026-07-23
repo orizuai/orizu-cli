@@ -80,6 +80,7 @@ export function brokerEnv(config: BrokerConfig): Record<string, string> {
   if (config.eventsStatus) env.HB_EVENTS_STATUS = String(config.eventsStatus)
   if (config.denyWrite) env.HB_DENY_WRITE = '1'
   if (config.fullRunApi) env.HB_FULL_RUN_API = '1'
+  if (config.port !== undefined) env.HB_PORT = String(config.port)
   return env
 }
 

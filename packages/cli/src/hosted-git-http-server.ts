@@ -22,6 +22,8 @@ import { execFileSync } from 'child_process'
 import { appendFileSync } from 'fs'
 import { basename, dirname, join } from 'path'
 
+import { serveOnLoopback } from './loopback-serve.js'
+
 interface BunLike {
   serve: (options: {
     port: number
@@ -61,7 +63,7 @@ export function readGitHttpConfigFromEnv(env: NodeJS.ProcessEnv): GitHttpConfig 
   return {
     repoDir: env.HG_REPO_DIR ?? '',
     authLogFile: env.HG_AUTH_LOG,
-    port: env.HG_PORT ? Number.parseInt(env.HG_PORT, 10) : 0,
+    port: env.HG_PORT ? Number.parseInt(env.HG_PORT, 10) : undefined,
   }
 }
 
@@ -69,6 +71,7 @@ export function readGitHttpConfigFromEnv(env: NodeJS.ProcessEnv): GitHttpConfig 
 export function gitHttpEnv(config: GitHttpConfig): Record<string, string> {
   const env: Record<string, string> = { HG_REPO_DIR: config.repoDir }
   if (config.authLogFile) env.HG_AUTH_LOG = config.authLogFile
+  if (config.port !== undefined) env.HG_PORT = String(config.port)
   return env
 }
 
@@ -86,74 +89,70 @@ export function startGitHttpServer(config: GitHttpConfig): { port: number; stop:
       headers: { 'WWW-Authenticate': 'Basic realm="orizu-sim"' },
     })
 
-  return bun().serve({
-    port: config.port ?? 0,
-    hostname: '127.0.0.1',
-    async fetch(request) {
-      // (a) Require Basic auth; reject unauthenticated requests so git invokes the
-      // credential helper (which mints from the broker) before retrying.
-      const authHeader = request.headers.get('authorization') ?? ''
-      if (!authHeader.startsWith('Basic ')) return unauthorized()
-      const decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf8')
-      const sep = decoded.indexOf(':')
-      const user = sep >= 0 ? decoded.slice(0, sep) : decoded
-      const pass = sep >= 0 ? decoded.slice(sep + 1) : ''
-      // Journal the credential git presented (proves password === minted token).
-      if (config.authLogFile) appendFileSync(config.authLogFile, `${JSON.stringify({ user, pass })}\n`)
-      if (!pass) return unauthorized()
+  return serveOnLoopback(bun(), config.port, async request => {
+    // (a) Require Basic auth; reject unauthenticated requests so git invokes the
+    // credential helper (which mints from the broker) before retrying.
+    const authHeader = request.headers.get('authorization') ?? ''
+    if (!authHeader.startsWith('Basic ')) return unauthorized()
+    const decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf8')
+    const sep = decoded.indexOf(':')
+    const user = sep >= 0 ? decoded.slice(0, sep) : decoded
+    const pass = sep >= 0 ? decoded.slice(sep + 1) : ''
+    // Journal the credential git presented (proves password === minted token).
+    if (config.authLogFile) appendFileSync(config.authLogFile, `${JSON.stringify({ user, pass })}\n`)
+    if (!pass) return unauthorized()
 
-      // (b) Serve the bare repo via `git http-backend` as CGI.
-      const url = new URL(request.url)
-      const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : undefined
-      const cgiEnv: Record<string, string> = {
-        ...(process.env as Record<string, string>),
-        GIT_PROJECT_ROOT: projectRoot,
-        GIT_HTTP_EXPORT_ALL: '1',
-        PATH_INFO: url.pathname,
-        QUERY_STRING: url.search.replace(/^\?/, ''),
-        REQUEST_METHOD: request.method,
-        CONTENT_TYPE: request.headers.get('content-type') ?? '',
-        REMOTE_USER: user,
-      }
-      const contentEncoding = request.headers.get('content-encoding')
-      if (contentEncoding) cgiEnv.HTTP_CONTENT_ENCODING = contentEncoding
-      if (body) cgiEnv.CONTENT_LENGTH = String(body.length)
+    // (b) Serve the bare repo via `git http-backend` as CGI.
+    const url = new URL(request.url)
+    const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : undefined
+    const cgiEnv: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      GIT_PROJECT_ROOT: projectRoot,
+      GIT_HTTP_EXPORT_ALL: '1',
+      PATH_INFO: url.pathname,
+      QUERY_STRING: url.search.replace(/^\?/, ''),
+      REQUEST_METHOD: request.method,
+      CONTENT_TYPE: request.headers.get('content-type') ?? '',
+      REMOTE_USER: user,
+    }
+    const contentEncoding = request.headers.get('content-encoding')
+    if (contentEncoding) cgiEnv.HTTP_CONTENT_ENCODING = contentEncoding
+    if (body) cgiEnv.CONTENT_LENGTH = String(body.length)
 
-      const proc = bun().spawn({
-        cmd: [backend],
-        env: cgiEnv,
-        stdin: body ?? 'ignore',
-        stdout: 'pipe',
-        stderr: 'ignore',
-      })
-      const out = Buffer.from(await new Response(proc.stdout).arrayBuffer())
-      await proc.exited
+    const proc = bun().spawn({
+      cmd: [backend],
+      env: cgiEnv,
+      stdin: body ?? 'ignore',
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+    const out = Buffer.from(await new Response(proc.stdout).arrayBuffer())
+    await proc.exited
 
-      // Split the CGI response (headers, blank line, body) — body may be binary.
-      let boundary = out.indexOf('\r\n\r\n')
-      let boundaryLen = 4
-      if (boundary < 0) {
-        boundary = out.indexOf('\n\n')
-        boundaryLen = 2
+    // Split the CGI response (headers, blank line, body) — body may be binary.
+    let boundary = out.indexOf('\r\n\r\n')
+    let boundaryLen = 4
+    if (boundary < 0) {
+      boundary = out.indexOf('\n\n')
+      boundaryLen = 2
+    }
+    const headerText = boundary >= 0 ? out.subarray(0, boundary).toString('utf8') : ''
+    const payload = boundary >= 0 ? out.subarray(boundary + boundaryLen) : out
+    let status = 200
+    const headers = new Headers()
+    for (const line of headerText.split(/\r?\n/)) {
+      const colon = line.indexOf(':')
+      if (colon < 0) continue
+      const key = line.slice(0, colon).trim()
+      const value = line.slice(colon + 1).trim()
+      if (key.toLowerCase() === 'status') {
+        status = Number.parseInt(value, 10) || 200
+        continue
       }
-      const headerText = boundary >= 0 ? out.subarray(0, boundary).toString('utf8') : ''
-      const payload = boundary >= 0 ? out.subarray(boundary + boundaryLen) : out
-      let status = 200
-      const headers = new Headers()
-      for (const line of headerText.split(/\r?\n/)) {
-        const colon = line.indexOf(':')
-        if (colon < 0) continue
-        const key = line.slice(0, colon).trim()
-        const value = line.slice(colon + 1).trim()
-        if (key.toLowerCase() === 'status') {
-          status = Number.parseInt(value, 10) || 200
-          continue
-        }
-        headers.set(key, value)
-      }
-      return new Response(payload, { status, headers })
-    },
-  })
+      headers.set(key, value)
+    }
+    return new Response(payload, { status, headers })
+  }, 'git HTTP server')
 }
 
 // When executed directly (`bun hosted-git-http-server.ts`), start the server and
