@@ -81,6 +81,9 @@ orizu projects create --name "Quality Eval" --team my-team
 
 ```bash
 orizu apps list --project my-team/quality-eval
+orizu apps list --project my-team/quality-eval --status archived
+orizu apps archive <app-id> --project my-team/quality-eval
+orizu apps restore <app-id> --project my-team/quality-eval
 ```
 
 Create from file:
@@ -138,6 +141,9 @@ Row identity contract:
 - `row_index` is not part of canonical runtime selection. CLI flags like `--row-ids` always take canonical `id` values.
 
 ```bash
+orizu datasets list --project my-team/quality-eval [--status active|archived|all]
+orizu datasets archive <dataset-id> --project my-team/quality-eval
+orizu datasets restore <dataset-id> --project my-team/quality-eval
 orizu datasets upload --file ./data.csv --project my-team/quality-eval --name "Batch 1"
 orizu datasets download --dataset <datasetId|datasetUrl> --format jsonl --out ./dataset.jsonl
 orizu datasets append --dataset <datasetId|datasetUrl> --file ./new-rows.jsonl
@@ -170,6 +176,25 @@ Edit rows requirements:
 ```bash
 orizu tasks list
 orizu tasks list --project my-team/quality-eval
+orizu tasks list --project my-team/quality-eval --status archived
+orizu tasks archive <task-id> --project my-team/quality-eval
+orizu tasks restore <task-id> --project my-team/quality-eval
+orizu assignments list --project my-team/quality-eval [--status active|archived|all]
+orizu assignments archive <task-id> --project my-team/quality-eval [--assignee <user-id>]
+orizu assignments restore <task-id> --project my-team/quality-eval [--assignee <user-id>]
+```
+
+Archive is reversible visibility state and never deletes task/assignment data
+or changes lifecycle. List commands default to active inventory. Scorers and
+optimization runs use the same contract:
+
+```bash
+orizu scorers list --project my-team/quality-eval [--status active|archived|all]
+orizu scorers archive <scorer-id> --project my-team/quality-eval
+orizu scorers restore <scorer-id> --project my-team/quality-eval
+orizu optimizations list --project my-team/quality-eval [--status active|archived|all]
+orizu optimizations archive <run-id> --project my-team/quality-eval
+orizu optimizations restore <run-id> --project my-team/quality-eval
 ```
 
 Create:

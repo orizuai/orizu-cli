@@ -71,6 +71,14 @@ import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { acceptScoreRunCommand } from './scores-accept-cli.js'
 import { listOptimizationRunsCommand } from './optimizations-list-cli.js'
+import {
+  archiveArtifactCommand,
+  listAssignmentsCommand,
+  printAppSummaries,
+  printDatasetSummaries,
+  printScorerSummaries,
+  printTaskSummaries,
+} from './archive-artifacts-cli.js'
 import { teamConnectorsCommand } from './team-connectors-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
@@ -117,6 +125,8 @@ interface Task {
   id: string
   title: string
   status: string
+  archiveStatus?: string
+  archivedAt?: string | null
   createdAt: string
   projectName?: string
   projectSlug?: string
@@ -133,6 +143,8 @@ interface AppSummary {
   teamName: string
   projectSlug: string
   projectName: string
+  status?: string
+  archivedAt?: string | null
 }
 
 interface DatasetSummary {
@@ -146,6 +158,8 @@ interface DatasetSummary {
   projectSlug: string
   teamName: string
   teamSlug: string
+  status?: string
+  archivedAt?: string | null
 }
 
 interface DatasetSelection {
@@ -183,6 +197,8 @@ interface ScorerSummary {
   mode: string
   metricLabel: string
   implementationKind: string
+  status?: string
+  archivedAt?: string | null
 }
 
 interface ScoreSubmitInput {
@@ -337,6 +353,17 @@ function getArg(name: string): string | null {
   }
 
   return cliArgs[index + 1]
+}
+
+function getArchiveListStatus(command: string): string {
+  const status = getArg('--status') || 'active'
+  if (!['active', 'archived', 'all'].includes(status)) {
+    throw new Error(
+      `Usage: orizu ${command} list [--project <team/project>] ` +
+      '[--status active|archived|all]'
+    )
+  }
+  return status
 }
 
 function getArgs(name: string): string[] {
@@ -551,31 +578,6 @@ function printPromptSummaries(items: PromptSummary[], emptyMessage: string) {
   })
 }
 
-function printScorerSummaries(items: ScorerSummary[]) {
-  if (items.length === 0) {
-    printLine('No scorers found.')
-    return
-  }
-
-  const rows = items.map(item => ({
-    id: sanitizeTerminalText(item.id),
-    name: sanitizeTerminalText(item.name),
-    mode: sanitizeTerminalText(item.mode),
-    metric: sanitizeTerminalText(item.metricLabel),
-    implementation: sanitizeTerminalText(item.implementationKind),
-  }))
-  const idWidth = Math.max('ID'.length, ...rows.map(row => row.id.length))
-  const nameWidth = Math.max('NAME'.length, ...rows.map(row => row.name.length))
-  const modeWidth = Math.max('MODE'.length, ...rows.map(row => row.mode.length))
-  const metricWidth = Math.max('METRIC'.length, ...rows.map(row => row.metric.length))
-
-  printLine(`${'ID'.padEnd(idWidth)}  ${'NAME'.padEnd(nameWidth)}  ${'MODE'.padEnd(modeWidth)}  ${'METRIC'.padEnd(metricWidth)}  IMPLEMENTATION`)
-  printLine(`${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(modeWidth)}  ${'-'.repeat(metricWidth)}  ${'-'.repeat('IMPLEMENTATION'.length)}`)
-  rows.forEach(row => {
-    printLine(`${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.mode.padEnd(modeWidth)}  ${row.metric.padEnd(metricWidth)}  ${row.implementation}`)
-  })
-}
-
 function readJsonObjectArg(valueArg: string | null, label: string): Record<string, unknown> {
   if (!valueArg) {
     return {}
@@ -664,8 +666,11 @@ async function fetchProjects(teamSlug?: string): Promise<Project[]> {
   return data.projects
 }
 
-async function fetchTasks(project?: string): Promise<Task[]> {
-  const query = project ? `?project=${encodeURIComponent(project)}` : ''
+async function fetchTasks(project?: string, status = 'active'): Promise<Task[]> {
+  const params = new URLSearchParams()
+  if (project) params.set('project', project)
+  if (status !== 'active') params.set('status', status)
+  const query = params.size > 0 ? `?${params.toString()}` : ''
   const response = await authedFetch(`/api/cli/tasks${query}`)
   if (!response.ok) {
     throw new Error(`Failed to fetch tasks: ${await response.text()}`)
@@ -675,8 +680,10 @@ async function fetchTasks(project?: string): Promise<Task[]> {
   return data.tasks
 }
 
-async function fetchApps(project: string): Promise<AppSummary[]> {
-  const response = await authedFetch(`/api/cli/apps?project=${encodeURIComponent(project)}`)
+async function fetchApps(project: string, status = 'active'): Promise<AppSummary[]> {
+  const params = new URLSearchParams({ project })
+  if (status !== 'active') params.set('status', status)
+  const response = await authedFetch(`/api/cli/apps?${params.toString()}`)
   if (!response.ok) {
     throw new Error(`Failed to fetch apps: ${await response.text()}`)
   }
@@ -685,8 +692,10 @@ async function fetchApps(project: string): Promise<AppSummary[]> {
   return data.apps
 }
 
-async function fetchDatasets(project: string): Promise<DatasetSummary[]> {
-  const response = await authedFetch(`/api/cli/datasets?project=${encodeURIComponent(project)}`)
+async function fetchDatasets(project: string, status = 'active'): Promise<DatasetSummary[]> {
+  const params = new URLSearchParams({ project })
+  if (status !== 'active') params.set('status', status)
+  const response = await authedFetch(`/api/cli/datasets?${params.toString()}`)
   if (!response.ok) {
     throw new Error(`Failed to fetch datasets: ${await response.text()}`)
   }
@@ -950,63 +959,6 @@ function printProjects(projects: Project[]) {
     printLine(
       `${row.project.padEnd(projectWidth)}  ${row.name.padEnd(nameWidth)}  ${row.role.padEnd(roleWidth)}`
     )
-  })
-}
-
-function printTasks(tasks: Task[]) {
-  if (tasks.length === 0) {
-    printLine('No tasks found.')
-    return
-  }
-
-  const rows = tasks.map(task => ({
-    id: sanitizeTerminalText(task.id),
-    name: sanitizeTerminalText(task.title || '-'),
-    status: sanitizeTerminalText(task.status || '-'),
-    project: task.teamSlug && task.projectSlug
-      ? sanitizeTerminalText(`${task.teamSlug}/${task.projectSlug}`)
-      : 'unknown-project',
-  }))
-
-  const idWidth = Math.max('TASK ID'.length, ...rows.map(row => row.id.length))
-  const nameWidth = Math.max('TASK NAME'.length, ...rows.map(row => row.name.length))
-  const statusWidth = Math.max('STATUS'.length, ...rows.map(row => row.status.length))
-
-  printLine(
-    `${'TASK ID'.padEnd(idWidth)}  ${'TASK NAME'.padEnd(nameWidth)}  ${'STATUS'.padEnd(statusWidth)}  TEAM/PROJECT`
-  )
-  printLine(
-    `${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(statusWidth)}  ------------`
-  )
-
-  rows.forEach(row => {
-    printLine(
-      `${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.status.padEnd(statusWidth)}  ${row.project}`
-    )
-  })
-}
-
-function printApps(apps: AppSummary[]) {
-  if (apps.length === 0) {
-    printLine('No apps found.')
-    return
-  }
-
-  const rows = apps.map(app => ({
-    id: sanitizeTerminalText(app.id),
-    name: sanitizeTerminalText(app.name || '-'),
-    version: `v${app.currentVersionNum || 1}`,
-  }))
-
-  const idWidth = Math.max('APP ID'.length, ...rows.map(row => row.id.length))
-  const nameWidth = Math.max('APP NAME'.length, ...rows.map(row => row.name.length))
-  const versionWidth = Math.max('VERSION'.length, ...rows.map(row => row.version.length))
-
-  printLine(`${'APP ID'.padEnd(idWidth)}  ${'APP NAME'.padEnd(nameWidth)}  ${'VERSION'.padEnd(versionWidth)}`)
-  printLine(`${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(versionWidth)}`)
-
-  rows.forEach(row => {
-    printLine(`${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.version.padEnd(versionWidth)}`)
   })
 }
 
@@ -1475,7 +1427,10 @@ async function listJudges() {
 
 async function listScorers() {
   const project = getArg('--project') || await resolveProjectSlug(null)
-  const response = await authedFetch(`/api/cli/scorers?project=${encodeURIComponent(project)}`)
+  const status = getArchiveListStatus('scorers')
+  const params = new URLSearchParams({ project })
+  if (status !== 'active') params.set('status', status)
+  const response = await authedFetch(`/api/cli/scorers?${params.toString()}`)
   if (!response.ok) {
     throw new Error(`Failed to fetch scorers: ${await response.text()}`)
   }
@@ -1485,7 +1440,7 @@ async function listScorers() {
     printJson(data as unknown as Record<string, unknown>)
     return
   }
-  printScorerSummaries(data.scorers)
+  printScorerSummaries(data.scorers, printLine)
 }
 
 // Command body lives in scorer-draft-push.ts (CLI line ratchet, ALI-976).
@@ -2823,22 +2778,38 @@ async function createProject() {
 
 async function listTasks() {
   const project = getArg('--project')
-  const tasks = await fetchTasks(project || undefined)
+  const tasks = await fetchTasks(
+    project || undefined,
+    getArchiveListStatus('tasks')
+  )
   if (hasJsonFlag()) {
     printJson({ tasks })
     return
   }
-  printTasks(tasks)
+  printTaskSummaries(tasks, printLine)
 }
 
 async function listApps() {
   const project = getArg('--project') || await resolveProjectSlug(null)
-  const apps = await fetchApps(project)
+  const apps = await fetchApps(project, getArchiveListStatus('apps'))
   if (hasJsonFlag()) {
     printJson({ apps })
     return
   }
-  printApps(apps)
+  printAppSummaries(apps, printLine)
+}
+
+async function listDatasets() {
+  const project = getArg('--project') || await resolveProjectSlug(null)
+  const datasets = await fetchDatasets(
+    project,
+    getArchiveListStatus('datasets')
+  )
+  if (hasJsonFlag()) {
+    printJson({ datasets })
+    return
+  }
+  printDatasetSummaries(datasets, printLine)
 }
 
 function readSourceFile(pathArg: string): string {
@@ -6400,6 +6371,28 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
+  if (
+    ['apps', 'datasets', 'tasks', 'assignments', 'scorers', 'optimizations']
+      .includes(command || '') &&
+    (subcommand === 'archive' || subcommand === 'restore')
+  ) {
+    await archiveArtifactCommand(cliArgs, {
+      json: hasJsonFlag(),
+      print: printLine,
+      resolveProjectSlug,
+    })
+    return
+  }
+
+  if (command === 'assignments' && subcommand === 'list') {
+    await listAssignmentsCommand(cliArgs.slice(1), {
+      json: hasJsonFlag(),
+      print: printLine,
+      resolveProjectSlug,
+    })
+    return
+  }
+
   if (command === 'scorers' && subcommand === 'list') {
     await listScorers()
     return
@@ -6578,6 +6571,10 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'datasets' && subcommand === 'upload') {
     await uploadDataset()
+    return
+  }
+  if (command === 'datasets' && subcommand === 'list') {
+    await listDatasets()
     return
   }
 

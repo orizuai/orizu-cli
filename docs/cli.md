@@ -385,6 +385,8 @@ Interactive fallback:
 
 ```bash
 orizu apps list --project my-team/quality-eval
+orizu apps list --project my-team/quality-eval --status archived
+orizu apps list --project my-team/quality-eval --status all --json
 ```
 
 Interactive fallback:
@@ -508,6 +510,13 @@ Behavior:
 
 Canonical contract reference:
 - `docs/contracts/dataset-canonical-contract.md`
+
+### List datasets
+
+```bash
+orizu datasets list --project my-team/quality-eval
+orizu datasets list --project my-team/quality-eval --status archived
+```
 
 ### Upload dataset
 
@@ -652,7 +661,41 @@ Interactive fallback:
 ```bash
 orizu tasks list
 orizu tasks list --project my-team/quality-eval
+orizu tasks list --project my-team/quality-eval --status archived
 ```
+
+### Archive and restore artifacts
+
+Archive is reversible visibility state. It does not delete versions, rows,
+assignments, responses, reports, optimization pins, or change task/run
+lifecycle status. List commands default to active inventory; use
+`--status archived` for only archived items or `--status all` for both.
+
+```bash
+orizu apps archive <app-id> --project my-team/quality-eval
+orizu datasets archive <dataset-id> --project my-team/quality-eval
+orizu tasks archive <task-id> --project my-team/quality-eval
+orizu scorers archive <scorer-id> --project my-team/quality-eval
+orizu optimizations archive <run-id> --project my-team/quality-eval
+
+# Use the same command families with restore.
+orizu apps restore <app-id> --project my-team/quality-eval
+
+# Assignment ids are task ids because the artifact is one recipient's grouped
+# queue. Omit --assignee to target the signed-in recipient.
+orizu assignments list --project my-team/quality-eval --status archived
+orizu assignments archive <task-id> --project my-team/quality-eval
+orizu assignments restore <task-id> --project my-team/quality-eval
+
+# Curator-equivalent operators may target a specific recipient.
+orizu assignments archive <task-id> \
+  --project my-team/quality-eval \
+  --assignee <user-id>
+```
+
+All archive/restore commands support `--json` and return the canonical,
+idempotent server result. Prompts retain their name-or-id commands:
+`orizu prompts archive|restore <prompt-id-or-name>`.
 
 ### Create task
 
@@ -805,6 +848,13 @@ Prompt-control-plane commands use version ids for datasets, split sets, prompts,
 
 ### Scorers
 
+List active scorers by default or select archive visibility explicitly:
+
+```bash
+orizu scorers list --project my-team/quality-eval
+orizu scorers list --project my-team/quality-eval --status archived
+```
+
 Register a scorer:
 
 ```bash
@@ -913,7 +963,8 @@ The commands above will prompt for team/project/task selection where needed.
 ## Current Limitations
 
 - `tasks assign --assignees` and `tasks publish --assignees` accept assignee user IDs, not emails; `--assignment-file` accepts emails or user IDs.
-- Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
+- Assignment queue reads default to the signed-in recipient. Curator-equivalent
+  operators may supply `--assignee <user-id>` for a managed recipient.
 - Assignment completion payloads are validated against the task's pinned app-version `output_json_schema`.
 - Login flow currently expects localhost callback availability on `127.0.0.1` using `ORIZU_AUTH_PORT` or the default port `43123`.
 - CLI package publishing/distribution is separate from this usage doc (examples assume local build or installed binary).

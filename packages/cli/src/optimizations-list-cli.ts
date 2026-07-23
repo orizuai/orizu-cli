@@ -12,6 +12,7 @@
  */
 
 import { authedFetch } from './http.js'
+import { extractErrorMessage } from './error-response.js'
 
 export interface OptimizationsListIo {
   json: boolean
@@ -23,6 +24,8 @@ export interface OptimizationsListIo {
 interface OptimizationRunSummary {
   id: string
   status: string
+  archiveStatus?: string
+  archivedAt?: string | null
   optimizerVersionId: string | null
   datasetVersionId: string | null
   bestScore: number | null
@@ -76,9 +79,21 @@ async function parseJsonPayload<T>(response: Response, context: string): Promise
 export async function listOptimizationRunsCommand(args: string[], io: OptimizationsListIo): Promise<void> {
   const fetcher = io.fetcher || authedFetch
   const project = argValue(args, '--project') || await io.resolveProjectSlug(null)
-  const response = await fetcher(`/api/cli/optimization-runs?project=${encodeURIComponent(project)}`)
+  const status = argValue(args, '--status') || 'active'
+  if (!['active', 'archived', 'all'].includes(status)) {
+    throw new Error(
+      'Usage: orizu optimizations list [--project <team/project>] ' +
+      '[--status active|archived|all] [--json]'
+    )
+  }
+  const params = new URLSearchParams({ project })
+  if (status !== 'active') params.set('status', status)
+  const response = await fetcher(`/api/cli/optimization-runs?${params.toString()}`)
   if (!response.ok) {
-    throw new Error(`Failed to list optimization runs: ${await response.text()}`)
+    throw new Error(
+      'Failed to list optimization runs: ' +
+      await extractErrorMessage(response)
+    )
   }
 
   const data = await parseJsonPayload<{ optimizationRuns: OptimizationRunSummary[] }>(response, 'Optimization runs list')
@@ -105,12 +120,17 @@ export async function listOptimizationRunsCommand(args: string[], io: Optimizati
 
   const idWidth = Math.max(2, ...rows.map(row => String(row.id).length))
   const statusWidth = Math.max(6, ...rows.map(row => String(row.status).length))
-  io.print(`${'ID'.padEnd(idWidth)}  ${'STATUS'.padEnd(statusWidth)}  BEST   PROMOTED_VERSION`)
-  io.print(`${'-'.repeat(idWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(5)}  ${'-'.repeat('PROMOTED_VERSION'.length)}`)
+  const archiveWidth = Math.max(
+    'ARCHIVE'.length,
+    ...rows.map(row => String(row.archiveStatus || 'active').length)
+  )
+  io.print(`${'ID'.padEnd(idWidth)}  ${'STATUS'.padEnd(statusWidth)}  ${'ARCHIVE'.padEnd(archiveWidth)}  BEST   PROMOTED_VERSION`)
+  io.print(`${'-'.repeat(idWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(archiveWidth)}  ${'-'.repeat(5)}  ${'-'.repeat('PROMOTED_VERSION'.length)}`)
   for (const row of rows) {
     const best = row.bestScore === null || row.bestScore === undefined ? '-' : String(row.bestScore)
     const promoted = row.resultPromptVersionId || '-'
-    io.print(`${String(row.id).padEnd(idWidth)}  ${String(row.status).padEnd(statusWidth)}  ${best.padEnd(5)}  ${promoted}`)
+    const archiveStatus = row.archiveStatus || 'active'
+    io.print(`${String(row.id).padEnd(idWidth)}  ${String(row.status).padEnd(statusWidth)}  ${archiveStatus.padEnd(archiveWidth)}  ${best.padEnd(5)}  ${promoted}`)
   }
   // ALI-1175: label the claim — nothing here is server-attested.
   io.print(BEST_SCORE_PROVENANCE_NOTICE)

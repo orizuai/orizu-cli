@@ -385,8 +385,20 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['scorers', 'list'],
-    usage: 'orizu scorers list --project <team/project>',
+    usage: 'orizu scorers list --project <team/project> [--status active|archived|all] [--json]',
     summary: 'List scorers in a project.',
+    group: 'Scorers and runners',
+  },
+  {
+    path: ['scorers', 'archive'],
+    usage: 'orizu scorers archive <scorer-id> [--project <team/project>] [--json]',
+    summary: 'Archive a scorer without deleting its versions or references.',
+    group: 'Scorers and runners',
+  },
+  {
+    path: ['scorers', 'restore'],
+    usage: 'orizu scorers restore <scorer-id> [--project <team/project>] [--json]',
+    summary: 'Restore an archived scorer.',
     group: 'Scorers and runners',
   },
   {
@@ -480,6 +492,24 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Optimizations',
   },
   {
+    path: ['optimizations', 'list'],
+    usage: 'orizu optimizations list [--project <team/project>] [--status active|archived|all] [--json]',
+    summary: 'List optimization runs with explicit archive visibility.',
+    group: 'Optimizations',
+  },
+  {
+    path: ['optimizations', 'archive'],
+    usage: 'orizu optimizations archive <run-id> [--project <team/project>] [--json]',
+    summary: 'Archive an optimization run without changing its lifecycle or pins.',
+    group: 'Optimizations',
+  },
+  {
+    path: ['optimizations', 'restore'],
+    usage: 'orizu optimizations restore <run-id> [--project <team/project>] [--json]',
+    summary: 'Restore an archived optimization run.',
+    group: 'Optimizations',
+  },
+  {
     path: ['optimizations', 'run-gepa'],
     usage: 'orizu optimizations run-gepa --project <team/project> --optimizer-version-id <id> --candidate-version-id <id> --runner-version-id <id> --candidate-runner-dir <dir> --scorer-version-id <id> --scorer-runner-version-id <id> --scorer-runner-dir <dir> [--scorer-input-contract gepa|flat_row] [--scorer-candidate-field <row-field>] [--allow-degenerate-seed] --dataset-version-id <id> --split-set-id <id> [--train-split train] [--val-split validation] [--budget auto|light|medium|heavy | --max-metric-calls <n> | --max-full-evals <n> | --max-iterations <n>] [--num-threads auto|N] [--reflection-retry-attempts N] [--reflection-http-timeout-seconds N] [--log-dir logs]',
     summary: 'Run the bundled GEPA-style optimizer locally and stream events. Validates the scorer contract on the seed before iterating; judge runners built for flat-row score runs need --scorer-input-contract flat_row (ALI-1158).',
@@ -523,8 +553,20 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['apps', 'list'],
-    usage: 'orizu apps list [--project <team/project>]',
+    usage: 'orizu apps list [--project <team/project>] [--status active|archived|all] [--json]',
     summary: 'List review apps in a project.',
+    group: 'Apps',
+  },
+  {
+    path: ['apps', 'archive'],
+    usage: 'orizu apps archive <app-id> [--project <team/project>] [--json]',
+    summary: 'Archive a review app without deleting versions or links.',
+    group: 'Apps',
+  },
+  {
+    path: ['apps', 'restore'],
+    usage: 'orizu apps restore <app-id> [--project <team/project>] [--json]',
+    summary: 'Restore an archived review app.',
     group: 'Apps',
   },
   {
@@ -568,8 +610,38 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['tasks', 'list'],
-    usage: 'orizu tasks list [--project <team/project>]',
+    usage: 'orizu tasks list [--project <team/project>] [--status active|archived|all] [--json]',
     summary: 'List review tasks, optionally scoped to a project.',
+    group: 'Tasks',
+  },
+  {
+    path: ['tasks', 'archive'],
+    usage: 'orizu tasks archive <task-id> [--project <team/project>] [--json]',
+    summary: 'Archive a task without changing its lifecycle or assignments.',
+    group: 'Tasks',
+  },
+  {
+    path: ['tasks', 'restore'],
+    usage: 'orizu tasks restore <task-id> [--project <team/project>] [--json]',
+    summary: 'Restore an archived task.',
+    group: 'Tasks',
+  },
+  {
+    path: ['assignments', 'list'],
+    usage: 'orizu assignments list [--project <team/project>] [--status active|archived|all] [--assignee <user-id>] [--json]',
+    summary: 'List grouped assignment queues for yourself or a managed assignee.',
+    group: 'Tasks',
+  },
+  {
+    path: ['assignments', 'archive'],
+    usage: 'orizu assignments archive <task-id> [--project <team/project>] [--assignee <user-id>] [--json]',
+    summary: 'Archive one recipient task-group without mutating row assignments.',
+    group: 'Tasks',
+  },
+  {
+    path: ['assignments', 'restore'],
+    usage: 'orizu assignments restore <task-id> [--project <team/project>] [--assignee <user-id>] [--json]',
+    summary: 'Restore one recipient assignment task-group.',
     group: 'Tasks',
   },
   {
@@ -662,6 +734,24 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     usage: 'orizu tasks export [--task <taskId>] [--format <csv|json|jsonl>] [--out <path>]',
     summary: 'Export task results.',
     group: 'Tasks',
+  },
+  {
+    path: ['datasets', 'list'],
+    usage: 'orizu datasets list [--project <team/project>] [--status active|archived|all] [--json]',
+    summary: 'List datasets with explicit archive visibility.',
+    group: 'Datasets',
+  },
+  {
+    path: ['datasets', 'archive'],
+    usage: 'orizu datasets archive <dataset-id> [--project <team/project>] [--json]',
+    summary: 'Archive a dataset without deleting rows, versions, or references.',
+    group: 'Datasets',
+  },
+  {
+    path: ['datasets', 'restore'],
+    usage: 'orizu datasets restore <dataset-id> [--project <team/project>] [--json]',
+    summary: 'Restore an archived dataset.',
+    group: 'Datasets',
   },
   {
     path: ['datasets', 'upload'],
