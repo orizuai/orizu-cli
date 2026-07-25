@@ -34,9 +34,99 @@ export interface GitCredentialIo {
   fetcher?: GitCredentialFetcher
   /** Explicit workspace id (tests / clone-time). Overrides env + cwd lookup. */
   workspaceId?: string
+  /**
+   * Exact logical capability configured for this remote. Artifacts credentials
+   * require this value because Git's helper protocol does not identify whether
+   * an operation is a fetch or push and host-only selection is unsafe.
+   */
+  purpose?: RepoTokenPurpose
+  /** Injectable clock for strict provider credential expiry validation. */
+  nowMs?: () => number
 }
 
 const GITHUB_HOST = 'github.com'
+const ARTIFACTS_HOST =
+  /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/
+const ARTIFACTS_PASSWORD = /^art_v1_[0-9a-f]{40}$/
+const ARTIFACTS_MAX_EXPIRY_SKEW_MS = 305_000
+const SAFE_REMOTE_COMPONENT = /^[^\u0000-\u0020\u007f\\?#]+$/
+
+export const REPO_TOKEN_PURPOSES = [
+  'read',
+  'write',
+] as const
+
+export type RepoTokenPurpose =
+  (typeof REPO_TOKEN_PURPOSES)[number]
+
+export interface GitCredentialInvocation {
+  readonly operation: 'get' | 'store' | 'erase'
+  readonly purpose: RepoTokenPurpose | null
+}
+
+function isRepoTokenPurpose(
+  value: string
+): value is RepoTokenPurpose {
+  return REPO_TOKEN_PURPOSES.includes(value as RepoTokenPurpose)
+}
+
+/**
+ * Git appends get/store/erase after the configured helper command, so an
+ * explicit path-aware configuration looks like:
+ * `!orizu git-credential --purpose=write`.
+ *
+ * Session credentials use the hosted runtime helper, which carries the
+ * server-bound session ID. This local helper deliberately accepts only
+ * sessionless developer read/write purposes.
+ */
+export function parseGitCredentialInvocation(
+  args: readonly string[]
+): GitCredentialInvocation | null {
+  let operation: GitCredentialInvocation['operation'] | null = null
+  let purpose: RepoTokenPurpose | null = null
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === '--purpose') {
+      if (purpose !== null) return null
+      const value = args[index + 1]
+      if (!value || !isRepoTokenPurpose(value)) return null
+      purpose = value
+      index += 1
+      continue
+    }
+    if (arg.startsWith('--purpose=')) {
+      if (purpose !== null) return null
+      const value = arg.slice('--purpose='.length)
+      if (!isRepoTokenPurpose(value)) return null
+      purpose = value
+      continue
+    }
+    if (arg === 'get' || arg === 'store' || arg === 'erase') {
+      if (operation !== null) return null
+      operation = arg
+      continue
+    }
+    return null
+  }
+
+  return operation === null ? null : { operation, purpose }
+}
+
+export async function runGitCredentialInvocation(
+  args: readonly string[],
+  io: GitCredentialIo
+): Promise<number> {
+  const invocation = parseGitCredentialInvocation(args)
+  if (!invocation) {
+    io.printErr('Invalid git-credential invocation')
+    return 1
+  }
+  return runGitCredential(invocation.operation, {
+    ...io,
+    purpose: invocation.purpose ?? undefined,
+  })
+}
 
 export function parseCredentialInput(stdin: string): Record<string, string> {
   const map: Record<string, string> = {}
@@ -98,7 +188,8 @@ export function resolveWorkspaceId(io: GitCredentialIo): string | null {
 async function mintToken(
   fetcher: GitCredentialFetcher,
   workspaceId: string,
-  purpose: 'read' | 'write'
+  purpose: RepoTokenPurpose,
+  expectedRepoFullName: string
 ): Promise<{ ok: true; token: string } | { ok: false; status: number; error: string }> {
   const response = await fetcher(`/api/cli/workspaces/${encodeURIComponent(workspaceId)}/repo-token`, {
     method: 'POST',
@@ -106,9 +197,44 @@ async function mintToken(
     body: JSON.stringify({ purpose }),
   })
   if (response.ok) {
-    const data = (await response.json()) as { token?: string }
-    if (data.token) return { ok: true, token: data.token }
-    return { ok: false, status: response.status, error: 'Broker returned no token' }
+    let data: unknown
+    try {
+      data = await response.json()
+    } catch {
+      return {
+        ok: false,
+        status: response.status,
+        error: 'Broker returned invalid JSON',
+      }
+    }
+    if (typeof data !== 'object' || data === null) {
+      return {
+        ok: false,
+        status: response.status,
+        error: 'Broker returned an invalid GitHub credential',
+      }
+    }
+    const credential = data as Record<string, unknown>
+    if (
+      !(
+        credential.provider === undefined ||
+        credential.provider === 'github'
+      ) ||
+      credential.remote !== undefined ||
+      credential.repo !== expectedRepoFullName ||
+      typeof credential.token !== 'string' ||
+      credential.token.length === 0 ||
+      credential.token.length > 512 ||
+      /[\u0000-\u0020\u007f]/u.test(credential.token)
+    ) {
+      return {
+        ok: false,
+        status: response.status,
+        error:
+          'Broker returned a credential for a different repository provider or path',
+      }
+    }
+    return { ok: true, token: credential.token }
   }
   let error = `status ${response.status}`
   try {
@@ -120,14 +246,241 @@ async function mintToken(
   return { ok: false, status: response.status, error }
 }
 
+function isArtifactsHost(host: string | undefined): boolean {
+  if (!host) return false
+  const normalized = host.toLowerCase()
+  return ARTIFACTS_HOST.test(normalized)
+}
+
+function exactGithubRepoFullName(
+  input: Record<string, string>
+): string | null {
+  const protocol = input.protocol?.toLowerCase()
+  const host = input.host?.toLowerCase()
+  const rawPath = input.path
+  if (
+    protocol !== 'https' ||
+    host !== GITHUB_HOST ||
+    !rawPath ||
+    !SAFE_REMOTE_COMPONENT.test(rawPath)
+  ) {
+    return null
+  }
+  const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
+  try {
+    const url = new URL(`https://${GITHUB_HOST}${path}`)
+    if (
+      url.origin !== `https://${GITHUB_HOST}` ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.search ||
+      url.hash ||
+      url.pathname !== path
+    ) {
+      return null
+    }
+    const segments = url.pathname
+      .slice(1)
+      .split('/')
+      .filter(Boolean)
+    if (segments.length !== 2) return null
+    const [owner, rawRepository] = segments
+    const repository = rawRepository.endsWith('.git')
+      ? rawRepository.slice(0, -4)
+      : rawRepository
+    if (
+      !/^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$/.test(owner) ||
+      !/^[A-Za-z0-9_.-]{1,100}$/.test(repository)
+    ) {
+      return null
+    }
+    return `${owner}/${repository}`
+  } catch {
+    return null
+  }
+}
+
+function exactArtifactsCredentialKey(
+  input: Record<string, string>
+): string | null {
+  const protocol = input.protocol?.toLowerCase()
+  const host = input.host?.toLowerCase()
+  const rawPath = input.path
+  if (
+    protocol !== 'https' ||
+    !host ||
+    !isArtifactsHost(host) ||
+    !rawPath ||
+    !SAFE_REMOTE_COMPONENT.test(host) ||
+    !SAFE_REMOTE_COMPONENT.test(rawPath)
+  ) {
+    return null
+  }
+
+  const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
+  try {
+    const url = new URL(`https://${host}${path}`)
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.search ||
+      url.hash ||
+      url.hostname !== host ||
+      !ARTIFACTS_HOST.test(url.hostname) ||
+      !url.pathname.startsWith('/git/') ||
+      !url.pathname.endsWith('.git') ||
+      `${url.origin}${url.pathname}` !==
+        `https://${host}${path}`
+    ) {
+      return null
+    }
+    return `${url.origin}${url.pathname}`
+  } catch {
+    return null
+  }
+}
+
+type ArtifactsCredentialResult =
+  | {
+      readonly ok: true
+      readonly username: 'x'
+      readonly password: string
+    }
+  | {
+      readonly ok: false
+      readonly error: string
+    }
+
+async function mintArtifactsCredential(
+  fetcher: GitCredentialFetcher,
+  workspaceId: string,
+  purpose: RepoTokenPurpose,
+  expectedCredentialKey: string,
+  nowMs: number
+): Promise<ArtifactsCredentialResult> {
+  const response = await fetcher(
+    `/api/cli/workspaces/${encodeURIComponent(workspaceId)}/repo-token`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purpose }),
+    }
+  )
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: `repository credential service returned status ${response.status}`,
+    }
+  }
+
+  let data: unknown
+  try {
+    data = await response.json()
+  } catch {
+    return {
+      ok: false,
+      error: 'repository credential service returned invalid JSON',
+    }
+  }
+  if (typeof data !== 'object' || data === null) {
+    return {
+      ok: false,
+      error: 'repository credential service returned an invalid credential',
+    }
+  }
+
+  const credential = data as Record<string, unknown>
+  const remote =
+    typeof credential.remote === 'string'
+      ? credential.remote
+      : null
+  let resolvedCredentialKey: string | null = null
+  if (remote !== null) {
+    try {
+      const url = new URL(remote)
+      if (
+        url.protocol === 'https:' &&
+        !url.username &&
+        !url.password &&
+        !url.port &&
+        !url.search &&
+        !url.hash &&
+        ARTIFACTS_HOST.test(url.hostname) &&
+        url.pathname.startsWith('/git/') &&
+        url.pathname.endsWith('.git') &&
+        url.toString() === remote
+      ) {
+        resolvedCredentialKey = `${url.origin}${url.pathname}`
+      }
+    } catch {
+      resolvedCredentialKey = null
+    }
+  }
+
+  if (resolvedCredentialKey !== expectedCredentialKey) {
+    return {
+      ok: false,
+      error:
+        'server-resolved repository does not match Git exact path',
+    }
+  }
+  if (
+    credential.provider !== 'cloudflare_artifacts' ||
+    credential.username !== 'x' ||
+    typeof credential.token !== 'string' ||
+    !ARTIFACTS_PASSWORD.test(credential.token)
+  ) {
+    return {
+      ok: false,
+      error: 'repository credential service returned an invalid credential',
+    }
+  }
+  const expiresAt =
+    typeof credential.expiresAt === 'string'
+      ? credential.expiresAt
+      : ''
+  const expiresAtMs = Date.parse(expiresAt)
+  if (
+    !Number.isSafeInteger(nowMs) ||
+    !Number.isFinite(expiresAtMs) ||
+    new Date(expiresAtMs).toISOString() !== expiresAt ||
+    expiresAtMs <= nowMs ||
+    expiresAtMs > nowMs + ARTIFACTS_MAX_EXPIRY_SKEW_MS
+  ) {
+    return {
+      ok: false,
+      error:
+        'repository credential service returned an invalid credential expiry',
+    }
+  }
+
+  return {
+    ok: true,
+    username: 'x',
+    password: credential.token,
+  }
+}
+
 export async function runGitCredential(op: string, io: GitCredentialIo): Promise<number> {
   // store/erase are no-ops: we never persist a credential to disk.
   if (op !== 'get') return 0
 
   const input = parseCredentialInput(io.stdin)
+  const inputHost = input.host?.toLowerCase()
 
-  // Only broker for github.com; anything else is git's own business.
-  if (input.host && input.host !== GITHUB_HOST) return 0
+  // Only broker for the legacy GitHub host or the exact Artifacts service.
+  // Anything else is git's own business.
+  if (
+    inputHost &&
+    inputHost !== GITHUB_HOST &&
+    !isArtifactsHost(inputHost)
+  ) {
+    return 0
+  }
 
   const workspaceId = resolveWorkspaceId(io)
   if (!workspaceId) {
@@ -137,10 +490,62 @@ export async function runGitCredential(op: string, io: GitCredentialIo): Promise
 
   const fetcher = io.fetcher ?? authedFetch
 
+  if (isArtifactsHost(inputHost)) {
+    if (!io.purpose) {
+      io.printErr(
+        'orizu git-credential: an Artifacts remote requires an explicit repository purpose'
+      )
+      return 1
+    }
+    const credentialKey = exactArtifactsCredentialKey(input)
+    if (credentialKey === null) {
+      io.printErr(
+        'orizu git-credential: refusing Artifacts credential selection without an exact repository path'
+      )
+      return 1
+    }
+
+    const minted = await mintArtifactsCredential(
+      fetcher,
+      workspaceId,
+      io.purpose,
+      credentialKey,
+      (io.nowMs ?? Date.now)()
+    )
+    if (!minted.ok) {
+      io.printErr(
+        `orizu git-credential: could not broker an Artifacts credential (${minted.error})`
+      )
+      return 1
+    }
+    io.print(`username=${minted.username}`)
+    io.print(`password=${minted.password}`)
+    io.print('')
+    return 0
+  }
+
   // Mint write first (curators/pushers), fall back to read on 403 (members).
-  let minted = await mintToken(fetcher, workspaceId, 'write')
-  if (!minted.ok && minted.status === 403) {
-    minted = await mintToken(fetcher, workspaceId, 'read')
+  const expectedRepoFullName = exactGithubRepoFullName(input)
+  if (!expectedRepoFullName) {
+    io.printErr(
+      'orizu git-credential: refusing GitHub credential selection without an exact repository path'
+    )
+    return 1
+  }
+  const primaryPurpose = io.purpose ?? 'write'
+  let minted = await mintToken(
+    fetcher,
+    workspaceId,
+    primaryPurpose,
+    expectedRepoFullName
+  )
+  if (!io.purpose && !minted.ok && minted.status === 403) {
+    minted = await mintToken(
+      fetcher,
+      workspaceId,
+      'read',
+      expectedRepoFullName
+    )
   }
 
   if (!minted.ok) {

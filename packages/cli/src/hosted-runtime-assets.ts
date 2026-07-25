@@ -233,12 +233,13 @@ function parseProtocolInput(text) {
   return out
 }
 
-function readCache(file, nowMs, bufferMs) {
+function readCache(file, nowMs, bufferMs, expectedCredentialKey) {
   let parsed
   try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')) } catch (_) { return null }
   if (!parsed || typeof parsed !== 'object') return null
   if (!parsed.username || !parsed.password) return null
   if (typeof parsed.expiresAtMs !== 'number') return null
+  if (!parsed.credentialKey || parsed.credentialKey !== expectedCredentialKey) return null
   if (parsed.expiresAtMs - nowMs <= bufferMs) return null
   return parsed
 }
@@ -250,7 +251,59 @@ function writeCache(file, cred) {
   } catch (e) { log('cache write failed: ' + (e && e.message)) }
 }
 
-async function requestToken(url, bearer, purpose, sessionId) {
+function exactCredentialKey(input) {
+  const protocol = String(input.protocol || '').toLowerCase()
+  const host = String(input.host || '').toLowerCase()
+  const rawPath = String(input.path || '')
+  if (!host || !rawPath || (protocol !== 'https' && protocol !== 'http')) return null
+  if (/[\\u0000-\\u0020\\u007f\\\\?#]/.test(host) || /[\\u0000-\\u0020\\u007f\\\\?#]/.test(rawPath)) return null
+  const path = rawPath.startsWith('/') ? rawPath : '/' + rawPath
+  try {
+    const parsed = new URL(protocol + '://' + host + path)
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) return null
+    if (parsed.hostname.toLowerCase() !== host.split(':')[0]) return null
+    if (parsed.origin + parsed.pathname !== protocol + '://' + host + path) return null
+    return parsed.origin + parsed.pathname
+  } catch (_) {
+    return null
+  }
+}
+
+function credentialKeyForRemote(remote) {
+  try {
+    const parsed = new URL(remote)
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash ||
+      !/^[0-9a-f]{32}\\.artifacts\\.cloudflare\\.net$/.test(parsed.hostname) ||
+      !/^\\/git\\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\\.git$/.test(parsed.pathname) ||
+      parsed.toString() !== remote
+    ) return null
+    return parsed.origin + parsed.pathname
+  } catch (_) {
+    return null
+  }
+}
+
+function isArtifactsCredentialKey(credentialKey) {
+  try {
+    const parsed = new URL(credentialKey)
+    return (
+      parsed.protocol === 'https:' &&
+      !parsed.port &&
+      /^[0-9a-f]{32}\\.artifacts\\.cloudflare\\.net$/.test(parsed.hostname) &&
+      /^\\/git\\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\\.git$/.test(parsed.pathname) &&
+      parsed.origin + parsed.pathname === credentialKey
+    )
+  } catch (_) {
+    return false
+  }
+}
+
+async function requestToken(url, bearer, purpose, sessionId, expectedCredentialKey) {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + bearer },
@@ -259,9 +312,48 @@ async function requestToken(url, bearer, purpose, sessionId) {
   if (res.ok) {
     const data = await res.json()
     if (!data || !data.token) throw new Error('broker returned no token')
+    const nowMs = Date.now()
     const parsedExpiry = Date.parse(data.expiresAt)
-    const expiresAtMs = Number.isFinite(parsedExpiry) ? parsedExpiry : Date.now() + 60 * 60 * 1000
-    return { cred: { username: 'x-access-token', password: String(data.token), expiresAtMs: expiresAtMs }, status: res.status }
+    const expiresAtMs = Number.isFinite(parsedExpiry) ? parsedExpiry : nowMs + 60 * 60 * 1000
+    const expectsArtifacts = isArtifactsCredentialKey(expectedCredentialKey)
+    if (expectsArtifacts && data.provider !== 'cloudflare_artifacts') {
+      throw new Error('broker returned the wrong repository provider')
+    }
+    if (data.provider === 'cloudflare_artifacts') {
+      const resolvedCredentialKey = credentialKeyForRemote(String(data.remote || ''))
+      if (!resolvedCredentialKey || resolvedCredentialKey !== expectedCredentialKey) {
+        throw new Error('server-resolved repository does not match the exact Git credential path')
+      }
+      if (
+        !Number.isFinite(parsedExpiry) ||
+        new Date(parsedExpiry).toISOString() !== data.expiresAt ||
+        parsedExpiry <= nowMs ||
+        parsedExpiry > nowMs + 305000
+      ) {
+        throw new Error('broker returned an invalid Artifacts credential expiry')
+      }
+      if (data.username !== 'x' || !/^art_v1_[0-9a-f]{40}$/.test(String(data.token))) {
+        throw new Error('broker returned an invalid Artifacts credential')
+      }
+      return {
+        cred: {
+          username: 'x',
+          password: String(data.token),
+          expiresAtMs: expiresAtMs,
+          credentialKey: resolvedCredentialKey,
+        },
+        status: res.status,
+      }
+    }
+    return {
+      cred: {
+        username: 'x-access-token',
+        password: String(data.token),
+        expiresAtMs: expiresAtMs,
+        credentialKey: expectedCredentialKey,
+      },
+      status: res.status,
+    }
   }
   return { cred: null, status: res.status }
 }
@@ -291,7 +383,7 @@ async function resolveOrizuBearer(ctx) {
   return bearer
 }
 
-async function mint(ctx) {
+async function mint(ctx, input, expectedCredentialKey) {
   const bearer = await resolveOrizuBearer(ctx)
   const base = String(ctx.apiBaseUrl || '').replace(/\\/$/, '')
   const url = base + '/api/cli/workspaces/' + encodeURIComponent(ctx.workspaceId) + '/repo-token'
@@ -303,14 +395,14 @@ async function mint(ctx) {
   // (e.g. a read-only caller asking to write) — the ONLY legitimate fallback
   // trigger. A 400 means the broker does not recognise the purpose at all
   // (vocabulary drift): fail loudly rather than silently downgrade.
-  const first = await requestToken(url, bearer, primary, ctx.sessionId)
+  const first = await requestToken(url, bearer, primary, ctx.sessionId, expectedCredentialKey)
   if (first.cred) return first.cred
   if (first.status === 400) {
     throw new Error('broker rejected purpose "' + primary + '" as unknown (400) — vocabulary drift')
   }
   if (first.status !== 403) throw new Error('broker responded ' + first.status)
 
-  const second = await requestToken(url, bearer, fallback, ctx.sessionId)
+  const second = await requestToken(url, bearer, fallback, ctx.sessionId, expectedCredentialKey)
   if (second.cred) return second.cred
   if (second.status === 400) {
     throw new Error('broker rejected fallback purpose "' + fallback + '" as unknown (400) — vocabulary drift')
@@ -343,12 +435,18 @@ async function main() {
   if (protocol && protocol !== 'https' && !httpAllowed) { log('refusing non-https protocol'); return 0 }
   const expectedHost = String(ctx.host || 'github.com').toLowerCase()
   if (host && host !== expectedHost) { log('refusing host ' + host); return 0 }
+  const expectedCredentialKey = exactCredentialKey(input)
+  if (!expectedCredentialKey) { log('refusing credential request without an exact path'); return 1 }
+  const artifactsRequest = isArtifactsCredentialKey(expectedCredentialKey)
 
   const bufferMs = typeof ctx.cacheBufferMs === 'number' ? ctx.cacheBufferMs : ${DEFAULT_CACHE_REFRESH_BUFFER_MS}
-  let cred = readCache(ctx.cacheFile, Date.now(), bufferMs)
+  // Provider credentials must never persist. The historical GitHub helper
+  // cache remains for migration compatibility; Artifacts mints are one-use
+  // process values delivered directly to Git.
+  let cred = artifactsRequest ? null : readCache(ctx.cacheFile, Date.now(), bufferMs, expectedCredentialKey)
   if (!cred) {
-    try { cred = await mint(ctx) } catch (e) { log('mint failed: ' + (e && e.message)); return 1 }
-    writeCache(ctx.cacheFile, cred)
+    try { cred = await mint(ctx, input, expectedCredentialKey) } catch (e) { log('mint failed: ' + (e && e.message)); return 1 }
+    if (!artifactsRequest) writeCache(ctx.cacheFile, cred)
   }
 
   for (const key of Object.keys(input)) {

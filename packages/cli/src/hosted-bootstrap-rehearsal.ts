@@ -72,6 +72,12 @@ export interface SpawnedBroker {
  */
 export function brokerEnv(config: BrokerConfig): Record<string, string> {
   const env: Record<string, string> = { HB_BEARER: config.bearer, HB_REPO: config.repo }
+  if (config.artifactsRemote) {
+    env.HB_ARTIFACTS_REMOTE = config.artifactsRemote
+  }
+  if (config.artifactsExpiresAt) {
+    env.HB_ARTIFACTS_EXPIRES_AT = config.artifactsExpiresAt
+  }
   if (config.eventsFile) env.HB_EVENTS_FILE = config.eventsFile
   if (config.tokensFile) env.HB_TOKENS_FILE = config.tokensFile
   if (config.sessionId) env.HB_SESSION_ID = config.sessionId

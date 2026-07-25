@@ -48,6 +48,10 @@ function bun(): BunServeLike & { main?: boolean } {
 export interface BrokerConfig {
   bearer: string
   repo: string
+  /** Test-only exact Artifacts remote returned by the repo-token endpoint. */
+  artifactsRemote?: string
+  /** Test-only expiry override for fail-closed helper rehearsals. */
+  artifactsExpiresAt?: string
   eventsFile?: string
   tokensFile?: string
   repoTokenStatus?: number
@@ -72,6 +76,8 @@ export function readBrokerConfigFromEnv(env: NodeJS.ProcessEnv): BrokerConfig {
   return {
     bearer: env.HB_BEARER ?? '',
     repo: env.HB_REPO ?? 'acme/repo',
+    artifactsRemote: env.HB_ARTIFACTS_REMOTE,
+    artifactsExpiresAt: env.HB_ARTIFACTS_EXPIRES_AT,
     eventsFile: env.HB_EVENTS_FILE,
     tokensFile: env.HB_TOKENS_FILE,
     repoTokenStatus: env.HB_REPO_TOKEN_STATUS ? Number.parseInt(env.HB_REPO_TOKEN_STATUS, 10) : undefined,
@@ -225,8 +231,22 @@ export function startBrokerServer(config: BrokerConfig): { port: number; stop: (
       }
       mints += 1
       const mintId = `mint-${mints}`
-      const token = `ghs_sim_${purpose}_${mintId}_${Math.random().toString(36).slice(2)}`
+      const token = config.artifactsRemote
+        ? `art_v1_${mints.toString(16).padStart(40, '0')}`
+        : `ghs_sim_${purpose}_${mintId}_${Math.random().toString(36).slice(2)}`
       if (config.tokensFile) appendFileSync(config.tokensFile, `${token}\n`)
+      if (config.artifactsRemote) {
+        return json({
+          provider: 'cloudflare_artifacts',
+          token,
+          username: 'x',
+          expiresAt:
+            config.artifactsExpiresAt ??
+            new Date(Date.now() + 300_000).toISOString(),
+          remote: config.artifactsRemote,
+          repo: config.artifactsRemote,
+        })
+      }
       return json({ token, expiresAt: new Date(Date.now() + 3600_000).toISOString(), repo: config.repo, mintId })
     }
 

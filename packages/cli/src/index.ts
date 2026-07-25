@@ -84,7 +84,7 @@ import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
 import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
-import { runGitCredential } from './git-credential.js'
+import { runGitCredentialInvocation } from './git-credential.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
 import { assertSnapshotManifestConfined, verifyGepaRunnerDirsFromArgs, verifyRunnerDirRegistered } from './runner-dir-verify.js'
 import { runScorersRegister } from './scorer-draft-push.js'
@@ -6628,7 +6628,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
     process.exitCode = await workspaceSyncCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine })
     return
   }
-  if (command === 'git-credential') { process.exitCode = await runGitCredential(subcommand ?? 'get', { stdin: readFileSync(0, 'utf8'), cwd: process.cwd(), print: printLine, printErr: printError }); return }
+  if (command === 'git-credential') { process.exitCode = await runGitCredentialInvocation(cliArgs.slice(1), { stdin: readFileSync(0, 'utf8'), cwd: process.cwd(), print: printLine, printErr: printError }); return }
   if (command === 'github' && subcommand === 'link') { const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal(); const team = getOptionalArgValue('--team') || (await resolveSetupTeam(null, noInput, false)).slug; await runGithubLink(team, { print: printLine, fetcher: authedFetch, openUrl: openInBrowser, confirm: (org) => askYesNo(`Connect this team to GitHub org '${org}'?`, true) }); return }
   if (command === 'connectors' || command === 'manifests') {
     const moduleCommand = command === 'connectors' ? connectorsCommand : manifestsCommand

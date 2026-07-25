@@ -62,6 +62,10 @@ export type BootFetch = (url: string, init?: RequestInit) => Promise<Response>
  *  DO-path `workers/session-coordinator/src/bootstrap.ts`); kept in sync by
  *  grep. Inlined (not imported) to avoid a hosted-session-cli import cycle. */
 const ANTHROPIC_DUMMY_KEY = 'sk-ant-orizu-proxy-broker-placeholder'
+const CLOUDFLARE_ARTIFACTS_HOST =
+  /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/
+const CLOUDFLARE_ARTIFACTS_GIT_PATH =
+  /^\/git\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\.git$/
 
 // -- Frozen env contract ------------------------------------------------------
 
@@ -433,6 +437,47 @@ export async function resolveRepo(opts: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ purpose: 'session_read', sessionId: opts.sessionId }),
   })
+  const provider = asString(minted.provider)
+  const artifactsRemote = asString(minted.remote)
+  if (provider === 'cloudflare_artifacts') {
+    if (!artifactsRemote) {
+      throw new Error(
+        'repo-token response carried no Artifacts remote'
+      )
+    }
+    let parsed: URL
+    try {
+      parsed = new URL(artifactsRemote)
+    } catch {
+      throw new Error(
+        'repo-token response carried an invalid Artifacts remote'
+      )
+    }
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      parsed.search ||
+      parsed.hash ||
+      !CLOUDFLARE_ARTIFACTS_HOST.test(parsed.hostname) ||
+      !CLOUDFLARE_ARTIFACTS_GIT_PATH.test(parsed.pathname) ||
+      parsed.toString() !== artifactsRemote
+    ) {
+      throw new Error(
+        'repo-token response carried an invalid Artifacts remote'
+      )
+    }
+    return {
+      repoFullName: artifactsRemote,
+      cloneUrl: artifactsRemote,
+    }
+  }
+  if (artifactsRemote) {
+    throw new Error(
+      'repo-token response carried an unexpected provider remote'
+    )
+  }
   const repoFullName = asString(minted.repo)
   if (!repoFullName) throw new Error('repo-token response carried no repo')
   // We deliberately do NOT early-revoke this probe token (ALI-1069): the
@@ -611,6 +656,7 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   // the run failed + report the boot failure (the DO is the backstop otherwise).
   opts.onBootContext?.({ runId, bearer: bearer.token })
   const repo = await resolveRepo({ baseUrl: env.baseUrl, workspaceId, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
+  const repositoryHost = new URL(repo.cloneUrl).host.toLowerCase()
   log(`resolved run ${runId} on ${repo.repoFullName}@${session.repoBranch}`)
 
   // 4 — Write the run-scoped assets: boot secret + initial bearer (0600), the
@@ -641,7 +687,7 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
     runId,
     sessionBranch: session.repoBranch,
     repoFullName: repo.repoFullName,
-    host: 'github.com',
+    host: repositoryHost,
     bearerFile: bearerFileAbs,
     cacheFile: cacheFileAbs,
     // PULL MODE: source the bearer over HTTP from the coordinator per git op.
