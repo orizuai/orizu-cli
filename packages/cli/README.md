@@ -185,6 +185,13 @@ orizu logout
     <td><code>orizu comments add --run &lt;runId&gt; --body @comment.md --anchor "Summary" --lines 4:6</code><br><code>orizu comments reply &lt;commentId&gt; --body "Fixed"</code><br><code>orizu comments resolve &lt;commentId&gt;</code></td>
   </tr>
   <tr>
+    <td colspan="2"><strong>Diff comments</strong></td>
+  </tr>
+  <tr>
+    <td>Export diff comments</td>
+    <td><code>orizu comments diff --run &lt;optimizationRunId&gt; [--from &lt;candidateId&gt; --to &lt;candidateId&gt;] [--detail hunk|diff|full] [--json]</code><br><code>orizu comments diff --prompt &lt;promptId&gt; [--from &lt;version&gt; --to &lt;version&gt;] [--detail hunk|diff|full] [--json]</code></td>
+  </tr>
+  <tr>
     <td colspan="2"><strong>Datasets</strong></td>
   </tr>
   <tr>

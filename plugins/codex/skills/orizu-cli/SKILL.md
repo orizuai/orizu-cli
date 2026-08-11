@@ -195,6 +195,7 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - Optimization exports default to `<run-id>.optimization.json`; prefer the existing `logs/<run-id>` directory from `run-gepa` when it is available because it contains the full local trace without needing server rehydration.
 - When ending an optimization run, attach a markdown report with `--report-file` when possible. Use `references/optimization-reports.md` for what to include.
 - Use `orizu comments list --prompt <prompt-id-or-name> --project <team>/<project> [--label <label> | --version <id>] [--json]` to list prompt-level discussion threads with open/resolved status, selected text/line context, and replies.
+- Use `orizu comments diff --run <optimization-run-id> [--from <candidate-id> --to <candidate-id>] [--detail hunk|diff|full] [--json]` or `orizu comments diff --prompt <prompt-id> [--from <version> --to <version>] [--detail hunk|diff|full] [--json]` to export comments grouped by candidate/version pair with anchored diff context. Exactly one target is required; pair selectors must be supplied together, and prompt selectors are integer version numbers.
 
 # Where things live
 
