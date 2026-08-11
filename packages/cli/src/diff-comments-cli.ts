@@ -1,3 +1,5 @@
+import { extractErrorMessage } from './error-response.js'
+
 interface DiffCommentAuthor {
   name?: string
   person?: { name?: string }
@@ -123,8 +125,14 @@ function buildParams(ctx: DiffCommentsCliContext): URLSearchParams {
     ctx.rejectDashPrefixedOptionValue(name, value)
   }
 
+  if (runId === '' || promptId === '') {
+    throw new Error(usage())
+  }
   if (Number(Boolean(runId)) + Number(Boolean(promptId)) !== 1) {
     throw new Error(usage())
+  }
+  if (from === '' || to === '') {
+    throw new Error('--from and --to must be provided together')
   }
   if (Boolean(from) !== Boolean(to)) {
     throw new Error('--from and --to must be provided together')
@@ -201,10 +209,10 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
       }
 
       if (!comment.context) {
-        ctx.printLine(
-          `    Context unavailable: ` +
-          `${sanitizeHumanText(ctx, comment.contextUnavailableReason ?? 'body_unresolvable')}`
-        )
+        const unavailableContext = comment.contextUnavailableReason
+          ? `Context unavailable: ${sanitizeHumanText(ctx, comment.contextUnavailableReason)}`
+          : 'Context unavailable (no reason supplied)'
+        ctx.printLine(`    ${unavailableContext}`)
         continue
       }
 
@@ -228,16 +236,13 @@ export async function diffCommentsCommand(ctx: DiffCommentsCliContext) {
   const params = buildParams(ctx)
   const response = await ctx.authedFetch(`/api/cli/diff-comments?${params.toString()}`)
   if (!response.ok) {
-    let message = `HTTP ${response.status}`
-    try {
-      const payload = await response.clone().json() as { error?: unknown }
-      if (typeof payload.error === 'string' && payload.error.trim()) {
-        message = sanitizeHumanInlineText(ctx, payload.error)
-      }
-    } catch {
-      // Keep the status-only error for non-JSON responses.
-    }
-    throw new Error(`Failed to fetch diff comments: ${message}`)
+    const extractedMessage = await extractErrorMessage(response)
+    const message = extractedMessage.trim()
+      ? extractedMessage
+      : `HTTP ${response.status}`
+    throw new Error(
+      `Failed to fetch diff comments: ${sanitizeHumanInlineText(ctx, message)}`
+    )
   }
 
   const payload = await ctx.parseJsonResponse<DiffCommentsPayload>(response, 'Diff comments')
