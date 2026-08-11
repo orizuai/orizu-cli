@@ -198,6 +198,31 @@ export function serializeBootContext(ctx: HostedBootContext): string {
 }
 
 /**
+ * The opaque git-password rule, as a pattern SOURCE string.
+ *
+ * ALI-1285: the Artifacts contract declares the credential opaque
+ * (`plaintext: string`), so only transport-usable shape is enforced — bounded,
+ * no whitespace, no control characters, at least 16 characters. Mirrors
+ * `workers/artifacts-runtime/contracts.ts` GIT_PASSWORD.
+ *
+ * It is kept as a SOURCE STRING, not a regex literal, because the rendered
+ * credential helper must embed the identical rule. A regex literal written
+ * inline in the renderer's template has its escapes consumed by the OUTER
+ * template literal before emission, which silently produced
+ * `[^s<NUL>-<US><DEL>]` — rejecting every credential containing `s` while
+ * accepting spaces and NBSP. Emitting via `JSON.stringify` of this constant
+ * makes the two layers provably identical, and
+ * `test/cli/hosted-credential-helper.test.ts` asserts that at the RENDERED
+ * layer by executing the emitted validator.
+ */
+export const HOSTED_OPAQUE_GIT_PASSWORD_SOURCE =
+  '^[^\\s\\u0000-\\u001f\\u007f]{16,1024}$'
+
+export const HOSTED_OPAQUE_GIT_PASSWORD = new RegExp(
+  HOSTED_OPAQUE_GIT_PASSWORD_SOURCE
+)
+
+/**
  * The git credential-helper script, as a self-contained CommonJS source string.
  * Implements the `get` action (mint/emit); `store`/`erase` are no-ops because
  * the broker owns credential truth and the script never persists what git hands
@@ -332,7 +357,15 @@ async function requestToken(url, bearer, purpose, sessionId, expectedCredentialK
       ) {
         throw new Error('broker returned an invalid Artifacts credential expiry')
       }
-      if (data.username !== 'x' || !/^art_v1_[0-9a-f]{40}$/.test(String(data.token))) {
+      // ALI-1285: the credential body is opaque; only transport-usable shape is
+      // enforced (see workers/artifacts-runtime/contracts.ts GIT_PASSWORD).
+      // Built from the shared pattern SOURCE via JSON.stringify so the outer
+      // template literal cannot consume its escapes.
+      if (
+        data.username !== 'x' ||
+        typeof data.token !== 'string' ||
+        !new RegExp(${JSON.stringify(HOSTED_OPAQUE_GIT_PASSWORD_SOURCE)}).test(data.token)
+      ) {
         throw new Error('broker returned an invalid Artifacts credential')
       }
       return {

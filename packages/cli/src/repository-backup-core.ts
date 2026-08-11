@@ -69,7 +69,9 @@ export const DEFAULT_REPOSITORY_BACKUP_LIMITS: Readonly<RepositoryBackupLimits> 
   Object.freeze({
     maxRefs: 20_000,
     maxObjects: 1_000_000,
-    maxObjectBytes: 10 * 1024 * 1024 * 1024,
+    // Conservative post-transfer ceiling for the verified reachable-object inventory.
+    // Quarantine bytes and deadlines bound transfer itself; see ADR-012 version 1.
+    maxObjectBytes: 8_000_000_000,
     maxSingleObjectBytes: 128 * 1024 * 1024,
     maxCommits: 250_000,
     maxTreeEntries: 2_000_000,
@@ -184,6 +186,15 @@ export interface RepositoryBackupDeadline {
   deadlineMs: number
 }
 
+/**
+ * Deterministic scheduler seam for local recovery fixtures. Production
+ * callers always use the platform timer and cannot override the overall wall.
+ */
+export interface RepositoryBackupTestDeadlineScheduler {
+  schedule(callback: () => void, delayMs: number): unknown
+  cancel(handle: unknown): void
+}
+
 export interface RepositoryBackupArtifactDestinations {
   /**
    * Create both files without following links and finish all writes before
@@ -235,6 +246,12 @@ export interface CreateVerifiedRepositoryBackupInput<
   databasePins: readonly FrozenRepositoryDatabasePin[]
   limits?: Partial<RepositoryBackupLimits>
   executionBoundary: RepositoryBackupExecutionBoundary
+  /**
+   * Test-only scheduler for deterministic deadline tests. It is rejected
+   * unless the remote is an explicit local fixture and the execution boundary
+   * attests that every resource limit is test-only and unenforced.
+   */
+  testDeadlineScheduler?: RepositoryBackupTestDeadlineScheduler
   /**
    * Runs only after source-side and independent restore verification. Stream
    * both path-backed artifacts to durable storage before returning; the
@@ -303,6 +320,16 @@ interface GitContext {
   deadlineMs: number
 }
 
+interface RepositoryBackupDeadlineScheduler {
+  schedule(callback: () => void, delayMs: number): unknown
+  cancel(handle: unknown): void
+}
+
+interface GitCommandTimeoutBudget {
+  timeoutMs: number
+  constrainedBy: 'command' | 'overall'
+}
+
 interface ParsedTreeEntry {
   mode: string
   type: string
@@ -316,6 +343,15 @@ interface GitFilesystemBudget {
 }
 
 const EMPTY_SHA1 = '0'.repeat(40)
+const SYSTEM_DEADLINE_SCHEDULER: RepositoryBackupDeadlineScheduler =
+  Object.freeze({
+    schedule(callback: () => void, delayMs: number): unknown {
+      return setTimeout(callback, delayMs)
+    },
+    cancel(handle: unknown): void {
+      clearTimeout(handle as ReturnType<typeof setTimeout>)
+    },
+  })
 const SAFE_LOCAL_CONFIG_KEYS = new Set([
   'core.bare',
   'core.filemode',
@@ -541,7 +577,9 @@ function assertWithinDeadline(deadlineMs: number): void {
 async function withinOverallDeadline<T>(
   deadlineMs: number,
   operation: string,
-  callback: (deadline: RepositoryBackupDeadline) => Promise<T>
+  callback: (deadline: RepositoryBackupDeadline) => Promise<T>,
+  scheduler: RepositoryBackupDeadlineScheduler =
+    SYSTEM_DEADLINE_SCHEDULER
 ): Promise<T> {
   assertWithinDeadline(deadlineMs)
   const controller = new AbortController()
@@ -549,14 +587,23 @@ async function withinOverallDeadline<T>(
     `${operation} exceeded the repository backup overall timeout`
   )
   const timeoutMs = Math.max(1, deadlineMs - Date.now())
-  let timeout: ReturnType<typeof setTimeout> | undefined
+  let timeout: unknown
+  let timeoutScheduled = false
   const timeoutSentinel = Symbol('repository-backup-timeout')
+  let resolveTimeout!: (value: typeof timeoutSentinel) => void
   const timedOut = new Promise<typeof timeoutSentinel>(resolve => {
-    timeout = setTimeout(() => {
-      controller.abort(timeoutError)
-      resolve(timeoutSentinel)
-    }, timeoutMs)
+    resolveTimeout = resolve
   })
+  try {
+    timeout = scheduler.schedule(() => {
+      controller.abort(timeoutError)
+      resolveTimeout(timeoutSentinel)
+    }, timeoutMs)
+    timeoutScheduled = true
+  } catch (error) {
+    controller.abort(error)
+    throw error
+  }
   const operationPromise = Promise.resolve().then(() =>
     callback(
       Object.freeze({
@@ -582,7 +629,7 @@ async function withinOverallDeadline<T>(
     }
     throw timeoutError
   } finally {
-    if (timeout !== undefined) clearTimeout(timeout)
+    if (timeoutScheduled) scheduler.cancel(timeout)
     if (!controller.signal.aborted) {
       controller.abort(
         new Error('repository backup callback lifetime ended')
@@ -591,12 +638,22 @@ async function withinOverallDeadline<T>(
   }
 }
 
-function remainingCommandTimeout(context: GitContext): number {
+function remainingCommandTimeout(
+  context: GitContext
+): GitCommandTimeoutBudget {
   assertWithinDeadline(context.deadlineMs)
-  return Math.max(
-    1,
-    Math.min(context.limits.commandTimeoutMs, context.deadlineMs - Date.now())
-  )
+  const overallRemainingMs = context.deadlineMs - Date.now()
+  const constrainedBy =
+    overallRemainingMs <= context.limits.commandTimeoutMs
+      ? 'overall'
+      : 'command'
+  return {
+    timeoutMs: Math.max(
+      1,
+      Math.min(context.limits.commandTimeoutMs, overallRemainingMs)
+    ),
+    constrainedBy,
+  }
 }
 
 function commandLabel(args: readonly string[]): string {
@@ -759,12 +816,13 @@ async function gitResult(
     )
   }
 
+  const timeoutBudget = remainingCommandTimeout(context)
   const result = await runGitProcess({
     args,
     cwd: context.repoDir,
     env: context.env,
     stdin: options.stdin,
-    timeoutMs: remainingCommandTimeout(context),
+    timeoutMs: timeoutBudget.timeoutMs,
     maxOutputBytes: context.limits.maxGitOutputBytes,
     ...(options.monitorQuarantine === true
       ? {
@@ -782,6 +840,11 @@ async function gitResult(
     throw new Error('repository quarantine filesystem monitor failed closed')
   }
   if (result.timedOut) {
+    if (timeoutBudget.constrainedBy === 'overall') {
+      throw new Error(
+        `${options.operation ?? commandLabel(args)} exceeded the repository backup overall timeout`
+      )
+    }
     throw new Error(`${options.operation ?? commandLabel(args)} exceeded its hard timeout`)
   }
   if (result.outputExceeded) {
@@ -865,6 +928,70 @@ function snapshotCloudflareArtifactsTarget(
   })
   assertCloudflareArtifactsTarget(snapshot)
   return snapshot
+}
+
+function snapshotTestDeadlineScheduler(
+  value: RepositoryBackupTestDeadlineScheduler | undefined
+): RepositoryBackupDeadlineScheduler | undefined {
+  if (value === undefined) return undefined
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Object.getPrototypeOf(value) !== Object.prototype ||
+    Object.keys(value).sort().join(',') !== 'cancel,schedule'
+  ) {
+    throw new Error(
+      'repository backup test deadline scheduler must be an exact plain object'
+    )
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value)
+  const schedule = descriptors.schedule
+  const cancel = descriptors.cancel
+  if (
+    schedule === undefined ||
+    cancel === undefined ||
+    !Object.hasOwn(schedule, 'value') ||
+    !Object.hasOwn(cancel, 'value') ||
+    schedule.get !== undefined ||
+    schedule.set !== undefined ||
+    cancel.get !== undefined ||
+    cancel.set !== undefined ||
+    typeof schedule.value !== 'function' ||
+    typeof cancel.value !== 'function'
+  ) {
+    throw new Error(
+      'repository backup test deadline scheduler must expose data-function schedule and cancel methods'
+    )
+  }
+  const scheduleFunction = schedule.value as (
+    callback: () => void,
+    delayMs: number
+  ) => unknown
+  const cancelFunction = cancel.value as (handle: unknown) => void
+  return Object.freeze({
+    schedule(callback: () => void, delayMs: number): unknown {
+      return scheduleFunction.call(value, callback, delayMs)
+    },
+    cancel(handle: unknown): void {
+      cancelFunction.call(value, handle)
+    },
+  })
+}
+
+function assertTestDeadlineSchedulerBoundary(
+  scheduler: RepositoryBackupDeadlineScheduler | undefined,
+  filesystem: RepositoryBackupExecutionFilesystem
+): void {
+  if (scheduler === undefined) return
+  if (
+    filesystem.quotaEnforcement !== 'test-only-unenforced' ||
+    filesystem.memoryEnforcement !== 'test-only-unenforced' ||
+    filesystem.processCountEnforcement !== 'test-only-unenforced'
+  ) {
+    throw new Error(
+      'repository backup test deadline scheduler requires a fully test-only unenforced execution boundary'
+    )
+  }
 }
 
 function validateRemoteUrl(
@@ -2092,6 +2219,8 @@ export async function createVerifiedRepositoryBackup<TArtifactResult>(
     )
   )
   const executionBoundary = input.executionBoundary
+  const testDeadlineScheduler =
+    snapshotTestDeadlineScheduler(input.testDeadlineScheduler)
   const consumeVerifiedArtifacts =
     input.consumeVerifiedArtifacts
   const rawCredentialHelper = input.credentialHelper
@@ -2112,6 +2241,11 @@ export async function createVerifiedRepositoryBackup<TArtifactResult>(
     allowLocalRemote,
     cloudflareArtifactsTarget
   )
+  if (testDeadlineScheduler !== undefined && protocol !== 'file') {
+    throw new Error(
+      'repository backup test deadline scheduler is allowed only for an explicit local recovery fixture'
+    )
+  }
   assertRecoveryRefName(requiredRef, 'required backup ref')
   if (
     requiredRefBindingMode !== 'exact' &&
@@ -2138,6 +2272,10 @@ export async function createVerifiedRepositoryBackup<TArtifactResult>(
     allowUnenforcedTestBoundary:
       protocol === 'file' && allowLocalRemote,
     async operation(filesystem) {
+      assertTestDeadlineSchedulerBoundary(
+        testDeadlineScheduler,
+        filesystem
+      )
       const deadlineMs = Date.now() + limits.overallTimeoutMs
       const { root, context } = await makeTempContext(
         filesystem.rootPath,
@@ -2376,7 +2514,8 @@ export async function createVerifiedRepositoryBackup<TArtifactResult>(
                 ),
               }),
               deadline
-            )
+            ),
+          testDeadlineScheduler ?? SYSTEM_DEADLINE_SCHEDULER
         )
 
         return {

@@ -11,6 +11,13 @@ import { spawnSync } from 'child_process'
 import { authedFetch } from './http.js'
 import { findUnknownOption } from './option-validation.js'
 import { formatRunEventDigest } from './run-event-digest.js'
+import {
+  createStartIntentId,
+  isAmbiguousStartResponseStatus,
+  isStartIntentId,
+  START_RESPONSE_LOSS_MAX_RETRIES,
+  type StartIntentIdGenerator,
+} from './start-intent.js'
 import { getWorkspaceRoot, workspaceExists } from './workspace.js'
 import { attachedWorkspaceId, stringOrNull } from './workspace-sync.js'
 
@@ -157,6 +164,14 @@ export interface SessionStartOptions extends CommonWorkbenchOptions {
    * smoke) never mutate the local checkout; the human CLI path turns it on.
    */
   localCheckout?: boolean
+  /** Injectable bounded repository-readiness delay for tests. */
+  sleep?: WorkbenchSleep
+  /** Injectable UUIDv4 generator; one value is replayed for every retry. */
+  generateStartIntentId?: StartIntentIdGenerator
+  /** Existing immutable intent when resuming a bounded pending start. */
+  startIntentId?: string | null
+  /** Existing session bound to startIntentId when resuming provisioning. */
+  reconcileSessionId?: string | null
 }
 
 export interface SessionStatusOptions extends CommonWorkbenchOptions {
@@ -198,6 +213,42 @@ export interface SessionStartResult {
   session: WorkbenchSession
   /** Local checkout attempt for the session branch; null when the session has no branch. */
   checkout?: SessionCheckout | null
+}
+
+/** A bounded repository wait exhausted without losing the immutable identity
+ * needed to resume safely. CLI callers can show the command; library callers
+ * can use the structured fields directly. */
+export class SessionRepositoryPendingError extends Error {
+  readonly sessionId: string
+  readonly startIntentId: string
+  readonly resumeCommand: string
+
+  constructor(input: {
+    readonly sessionId: string
+    readonly startIntentId: string
+    readonly projectSlug: string | null
+    readonly workspaceDirectory: string | null
+  }) {
+    const quoteForShell = (value: string): string =>
+      `'${value.replaceAll("'", "'\"'\"'")}'`
+    const projectArg = input.projectSlug
+      ? ` --project ${quoteForShell(input.projectSlug)}`
+      : ''
+    const workspaceArg = input.workspaceDirectory
+      ? ` --workspace ${quoteForShell(input.workspaceDirectory)}`
+      : ''
+    const resumeCommand =
+      `orizu session start --start-intent ${quoteForShell(input.startIntentId)}` +
+      ` --session ${quoteForShell(input.sessionId)}${projectArg}${workspaceArg}`
+    super(
+      'Session repository is still provisioning after the bounded retry window. ' +
+        `Resume the same session without creating a duplicate: ${resumeCommand}`
+    )
+    this.name = 'SessionRepositoryPendingError'
+    this.sessionId = input.sessionId
+    this.startIntentId = input.startIntentId
+    this.resumeCommand = resumeCommand
+  }
 }
 
 export interface SessionStatusResult {
@@ -260,6 +311,8 @@ export interface WorkbenchCommandIo {
   sleep?: WorkbenchSleep
   /** Injectable git for the session-branch ergonomics (ALI-1028). */
   git?: SessionGitRunner
+  /** Test seam for the session-start idempotency UUID. */
+  generateStartIntentId?: StartIntentIdGenerator
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
@@ -271,7 +324,13 @@ const DEFAULT_TAIL_INTERVAL_SECONDS = 2
 // hot-spin against the API while a non-terminal run is quiet. Draining full
 // pages intentionally skips the sleep — that is catch-up, not polling.
 const MIN_TAIL_INTERVAL_MS = 500
-const SESSION_START_OPTIONS = new Set(['--project', '--workspace', '--json'])
+const SESSION_START_OPTIONS = new Set([
+  '--project',
+  '--workspace',
+  '--start-intent',
+  '--session',
+  '--json',
+])
 const WORKBENCH_VALUE_OPTIONS = new Set([
   '--after',
   '--interval',
@@ -280,6 +339,7 @@ const WORKBENCH_VALUE_OPTIONS = new Set([
   '--run',
   '--session',
   '--status',
+  '--start-intent',
   '--summary',
   '--title',
   '--workspace',
@@ -288,6 +348,9 @@ const WORKBENCH_VALUE_OPTIONS = new Set([
 function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+export const SESSION_REPOSITORY_PENDING_RETRY_MS = 2_000
+export const SESSION_REPOSITORY_PENDING_MAX_RETRIES = 30
 
 function numberOrFallback(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -451,7 +514,29 @@ export async function runSessionStart(opts: SessionStartOptions = {}): Promise<S
   const fetcher = fetcherFrom(opts)
   const workspaceId = resolveAttachedWorkspaceId(opts)
   const projectSlug = normalizeProjectSlug(opts.projectSlug)
-  const body: Record<string, unknown> = {}
+  const suppliedStartIntentId = stringOrNull(
+    opts.startIntentId
+  )
+  if (
+    suppliedStartIntentId &&
+    !isStartIntentId(suppliedStartIntentId)
+  ) {
+    throw new Error(
+      'session start --start-intent must be a UUIDv4'
+    )
+  }
+  const startIntentId =
+    suppliedStartIntentId ??
+    createStartIntentId(opts.generateStartIntentId)
+  const suppliedReconcileSessionId = stringOrNull(
+    opts.reconcileSessionId
+  )
+  if (suppliedReconcileSessionId && !suppliedStartIntentId) {
+    throw new Error(
+      'session start --session requires --start-intent'
+    )
+  }
+  const body: Record<string, unknown> = { startIntentId }
   if (projectSlug) {
     body.projectSlug = projectSlug
   }
@@ -459,18 +544,100 @@ export async function runSessionStart(opts: SessionStartOptions = {}): Promise<S
     body.clientInfo = opts.clientInfo
   }
 
-  const response = await fetcher(`/api/cli/workspaces/${encodeURIComponent(workspaceId)}/sessions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  let response: Response
+  let data: Record<string, unknown>
+  let reconcileSessionId: string | null =
+    suppliedReconcileSessionId
+  let repositoryPendingAttempts = 0
+  let ambiguousResponseAttempts = 0
+  for (;;) {
+    try {
+      response = await fetcher(
+        `/api/cli/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...body,
+            ...(reconcileSessionId
+              ? { sessionId: reconcileSessionId }
+              : {}),
+          }),
+        }
+      )
+    } catch (error) {
+      if (
+        ambiguousResponseAttempts <
+        START_RESPONSE_LOSS_MAX_RETRIES
+      ) {
+        ambiguousResponseAttempts += 1
+        continue
+      }
+      throw error
+    }
+    data = await readJson(response.clone())
+    if (
+      isAmbiguousStartResponseStatus(response.status) &&
+      ambiguousResponseAttempts <
+        START_RESPONSE_LOSS_MAX_RETRIES
+    ) {
+      ambiguousResponseAttempts += 1
+      continue
+    }
+    const repository =
+      data.repository &&
+      typeof data.repository === 'object' &&
+      !Array.isArray(data.repository)
+        ? data.repository as Record<string, unknown>
+        : null
+    const pendingSession =
+      response.status === 202 &&
+      repository?.state === 'pending'
+        ? sessionFrom(data, 'Session start')
+        : null
+    const pendingSessionId = pendingSession
+      ? stringOrNull(pendingSession.id)
+      : null
+    if (pendingSessionId) {
+      if (
+        repositoryPendingAttempts >=
+        SESSION_REPOSITORY_PENDING_MAX_RETRIES
+      ) {
+        throw new SessionRepositoryPendingError({
+          sessionId: pendingSessionId,
+          startIntentId,
+          projectSlug,
+          workspaceDirectory: stringOrNull(opts.cwd),
+        })
+      }
+      repositoryPendingAttempts += 1
+      ambiguousResponseAttempts = 0
+      reconcileSessionId = pendingSessionId
+      const retryAfterSeconds =
+        typeof repository?.retryAfterSeconds === 'number' &&
+        Number.isInteger(repository.retryAfterSeconds) &&
+        repository.retryAfterSeconds >= 1 &&
+        repository.retryAfterSeconds <= 60
+          ? repository.retryAfterSeconds
+          : SESSION_REPOSITORY_PENDING_RETRY_MS / 1_000
+      await (opts.sleep ?? defaultSleep)(retryAfterSeconds * 1_000)
+      continue
+    }
+    break
+  }
   await assertOk(response, 'Session start')
-  const data = await readJson(response)
   const session = sessionFrom(data, 'Session start')
   // The session is started; local checkout is best-effort ergonomics only,
-  // and only when explicitly requested (the CLI human path).
+  // and only when explicitly requested (the CLI human path). The temporary
+  // Artifacts compatibility branch is `main` in a separate remote; never run
+  // the legacy `git fetch origin/main` flow against the caller's current
+  // checkout.
   const branch = stringOrNull(session.repoBranch)
-  const checkout = branch && opts.localCheckout
+  const artifactsRepositoryId =
+    stringOrNull(session.workingRepositoryId)
+  const checkout = artifactsRepositoryId
+    ? null
+    : branch && opts.localCheckout
     ? checkoutSessionBranchLocally(opts.cwd, branch, opts.git ?? defaultSessionGit)
     : branch
       ? { branch, state: 'skipped' as const, detail: 'local checkout not requested' }
@@ -487,7 +654,10 @@ export async function runSessionStatus(opts: SessionStatusOptions = {}): Promise
     const data = await readJson(response)
     const session = sessionFrom(data, 'Session status')
     const branch = stringOrNull(session.repoBranch)
-    const branchSync = branch
+    const artifactsRepositoryId = stringOrNull(
+      session.workingRepositoryId
+    )
+    const branchSync = branch && !artifactsRepositoryId
       ? computeSessionBranchSync(opts.cwd, branch, opts.git ?? defaultSessionGit)
       : null
     return { session, branchSync }
@@ -532,9 +702,29 @@ async function prepareLocalSessionBranch(
   fetcher: WorkbenchFetcher
 ): Promise<{ localWarnings: string[]; pushed: boolean }> {
   const git = opts.git ?? defaultSessionGit
-  const root = getWorkspaceRoot(opts.cwd)
   const localWarnings: string[] = []
 
+  // Resolve the server-owned repository mode before invoking Git at all.
+  // Artifacts temporarily exposes repoBranch=main for hosted compatibility,
+  // but that branch belongs to the private working repository. Treating it as
+  // a legacy branch in the caller's current checkout can stage, commit, and
+  // push origin/main before the server has a chance to reject finish-branch.
+  const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(opts.sessionId)}`)
+  if (!response.ok) {
+    // Best-effort: the finish call right after will surface the real error.
+    return { localWarnings, pushed: false }
+  }
+  const session = sessionFrom(await readJson(response), 'Session status')
+  if (stringOrNull(session.workingRepositoryId)) {
+    if (opts.push) {
+      throw new Error(
+        'session finish --push is not supported for an Artifacts-backed session; the hosted session owns its private repository'
+      )
+    }
+    return { localWarnings, pushed: false }
+  }
+
+  const root = getWorkspaceRoot(opts.cwd)
   if (!isWorkbenchClone(root, git)) {
     if (opts.push) {
       throw new Error(
@@ -544,14 +734,7 @@ async function prepareLocalSessionBranch(
     return { localWarnings, pushed: false }
   }
 
-  // Learn the session branch name (the finish call itself does not return it
-  // until after the branch is finished).
-  const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(opts.sessionId)}`)
-  if (!response.ok) {
-    // Best-effort: the finish call right after will surface the real error.
-    return { localWarnings, pushed: false }
-  }
-  const branch = stringOrNull(sessionFrom(await readJson(response), 'Session status').repoBranch)
+  const branch = stringOrNull(session.repoBranch)
   if (!branch) {
     return { localWarnings, pushed: false }
   }
@@ -1024,6 +1207,17 @@ export async function workbenchCommand(args: string[], io: WorkbenchCommandIo): 
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (io.json) {
+      if (error instanceof SessionRepositoryPendingError) {
+        io.print(
+          JSON.stringify({
+            error: message,
+            sessionId: error.sessionId,
+            startIntentId: error.startIntentId,
+            resumeCommand: error.resumeCommand,
+          })
+        )
+        return 1
+      }
       return emitJsonError(io, message)
     }
     throw error
@@ -1045,7 +1239,7 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
       if (unknownOption) {
         return emitJsonError(
           io,
-          `unknown option ${unknownOption}\nUsage: orizu session start [--project <team/project>] [--workspace <dir>] [--json]`
+          `unknown option ${unknownOption}\nUsage: orizu session start [--project <team/project>] [--workspace <dir>] [--start-intent <uuid> --session <uuid>] [--json]`
         )
       }
       const result = await runSessionStart({
@@ -1054,7 +1248,11 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
         git: io.git,
         localCheckout: true,
         projectSlug: argValue(args, '--project'),
+        startIntentId: argValue(args, '--start-intent'),
+        reconcileSessionId: argValue(args, '--session'),
         clientInfo: { source: 'orizu-cli' },
+        generateStartIntentId: io.generateStartIntentId,
+        sleep: io.sleep,
       })
       emit(io, formatSessionStart(result), result as unknown as Record<string, unknown>)
       return 0

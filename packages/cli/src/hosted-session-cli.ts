@@ -60,6 +60,13 @@ import { mergeJobCommand } from './merge-job.js'
 import { authedFetch } from './http.js'
 import { resolveBaseUrl } from './http.js'
 import { findUnknownOption } from './option-validation.js'
+import {
+  createStartIntentId,
+  isAmbiguousStartResponseStatus,
+  isStartIntentId,
+  START_RESPONSE_LOSS_MAX_RETRIES,
+  type StartIntentIdGenerator,
+} from './start-intent.js'
 import { getWorkspaceRoot } from './workspace.js'
 import { attachedWorkspaceId } from './workspace-sync.js'
 import { tailWorkbenchRun } from './workbench-cli.js'
@@ -89,6 +96,46 @@ const GENERATED_HOSTED_UUID_PLACEHOLDER = '00000000-0000-4000-8000-000000000000'
 /** Non-secret placeholder OpenCode uses to form requests; the firewall proxy
  *  overrides the real Anthropic header (model-key brokering). NEVER a real key. */
 export const ANTHROPIC_DUMMY_KEY = 'sk-ant-orizu-proxy-broker-placeholder'
+const CLOUDFLARE_ARTIFACTS_HOST =
+  /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/
+const CLOUDFLARE_ARTIFACTS_GIT_PATH =
+  /^\/git\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\.git$/
+/** The broker currently drains repository lifecycle work once per minute. A
+ * durable provider `waiting` response can therefore cost a full cron period;
+ * use the server-advertised cadence and retain a five-minute resume window. */
+export const REPOSITORY_PROVISIONING_RETRY_MS = 60_000
+export const REPOSITORY_PROVISIONING_MAX_WAIT_MS = 5 * 60_000
+/** Backward-compatible names for existing operator-path callers/tests. */
+export const OPERATOR_REPOSITORY_PENDING_RETRY_MS =
+  REPOSITORY_PROVISIONING_RETRY_MS
+/** @deprecated The runtime is delay-budgeted, not retry-counted. This retains
+ * the old exported symbol as the maximum count implied by the 1s wire floor. */
+export const OPERATOR_REPOSITORY_PENDING_MAX_RETRIES =
+  REPOSITORY_PROVISIONING_MAX_WAIT_MS / 1_000
+
+/** A bounded repository wait exhausted without losing the immutable hosted
+ * start identity. Both server- and operator-provisioned paths expose the same
+ * structured recovery contract. */
+export class HostedSessionRepositoryPendingError extends Error {
+  readonly sessionId: string
+  readonly startIntentId: string
+  readonly resumeCommand: string
+
+  constructor(input: {
+    readonly sessionId: string
+    readonly startIntentId: string
+    readonly resumeCommand: string
+  }) {
+    super(
+      'Session repository is still provisioning after the bounded retry window. ' +
+        `Resume the same session without creating a duplicate: ${input.resumeCommand}`
+    )
+    this.name = 'HostedSessionRepositoryPendingError'
+    this.sessionId = input.sessionId
+    this.startIntentId = input.startIntentId
+    this.resumeCommand = input.resumeCommand
+  }
+}
 
 // -- Injectable HTTP -----------------------------------------------------------
 
@@ -134,6 +181,115 @@ async function postJson(
     throw new Error(`${path} failed (${response.status}): ${error}`)
   }
   return readJson(response)
+}
+
+async function startWorkspaceSessionWithRepository(
+  fetcher: HostFetcher,
+  workspaceId: string,
+  payload: Record<string, unknown>,
+  sleep: (ms: number) => Promise<void>,
+  identity: {
+    readonly startIntentId: string
+    readonly sessionId?: string
+    readonly resumeCommand: (sessionId: string) => string
+  }
+): Promise<Record<string, unknown>> {
+  const path =
+    `/api/cli/workspaces/${encodeURIComponent(workspaceId)}/sessions`
+  let sessionId: string | null = identity.sessionId ?? null
+  let repositoryWaitedMs = 0
+  let ambiguousResponseAttempts = 0
+  for (;;) {
+    let response: Response
+    try {
+      response = await fetcher(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...payload,
+          ...(sessionId ? { sessionId } : {}),
+        }),
+      })
+    } catch (error) {
+      if (
+        ambiguousResponseAttempts <
+        START_RESPONSE_LOSS_MAX_RETRIES
+      ) {
+        ambiguousResponseAttempts += 1
+        continue
+      }
+      throw error
+    }
+    const body = await readJson(response)
+    if (
+      isAmbiguousStartResponseStatus(response.status) &&
+      ambiguousResponseAttempts <
+        START_RESPONSE_LOSS_MAX_RETRIES
+    ) {
+      ambiguousResponseAttempts += 1
+      continue
+    }
+    const repository =
+      body.repository &&
+      typeof body.repository === 'object' &&
+      !Array.isArray(body.repository)
+        ? body.repository as Record<string, unknown>
+        : null
+    const session =
+      body.session &&
+      typeof body.session === 'object' &&
+      !Array.isArray(body.session)
+        ? body.session as Record<string, unknown>
+        : null
+    const pendingSessionId =
+      response.status === 202 &&
+      repository?.state === 'pending'
+        ? typeof session?.id === 'string'
+          ? session.id
+          : null
+        : null
+    if (pendingSessionId) {
+      if (
+        repositoryWaitedMs >=
+        REPOSITORY_PROVISIONING_MAX_WAIT_MS
+      ) {
+        throw new HostedSessionRepositoryPendingError({
+          sessionId: pendingSessionId,
+          startIntentId: identity.startIntentId,
+          resumeCommand: identity.resumeCommand(
+            pendingSessionId
+          ),
+        })
+      }
+      ambiguousResponseAttempts = 0
+      sessionId = pendingSessionId
+      const retryAfterSeconds =
+        typeof repository?.retryAfterSeconds === 'number' &&
+        Number.isInteger(repository.retryAfterSeconds) &&
+        repository.retryAfterSeconds >= 1 &&
+        repository.retryAfterSeconds <= 60
+          ? repository.retryAfterSeconds
+          : OPERATOR_REPOSITORY_PENDING_RETRY_MS / 1_000
+      const scheduledDelayMs = Math.min(
+        retryAfterSeconds * 1_000,
+        REPOSITORY_PROVISIONING_MAX_WAIT_MS -
+          repositoryWaitedMs
+      )
+      repositoryWaitedMs += scheduledDelayMs
+      await sleep(scheduledDelayMs)
+      continue
+    }
+    if (!response.ok) {
+      const error =
+        typeof body.error === 'string'
+          ? body.error
+          : `${response.status}`
+      throw new Error(
+        `${path} failed (${response.status}): ${error}`
+      )
+    }
+    return body
+  }
 }
 
 function requireString(value: unknown, label: string): string {
@@ -186,6 +342,10 @@ export interface StartHostedSessionOptions {
   workspaceId: string
   task: string
   projectSlug?: string | null
+  /** Immutable response-loss identity. Supply both fields to resume the exact
+   * pending repository; omitting both creates a fresh UUIDv4 intent. */
+  startIntentId?: string
+  reconcileSessionId?: string
   model?: string
   reasoningEffort?: string
   /** Sandbox session length (minutes); default 60, hard-capped at 24h. */
@@ -211,7 +371,8 @@ export interface StartHostedSessionOptions {
   tail?: boolean
   /** Host-side model key; injected at the firewall proxy, never into the sandbox. */
   modelApiKey?: string
-  /** VCS host the credential helper serves (default github.com; rehearsal only). */
+  /** @deprecated The credential-helper host is derived from the resolved clone
+   *  URL. Kept only as a source-compatible no-op for older library callers. */
   host?: string
   /** Loopback hosts the helper may serve over plain HTTP (rehearsal only). */
   insecureHttpHosts?: readonly string[]
@@ -223,11 +384,19 @@ export interface StartHostedSessionOptions {
    *  `buildEgressPolicy` — DEFAULT-DENY base allowlist (Orizu API + model provider
    *  + git) with the model-key broker composed on, plus the per-team additive
    *  domains. Injectable for tests. */
-  buildEgressPolicy?: (input: { modelApiKey?: string; extraDomains: readonly string[] }) => SandboxEgressPolicy | undefined
+  buildEgressPolicy?: (input: {
+    modelApiKey?: string
+    extraDomains: readonly string[]
+    repositoryHost: string
+  }) => SandboxEgressPolicy | undefined
   /** Resolve the per-team ADDITIVE egress domains for this workspace's team
    *  (base hosts are code-owned and always present). Default: no extra domains —
    *  the production CLI injects a route-backed resolver. */
   resolveExtraEgressDomains?: (workspaceId: string) => Promise<readonly string[]>
+  /** Injectable bounded wait used while the server prepares an Artifacts fork. */
+  repositorySleep?: (ms: number) => Promise<void>
+  /** Injectable UUIDv4 generator; one value is replayed for every retry. */
+  generateStartIntentId?: StartIntentIdGenerator
   rotationIntervalMs?: number
   agentTokenTtlMinutes?: number
   now?: () => number
@@ -323,6 +492,59 @@ export interface StartHostedSessionResult {
   error: string | null
 }
 
+export function repositoryResolutionFromMint(
+  minted: Record<string, unknown>
+): RepoResolution {
+  const provider =
+    typeof minted.provider === 'string' ? minted.provider : null
+  const artifactsRemote =
+    typeof minted.remote === 'string' ? minted.remote : null
+  if (provider === 'cloudflare_artifacts') {
+    if (!artifactsRemote) {
+      throw new Error(
+        'repo-token response carried no Artifacts remote'
+      )
+    }
+    let parsed: URL
+    try {
+      parsed = new URL(artifactsRemote)
+    } catch {
+      throw new Error(
+        'repo-token response carried an invalid Artifacts remote'
+      )
+    }
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      parsed.search ||
+      parsed.hash ||
+      !CLOUDFLARE_ARTIFACTS_HOST.test(parsed.hostname) ||
+      !CLOUDFLARE_ARTIFACTS_GIT_PATH.test(parsed.pathname) ||
+      parsed.toString() !== artifactsRemote
+    ) {
+      throw new Error(
+        'repo-token response carried an invalid Artifacts remote'
+      )
+    }
+    return {
+      repoFullName: artifactsRemote,
+      cloneUrl: artifactsRemote,
+    }
+  }
+  if (artifactsRemote) {
+    throw new Error(
+      'repo-token response carried an unexpected provider remote'
+    )
+  }
+  const repoFullName = requireString(minted.repo, 'repo')
+  return {
+    repoFullName,
+    cloneUrl: `https://github.com/${repoFullName}.git`,
+  }
+}
+
 function clampDuration(minutes: number | undefined): number {
   const base = typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_DURATION_MINUTES
   return Math.min(Math.max(1, Math.floor(base)), MAX_DURATION_MINUTES)
@@ -344,7 +566,9 @@ async function writeBearerFile(session: SandboxSession, bearerRel: string, beare
 }
 
 /** Default repo resolution: mint a session_read token (human bearer) to learn
- *  the repo full name, build the GitHub clone URL, then revoke the mint. */
+ *  the exact provider-neutral remote. Legacy GitHub mints are revoked after
+ *  discovery; Artifacts credentials are lifecycle-audited and revoked by the
+ *  session cleanup reconciler. */
 async function defaultResolveRepo(
   fetcher: HostFetcher,
   workspaceId: string,
@@ -354,7 +578,7 @@ async function defaultResolveRepo(
     purpose: 'session_read',
     sessionId,
   })
-  const repoFullName = requireString(minted.repo, 'repo')
+  const resolution = repositoryResolutionFromMint(minted)
   const token = typeof minted.token === 'string' ? minted.token : null
   const mintId = typeof minted.mintId === 'string' ? minted.mintId : null
   if (token && mintId) {
@@ -368,7 +592,7 @@ async function defaultResolveRepo(
       // best-effort revoke — the 60-min TTL is the backstop.
     }
   }
-  return { repoFullName, cloneUrl: `https://github.com/${repoFullName}.git` }
+  return resolution
 }
 
 export async function startHostedSession(
@@ -380,6 +604,21 @@ export async function startHostedSession(
   if (!opts.modelApiKey) {
     throw new Error('hosted session needs a model API key: set ANTHROPIC_API_KEY (or pass --model-key)')
   }
+  if (
+    Boolean(opts.startIntentId) !==
+      Boolean(opts.reconcileSessionId) ||
+    (opts.startIntentId !== undefined &&
+      !isStartIntentId(opts.startIntentId)) ||
+    (opts.reconcileSessionId !== undefined &&
+      !isStartIntentId(opts.reconcileSessionId))
+  ) {
+    throw new Error(
+      '--start-intent and --session must be supplied together as UUIDv4 values'
+    )
+  }
+  const startIntentId =
+    opts.startIntentId ??
+    createStartIntentId(opts.generateStartIntentId)
   const rawFetch = opts.rawFetch ?? (globalThis.fetch as HostedFetch)
   const log = opts.logLine ?? ((): void => {})
   const model = opts.model ?? DEFAULT_HOSTED_MODEL
@@ -406,18 +645,54 @@ export async function startHostedSession(
   // API base URL so a self-hosted / staging base allowlists the right host.
   const buildEgress =
     opts.buildEgressPolicy ??
-    ((input: { modelApiKey?: string; extraDomains: readonly string[] }): SandboxEgressPolicy | undefined =>
+    ((input: {
+      modelApiKey?: string
+      extraDomains: readonly string[]
+      repositoryHost: string
+    }): SandboxEgressPolicy | undefined =>
       buildEgressPolicy({
         orizuBaseUrl: opts.apiBaseUrl,
         extraDomains: input.extraDomains,
+        repositoryHosts: [input.repositoryHost],
         modelKeyBroker: input.modelApiKey ? { apiKey: input.modelApiKey } : undefined,
       }))
 
   // (a) open a workspace session (its own session branch is cut server-side).
-  const sessionResp = await postJson(
+  const sessionResp = await startWorkspaceSessionWithRepository(
     opts.fetcher,
-    `/api/cli/workspaces/${encodeURIComponent(opts.workspaceId)}/sessions`,
-    { repoBranch: true, projectSlug: opts.projectSlug ?? undefined, clientInfo: { source: 'orizu-cli-hosted' } }
+    opts.workspaceId,
+    {
+      repoBranch: true,
+      projectSlug: opts.projectSlug ?? undefined,
+      clientInfo: { source: 'orizu-cli-hosted' },
+      startIntentId,
+    },
+    opts.repositorySleep ??
+      (ms => new Promise(resolve => setTimeout(resolve, ms))),
+    {
+      startIntentId,
+      ...(opts.reconcileSessionId
+        ? { sessionId: opts.reconcileSessionId }
+        : {}),
+      resumeCommand: sessionId =>
+        buildHostedResumeCommand({
+          task: opts.task,
+          workspaceId: opts.workspaceId,
+          startIntentId,
+          sessionId,
+          operator: true,
+          taskFile: null,
+          projectSlug: opts.projectSlug ?? null,
+          durationMinutes: opts.durationMinutes,
+          model: opts.model,
+          reasoningEffort: opts.reasoningEffort,
+          title: opts.title,
+          provider: opts.provider.kind,
+          runtime: opts.runtime,
+          image: opts.hostedImage,
+          snapshot: opts.hostedSnapshot,
+        }),
+    }
   )
   const session = sessionResp.session as { id?: unknown; repoBranch?: unknown } | undefined
   const sessionId = requireString(session?.id, 'session id')
@@ -448,6 +723,11 @@ export async function startHostedSession(
   const repo = await (opts.resolveRepo
     ? opts.resolveRepo(opts.workspaceId)
     : defaultResolveRepo(opts.fetcher, opts.workspaceId, sessionId))
+  const repositoryUrl = new URL(repo.cloneUrl)
+  const repositoryHost =
+    repositoryUrl.hostname.toLowerCase()
+  const repositoryCredentialHost =
+    repositoryUrl.host.toLowerCase()
 
   // (d) create the sandbox — timeout ALWAYS set from --duration.
   // Resolve the per-team ADDITIVE egress domains (best-effort: a resolution
@@ -460,7 +740,11 @@ export async function startHostedSession(
       log(`egress allowlist resolve failed (using base allowlist only): ${error instanceof Error ? error.message : String(error)}`)
     }
   }
-  const egressPolicy = buildEgress({ modelApiKey: opts.modelApiKey, extraDomains: extraEgressDomains })
+  const egressPolicy = buildEgress({
+    modelApiKey: opts.modelApiKey,
+    extraDomains: extraEgressDomains,
+    repositoryHost,
+  })
   const sandbox = await opts.provider.createSandbox({
     timeoutMs: clampDuration(opts.durationMinutes) * 60 * 1000,
     runtime: opts.runtime,
@@ -510,7 +794,7 @@ export async function startHostedSession(
     bearerKind: 'agent',
     sink: bootstrapSink,
     fetchImpl: rawFetch,
-    host: opts.host,
+    host: repositoryCredentialHost,
     insecureHttpHosts: opts.insecureHttpHosts,
     // ALI-1017: skip the in-sandbox CLI install when the pre-baked image ships it.
     prebaked: prebakedImage,
@@ -819,10 +1103,71 @@ function numFlag(args: readonly string[], flag: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+interface HostedResumeCommandInput {
+  readonly task: string
+  readonly taskFile: string | null
+  readonly workspaceId: string
+  readonly startIntentId: string
+  readonly sessionId: string
+  readonly operator: boolean
+  readonly projectSlug?: string | null
+  readonly durationMinutes?: number
+  readonly model?: string
+  readonly reasoningEffort?: string
+  readonly title?: string
+  readonly provider?: string
+  readonly runtime?: string
+  readonly image?: string
+  readonly snapshot?: string
+}
+
+function quoteForShell(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`
+}
+
+function buildHostedResumeCommand(
+  input: HostedResumeCommandInput
+): string {
+  const parts = ['orizu', 'session', 'start', '--hosted']
+  if (input.operator) parts.push('--operator')
+  if (input.taskFile) {
+    parts.push('--task-file', quoteForShell(input.taskFile))
+  } else {
+    parts.push('--task', quoteForShell(input.task))
+  }
+  parts.push('--workspace', quoteForShell(input.workspaceId))
+  parts.push(
+    '--start-intent',
+    quoteForShell(input.startIntentId),
+    '--session',
+    quoteForShell(input.sessionId)
+  )
+  const append = (
+    flag: string,
+    value: string | number | null | undefined
+  ): void => {
+    if (value !== undefined && value !== null) {
+      parts.push(flag, quoteForShell(String(value)))
+    }
+  }
+  append('--project', input.projectSlug)
+  append('--duration', input.durationMinutes)
+  append('--model', input.model)
+  append('--reasoning-effort', input.reasoningEffort)
+  append('--title', input.title)
+  if (input.operator) {
+    append('--provider', input.provider)
+    append('--runtime', input.runtime)
+    append('--image', input.image)
+    append('--snapshot', input.snapshot)
+  }
+  return parts.join(' ')
+}
+
 const HOSTED_USAGE =
   'Usage: orizu session start --hosted (--task "<prompt>" | --task-file <path>) [--duration <min> (default 60, max 1440)] ' +
   '[--model <provider/model>] [--reasoning-effort <level>] [--project <team/project>] ' +
-  '[--title <title>] [--tail [--quiet]]\n' +
+  '[--title <title>] [--start-intent <uuid> --session <uuid>] [--tail [--quiet]]\n' +
   '--tail streams compact per-event digests (agent text, tool calls + args, results); ' +
   '--quiet restores the types-only stream; --json keeps full event payloads.\n' +
   'Default: the Orizu server provisions the sandbox (no VERCEL_* or model key needed on your machine); ' +
@@ -843,6 +1188,8 @@ const HOSTED_START_OPTIONS = new Set([
   '--reasoning-effort',
   '--project',
   '--title',
+  '--start-intent',
+  '--session',
   '--tail',
   '--quiet',
   '--operator',
@@ -863,6 +1210,8 @@ const HOSTED_START_VALUE_OPTIONS = new Set([
   '--reasoning-effort',
   '--project',
   '--title',
+  '--start-intent',
+  '--session',
   '--provider',
   '--runtime',
   '--image',
@@ -902,6 +1251,37 @@ export const HOSTED_START_PENDING_MAX_RETRIES = Math.ceil(
   (COORDINATOR_START_LEASE_TTL_MS + HOSTED_START_PENDING_TTL_MARGIN_MS) / HOSTED_START_PENDING_RETRY_MS
 )
 
+function repositoryRetryAfterMs(
+  response: Response,
+  body: Record<string, unknown>
+): number {
+  const repository =
+    body.repository &&
+    typeof body.repository === 'object' &&
+    !Array.isArray(body.repository)
+      ? body.repository as Record<string, unknown>
+      : null
+  const bodySeconds = repository?.retryAfterSeconds
+  const header = response.headers.get('Retry-After')
+  const headerSeconds =
+    header !== null && /^\d+$/.test(header)
+      ? Number(header)
+      : null
+  const seconds =
+    typeof bodySeconds === 'number' &&
+    Number.isInteger(bodySeconds) &&
+    bodySeconds >= 1 &&
+    bodySeconds <= 60
+      ? bodySeconds
+      : headerSeconds !== null &&
+          Number.isInteger(headerSeconds) &&
+          headerSeconds >= 1 &&
+          headerSeconds <= 60
+        ? headerSeconds
+        : REPOSITORY_PROVISIONING_RETRY_MS / 1_000
+  return seconds * 1_000
+}
+
 export async function startHostedViaServer(
   args: readonly string[],
   workspaceId: string,
@@ -909,13 +1289,36 @@ export async function startHostedViaServer(
   tail: boolean,
   io: HostedCommandIo,
   fetcher: HostFetcher = (path, init) => authedFetch(path, init),
-  sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms))
+  sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  generateStartIntentId?: StartIntentIdGenerator
 ): Promise<number> {
   const durationMinutes = numFlag(args, '--duration')
   const model = argVal(args, '--model') ?? undefined
   const reasoningEffort = argVal(args, '--reasoning-effort') ?? undefined
   const projectSlug = argVal(args, '--project') ?? undefined
   const title = argVal(args, '--title') ?? undefined
+  const requestedStartIntentId =
+    argVal(args, '--start-intent') ?? undefined
+  const requestedSessionId =
+    argVal(args, '--session') ?? undefined
+  const hasRequestedStartIntent =
+    hasFlag(args, '--start-intent')
+  const hasRequestedSession = hasFlag(args, '--session')
+  if (
+    hasRequestedStartIntent !== hasRequestedSession ||
+    (hasRequestedStartIntent &&
+      !isStartIntentId(requestedStartIntentId)) ||
+    (hasRequestedSession &&
+      !isStartIntentId(requestedSessionId))
+  ) {
+    io.printErr?.(
+      '--start-intent and --session must be supplied together as UUIDv4 values'
+    )
+    return 1
+  }
+  const startIntentId =
+    requestedStartIntentId ??
+    createStartIntentId(generateStartIntentId)
   const payload: Record<string, unknown> = {
     workspaceId,
     task,
@@ -924,8 +1327,14 @@ export async function startHostedViaServer(
     reasoningEffort,
     projectSlug,
     title,
+    startIntentId,
   }
-  const serializedPayload = JSON.stringify(payload)
+  const serializedPayload = JSON.stringify({
+    ...payload,
+    ...(requestedSessionId
+      ? { sessionId: requestedSessionId }
+      : {}),
+  })
   const payloadBytes = new TextEncoder().encode(serializedPayload).byteLength
   if (payloadBytes > MAX_HOSTED_START_BODY_BYTES) {
     const message =
@@ -964,13 +1373,17 @@ export async function startHostedViaServer(
     else io.printErr?.(message)
     return 1
   }
-  // R7 P4: the coordinator may momentarily answer start_pending (a start for
-  // this session is racing). It returns the sessionId so we RECONCILE the SAME
-  // session — re-poking by that id rather than blindly re-initing a duplicate.
+  // R7 P4 / ADR-011: the repository or coordinator may momentarily be pending.
+  // Both return the sessionId so we RECONCILE the SAME session rather than
+  // blindly creating a duplicate.
   let response: Response
   let body: Record<string, unknown> = {}
-  let reconcileSessionId: string | undefined
-  for (let attempt = 0; ; attempt++) {
+  let reconcileSessionId: string | undefined =
+    requestedSessionId
+  let startPendingAttempts = 0
+  let repositoryWaitedMs = 0
+  let ambiguousResponseAttempts = 0
+  for (;;) {
     const attemptBody = reconcileSessionId
       ? JSON.stringify({ ...payload, sessionId: reconcileSessionId })
       : serializedPayload
@@ -981,18 +1394,92 @@ export async function startHostedViaServer(
         body: attemptBody,
       })
     } catch (error) {
+      if (
+        ambiguousResponseAttempts <
+        START_RESPONSE_LOSS_MAX_RETRIES
+      ) {
+        ambiguousResponseAttempts += 1
+        continue
+      }
       io.printErr?.(`hosted session request failed: ${error instanceof Error ? error.message : String(error)}`)
       return 1
     }
     body = (await response.json().catch(() => ({}))) as Record<string, unknown>
-    const stillPending =
+    if (
+      isAmbiguousStartResponseStatus(response.status) &&
+      ambiguousResponseAttempts <
+        START_RESPONSE_LOSS_MAX_RETRIES
+    ) {
+      ambiguousResponseAttempts += 1
+      continue
+    }
+    const pendingSessionId =
       response.status === 409 &&
-      body.coordinator === 'start_pending' &&
       typeof body.sessionId === 'string' &&
       body.sessionId.length > 0
-    if (stillPending && attempt < HOSTED_START_PENDING_MAX_RETRIES) {
-      reconcileSessionId = body.sessionId as string
+        ? body.sessionId
+        : null
+    if (
+      pendingSessionId &&
+      body.coordinator === 'start_pending' &&
+      startPendingAttempts < HOSTED_START_PENDING_MAX_RETRIES
+    ) {
+      startPendingAttempts += 1
+      ambiguousResponseAttempts = 0
+      reconcileSessionId = pendingSessionId
       await sleep(HOSTED_START_PENDING_RETRY_MS)
+      continue
+    }
+    if (
+      pendingSessionId &&
+      body.coordinator === 'repository_pending'
+    ) {
+      if (
+        repositoryWaitedMs >=
+        REPOSITORY_PROVISIONING_MAX_WAIT_MS
+      ) {
+        const pendingError =
+          new HostedSessionRepositoryPendingError({
+            sessionId: pendingSessionId,
+            startIntentId,
+            resumeCommand: buildHostedResumeCommand({
+              task,
+              taskFile: argVal(args, '--task-file'),
+              workspaceId,
+              startIntentId,
+              sessionId: pendingSessionId,
+              operator: false,
+              projectSlug,
+              durationMinutes,
+              model,
+              reasoningEffort,
+              title,
+            }),
+          })
+        if (io.json) {
+          io.print(
+            JSON.stringify({
+              ok: false,
+              error: pendingError.message,
+              sessionId: pendingError.sessionId,
+              startIntentId: pendingError.startIntentId,
+              resumeCommand: pendingError.resumeCommand,
+            })
+          )
+        } else {
+          io.printErr?.(pendingError.message)
+        }
+        return 1
+      }
+      ambiguousResponseAttempts = 0
+      reconcileSessionId = pendingSessionId
+      const scheduledDelayMs = Math.min(
+        repositoryRetryAfterMs(response, body),
+        REPOSITORY_PROVISIONING_MAX_WAIT_MS -
+          repositoryWaitedMs
+      )
+      repositoryWaitedMs += scheduledDelayMs
+      await sleep(scheduledDelayMs)
       continue
     }
     break
@@ -1099,6 +1586,21 @@ export async function hostedCommand(
     return 1
   }
 
+  const hasResumeIntent = hasFlag(args, '--start-intent')
+  const hasResumeSession = hasFlag(args, '--session')
+  const resumeIntent = argVal(args, '--start-intent')
+  const resumeSession = argVal(args, '--session')
+  if (
+    hasResumeIntent !== hasResumeSession ||
+    (hasResumeIntent && !isStartIntentId(resumeIntent)) ||
+    (hasResumeSession && !isStartIntentId(resumeSession))
+  ) {
+    io.printErr?.(
+      '--start-intent and --session must be supplied together as UUIDv4 values'
+    )
+    return 1
+  }
+
   const inlineTask = argVal(args, '--task')
   const taskFile = argVal(args, '--task-file')
   if (hasFlag(args, '--task') && hasFlag(args, '--task-file')) {
@@ -1150,12 +1652,16 @@ export async function hostedCommand(
     providerKind === 'local-sim' ? createLocalSimProvider() : createVercelProvider()
 
   const hostFetcher: HostFetcher = (path, init) => authedFetch(path, init)
-  const result = await startHostedSession({
+  let result: StartHostedSessionResult
+  try {
+    result = await startHostedSession({
     fetcher: hostFetcher,
     apiBaseUrl: resolveBaseUrl(),
     provider,
     workspaceId,
     task,
+    startIntentId: resumeIntent ?? undefined,
+    reconcileSessionId: resumeSession ?? undefined,
     // Resolve the per-team additive egress domains at create (best-effort — a
     // failure falls back to the base allowlist only). Human-scoped read.
     resolveExtraEgressDomains: async (id: string): Promise<readonly string[]> => {
@@ -1166,7 +1672,10 @@ export async function hostedCommand(
     },
     projectSlug: argVal(args, '--project'),
     model: argVal(args, '--model') ?? undefined,
+    reasoningEffort:
+      argVal(args, '--reasoning-effort') ?? undefined,
     durationMinutes: numFlag(args, '--duration'),
+    title: argVal(args, '--title') ?? undefined,
     runtime: argVal(args, '--runtime') ?? undefined,
     // Pre-baked runtime (ALI-1017): flag wins, else env. Image = Docker/VCR path,
     // snapshot = zero-Docker path; both flip the install-skip flag. startHostedSession
@@ -1193,7 +1702,26 @@ export async function hostedCommand(
           await tailWorkbenchRun({ fetcher, runId, onEvent: event => onEvent?.(event as Record<string, unknown>) })
         }
       : undefined,
-  })
+    })
+  } catch (error) {
+    if (!(error instanceof HostedSessionRepositoryPendingError)) {
+      throw error
+    }
+    if (io.json) {
+      io.print(
+        JSON.stringify({
+          ok: false,
+          error: error.message,
+          sessionId: error.sessionId,
+          startIntentId: error.startIntentId,
+          resumeCommand: error.resumeCommand,
+        })
+      )
+    } else {
+      io.printErr?.(error.message)
+    }
+    return 1
+  }
 
   if (io.json) {
     io.print(JSON.stringify({ ok: result.ok, sessionId: result.sessionId, runId: result.runId, sandboxId: result.sandboxId, error: result.error }))

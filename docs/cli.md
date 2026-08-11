@@ -506,6 +506,36 @@ Behavior:
 - `reply`, `resolve`, `unresolve`, and `edit` use only the globally unique comment ID
 - `--json` returns the full API payload
 
+## Diff comments
+
+Diff comments are inline comments on a recomputed diff between two immutable
+prompt revisions. Export them for every commented pair, or select one pair
+with `--from` and `--to`:
+
+```bash
+orizu comments diff --run <optimizationRunId>
+orizu comments diff --run <optimizationRunId> --from <candidateId> --to <candidateId> --detail full
+orizu comments diff --prompt <promptId> --from 3 --to 4 --detail diff --json
+```
+
+Exactly one of `--run` and `--prompt` is required. `--from` and `--to` must be
+provided together; prompt revisions must be integer version numbers. Detail
+levels are:
+
+- `hunk`: anchored line and its complete changed run, with up to three
+  unchanged lines of padding on each side
+- `diff` (default): hunk context plus the pair's whole-document unified diff
+- `full`: diff context plus both complete revision bodies
+
+Human output groups comments beneath their revision-pair header and renders
+each hunk as an indented diff snippet. `--json` emits the endpoint payload as
+one JSON line. Comments are never omitted when context cannot be reconstructed;
+the payload and human output instead name `diff_degraded_size_limit`,
+`bodies_unavailable_event_cap`, `body_unresolvable`, `anchor_out_of_range`, or
+`pair_budget_exceeded` (for commented pairs after the first 100).
+Optimization export bundles expose the same comments at `diffComments` using
+`hunk` detail.
+
 ## Datasets
 
 Canonical contract reference:

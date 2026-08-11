@@ -95,6 +95,7 @@ import {
   throwDeprecatedPromptCommentsCommand,
   type ReportCommentsCliContext,
 } from './report-comments-cli.js'
+import { diffCommentsCommand } from './diff-comments-cli.js'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -6270,6 +6271,10 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   if (command === 'comments') {
+    if (subcommand === 'diff') {
+      await diffCommentsCommand(createReportCommentsCliContext())
+      return
+    }
     await reportCommentsCommand(subcommand, createReportCommentsCliContext())
     return
   }

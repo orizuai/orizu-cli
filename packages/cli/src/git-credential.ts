@@ -47,7 +47,17 @@ export interface GitCredentialIo {
 const GITHUB_HOST = 'github.com'
 const ARTIFACTS_HOST =
   /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/
-const ARTIFACTS_PASSWORD = /^art_v1_[0-9a-f]{40}$/
+/**
+ * ALI-1285: the Artifacts contract declares the credential OPAQUE
+ * (`plaintext: string`) with no documented body format. Pinning
+ * `art_v1_<40 hex>` would reject a contract-conformant credential that the
+ * broker and the runtime contract both accept. Only what the git Basic-auth
+ * transport requires is enforced: bounded, no whitespace, no control
+ * characters, and at least 16 characters (a security floor, not a format
+ * claim). Mirrors `workers/artifacts-runtime/contracts.ts` GIT_PASSWORD.
+ */
+const ARTIFACTS_PASSWORD =
+  /^[^\s\u0000-\u001f\u007f]{16,1024}$/
 const ARTIFACTS_MAX_EXPIRY_SKEW_MS = 305_000
 const SAFE_REMOTE_COMPONENT = /^[^\u0000-\u0020\u007f\\?#]+$/
 

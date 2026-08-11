@@ -280,6 +280,20 @@ Defaults:
 
 For prompts, judges, runners, run submission, optimizer artifacts, live event logging, and accepted-candidate promotion, read `prompt-control-plane.md`. For markdown reports attached to optimization runs, read `optimization-reports.md`.
 
+Diff-comment export:
+
+```bash
+orizu comments diff --run <optimization-run-id> [--from <candidate-id> --to <candidate-id>] [--detail hunk|diff|full] [--json]
+orizu comments diff --prompt <prompt-id> [--from <version> --to <version>] [--detail hunk|diff|full] [--json]
+```
+
+Exactly one target is required, and `--from` / `--to` must appear together.
+Prompt pair selectors are integer version numbers. Human output groups comments
+by pair and renders anchored hunks; `--json` emits the complete machine payload.
+Unrecoverable context is retained with a named degradation reason rather than
+dropping a comment. Optimization export includes the same data at
+`diffComments` using hunk detail.
+
 Optimization trace commands:
 
 ```bash

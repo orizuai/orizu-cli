@@ -36,6 +36,7 @@ const GROUPS: CliGroupDoc[] = [
   { name: 'Projects', summary: 'Manage projects inside teams.' },
   { name: 'Prompts and judges', summary: 'Work with versioned prompt and judge artifacts.' },
   { name: 'Report comments', summary: 'Review and mutate anchored report comments across prompt, optimization, and task reports.' },
+  { name: 'Diff comments', summary: 'Export inline comments with recoverable prompt-diff context.' },
   { name: 'Scorers and runners', summary: 'Register scorers, push runnable artifacts, execute runners, and submit scores.' },
   { name: 'Optimizations', summary: 'Start, run, export, and finalize optimization runs.' },
   { name: 'Apps', summary: 'Create, preview, update, inspect, and export review apps.' },
@@ -101,6 +102,24 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
       'orizu comments list --prompt Generator --project core/evals --label production',
       'orizu comments list --run <run-id>',
       'orizu comments list --task <task-id>',
+    ],
+  },
+  {
+    path: ['comments', 'diff'],
+    usage: 'orizu comments diff (--run <run-id> | --prompt <prompt-id>) [--from <revision> --to <revision>] [--detail hunk|diff|full] [--json]',
+    summary: 'Export diff comments grouped by revision pair with anchored context.',
+    group: 'Diff comments',
+    options: [
+      { name: '--run <run-id>', help: 'Optimization run whose candidate diff comments should be exported.' },
+      { name: '--prompt <prompt-id>', help: 'Prompt whose version diff comments should be exported.' },
+      { name: '--from <revision>', help: 'Pair start: candidate ID for runs or integer version for prompts.' },
+      { name: '--to <revision>', help: 'Pair end; must be provided together with --from.' },
+      { name: '--detail <level>', help: 'Context detail level.', choices: ['hunk', 'diff', 'full'] },
+      { name: '--json', help: 'Emit the full pair-grouped export payload.' },
+    ],
+    examples: [
+      'orizu comments diff --run <run-id>',
+      'orizu comments diff --prompt <prompt-id> --from 3 --to 4 --detail full',
     ],
   },
   {

@@ -127,6 +127,10 @@ export interface BuildEgressPolicyOptions {
   /** Per-team ADDITIVE domains (a customer's own API a workflow needs). Base
    *  hosts can never be removed; these only widen. Invalid entries are dropped. */
   extraDomains?: readonly string[]
+  /** Exact server-derived Git remote hosts needed in addition to the legacy
+   * GitHub migration hosts. Artifacts account hosts are passed here only after
+   * strict remote validation; never use a broad wildcard. */
+  repositoryHosts?: readonly string[]
 }
 
 /**
@@ -134,7 +138,12 @@ export interface BuildEgressPolicyOptions {
  * an Orizu base URL: the Orizu control-plane host(s), the model provider host,
  * and the git host(s). Exported so tests and the policy doc assert the exact set.
  */
-export function baseEgressDomains(opts: { orizuBaseUrl?: string; modelHost?: string; modelHosts?: readonly string[] } = {}): string[] {
+export function baseEgressDomains(opts: {
+  orizuBaseUrl?: string
+  modelHost?: string
+  modelHosts?: readonly string[]
+  repositoryHosts?: readonly string[]
+} = {}): string[] {
   const domains = new Set<string>()
   for (const d of orizuEgressDomains(opts.orizuBaseUrl)) domains.add(d)
   domains.add(opts.modelHost ?? ANTHROPIC_API_HOST)
@@ -143,6 +152,19 @@ export function baseEgressDomains(opts: { orizuBaseUrl?: string; modelHost?: str
     if (n) domains.add(n)
   }
   for (const d of GIT_HOST_DOMAINS) domains.add(d)
+  for (const d of opts.repositoryHosts ?? []) {
+    const normalized = normalizeEgressDomain(d)
+    // Repository hosts come from a validated remote and must remain exact:
+    // no URL normalization, leading wildcard, path, port, or case drift is
+    // accepted at this final firewall seam.
+    if (
+      normalized &&
+      !normalized.startsWith('*.') &&
+      normalized === d.trim().toLowerCase()
+    ) {
+      domains.add(normalized)
+    }
+  }
   return [...domains]
 }
 
@@ -163,6 +185,7 @@ export function buildEgressPolicy(opts: BuildEgressPolicyOptions = {}): SandboxE
     orizuBaseUrl: opts.orizuBaseUrl,
     modelHost: brokerHost,
     modelHosts: opts.modelHosts,
+    repositoryHosts: opts.repositoryHosts,
   })
 
   const allow: Record<string, SandboxEgressRule[]> = {}

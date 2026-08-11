@@ -695,6 +695,10 @@ async function fetchStaleSessionBranches(
   const sessions = Array.isArray(data.sessions) ? (data.sessions as Array<Record<string, unknown>>) : []
   const stale: StaleSessionBranch[] = []
   for (const session of sessions) {
+    // Artifacts uses compatibility repoBranch=main for its separate private
+    // working repository. It is never a stale branch in the caller's legacy
+    // GitHub workbench checkout.
+    if (stringOrNull(session.workingRepositoryId)) continue
     const branch = stringOrNull(session.repoBranch)
     if (!branch) continue
     const status = stringOrNull(session.status)
