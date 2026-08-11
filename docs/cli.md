@@ -534,7 +534,10 @@ the payload and human output instead name `diff_degraded_size_limit`,
 `bodies_unavailable_event_cap`, `body_unresolvable`, `anchor_out_of_range`, or
 `pair_budget_exceeded` (for commented pairs after the first 100).
 Optimization export bundles expose the same comments at `diffComments` using
-`hunk` detail.
+`hunk` detail. They also include `diffCommentsSuppressedReason`, normally
+`null`. For a hosted agent exporting a run outside its assigned project, the
+value is `agent_project_scope` and `diffComments` remains empty; the marker
+does not reveal whether any comments exist.
 
 ## Datasets
 
