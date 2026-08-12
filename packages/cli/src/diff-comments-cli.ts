@@ -101,6 +101,43 @@ function sanitizeHumanInlineText(
   return sanitizeHumanText(ctx, value).replaceAll('\n', '\\n')
 }
 
+function hasExplicitlyEmptyJsonError(response: Response, rawBody: string): boolean {
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('application/json')) {
+    return false
+  }
+
+  try {
+    const payload = JSON.parse(rawBody) as { error?: unknown } | null
+    return Boolean(
+      payload
+      && typeof payload === 'object'
+      && !Array.isArray(payload)
+      && typeof payload.error === 'string'
+      && payload.error.length === 0
+    )
+  } catch {
+    return false
+  }
+}
+
+async function extractDiffCommentsErrorMessage(response: Response): Promise<string> {
+  const statusFallback = `HTTP ${response.status}`
+
+  try {
+    const rawBody = await response.text()
+    if (hasExplicitlyEmptyJsonError(response, rawBody)) {
+      return statusFallback
+    }
+
+    const copiedResponse = new Response(rawBody, { headers: response.headers })
+    const extractedMessage = await extractErrorMessage(copiedResponse)
+    return extractedMessage.trim() ? extractedMessage : statusFallback
+  } catch {
+    return statusFallback
+  }
+}
+
 function humanLineNumber(
   ctx: DiffCommentsCliContext,
   line: number | null
@@ -130,6 +167,9 @@ function buildParams(ctx: DiffCommentsCliContext): URLSearchParams {
   }
   if (Number(Boolean(runId)) + Number(Boolean(promptId)) !== 1) {
     throw new Error(usage())
+  }
+  if (from === '' && to === '') {
+    throw new Error('--from and --to must not be empty')
   }
   if (from === '' || to === '') {
     throw new Error('--from and --to must be provided together')
@@ -175,7 +215,9 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
       `${sanitizeHumanInlineText(ctx, from)} → ${sanitizeHumanInlineText(ctx, to)}`
     )
     if (pair.degraded) {
-      ctx.printLine(`  Context unavailable: ${sanitizeHumanText(ctx, pair.degraded.reason)}`)
+      ctx.printLine(
+        `  Context unavailable: ${sanitizeHumanInlineText(ctx, pair.degraded.reason)}`
+      )
     }
     if (pair.diff !== null) {
       ctx.printLine('  Diff:')
@@ -210,7 +252,7 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
 
       if (!comment.context) {
         const unavailableContext = comment.contextUnavailableReason
-          ? `Context unavailable: ${sanitizeHumanText(ctx, comment.contextUnavailableReason)}`
+          ? `Context unavailable: ${sanitizeHumanInlineText(ctx, comment.contextUnavailableReason)}`
           : 'Context unavailable (no reason supplied)'
         ctx.printLine(`    ${unavailableContext}`)
         continue
@@ -236,10 +278,7 @@ export async function diffCommentsCommand(ctx: DiffCommentsCliContext) {
   const params = buildParams(ctx)
   const response = await ctx.authedFetch(`/api/cli/diff-comments?${params.toString()}`)
   if (!response.ok) {
-    const extractedMessage = await extractErrorMessage(response)
-    const message = extractedMessage.trim()
-      ? extractedMessage
-      : `HTTP ${response.status}`
+    const message = await extractDiffCommentsErrorMessage(response)
     throw new Error(
       `Failed to fetch diff comments: ${sanitizeHumanInlineText(ctx, message)}`
     )
