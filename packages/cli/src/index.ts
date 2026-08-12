@@ -2600,6 +2600,7 @@ async function exportOptimizationRun() {
     : `${runId}.optimization.json`
   writeTextFileEnsuringDir(filename, `${JSON.stringify(data, null, 2)}\n`)
   printLine(`Saved optimization export to ${sanitizeTerminalText(filename)}`)
+  if (typeof data.diffCommentsSuppressedReason === 'string' && data.diffCommentsSuppressedReason) printLine(`Diff comments suppressed: ${sanitizeTerminalText(data.diffCommentsSuppressedReason)}`)
 }
 
 // ALI-1073 list moved to optimizations-list-cli.ts (line ratchet, ALI-976);

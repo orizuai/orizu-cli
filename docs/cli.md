@@ -531,8 +531,11 @@ Human output groups comments beneath their revision-pair header and renders
 each hunk as an indented diff snippet. `--json` emits the endpoint payload as
 one JSON line. Comments are never omitted when context cannot be reconstructed;
 the payload and human output instead name `diff_degraded_size_limit`,
-`bodies_unavailable_event_cap`, `body_unresolvable`, `anchor_out_of_range`, or
-`pair_budget_exceeded` (for commented pairs after the first 100).
+`diff_degraded_cell_limit`, `bodies_unavailable_event_cap`, `body_unresolvable`,
+`anchor_out_of_range`, or `pair_budget_exceeded` (for commented pairs after the
+first 100). The cell-limit case retains exact `context.lineText` while
+`context.lineOp` and `context.hunk` are `null`. If a null context arrives without
+a reason, human output says `Context unavailable (no reason supplied)`.
 Optimization export bundles expose the same comments at `diffComments` using
 `hunk` detail. They also include `diffCommentsSuppressedReason`, normally
 `null`. For a hosted agent exporting a run outside its assigned project, the

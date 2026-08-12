@@ -292,7 +292,11 @@ Prompt pair selectors are integer version numbers. Human output groups comments
 by pair and renders anchored hunks; `--json` emits the complete machine payload.
 Unrecoverable context is retained with a named degradation reason rather than
 dropping a comment. Optimization export includes the same data at
-`diffComments` using hunk detail.
+`diffComments` using hunk detail. It also includes
+`diffCommentsSuppressedReason`: normally `null`, or `agent_project_scope` when
+a hosted agent exports a run outside its assigned project. In that case
+`diffComments` is empty, and the marker reveals nothing about whether comments
+exist.
 
 Optimization trace commands:
 

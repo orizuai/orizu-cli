@@ -7,6 +7,7 @@ interface DiffCommentAuthor {
 
 type DiffCommentContextUnavailableReason =
   | 'diff_degraded_size_limit'
+  | 'diff_degraded_cell_limit'
   | 'bodies_unavailable_event_cap'
   | 'body_unresolvable'
   | 'anchor_out_of_range'
@@ -27,8 +28,8 @@ interface DiffCommentPayloadComment {
   anchor: { side: 'old' | 'new'; line: number }
   context: {
     lineText: string
-    lineOp: 'add' | 'del' | 'context'
-    hunk: { lines: DiffCommentContextLine[] }
+    lineOp: 'add' | 'del' | 'context' | null
+    hunk: { lines: DiffCommentContextLine[] } | null
   } | null
   contextUnavailableReason?: DiffCommentContextUnavailableReason
 }
@@ -250,11 +251,19 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
         ctx.printLine(`    ${line}`)
       }
 
-      if (!comment.context) {
-        const unavailableContext = comment.contextUnavailableReason
-          ? `Context unavailable: ${sanitizeHumanInlineText(ctx, comment.contextUnavailableReason)}`
-          : 'Context unavailable (no reason supplied)'
-        ctx.printLine(`    ${unavailableContext}`)
+      if (comment.contextUnavailableReason) {
+        ctx.printLine(
+          `    Context unavailable: ${sanitizeHumanInlineText(ctx, comment.contextUnavailableReason)}`
+        )
+        if (comment.context) {
+          ctx.printLine(
+            `    Anchored line: ${sanitizeHumanInlineText(ctx, comment.context.lineText)}`
+          )
+        }
+        continue
+      }
+      if (!comment.context || !comment.context.hunk) {
+        ctx.printLine('    Context unavailable (no reason supplied)')
         continue
       }
 
