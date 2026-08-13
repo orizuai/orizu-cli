@@ -74,6 +74,7 @@ export interface DiffCommentsCliContext {
 }
 
 const DETAIL_LEVELS = ['hunk', 'diff', 'full'] as const
+const CONTEXT_UNAVAILABLE_WITHOUT_REASON = '    Context unavailable (no reason supplied)'
 
 function isCandidatePair(
   pair: DiffCommentPayloadPair
@@ -102,7 +103,17 @@ function sanitizeHumanInlineText(
   return sanitizeHumanText(ctx, value).replaceAll('\n', '\\n')
 }
 
+// Quote untrusted multiline blocks so none of their rows can impersonate a
+// genuine hunk row, whose marker begins immediately after the four-space indent.
+function printHumanTextBlock(ctx: DiffCommentsCliContext, value: unknown): void {
+  for (const line of sanitizeHumanText(ctx, value).split('\n')) {
+    ctx.printLine(`    │ ${line}`)
+  }
+}
+
 function hasExplicitlyEmptyJsonError(response: Response, rawBody: string): boolean {
+  // Mirrors error-response.ts `extractErrorMessage`; keep its content-type
+  // sniff and payload-shape check in step with that shared extractor.
   const contentType = response.headers.get('content-type') || ''
   if (!contentType.includes('application/json')) {
     return false
@@ -143,7 +154,7 @@ function humanLineNumber(
   ctx: DiffCommentsCliContext,
   line: number | null
 ): string {
-  return line === null ? '-' : sanitizeHumanText(ctx, String(line + 1))
+  return line === null ? '-' : sanitizeHumanInlineText(ctx, String(line + 1))
 }
 
 function buildParams(ctx: DiffCommentsCliContext): URLSearchParams {
@@ -169,11 +180,8 @@ function buildParams(ctx: DiffCommentsCliContext): URLSearchParams {
   if (Number(Boolean(runId)) + Number(Boolean(promptId)) !== 1) {
     throw new Error(usage())
   }
-  if (from === '' && to === '') {
-    throw new Error('--from and --to must not be empty')
-  }
   if (from === '' || to === '') {
-    throw new Error('--from and --to must be provided together')
+    throw new Error('--from and --to must not be empty')
   }
   if (Boolean(from) !== Boolean(to)) {
     throw new Error('--from and --to must be provided together')
@@ -222,9 +230,7 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
     }
     if (pair.diff !== null) {
       ctx.printLine('  Diff:')
-      for (const line of sanitizeHumanText(ctx, pair.diff).split('\n')) {
-        ctx.printLine(`    ${line}`)
-      }
+      printHumanTextBlock(ctx, pair.diff)
     }
     if (pair.bodies !== null) {
       for (const [label, body] of [
@@ -232,9 +238,7 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
         ['To body', pair.bodies.to],
       ] as const) {
         ctx.printLine(`  ${label}:`)
-        for (const line of sanitizeHumanText(ctx, body).split('\n')) {
-          ctx.printLine(`    ${line}`)
-        }
+        printHumanTextBlock(ctx, body)
       }
     }
 
@@ -247,9 +251,7 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
         `${sanitizeHumanInlineText(ctx, comment.anchor.side)} line ` +
         `${sanitizeHumanInlineText(ctx, String(comment.anchor.line + 1))}`
       )
-      for (const line of sanitizeHumanText(ctx, comment.body).split('\n')) {
-        ctx.printLine(`    ${line}`)
-      }
+      printHumanTextBlock(ctx, comment.body)
 
       if (comment.contextUnavailableReason) {
         ctx.printLine(
@@ -262,8 +264,15 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
         }
         continue
       }
-      if (!comment.context || !comment.context.hunk) {
-        ctx.printLine('    Context unavailable (no reason supplied)')
+      if (!comment.context) {
+        ctx.printLine(CONTEXT_UNAVAILABLE_WITHOUT_REASON)
+        continue
+      }
+      if (!comment.context.hunk) {
+        ctx.printLine(CONTEXT_UNAVAILABLE_WITHOUT_REASON)
+        ctx.printLine(
+          `    Anchored line: ${sanitizeHumanInlineText(ctx, comment.context.lineText)}`
+        )
         continue
       }
 
@@ -276,7 +285,7 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
         ctx.printLine(
           `    ${marker} old:${humanLineNumber(ctx, line.oldLine)} ` +
           `new:${humanLineNumber(ctx, line.newLine)} | ` +
-          `${prefix}${sanitizeHumanText(ctx, line.text)}`
+          `${prefix}${sanitizeHumanInlineText(ctx, line.text)}`
         )
       }
     }

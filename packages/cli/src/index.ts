@@ -90,12 +90,16 @@ import { assertSnapshotManifestConfined, verifyGepaRunnerDirsFromArgs, verifyRun
 import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
 import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
+import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
 import {
   reportCommentsCommand,
   throwDeprecatedPromptCommentsCommand,
   type ReportCommentsCliContext,
 } from './report-comments-cli.js'
 import { diffCommentsCommand } from './diff-comments-cli.js'
+import { exportOptimizationRunCommand } from './optimization-export-cli.js'
+
+export { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -454,10 +458,6 @@ export function createCodeChallenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url')
 }
 
-export function sanitizeTerminalText(value: unknown): string {
-  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
-}
-
 function printError(message: string): void {
   console.error(sanitizeTerminalText(message))
 }
@@ -528,27 +528,6 @@ export function formatTerminalLink(url: string): string {
   }
 
   return `\u001B]8;;${safeUrl}\u0007${safeUrl}\u001B]8;;\u0007`
-}
-
-export async function parseJsonResponse<T>(response: Response, context: string): Promise<T> {
-  const contentType = response.headers.get('content-type') || ''
-  const rawBody = await response.text()
-
-  if (!contentType.includes('application/json')) {
-    throw new Error(
-      `${context} returned non-JSON response (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
-
-  try {
-    return JSON.parse(rawBody) as T
-  } catch {
-    throw new Error(
-      `${context} returned invalid JSON (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
 }
 
 function shellQuote(value: string): string {
@@ -2574,33 +2553,6 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
   } else {
     printLine(`Cancelled optimization run ${id}`)
   }
-}
-
-async function exportOptimizationRun() {
-  const runId = getPositionalArg(2) || getArg('--run-id')
-  const outPathArg = getArg('--out')
-
-  if (!runId) {
-    throw new Error('Usage: orizu optimizations export <run-id> [--out <path>] [--json]')
-  }
-
-  const response = await authedFetch(`/api/cli/optimization-runs/${encodeURIComponent(runId)}/export`)
-  if (!response.ok) {
-    throw new Error(`Failed to export optimization run: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Optimization export')
-  if (hasJsonFlag() && !outPathArg) {
-    printJson(data)
-    return
-  }
-
-  const filename = outPathArg
-    ? expandHomePath(outPathArg)
-    : `${runId}.optimization.json`
-  writeTextFileEnsuringDir(filename, `${JSON.stringify(data, null, 2)}\n`)
-  printLine(`Saved optimization export to ${sanitizeTerminalText(filename)}`)
-  if (typeof data.diffCommentsSuppressedReason === 'string' && data.diffCommentsSuppressedReason) printLine(`Diff comments suppressed: ${sanitizeTerminalText(data.diffCommentsSuppressedReason)}`)
 }
 
 // ALI-1073 list moved to optimizations-list-cli.ts (line ratchet, ALI-976);
@@ -6464,7 +6416,17 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   if (command === 'optimizations' && subcommand === 'export') {
-    await exportOptimizationRun()
+    await exportOptimizationRunCommand({
+      getArg,
+      getPositionalArg,
+      authedFetch,
+      hasJsonFlag,
+      printJson,
+      printLine,
+      expandHomePath,
+      writeTextFileEnsuringDir,
+      sanitizeTerminalText,
+    })
     return
   }
 

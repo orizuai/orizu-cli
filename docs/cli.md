@@ -528,19 +528,28 @@ levels are:
 - `full`: diff context plus both complete revision bodies
 
 Human output groups comments beneath their revision-pair header and renders
-each hunk as an indented diff snippet. `--json` emits the endpoint payload as
-one JSON line. Comments are never omitted when context cannot be reconstructed;
+each hunk as an indented diff snippet. Untrusted multiline blocks (diffs,
+revision bodies, and comment bodies) are rendered behind a `│ ` quote gutter,
+so unquoted `> old:N new:N |` rows are the only genuine hunk rows. `--json`
+emits the endpoint payload as one JSON line. Comments are never omitted when
+context cannot be reconstructed;
 the payload and human output instead name `diff_degraded_size_limit`,
 `diff_degraded_cell_limit`, `bodies_unavailable_event_cap`, `body_unresolvable`,
 `anchor_out_of_range`, or `pair_budget_exceeded` (for commented pairs after the
-first 100). The cell-limit case retains exact `context.lineText` while
-`context.lineOp` and `context.hunk` are `null`. If a null context arrives without
-a reason, human output says `Context unavailable (no reason supplied)`.
+first 100). For an in-range anchor the cell-limit case retains exact
+`context.lineText` while `context.lineOp` and `context.hunk` are `null`; an
+out-of-range anchor under the same degradation reports `anchor_out_of_range`
+with a null `context`. If a null context arrives without a reason, human output
+says `Context unavailable (no reason supplied)`. If a non-null context arrives
+with `hunk: null` and no reason, the anchored line is still printed.
 Optimization export bundles expose the same comments at `diffComments` using
 `hunk` detail. They also include `diffCommentsSuppressedReason`, normally
 `null`. For a hosted agent exporting a run outside its assigned project, the
 value is `agent_project_scope` and `diffComments` remains empty; the marker
-does not reveal whether any comments exist.
+does not reveal whether any comments exist. All degradation reasons above are
+shared with the bundle except `bodies_unavailable_event_cap`: the bundle reuses
+its uncapped event derivation, so that endpoint-specific reason is not reachable
+there.
 
 ## Datasets
 
