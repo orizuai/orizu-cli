@@ -362,9 +362,29 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['prompts', 'push'],
-    usage: 'orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--session <session-id>] [--json]',
+    usage: 'orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--session <session-id>] [--report-file <path>] [--json]',
     summary: 'Push a local prompt artifact directory as a new version (with --session: a commit-first git draft).',
     group: 'Prompts and judges',
+  },
+  {
+    path: ['prompts', 'report', 'set'],
+    usage: 'orizu prompts report set --prompt <id-or-name> --project <team/project> (--version <n> | --version-id <id>) (--report <markdown|@file> | --report-file <path>) [--json]',
+    summary: 'Upload or replace the Markdown report for one explicit prompt version.',
+    group: 'Prompts and judges',
+    aliases: [['prompts', 'report', 'upload']],
+    options: [
+      { name: '--prompt <id-or-name>', help: 'Prompt ID or name.', required: true },
+      { name: '--project <team/project>', help: 'Project slug containing the prompt.', required: true },
+      { name: '--version <n>', help: 'Positive prompt version number.' },
+      { name: '--version-id <id>', help: 'Explicit prompt version ID.' },
+      { name: '--report <markdown|@file>', help: 'Inline Markdown or an @file reference.' },
+      { name: '--report-file <path>', help: 'Markdown file to upload.' },
+      { name: '--json', help: 'Emit the updated prompt report payload.' },
+    ],
+    examples: [
+      'orizu prompts report set --prompt Generator --project core/evals --version 3 --report-file ./report.md',
+      'orizu prompts report upload --prompt Generator --project core/evals --version-id <id> --report @./report.md',
+    ],
   },
   {
     path: ['prompts', 'labels', 'set'],
@@ -398,7 +418,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['judges', 'push'],
-    usage: 'orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--session <session-id>] [--json]',
+    usage: 'orizu judges push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--session <session-id>] [--report-file <path>] [--json]',
     summary: 'Push a local judge artifact directory as a new version (with --session: a commit-first git draft).',
     group: 'Prompts and judges',
   },

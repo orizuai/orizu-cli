@@ -86,6 +86,8 @@ import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredentialInvocation } from './git-credential.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
+import { readMarkdownReportInput } from './markdown-report-input.js'
+import { promptPushErrorMessage, promptReportCommand } from './prompt-report-cli.js'
 import { assertSnapshotManifestConfined, verifyGepaRunnerDirsFromArgs, verifyRunnerDirRegistered } from './runner-dir-verify.js'
 import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
@@ -1494,15 +1496,16 @@ async function pushRunnerArtifact(kind: 'runner' | 'optimizer') {
 
 async function pushPromptArtifact(kind: 'prompt' | 'judge') {
   const promptDir = getPositionalArg(2)
-  const project = getArg('--project') || await resolveProjectSlug(null)
+  const projectArg = getArg('--project')
   const runnerVersionArg = getArg('--runner-version')
   const parentVersionId = getArg('--parent') || undefined
   const sessionId = getArg('--session') || undefined
-  const usage = `Usage: orizu ${kind === 'judge' ? 'judges' : 'prompts'} push <dir> --project <team/project> [--runner-version <id>] [--parent <version-id>] [--session <session-id>] [--json]`
+  const usage = `Usage: orizu ${kind === 'judge' ? 'judges' : 'prompts'} push <dir> --project <team/project> [--runner-version <id>] [--parent <version-id>] [--session <session-id>] [--report-file <path>] [--json]`
 
-  if (!promptDir) {
-    throw new Error(usage)
-  }
+  if (!promptDir) throw new Error(usage)
+  if (cliArgs.some(arg => arg === '--report' || arg.startsWith('--report='))) throw new Error(`${kind === 'judge' ? 'judges' : 'prompts'} push accepts report input only through --report-file`)
+  const report = readMarkdownReportInput(cliArgs, 'Prompt')
+  const project = projectArg || await resolveProjectSlug(null)
 
   const promptRoot = expandHomePath(promptDir)
   const manifest = readJsonFile(join(promptRoot, 'orizu.prompt.json'))
@@ -1523,6 +1526,7 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
       kind, project, sessionId, manifest, sidecars, runnerVersionId, parentVersionId,
       displayName: String(manifest.name || promptDir),
       bodyKind: primaryText.bodyKind, primaryBody: primaryText.body,
+      report,
     })
     if (hasJsonFlag()) printJson(data)
     else printLine(message)
@@ -1556,11 +1560,17 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
       parentVersionId,
       versionLabel: manifest.version_label,
       createdBy: manifest.provenance || { kind: 'human-edit' },
+      ...(report
+        ? {
+            reportMarkdown: report.markdown,
+            reportSourceName: report.sourceName,
+          }
+        : {}),
     }),
   })
 
   if (!response.ok) {
-    throw new Error(`Failed to push ${kind}: ${await response.text()}`)
+    throw new Error(await promptPushErrorMessage(response, kind, Boolean(report)))
   }
 
   const data = await parseJsonResponse<Record<string, unknown>>(response, `${kind} push`)
@@ -2295,7 +2305,6 @@ async function execScorer() {
 }
 
 type OptimizationLifecycleAction = 'pause' | 'resume' | 'finish' | 'fail' | 'cancel'
-const MARKDOWN_REPORT_MAX_BYTES = 2 * 1024 * 1024
 
 function parseOptionalNumberFlag(name: string): number | undefined {
   const value = getArg(name)
@@ -2315,57 +2324,12 @@ function hasObjectKeys(value: Record<string, unknown>): boolean {
   return Object.keys(value).length > 0
 }
 
-function readMarkdownReportInput(
-  reportLabel: 'Optimization' | 'Task'
-): { markdown: string; sourceName: string | null } | null {
-  const report = getArg('--report')
-  const reportFile = getArg('--report-file')
-
-  rejectDashPrefixedOptionValue('--report', report)
-  rejectDashPrefixedOptionValue('--report-file', reportFile)
-
-  if (report && reportFile) {
-    throw new Error('Use either --report or --report-file, not both')
-  }
-
-  if (!report && !reportFile) {
-    return null
-  }
-
-  let markdown: string
-  let sourceName: string | null
-
-  if (reportFile) {
-    const expandedPath = expandHomePath(reportFile)
-    markdown = readSourceFile(reportFile)
-    sourceName = basename(expandedPath)
-  } else if (report?.startsWith('@')) {
-    const path = report.slice(1)
-    const expandedPath = expandHomePath(path)
-    markdown = readSourceFile(path)
-    sourceName = basename(expandedPath)
-  } else {
-    markdown = report || ''
-    sourceName = 'inline'
-  }
-
-  if (!markdown.trim()) {
-    throw new Error(`${reportLabel} report markdown must not be blank`)
-  }
-
-  if (Buffer.byteLength(markdown, 'utf8') > MARKDOWN_REPORT_MAX_BYTES) {
-    throw new Error(`${reportLabel} report exceeds ${MARKDOWN_REPORT_MAX_BYTES} bytes`)
-  }
-
-  return { markdown, sourceName }
-}
-
 function readOptimizationReportInput(): { markdown: string; sourceName: string | null } | null {
-  return readMarkdownReportInput('Optimization')
+  return readMarkdownReportInput(cliArgs, 'Optimization')
 }
 
 function readTaskReportInput(): { markdown: string; sourceName: string | null } | null {
-  return readMarkdownReportInput('Task')
+  return readMarkdownReportInput(cliArgs, 'Task')
 }
 
 async function startOptimizationRun() {
@@ -6286,6 +6250,16 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'prompts' && subcommand === 'push') {
     await pushPromptArtifact('prompt')
+    return
+  }
+
+  if (
+    command === 'prompts' && subcommand === 'report' &&
+    (cliArgs[2] === 'set' || cliArgs[2] === 'upload')
+  ) {
+    await promptReportCommand(cliArgs, {
+      resolveProjectSlug, json: hasJsonFlag(), printJson, printLine,
+    })
     return
   }
 

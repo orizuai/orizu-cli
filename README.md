@@ -174,6 +174,14 @@ orizu logout
     <td><code>orizu prompts archive &lt;promptIdOrName&gt; --project ops-eval/support-qa</code><br><code>orizu prompts restore &lt;promptIdOrName&gt; --project ops-eval/support-qa</code></td>
   </tr>
   <tr>
+    <td>Push a prompt with a report</td>
+    <td><code>orizu prompts push ./prompts/support --project ops-eval/support-qa --report-file ./prompt-report.md</code></td>
+  </tr>
+  <tr>
+    <td>Upload a report for an existing prompt version</td>
+    <td><code>orizu prompts report set --prompt &lt;promptIdOrName&gt; --project ops-eval/support-qa --version 3 --report-file ./prompt-report.md</code><br><code>prompts report upload</code> is an exact alias; select exactly one of <code>--version</code> or <code>--version-id</code>.</td>
+  </tr>
+  <tr>
     <td colspan="2"><strong>Report comments</strong></td>
   </tr>
   <tr>

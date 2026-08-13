@@ -73,6 +73,7 @@ export interface PushPromptDraftInput {
   sidecars: PromptDraftSidecar[]
   runnerVersionId: string
   parentVersionId?: string
+  report?: { markdown: string; sourceName: string | null } | null
   /** Test seam; defaults to the authenticated CLI fetcher. */
   fetcher?: (path: string, init?: RequestInit) => Promise<Response>
 }
@@ -112,6 +113,12 @@ export async function pushPromptDraft(input: PushPromptDraftInput): Promise<Push
       parentVersionId: input.parentVersionId,
       createdBy: manifest.provenance || { kind: 'human-edit' },
       files,
+      ...(input.report
+        ? {
+            reportMarkdown: input.report.markdown,
+            reportSourceName: input.report.sourceName,
+          }
+        : {}),
     }),
   })
 
