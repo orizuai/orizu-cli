@@ -1,4 +1,8 @@
-import { extractErrorMessage } from './error-response.js'
+import {
+  extractErrorMessage,
+  isJsonErrorResponsePayload,
+} from './error-response.js'
+import { sanitizeHumanInlineText } from './json-response.js'
 
 interface DiffCommentAuthor {
   name?: string
@@ -96,13 +100,6 @@ function sanitizeHumanText(
   return ctx.sanitizeTerminalText(value).replaceAll('\r', '')
 }
 
-function sanitizeHumanInlineText(
-  ctx: DiffCommentsCliContext,
-  value: unknown
-): string {
-  return sanitizeHumanText(ctx, value).replaceAll('\n', '\\n')
-}
-
 // Quote untrusted multiline blocks so none of their rows can impersonate a
 // genuine hunk row, whose marker begins immediately after the four-space indent.
 function printHumanTextBlock(ctx: DiffCommentsCliContext, value: unknown): void {
@@ -112,22 +109,9 @@ function printHumanTextBlock(ctx: DiffCommentsCliContext, value: unknown): void 
 }
 
 function hasExplicitlyEmptyJsonError(response: Response, rawBody: string): boolean {
-  // Mirrors error-response.ts `extractErrorMessage`; keep its content-type
-  // sniff and payload-shape check in step with that shared extractor.
-  const contentType = response.headers.get('content-type') || ''
-  if (!contentType.includes('application/json')) {
-    return false
-  }
-
   try {
-    const payload = JSON.parse(rawBody) as { error?: unknown } | null
-    return Boolean(
-      payload
-      && typeof payload === 'object'
-      && !Array.isArray(payload)
-      && typeof payload.error === 'string'
-      && payload.error.length === 0
-    )
+    const payload: unknown = JSON.parse(rawBody)
+    return isJsonErrorResponsePayload(response, payload) && payload.error.length === 0
   } catch {
     return false
   }
@@ -154,7 +138,9 @@ function humanLineNumber(
   ctx: DiffCommentsCliContext,
   line: number | null
 ): string {
-  return line === null ? '-' : sanitizeHumanInlineText(ctx, String(line + 1))
+  return line === null
+    ? '-'
+    : sanitizeHumanInlineText(ctx.sanitizeTerminalText, String(line + 1))
 }
 
 function buildParams(ctx: DiffCommentsCliContext): URLSearchParams {
@@ -221,11 +207,12 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
     ctx.printLine('')
     ctx.printLine(
       `${hasCandidateIds ? 'Candidates' : 'Versions'} ` +
-      `${sanitizeHumanInlineText(ctx, from)} → ${sanitizeHumanInlineText(ctx, to)}`
+      `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, from)} → ` +
+      `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, to)}`
     )
     if (pair.degraded) {
       ctx.printLine(
-        `  Context unavailable: ${sanitizeHumanInlineText(ctx, pair.degraded.reason)}`
+        `  Context unavailable: ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, pair.degraded.reason)}`
       )
     }
     if (pair.diff !== null) {
@@ -245,21 +232,21 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
     for (const comment of pair.comments) {
       const authorName = comment.author?.person?.name || comment.author?.name || 'Unknown'
       ctx.printLine(
-        `  ${sanitizeHumanInlineText(ctx, comment.id)} · ` +
-        `${sanitizeHumanInlineText(ctx, authorName)} · ` +
-        `${sanitizeHumanInlineText(ctx, comment.createdAt)} · ` +
-        `${sanitizeHumanInlineText(ctx, comment.anchor.side)} line ` +
-        `${sanitizeHumanInlineText(ctx, String(comment.anchor.line + 1))}`
+        `  ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, comment.id)} · ` +
+        `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, authorName)} · ` +
+        `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, comment.createdAt)} · ` +
+        `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, comment.anchor.side)} line ` +
+        `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, String(comment.anchor.line + 1))}`
       )
       printHumanTextBlock(ctx, comment.body)
 
       if (comment.contextUnavailableReason) {
         ctx.printLine(
-          `    Context unavailable: ${sanitizeHumanInlineText(ctx, comment.contextUnavailableReason)}`
+          `    Context unavailable: ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, comment.contextUnavailableReason)}`
         )
         if (comment.context) {
           ctx.printLine(
-            `    Anchored line: ${sanitizeHumanInlineText(ctx, comment.context.lineText)}`
+            `    Anchored line: ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, comment.context.lineText)}`
           )
         }
         continue
@@ -271,7 +258,7 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
       if (!comment.context.hunk) {
         ctx.printLine(CONTEXT_UNAVAILABLE_WITHOUT_REASON)
         ctx.printLine(
-          `    Anchored line: ${sanitizeHumanInlineText(ctx, comment.context.lineText)}`
+          `    Anchored line: ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, comment.context.lineText)}`
         )
         continue
       }
@@ -285,7 +272,7 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
         ctx.printLine(
           `    ${marker} old:${humanLineNumber(ctx, line.oldLine)} ` +
           `new:${humanLineNumber(ctx, line.newLine)} | ` +
-          `${prefix}${sanitizeHumanInlineText(ctx, line.text)}`
+          `${prefix}${sanitizeHumanInlineText(ctx.sanitizeTerminalText, line.text)}`
         )
       }
     }
@@ -298,7 +285,7 @@ export async function diffCommentsCommand(ctx: DiffCommentsCliContext) {
   if (!response.ok) {
     const message = await extractDiffCommentsErrorMessage(response)
     throw new Error(
-      `Failed to fetch diff comments: ${sanitizeHumanInlineText(ctx, message)}`
+      `Failed to fetch diff comments: ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, message)}`
     )
   }
 

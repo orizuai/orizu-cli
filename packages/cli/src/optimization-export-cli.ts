@@ -1,4 +1,7 @@
-import { parseJsonResponse } from './json-response.js'
+import {
+  parseJsonResponse,
+  sanitizeHumanInlineText,
+} from './json-response.js'
 
 /**
  * Human-output helpers for `orizu optimizations export`.
@@ -6,7 +9,7 @@ import { parseJsonResponse } from './json-response.js'
  * Lives outside index.ts per the CLI line ratchet (ALI-976).
  */
 
-interface OptimizationExportCliContext {
+export interface OptimizationExportCliContext {
   getArg: (name: string) => string | null
   getPositionalArg: (index: number) => string | null
   authedFetch: (path: string, init?: RequestInit) => Promise<Response>
@@ -28,7 +31,7 @@ export function printDiffCommentsSuppressionMarker(
   }
 
   ctx.printLine(
-    `Diff comments suppressed: ${ctx.sanitizeTerminalText(reason)}`
+    `Diff comments suppressed: ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, reason)}`
   )
 }
 

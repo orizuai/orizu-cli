@@ -5,6 +5,13 @@ export function sanitizeTerminalText(value: unknown): string {
   )
 }
 
+export function sanitizeHumanInlineText(
+  sanitizer: (value: unknown) => string,
+  value: unknown
+): string {
+  return sanitizer(value).replaceAll('\r', '').replaceAll('\n', '\\n')
+}
+
 export async function parseJsonResponse<T>(
   response: Response,
   context: string

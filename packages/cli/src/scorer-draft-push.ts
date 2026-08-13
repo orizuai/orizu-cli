@@ -1,4 +1,5 @@
 import { authedFetch } from './http.js'
+import { sanitizeTerminalText } from './json-response.js'
 import { appendRegistrationTagWarning } from './registration-tag-warning.js'
 
 /**
@@ -18,12 +19,6 @@ import { appendRegistrationTagWarning } from './registration-tag-warning.js'
  * Lives outside index.ts per the CLI line ratchet (ALI-976); mirrors
  * prompt-draft-push.ts.
  */
-
-// Mirrors index.ts `sanitizeTerminalText` (precedent: artifact-pull.ts keeps
-// its own copy to avoid importing the CLI entrypoint).
-function sanitizeTerminalText(value: unknown): string {
-  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
-}
 
 /** index.ts helpers injected by the command dispatcher (report-comments-cli
  * precedent: command modules receive a ctx instead of importing the CLI

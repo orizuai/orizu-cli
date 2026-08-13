@@ -530,9 +530,9 @@ levels are:
 Human output groups comments beneath their revision-pair header and renders
 each hunk as an indented diff snippet. Untrusted multiline blocks (diffs,
 revision bodies, and comment bodies) are rendered behind a `│ ` quote gutter,
-so unquoted `> old:N new:N |` rows are the only genuine hunk rows. `--json`
-emits the endpoint payload as one JSON line. Comments are never omitted when
-context cannot be reconstructed;
+so unquoted rows are the only genuine hunk rows: `>` marks the anchored row,
+while a space marks the other hunk rows. `--json` emits the endpoint payload as
+one JSON line. Comments are never omitted when context cannot be reconstructed;
 the payload and human output instead name `diff_degraded_size_limit`,
 `diff_degraded_cell_limit`, `bodies_unavailable_event_cap`, `body_unresolvable`,
 `anchor_out_of_range`, or `pair_budget_exceeded` (for commented pairs after the

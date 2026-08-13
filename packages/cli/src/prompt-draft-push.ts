@@ -1,4 +1,5 @@
 import { authedFetch } from './http.js'
+import { sanitizeTerminalText } from './json-response.js'
 import { appendRegistrationTagWarning } from './registration-tag-warning.js'
 
 /**
@@ -20,12 +21,6 @@ import { appendRegistrationTagWarning } from './registration-tag-warning.js'
  */
 
 export const PROMPT_PRIMARY_GIT_FILENAME = 'prompt.md'
-
-// Mirrors index.ts `sanitizeTerminalText` (precedent: artifact-pull.ts keeps
-// its own copy to avoid importing the CLI entrypoint).
-function sanitizeTerminalText(value: unknown): string {
-  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
-}
 
 export interface PromptDraftSidecar {
   path: string

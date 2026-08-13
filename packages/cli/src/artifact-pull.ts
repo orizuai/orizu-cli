@@ -18,6 +18,7 @@ import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 
 import { authedFetch } from './http.js'
+import { sanitizeTerminalText } from './json-response.js'
 
 export type PullableArtifactKind = 'runner' | 'optimizer'
 
@@ -30,10 +31,6 @@ export interface PullArtifactIo {
 
 // Shared with the runners exec download path in index.ts.
 export const ARTIFACT_MAX_BYTES = 25 * 1024 * 1024
-
-function sanitizeTerminalText(value: unknown): string {
-  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
-}
 
 function expandHomePath(path: string): string {
   if (path.startsWith('~/')) {

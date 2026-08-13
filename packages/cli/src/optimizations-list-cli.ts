@@ -13,6 +13,7 @@
 
 import { authedFetch } from './http.js'
 import { extractErrorMessage } from './error-response.js'
+import { sanitizeTerminalText } from './json-response.js'
 
 export interface OptimizationsListIo {
   json: boolean
@@ -47,10 +48,6 @@ function argValue(args: readonly string[], flag: string): string | null {
     return null
   }
   return args[index + 1]
-}
-
-function sanitizeTerminalText(value: unknown): string {
-  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
 }
 
 // Shared-parser behavior (artifact-pull.ts pattern): a non-JSON or malformed

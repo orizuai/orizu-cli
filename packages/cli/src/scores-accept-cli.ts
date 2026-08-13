@@ -12,6 +12,7 @@
  */
 
 import { authedFetch } from './http.js'
+import { sanitizeTerminalText } from './json-response.js'
 
 export interface ScoresAcceptIo {
   json: boolean
@@ -26,10 +27,6 @@ interface AcceptedScoreRun {
   acceptedByUserId: string | null
   acceptedAt: string | null
   alreadyAccepted: boolean
-}
-
-function sanitizeTerminalText(value: unknown): string {
-  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
 }
 
 function argValue(args: readonly string[], flag: string): string | null {

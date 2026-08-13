@@ -19,19 +19,10 @@ import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
 import { authedFetch } from './http.js'
+import { sanitizeTerminalText } from './json-response.js'
 import { assertWorkspaceDirUsable, workspaceExists } from './workspace.js'
 
 export type SetupFetcher = (path: string, init?: RequestInit) => Promise<Response>
-
-/**
- * Strip terminal control characters from server-supplied strings before they
- * are printed (mirrors index.ts `sanitizeTerminalText`), so a hostile or
- * mangled provisioning `warnings[]`/`defaultBranch` value can't inject escape
- * sequences into the user's terminal.
- */
-function sanitizeServerText(value: unknown): string {
-  return String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
-}
 
 export interface GithubLinkIo {
   print: (line: string) => void
@@ -349,12 +340,12 @@ export async function runHostedAttach(
     if (data.rulesetApplied === true) {
       io.print(
         `   Default-branch protection applied (ruleset "orizu-default-branch-protection"${
-          data.defaultBranch ? ` on ${sanitizeServerText(data.defaultBranch)}` : ''
+          data.defaultBranch ? ` on ${sanitizeTerminalText(data.defaultBranch)}` : ''
         }).`
       )
     }
     for (const warning of data.warnings ?? []) {
-      io.print(`   ⚠ ${sanitizeServerText(warning)}`)
+      io.print(`   ⚠ ${sanitizeTerminalText(warning)}`)
     }
   }
 
