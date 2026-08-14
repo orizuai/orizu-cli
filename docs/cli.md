@@ -485,6 +485,26 @@ orizu apps export --app <appId> --version 2
 
 Exports the stored `.tsx` source for the app's current version by default. Use `--version <n>` to inspect an older implementation. When `--out` is omitted, the CLI writes `<app-name>.v<version>.tsx` in the current directory.
 
+## Prompts
+
+```bash
+orizu prompts list --project my-team/quality-eval [--status active|archived|all]
+```
+
+The table includes `ID`, `NAME`, `ROLE`, `STATUS`, `TOKENS`, `LINES`, `CHARS`,
+and `WORDS`. Measurements describe the latest sealed prompt version. `—` means
+the canonical body could not be measured; zero is shown as `0`. Token values
+carry a `~` prefix because one fixed, model-agnostic `gpt-tokenizer` encoding is
+used for every prompt and is an approximation of any particular model's usage.
+With `--json`, failed or deliberately skipped enrichment carries a named
+`lengthStatsUnavailableReason`. Measured summaries also include
+`lengthStatsVersionId` and `lengthStatsVersionNumber`, identifying the latest
+sealed version the stats belong to even when its canonical body could not be
+measured. Length enrichment is best-effort: if its supporting query fails, the
+list still succeeds with null stats and `enrichment_failed`. To bound request
+work, at most the first 500 sorted summaries are enriched; later summaries
+carry null stats and `measurement_cap_exceeded`.
+
 ## Report comments
 
 Report comments use one command family across prompt version reports, optimization run reports, and task reports.
@@ -542,6 +562,18 @@ out-of-range anchor under the same degradation reports `anchor_out_of_range`
 with a null `context`. If a null context arrives without a reason, human output
 says `Context unavailable (no reason supplied)`. If a non-null context arrives
 with `hunk: null` and no reason, the anchored line is still printed.
+Each available side prints a `From:` or `To:` length-stat line. Side
+measurements are independent: an unavailable side is shown as `unavailable`
+with its reason while the other side remains visible. The JSON pair likewise
+allows `lengthStats.from` and `lengthStats.to` to be independently `null`, with
+`fromUnavailableReason` and `toUnavailableReason` naming failures. When the
+whole pair has neither side stats nor a delta, human output prints
+`Length: unavailable` and includes the pair degradation reason when present.
+Otherwise `Tokens:`, `Lines:`, `Chars:`, and `Words:` show removed/added/net
+rows. If exact split churn is unavailable, `Split unavailable:` names the
+guard; removed and added display as `—` while the independently measured net
+value remains real. A missing delta is printed as `Length delta: unavailable`
+with its named measurement failure when available.
 Optimization export bundles expose the same comments at `diffComments` using
 `hunk` detail. They also include `diffCommentsSuppressedReason`, normally
 `null`. For a hosted agent exporting a run outside its assigned project, the
@@ -550,6 +582,12 @@ does not reveal whether any comments exist. All degradation reasons above are
 shared with the bundle except `bodies_unavailable_event_cap`: the bundle reuses
 its uncapped event derivation, so that endpoint-specific reason is not reachable
 there.
+
+The v1 optimization export preserves the run row's `best_candidate_id` in
+`summary.bestCandidateId` when event derivation names an unknown candidate and
+therefore cannot select it. This is a compatibility fallback: candidate detail
+may be absent for that identifier. If both derivation and the run row omit a
+best candidate, `summary.bestCandidateId` is `null`.
 
 ## Datasets
 

@@ -3,6 +3,13 @@ import {
   isJsonErrorResponsePayload,
 } from './error-response.js'
 import { sanitizeHumanInlineText } from './json-response.js'
+import {
+  formatFiniteLengthCount,
+  type CliLengthDelta,
+  type CliLengthMeasurementUnavailableReason,
+  type CliLengthStats,
+  type CliLengthStatsPair,
+} from './prompt-length-wire.js'
 
 interface DiffCommentAuthor {
   name?: string
@@ -42,6 +49,9 @@ interface DiffCommentPayloadPairContext {
   diff: string | null
   bodies: { from: string; to: string } | null
   degraded: { reason: DiffCommentContextUnavailableReason } | null
+  lengthStats: CliLengthStatsPair | null
+  lengthDelta: CliLengthDelta | null
+  lengthDeltaUnavailableReason?: CliLengthMeasurementUnavailableReason
   comments: DiffCommentPayloadComment[]
 }
 
@@ -143,6 +153,86 @@ function humanLineNumber(
     : sanitizeHumanInlineText(ctx.sanitizeTerminalText, String(line + 1))
 }
 
+function formatStats(stats: CliLengthStats): string {
+  const tokens = formatFiniteLengthCount(stats.tokens)
+  return `${tokens === null ? '—' : `~${tokens}`} tokens · ` +
+    `${formatFiniteLengthCount(stats.lines) ?? '—'} lines · ` +
+    `${formatFiniteLengthCount(stats.chars) ?? '—'} chars · ` +
+    `${formatFiniteLengthCount(stats.words) ?? '—'} words`
+}
+
+function formatDeltaValue(
+  value: number | null,
+  metric: keyof Omit<CliLengthDelta, 'splitUnavailableReason'>,
+  signed = false
+): string {
+  const formatted = formatFiniteLengthCount(value, signed)
+  if (formatted === null) return '—'
+  return metric === 'tokens' ? `~${formatted}` : formatted
+}
+
+function printLengthMeasurements(
+  ctx: DiffCommentsCliContext,
+  pair: DiffCommentPayloadPair
+) {
+  function unavailableSuffix(reason: unknown): string {
+    if (typeof reason !== 'string' || reason.length === 0) return ''
+    return ` (${sanitizeHumanInlineText(ctx.sanitizeTerminalText, reason)})`
+  }
+
+  if (!pair.lengthStats && !pair.lengthDelta) {
+    ctx.printLine(
+      `  Length: unavailable${unavailableSuffix(
+        pair.lengthDeltaUnavailableReason ?? pair.degraded?.reason
+      )}`
+    )
+    return
+  }
+
+  if (pair.lengthStats) {
+    ctx.printLine(pair.lengthStats.from
+      ? `  From: ${formatStats(pair.lengthStats.from)}`
+      : `  From: unavailable${unavailableSuffix(
+        pair.lengthStats.fromUnavailableReason
+      )}`)
+    ctx.printLine(pair.lengthStats.to
+      ? `  To: ${formatStats(pair.lengthStats.to)}`
+      : `  To: unavailable${unavailableSuffix(
+        pair.lengthStats.toUnavailableReason
+      )}`)
+  }
+  if (!pair.lengthDelta) {
+    ctx.printLine(
+      `  Length delta: unavailable${unavailableSuffix(
+        pair.lengthDeltaUnavailableReason ?? pair.degraded?.reason
+      )}`
+    )
+    return
+  }
+
+  if (pair.lengthDelta.splitUnavailableReason) {
+    ctx.printLine(
+      `  Split unavailable: ${sanitizeHumanInlineText(
+        ctx.sanitizeTerminalText,
+        pair.lengthDelta.splitUnavailableReason
+      )}`
+    )
+  }
+  for (const [metric, label] of [
+    ['tokens', 'Tokens'],
+    ['lines', 'Lines'],
+    ['chars', 'Chars'],
+    ['words', 'Words'],
+  ] as const) {
+    const delta = pair.lengthDelta[metric]
+    ctx.printLine(
+      `  ${label}: removed ${formatDeltaValue(delta.removed, metric)} · ` +
+      `added ${formatDeltaValue(delta.added, metric)} · ` +
+      `net ${formatDeltaValue(delta.net, metric, true)}`
+    )
+  }
+}
+
 function buildParams(ctx: DiffCommentsCliContext): URLSearchParams {
   const runId = ctx.getArg('--run')
   const promptId = ctx.getArg('--prompt')
@@ -210,6 +300,7 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
       `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, from)} → ` +
       `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, to)}`
     )
+    printLengthMeasurements(ctx, pair)
     if (pair.degraded) {
       ctx.printLine(
         `  Context unavailable: ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, pair.degraded.reason)}`

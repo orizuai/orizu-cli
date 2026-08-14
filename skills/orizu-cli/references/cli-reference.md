@@ -290,6 +290,15 @@ orizu comments diff --prompt <prompt-id> [--from <version> --to <version>] [--de
 Exactly one target is required, and `--from` / `--to` must appear together.
 Prompt pair selectors are integer version numbers. Human output groups comments
 by pair and renders anchored hunks; `--json` emits the complete machine payload.
+Each available side prints `From:` or `To:` length stats; one side can be
+`unavailable (<reason>)` while the other remains visible. Machine output allows
+`lengthStats.from` and `lengthStats.to` to be independently null and names the
+side failures in `fromUnavailableReason` and `toUnavailableReason`. A wholly
+unavailable pair prints `Length: unavailable (<reason>)`; a missing delta
+prints `Length delta: unavailable`. Otherwise `Tokens:`, `Lines:`, `Chars:`,
+and `Words:` show removed/added/net rows. A `Split unavailable:` row names the
+exact guard when split churn cannot be computed; removed/added are `—` but the
+independent net remains numeric.
 Unrecoverable context is retained with a named degradation reason rather than
 dropping a comment. Optimization export includes the same data at
 `diffComments` using hunk detail. It also includes
@@ -313,6 +322,7 @@ Behavior:
 - `run-gepa` writes a complete local trace under `logs/<optimization_run_id>` by default.
 - The local trace is the best artifact for coding-agent analysis because it includes full rows, outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, candidate text, and `result.json`.
 - `optimizations export` writes a portable JSON artifact from server data when the local log is unavailable or the run happened elsewhere.
+- The v1 export preserves the run row's `best_candidate_id` in `summary.bestCandidateId` when event derivation rejects it as unknown; candidate detail may be absent, and the field is `null` when neither source names a best candidate.
 - Server optimization events redact row snapshots and reflection prompts by default; export rehydrates row inputs from dataset artifacts when possible and includes bundled `run-gepa` reflection responses.
 
 ## End-to-End Flows

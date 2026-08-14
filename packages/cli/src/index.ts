@@ -88,6 +88,11 @@ import { runGitCredentialInvocation } from './git-credential.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
 import { readMarkdownReportInput } from './markdown-report-input.js'
 import { promptPushErrorMessage, promptReportCommand } from './prompt-report-cli.js'
+import { printPromptSummaryTable } from './prompt-summary-table.js'
+import type {
+  CliLengthMeasurementUnavailableReason,
+  CliLengthStats,
+} from './prompt-length-wire.js'
 import { assertSnapshotManifestConfined, verifyGepaRunnerDirsFromArgs, verifyRunnerDirRegistered } from './runner-dir-verify.js'
 import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
@@ -182,6 +187,10 @@ interface PromptSummary {
   status?: string
   archivedAt?: string | null
   description?: string | null
+  lengthStats?: CliLengthStats | null
+  lengthStatsUnavailableReason?: CliLengthMeasurementUnavailableReason
+  lengthStatsVersionId?: string
+  lengthStatsVersionNumber?: number
 }
 
 interface TaskReportPayload {
@@ -534,30 +543,6 @@ export function formatTerminalLink(url: string): string {
 
 function shellQuote(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-}
-
-function printPromptSummaries(items: PromptSummary[], emptyMessage: string) {
-  if (items.length === 0) {
-    printLine(emptyMessage)
-    return
-  }
-
-  const rows = items.map(item => ({
-    id: sanitizeTerminalText(item.id),
-    name: sanitizeTerminalText(item.name),
-    role: sanitizeTerminalText(item.role),
-    status: sanitizeTerminalText(item.status || 'active'),
-  }))
-  const idWidth = Math.max('ID'.length, ...rows.map(row => row.id.length))
-  const nameWidth = Math.max('NAME'.length, ...rows.map(row => row.name.length))
-  const roleWidth = Math.max('ROLE'.length, ...rows.map(row => row.role.length))
-  const statusWidth = Math.max('STATUS'.length, ...rows.map(row => row.status.length))
-
-  printLine(`${'ID'.padEnd(idWidth)}  ${'NAME'.padEnd(nameWidth)}  ${'ROLE'.padEnd(roleWidth)}  ${'STATUS'.padEnd(statusWidth)}`)
-  printLine(`${'-'.repeat(idWidth)}  ${'-'.repeat(nameWidth)}  ${'-'.repeat(roleWidth)}  ${'-'.repeat(statusWidth)}`)
-  rows.forEach(row => {
-    printLine(`${row.id.padEnd(idWidth)}  ${row.name.padEnd(nameWidth)}  ${row.role.padEnd(roleWidth)}  ${row.status.padEnd(statusWidth)}`)
-  })
 }
 
 function readJsonObjectArg(valueArg: string | null, label: string): Record<string, unknown> {
@@ -1383,7 +1368,7 @@ async function listPrompts() {
     printJson(data as unknown as Record<string, unknown>)
     return
   }
-  printPromptSummaries(data.prompts, 'No prompts found.')
+  printPromptSummaryTable(data.prompts, 'No prompts found.', printLine)
 }
 
 async function listJudges() {
@@ -1404,7 +1389,7 @@ async function listJudges() {
     printJson(data as unknown as Record<string, unknown>)
     return
   }
-  printPromptSummaries(data.judges, 'No judges found.')
+  printPromptSummaryTable(data.judges, 'No judges found.', printLine)
 }
 
 async function listScorers() {

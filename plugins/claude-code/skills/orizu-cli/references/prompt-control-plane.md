@@ -413,6 +413,20 @@ orizu --local judges list --project <team>/<project>
 Prompt and judge lists show active artifacts by default. Use `--status archived`
 or `--status all` when you need archived artifacts.
 
+Prompt and judge list tables include `ID`, `NAME`, `ROLE`, `STATUS`, `TOKENS`,
+`LINES`, `CHARS`, and `WORDS`, measured from the latest sealed version. `—`
+means the canonical body could not be measured; zero remains `0`. The `~`
+prefix on token counts means approximate: Orizu uses one fixed, model-agnostic
+`gpt-tokenizer` encoding rather than claiming an exact count for every model.
+Failed or deliberately skipped JSON enrichment carries a named
+`lengthStatsUnavailableReason`. Measured summaries also include
+`lengthStatsVersionId` and `lengthStatsVersionNumber`, identifying the latest
+sealed version behind each measurement even when the canonical body could not
+be measured. Length enrichment is best-effort: a supporting query failure
+leaves the list available with null stats and `enrichment_failed`. At most the
+first 500 sorted summaries are enriched per request; later summaries carry
+null stats and `measurement_cap_exceeded`.
+
 Archive or restore a prompt:
 
 ```bash
@@ -741,6 +755,11 @@ orizu --local optimizations export <optimization-run-id> \
 ```
 
 Use export when the local log is unavailable, the run happened on another machine, or a coding agent needs a portable single JSON artifact. The export fetches all optimization events, derives seed vs best, Pareto frontier, score-over-time, candidates, iterations, minibatch rows, and validation rows, and rehydrates row inputs from the dataset version artifact when possible. Server events may not contain row snapshots or reflection prompts unless the run used `--log-row-snapshots`; reflection responses are included for bundled `run-gepa` runs.
+
+The v1 export keeps the run row's `best_candidate_id` in
+`summary.bestCandidateId` when event derivation rejects that identifier as an
+unknown candidate. Candidate detail can therefore be absent for the preserved
+identifier. If neither source names a best candidate, the field is `null`.
 
 Lifecycle controls:
 

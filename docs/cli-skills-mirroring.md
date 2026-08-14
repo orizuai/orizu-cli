@@ -66,6 +66,8 @@ For plugin releases (Codex / Claude Code packages), follow
 - Run `npx orizu --help` and confirm the published package matches the repo command surface.
 - Run `npx orizu install-skill --target codex-user --dry-run` and confirm the bundled skill resolves from the npm package.
 - Run `orizu teams members list --team <team>` and confirm the table shows `MEMBER ID`, `USER ID`, `EMAIL`, and `ROLE`.
+- Run `orizu prompts list --project <team>/<project>` and confirm the table shows `ID`, `NAME`, `ROLE`, `STATUS`, `TOKENS`, `LINES`, `CHARS`, and `WORDS`, with `~` on token counts.
+- Run `orizu judges list --project <team>/<project>` and confirm the same prompt measurement columns are populated for a judge with a sealed version.
 - Run `orizu tasks create ...` without `--publish` and confirm it creates a draft with a task URL and manual-test guidance.
 - Run `orizu tasks create ... --publish --assignees <email-or-user-id>` and confirm immediate publish still stores canonical user IDs server-side.
 - Run `orizu tasks publish --task <taskId> --assignees <userId1,userId2>` and confirm an approved draft becomes active.
