@@ -368,13 +368,13 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['prompts', 'report', 'set'],
-    usage: 'orizu prompts report set --prompt <id-or-name> --project <team/project> (--version <n> | --version-id <id>) (--report <markdown|@file> | --report-file <path>) [--json]',
+    usage: 'orizu prompts report set --prompt <id-or-name> [--project <team/project>] (--version <n> | --version-id <id>) (--report <markdown|@file> | --report-file <path>) [--json]',
     summary: 'Upload or replace the Markdown report for one explicit prompt version.',
     group: 'Prompts and judges',
     aliases: [['prompts', 'report', 'upload']],
     options: [
       { name: '--prompt <id-or-name>', help: 'Prompt ID or name.', required: true },
-      { name: '--project <team/project>', help: 'Project slug containing the prompt.', required: true },
+      { name: '--project <team/project>', help: 'Project slug containing the prompt.' },
       { name: '--version <n>', help: 'Positive prompt version number.' },
       { name: '--version-id <id>', help: 'Explicit prompt version ID.' },
       { name: '--report <markdown|@file>', help: 'Inline Markdown or an @file reference.' },

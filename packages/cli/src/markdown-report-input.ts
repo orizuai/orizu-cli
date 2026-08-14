@@ -20,6 +20,12 @@ function rejectDashPrefixedOptionValue(name: string, value: string | null) {
   }
 }
 
+function rejectMissingOptionValue(args: readonly string[], name: string) {
+  if (args.some((arg, index) => arg === name && index + 1 >= args.length)) {
+    throw new Error(`${name} requires a value`)
+  }
+}
+
 function readSourceFile(pathArg: string): string {
   const expandedPath = expandHomePath(pathArg)
   try {
@@ -42,6 +48,16 @@ export function readMarkdownReportInput(
   args: readonly string[],
   reportLabel: 'Optimization' | 'Prompt' | 'Task'
 ): MarkdownReportInput | null {
+  if (args.some(arg => arg.startsWith('--report='))) {
+    throw new Error('use --report <markdown|@file> with a space, not =')
+  }
+  if (args.some(arg => arg.startsWith('--report-file='))) {
+    throw new Error('use --report-file <path> with a space, not =')
+  }
+
+  rejectMissingOptionValue(args, '--report')
+  rejectMissingOptionValue(args, '--report-file')
+
   const report = getArg(args, '--report')
   const reportFile = getArg(args, '--report-file')
 

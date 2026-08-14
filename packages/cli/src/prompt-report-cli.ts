@@ -59,7 +59,7 @@ export async function promptReportCommand(
 
   if (!prompt) {
     throw new Error(
-      'Usage: orizu prompts report set --prompt <id-or-name> --project <team/project> ' +
+      'Usage: orizu prompts report set --prompt <id-or-name> [--project <team/project>] ' +
       '(--version <n> | --version-id <id>) ' +
       '(--report <markdown|@file> | --report-file <path>) [--json]'
     )
@@ -74,7 +74,7 @@ export async function promptReportCommand(
   const report = readMarkdownReportInput(args, 'Prompt')
   if (!report) {
     throw new Error(
-      'Usage: orizu prompts report set --prompt <id-or-name> --project <team/project> ' +
+      'Usage: orizu prompts report set --prompt <id-or-name> [--project <team/project>] ' +
       '(--version <n> | --version-id <id>) ' +
       '(--report <markdown|@file> | --report-file <path>) [--json]'
     )

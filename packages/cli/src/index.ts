@@ -98,6 +98,7 @@ import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
 import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
 import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
+import { reportReplacementWarning } from './report-replacement-warning.js'
 import {
   reportCommentsCommand,
   throwDeprecatedPromptCommentsCommand,
@@ -471,6 +472,11 @@ export function createCodeChallenge(verifier: string): string {
 
 function printError(message: string): void {
   console.error(sanitizeTerminalText(message))
+}
+
+function printReportReplacementWarning(data: Record<string, unknown>): void {
+  const warning = reportReplacementWarning(data)
+  if (warning) printError(warning)
 }
 
 export function validateBrowserUrl(url: string, expectedOrigin?: string): URL {
@@ -1514,7 +1520,10 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
       report,
     })
     if (hasJsonFlag()) printJson(data)
-    else printLine(message)
+    else {
+      printReportReplacementWarning(data)
+      printLine(message)
+    }
     return
   }
 
@@ -1564,6 +1573,7 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
     return
   }
 
+  printReportReplacementWarning(data)
   printLine(`Pushed ${kind} ${sanitizeTerminalText(String(manifest.name || promptDir))} (${sanitizeTerminalText(String(data.prompt_version_id || 'unknown version'))})`)
 }
 
