@@ -1,6 +1,8 @@
 import { readFileSync } from 'fs'
 import { basename } from 'path'
 
+import { hasCanonicalReportMarkdownContent } from './report-markdown-blankness.js'
+
 export const MARKDOWN_REPORT_MAX_BYTES = 2 * 1024 * 1024
 
 function getArg(args: readonly string[], name: string): string | null {
@@ -85,7 +87,7 @@ export function readMarkdownReportInput(
     sourceName = 'inline'
   }
 
-  if (!markdown.trim()) {
+  if (!hasCanonicalReportMarkdownContent(markdown)) {
     throw new Error(`${reportLabel} report markdown must not be blank`)
   }
   if (Buffer.byteLength(markdown, 'utf8') > MARKDOWN_REPORT_MAX_BYTES) {

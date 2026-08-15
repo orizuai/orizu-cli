@@ -474,9 +474,12 @@ function printError(message: string): void {
   console.error(sanitizeTerminalText(message))
 }
 
-function printReportReplacementWarning(data: Record<string, unknown>): void {
+function printPushDisclosures(data: Record<string, unknown>): void {
   const warning = reportReplacementWarning(data)
   if (warning) printError(warning)
+  if (data.metadata_updated === true) {
+    printError('Updated prompt metadata on the identical existing version')
+  }
 }
 
 export function validateBrowserUrl(url: string, expectedOrigin?: string): URL {
@@ -1521,7 +1524,7 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
     })
     if (hasJsonFlag()) printJson(data)
     else {
-      printReportReplacementWarning(data)
+      printPushDisclosures(data)
       printLine(message)
     }
     return
@@ -1573,7 +1576,7 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
     return
   }
 
-  printReportReplacementWarning(data)
+  printPushDisclosures(data)
   printLine(`Pushed ${kind} ${sanitizeTerminalText(String(manifest.name || promptDir))} (${sanitizeTerminalText(String(data.prompt_version_id || 'unknown version'))})`)
 }
 
