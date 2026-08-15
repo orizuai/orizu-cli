@@ -50,7 +50,11 @@ interface DiffCommentPayloadPairContext {
   bodies: { from: string; to: string } | null
   degraded: { reason: DiffCommentContextUnavailableReason } | null
   lengthStats: CliLengthStatsPair | null
-  lengthDelta: CliLengthDelta | null
+  lengthDelta: (
+    Partial<Record<keyof Omit<CliLengthDelta, 'splitUnavailableReason'>, unknown>> & {
+      splitUnavailableReason?: unknown
+    }
+  ) | null
   lengthDeltaUnavailableReason?: CliLengthMeasurementUnavailableReason
   comments: DiffCommentPayloadComment[]
 }
@@ -74,6 +78,12 @@ interface DiffCommentsPayload {
   }
   detail: 'hunk' | 'diff' | 'full'
   pairs: DiffCommentPayloadPair[]
+}
+
+interface RenderableLengthMetricDelta {
+  removed: number | null
+  added: number | null
+  net: number | null
 }
 
 export interface DiffCommentsCliContext {
@@ -171,6 +181,22 @@ function formatDeltaValue(
   return metric === 'tokens' ? `~${formatted}` : formatted
 }
 
+function isLengthMetricDelta(
+  value: unknown
+): value is RenderableLengthMetricDelta {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const delta = value as Record<string, unknown>
+  const isNullableFiniteNumber = (candidate: unknown) =>
+    candidate === null || (
+      typeof candidate === 'number' && Number.isFinite(candidate)
+    )
+  return isNullableFiniteNumber(delta.removed) &&
+    isNullableFiniteNumber(delta.added) &&
+    isNullableFiniteNumber(delta.net)
+}
+
 function printLengthMeasurements(
   ctx: DiffCommentsCliContext,
   pair: DiffCommentPayloadPair
@@ -210,11 +236,15 @@ function printLengthMeasurements(
     return
   }
 
-  if (pair.lengthDelta.splitUnavailableReason) {
+  const splitUnavailableReason = pair.lengthDelta.splitUnavailableReason
+  if (
+    typeof splitUnavailableReason === 'string' &&
+    splitUnavailableReason.length > 0
+  ) {
     ctx.printLine(
       `  Split unavailable: ${sanitizeHumanInlineText(
         ctx.sanitizeTerminalText,
-        pair.lengthDelta.splitUnavailableReason
+        splitUnavailableReason
       )}`
     )
   }
@@ -225,6 +255,10 @@ function printLengthMeasurements(
     ['words', 'Words'],
   ] as const) {
     const delta = pair.lengthDelta[metric]
+    if (!isLengthMetricDelta(delta)) {
+      ctx.printLine(`  ${label}: unavailable`)
+      continue
+    }
     ctx.printLine(
       `  ${label}: removed ${formatDeltaValue(delta.removed, metric)} · ` +
       `added ${formatDeltaValue(delta.added, metric)} · ` +

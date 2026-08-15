@@ -502,8 +502,9 @@ With `--json`, failed or deliberately skipped enrichment carries a named
 sealed version the stats belong to even when its canonical body could not be
 measured. Length enrichment is best-effort: if its supporting query fails, the
 list still succeeds with null stats and `enrichment_failed`. To bound request
-work, at most the first 500 sorted summaries are enriched; later summaries
-carry null stats and `measurement_cap_exceeded`.
+work, at most the first 500 sorted summaries are enriched and canonical-body
+resolution has a 15-second server budget. A summary skipped by either bound
+carries null stats and `measurement_cap_exceeded`.
 
 ## Report comments
 

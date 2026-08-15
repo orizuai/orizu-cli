@@ -56,9 +56,9 @@ export function formatFiniteLengthCount(
   signed = false
 ): string | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  if (!signed) return value.toLocaleString('en-US')
 
   const formatted = Math.abs(value).toLocaleString('en-US')
-  if (!signed) return formatted
   if (value > 0) return `+${formatted}`
   if (value < 0) return `-${formatted}`
   return formatted

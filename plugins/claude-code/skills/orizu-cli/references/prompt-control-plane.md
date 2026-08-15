@@ -424,8 +424,9 @@ Failed or deliberately skipped JSON enrichment carries a named
 sealed version behind each measurement even when the canonical body could not
 be measured. Length enrichment is best-effort: a supporting query failure
 leaves the list available with null stats and `enrichment_failed`. At most the
-first 500 sorted summaries are enriched per request; later summaries carry
-null stats and `measurement_cap_exceeded`.
+first 500 sorted summaries are enriched per request, and canonical-body
+resolution has a 15-second server budget. A summary skipped by either bound
+carries null stats and `measurement_cap_exceeded`.
 
 Archive or restore a prompt:
 
