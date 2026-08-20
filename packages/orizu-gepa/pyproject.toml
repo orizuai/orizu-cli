@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orizu-gepa"
+version = "0.0.0"
+description = "Official GEPA connector for Orizu."
+requires-python = ">=3.10"
+# M1 imports frozen ``orizu_gepa`` directly from PYTHONPATH. Packaging that
+# sibling source is deferred to M2 / ALI-1503; do not add a pip dependency.
+dependencies = ["gepa==0.1.4"]
+
+[project.scripts]
+orizu-gepa-connector = "orizu_gepa_connector.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

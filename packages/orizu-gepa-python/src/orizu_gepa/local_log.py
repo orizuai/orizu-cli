@@ -70,6 +70,17 @@ class LocalOptimizationLogger:
     def append_event(self, event: dict[str, Any]) -> None:
         _append_jsonl(self.directory / "events.jsonl", event)
 
+    def write_preflight(self, *, project: str, verdict: dict[str, Any], kind: str = "preflight_refusal") -> Path:
+        """Write a preflight verdict before or alongside the optimization event stream."""
+        path = self.directory / "preflight.json"
+        _write_json(path, {
+            "schema_version": "orizu.optimization-preflight.v1",
+            "kind": kind,
+            "project": project,
+            "verdict": verdict,
+        })
+        return path
+
     def append_evaluations(
         self,
         *,
@@ -109,6 +120,44 @@ class LocalOptimizationLogger:
             "prompt": prompt,
             "response": response,
             "candidate_text": candidate_text,
+        })
+
+    def append_reflection_failure(
+        self,
+        *,
+        iteration: int | None,
+        parent_candidate_id: str | None,
+        row_ids: list[str],
+        error_type: str,
+        error_message: str,
+        gepa_prompt_chars: int,
+        parent_text_chars: int,
+        parent_result_count: int,
+        parent_context_chars: int,
+    ) -> None:
+        """Persist a GEPA-swallowed reflection exception in the shared ledger."""
+        _append_jsonl(self.directory / "reflections.jsonl", {
+            "status": "failed",
+            "iteration": iteration,
+            "parent_candidate_id": parent_candidate_id,
+            "child_candidate_id": None,
+            "row_ids": row_ids,
+            "error_type": error_type,
+            "error_message": error_message,
+            "gepa_prompt_chars": gepa_prompt_chars,
+            "parent_text_chars": parent_text_chars,
+            "parent_result_count": parent_result_count,
+            "parent_context_chars": parent_context_chars,
+        })
+
+    def write_lm_stats(self, *, total_cost: float, total_tokens_in: int, total_tokens_out: int) -> None:
+        """Record connector reflection usage in the local run's stable JSON form."""
+        _write_json(self.directory / "lm_stats.json", {
+            "reflection": {
+                "total_cost": total_cost,
+                "total_tokens_in": total_tokens_in,
+                "total_tokens_out": total_tokens_out,
+            },
         })
 
     def write_result(self, result: TextGepaResult) -> None:

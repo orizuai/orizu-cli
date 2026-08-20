@@ -106,6 +106,8 @@ import {
 } from './report-comments-cli.js'
 import { diffCommentsCommand } from './diff-comments-cli.js'
 import { exportOptimizationRunCommand } from './optimization-export-cli.js'
+import { dispatchGepaEngine } from './gepa-engine-dispatch.js'
+import { getGepaPythonCommand } from './gepa-python-command.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
 
 export { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
@@ -2521,23 +2523,12 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
 // ALI-1073 list moved to optimizations-list-cli.ts (line ratchet, ALI-976);
 // ALI-1175 labels its best scores as agent-reported evidence there.
 
-function removeFlagWithValue(args: string[], flag: string): string[] {
-  const filtered: string[] = []
-  for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === flag) {
-      index += 1
-      continue
-    }
-    filtered.push(args[index])
-  }
-  return filtered
-}
-
 async function runGepaOptimization() {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const baseUrl = getBaseUrl()
-  const python = getArg('--python') || process.env.PYTHON || 'python3'
-  let forwardedArgs = removeFlagWithValue(cliArgs.slice(2), '--python')
+  const runGepa = getGepaPythonCommand(cliArgs.slice(2), process.env)
+  const python = runGepa.python
+  let forwardedArgs = runGepa.args
 
   // ALI-1159 (ADR-007): GEPA executes ad-hoc local runner dirs while
   // attributing records to registered runner version ids — verify the bytes
@@ -2549,6 +2540,7 @@ async function runGepaOptimization() {
   forwardedArgs = verified.args
 
   let result
+  let selectedEngine = 'official'
   try {
     // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
     // credentials.json so hosted sandboxes can run optimizations. Read at spawn
@@ -2561,32 +2553,31 @@ async function runGepaOptimization() {
       forwardedArgs = ['--project', project, ...forwardedArgs]
     }
 
-    const pythonPathEntries = getGepaPythonPathEntries(process.env.PYTHONPATH)
+    const dispatch = dispatchGepaEngine(forwardedArgs, project, {
+      ...process.env,
+      ORIZU_API_URL: baseUrl,
+      ORIZU_TOKEN: token,
+      ORIZU_PROJECT: project,
+      ORIZU_VERIFIED_RUNNER_DIRS: JSON.stringify(verified.verifiedDirs),
+      PYTHONPATH: getGepaPythonPathEntries(process.env.PYTHONPATH).join(delimiter),
+      PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
+    })
+    selectedEngine = dispatch.engine
 
-    result = spawnSync(python, ['-m', 'orizu_gepa.cli', ...forwardedArgs], {
+    result = spawnSync(python, ['-m', dispatch.module, ...dispatch.args], {
       stdio: 'inherit',
-      env: {
-        ...process.env,
-        ORIZU_API_URL: baseUrl,
-        ORIZU_TOKEN: token,
-        ORIZU_PROJECT: project,
-        // Integrity handshake (ALI-1159): the Python entrypoint refuses
-        // runner dirs that are not in this wrapper-verified list.
-        ORIZU_VERIFIED_RUNNER_DIRS: JSON.stringify(verified.verifiedDirs),
-        PYTHONPATH: pythonPathEntries.join(delimiter),
-        PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
-      },
+      env: dispatch.environment,
     })
   } finally {
     verified.cleanup()
   }
 
   if (result.error) {
-    throw result.error
+    throw new Error(`${selectedEngine} GEPA engine failed: ${result.error.message}`, { cause: result.error })
   }
 
   if (result.status !== 0) {
-    throw new Error(`orizu-gepa failed with exit code ${result.status}`)
+    throw new Error(`${selectedEngine} GEPA engine failed with exit code ${result.status}`)
   }
 
   if (hasJsonFlag()) {

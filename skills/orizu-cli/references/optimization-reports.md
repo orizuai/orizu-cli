@@ -130,7 +130,7 @@ Set an explicit expectation before the run: for example, "if best kappa does not
 
 ### Budget Versus Iteration Cap
 
-Default budget presets are DSPy-style metric-call budgets. `light`, `medium`, and `heavy` map to DSPy's `auto="light"`, `auto="medium"`, and `auto="heavy"` scales; `auto` is treated as the balanced `medium` preset and is the default when no budget control is provided. The final metric-call limit scales with validation-set size, rather than using fixed tiny constants. `--budget`, `--max-metric-calls`, `--max-full-evals`, and `--max-iterations` are mutually exclusive CLI budget controls; choose only one.
+Default budget presets are DSPy-style metric-call budgets. `light`, `medium`, and `heavy` map to DSPy's `auto="light"`, `auto="medium"`, and `auto="heavy"` scales; `auto` is treated as the balanced `medium` preset and is the default when no budget control is provided. The final metric-call limit scales with validation-set size, rather than using fixed tiny constants. `--budget`, `--max-metric-calls`, `--max-full-evals`, `--max-iterations`, and `--max-candidate-proposals` are mutually exclusive CLI budget controls; choose only one. The proposal cap is available only on the official engine.
 
 Metric-call and full-eval budgets are checked only between iterations. Once an iteration starts, `run-gepa` completes the parent minibatch, child minibatch, and full validation eval for an accepted child even if that overshoots the nominal budget. If a run ends as `budget_exhausted`, it pauses and does not auto-promote. If auto-promotion matters, choose a single budget control large enough to cover the intended search.
 

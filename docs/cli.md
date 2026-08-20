@@ -136,6 +136,16 @@ Use `orizu --help`, `orizu <group> --help`, or
 examples. Agents and scripts can run `orizu capabilities --json` for a structured
 command manifest.
 
+### GEPA engine selection
+
+`orizu optimizations run-gepa` uses the vendored official GEPA connector by
+default. Pass `--engine legacy` only to use the frozen compatibility loop while
+investigating a migration issue. The selected engine is recorded in run metadata;
+the command preserves the runner-byte verification boundary for both engines.
+Choose one budget control: a named `--budget` preset, `--max-metric-calls`,
+`--max-full-evals`, `--max-iterations`, or `--max-candidate-proposals`.
+`--max-candidate-proposals` is available only with the default official engine.
+
 ### JSON output everywhere
 
 Agents are first-class users of this CLI: **every command supports `--json`**,

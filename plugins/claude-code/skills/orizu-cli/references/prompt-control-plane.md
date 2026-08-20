@@ -706,6 +706,7 @@ orizu --local optimizations run-gepa \
   --split-set-id <split-set-id> \
   --train-split train \
   --val-split validation \
+  --engine official \
   --log-dir ./logs \
   --minibatch-size 3 \
   --num-threads auto
@@ -713,9 +714,10 @@ orizu --local optimizations run-gepa \
 
 Useful GEPA flags:
 
+- `--engine official|legacy` defaults to `official`, which runs the bundled official GEPA connector. Use `legacy` only as the frozen recovery hatch; it keeps the historical Python loop and does not support `--max-candidate-proposals`.
 - `--scorer-input-contract gepa|flat_row` selects the scorer-runner input shape. Use `flat_row` to reuse a judge runner written for `runners exec --scorer-version` without a hand-written adapter; add `--scorer-candidate-field <row-field>` when that judge reads the candidate output from a specific row field (e.g. `draft`). Passing a candidate field under the `gepa` contract is refused at launch, not silently ignored. See "Scorer-Runner Input Contracts" above.
 - `--allow-degenerate-seed` opts out of the launch-time refusal when the seed scores the worst possible value on every validation row. Leave it off by default — a uniformly-worst seed is almost always a scorer contract mismatch.
-- Budget controls are mutually exclusive: choose at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, or `--max-iterations <n>`. With none provided, `run-gepa` defaults to `--budget auto`, the balanced medium preset.
+- Budget controls are mutually exclusive: choose at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, `--max-iterations <n>`, or `--max-candidate-proposals <n>`. With none provided, `run-gepa` defaults to `--budget auto`, the balanced medium preset. `--max-candidate-proposals` is available only with `--engine official`.
 - `--minibatch-size <n>` defaults to 3.
 - `--num-threads auto|N` defaults to `auto`; auto caps row-evaluation concurrency from mini-batch size, validation-set size, 2x CPU count, memory estimate, file-descriptor limit, and a 64-thread default ceiling. Set `ORIZU_GEPA_AUTO_THREADS_MAX` or use `--num-threads <n>` only when the runner/provider capacity is known.
 - `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`.

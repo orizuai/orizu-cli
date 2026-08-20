@@ -17,14 +17,14 @@ External users consume:
   - Validates plugin manifests, marketplace catalogs, and that committed
     plugin skill bundles match `skills/orizu-cli` (`bun run plugins:validate`).
 - `.github/workflows/sync-cli-and-skills.yml`
-  - Mirrors `packages/cli`, `packages/orizu-gepa-python`, `skills`,
+  - Mirrors `packages/cli`, `packages/orizu-gepa`, `packages/orizu-gepa-python`, `skills`,
     `plugins`, the marketplace catalogs, plugin scripts, and CLI docs to one
     mirror repo `main` (after skills and plugins validate).
 - `.github/workflows/publish-cli.yml`
   - Triggered by tags matching `cli-vX.Y.Z` (or manual dispatch).
   - Sets `packages/cli/package.json` version from the release tag at publish time.
   - Verifies checked-in CLI build artifacts.
-  - Vendors `packages/orizu-gepa-python` into the CLI package during `npm publish`.
+  - Vendors `packages/orizu-gepa` and `packages/orizu-gepa-python` into the CLI package during `npm publish`.
   - Vendors `skills/orizu-cli` into the CLI package during `npm publish`.
   - Publishes `packages/cli` to npm.
   - Pushes `vX.Y.Z` tag to mirror repo.

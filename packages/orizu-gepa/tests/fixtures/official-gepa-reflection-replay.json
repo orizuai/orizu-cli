@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "--project", "synthetic-team/synthetic-project",
+    "--optimizer-version-id", "00000000-0000-4000-8000-000000000001",
+    "--candidate-version-id", "00000000-0000-4000-8000-000000000002",
+    "--runner-version-id", "00000000-0000-4000-8000-000000000003",
+    "--candidate-runner-dir", "/tmp/synthetic-candidate-runner",
+    "--scorer-version-id", "00000000-0000-4000-8000-000000000004",
+    "--scorer-runner-version-id", "00000000-0000-4000-8000-000000000005",
+    "--scorer-runner-dir", "/tmp/synthetic-scorer-runner",
+    "--dataset-version-id", "00000000-0000-4000-8000-000000000006",
+    "--split-set-id", "00000000-0000-4000-8000-000000000007",
+    "--train-split", "train",
+    "--val-split", "validation",
+    "--max-iterations", "2",
+    "--minibatch-size", "26",
+    "--num-threads", "6",
+    "--seed", "1502",
+    "--reflection-model", "anthropic/claude-haiku-4-5",
+    "--reflection-max-tokens", "1024",
+    "--engine", "official"
+  ],
+  "parent_text_chars": 23001,
+  "parent_rows": 26,
+  "legacy_response": "better"
+}

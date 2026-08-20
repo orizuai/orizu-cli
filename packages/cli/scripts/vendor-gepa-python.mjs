@@ -9,6 +9,8 @@ const cliRoot = resolve(scriptDir, '..')
 const repoRoot = resolve(cliRoot, '..', '..')
 const sourceRoot = resolve(repoRoot, 'packages', 'orizu-gepa-python')
 const vendorRoot = resolve(cliRoot, 'vendor', 'orizu-gepa-python')
+const connectorSourceRoot = resolve(repoRoot, 'packages', 'orizu-gepa')
+const connectorVendorRoot = resolve(cliRoot, 'vendor', 'orizu-gepa')
 const officialArchive = resolve(cliRoot, 'gepa-python-source.zip')
 const officialVendorRoot = resolve(cliRoot, 'vendor', 'gepa-python')
 const shouldClean = process.argv.includes('--clean')
@@ -32,9 +34,13 @@ const GEPA_WHEEL_SHA256 = '12b971039599625c156d2231f6d72a29c31a22e9c237689459b5f
 const hasSourcePackage = existsSync(sourceSrc)
   && existsSync(sourcePyproject)
   && existsSync(sourceManifest)
+const hasConnectorSourcePackage = existsSync(resolve(connectorSourceRoot, 'src'))
+  && existsSync(resolve(connectorSourceRoot, 'pyproject.toml'))
 const hasVendoredPackage = existsSync(vendoredSrc)
   && existsSync(vendoredPyproject)
   && existsSync(vendoredManifest)
+const hasVendoredConnectorPackage = existsSync(resolve(connectorVendorRoot, 'src', 'orizu_gepa_connector', '__main__.py'))
+  && existsSync(resolve(connectorVendorRoot, 'pyproject.toml'))
 const hasOfficialVendoredPackage = existsSync(officialVendoredManifest)
   && existsSync(officialVendoredGepa)
 
@@ -172,20 +178,25 @@ if (shouldRefresh) {
 if (shouldClean) {
   if (hasSourcePackage) {
     rmSync(vendorRoot, { recursive: true, force: true })
+  }
+  if (hasConnectorSourcePackage) {
+    rmSync(connectorVendorRoot, { recursive: true, force: true })
+  }
+  if (hasSourcePackage || hasConnectorSourcePackage) {
     rmSync(officialVendorRoot, { recursive: true, force: true })
   }
   process.exit(0)
 }
 
-if (!hasSourcePackage) {
-  if (hasVendoredPackage && hasOfficialVendoredPackage) {
+if (!hasSourcePackage || !hasConnectorSourcePackage) {
+  if (hasVendoredPackage && hasVendoredConnectorPackage && hasOfficialVendoredPackage) {
     assertOfficialVendoredManifest()
     process.exit(0)
   }
-  if (hasVendoredPackage) {
-    throw new Error(`Unable to vendor official GEPA: vendored package is incomplete at ${officialVendorRoot}`)
+  if (hasVendoredPackage || hasVendoredConnectorPackage || hasOfficialVendoredPackage) {
+    throw new Error('Unable to vendor GEPA packages: vendored legacy, connector, or official package is incomplete')
   }
-  throw new Error(`Unable to vendor orizu-gepa-python: source package not found at ${sourceRoot}`)
+  throw new Error(`Unable to vendor GEPA packages: source package not found at ${sourceRoot} or ${connectorSourceRoot}`)
 }
 
 rmSync(vendorRoot, { recursive: true, force: true })
@@ -193,6 +204,23 @@ mkdirSync(vendorRoot, { recursive: true })
 cpSync(sourcePyproject, resolve(vendorRoot, 'pyproject.toml'))
 cpSync(sourceManifest, resolve(vendorRoot, 'manifest.json'))
 cpSync(sourceSrc, resolve(vendorRoot, 'src'), {
+  recursive: true,
+  filter: sourcePath => {
+    const normalizedPath = sourcePath.replace(/\\/g, '/')
+    return !normalizedPath.endsWith('/__pycache__')
+      && !normalizedPath.includes('/__pycache__/')
+      && !normalizedPath.endsWith('.pyc')
+      && !normalizedPath.endsWith('.pyo')
+      && !normalizedPath.endsWith('/.pytest_cache')
+      && !normalizedPath.includes('/.pytest_cache/')
+      && !normalizedPath.endsWith('/.DS_Store')
+  },
+})
+
+rmSync(connectorVendorRoot, { recursive: true, force: true })
+mkdirSync(connectorVendorRoot, { recursive: true })
+cpSync(resolve(connectorSourceRoot, 'pyproject.toml'), resolve(connectorVendorRoot, 'pyproject.toml'))
+cpSync(resolve(connectorSourceRoot, 'src'), resolve(connectorVendorRoot, 'src'), {
   recursive: true,
   filter: sourcePath => {
     const normalizedPath = sourcePath.replace(/\\/g, '/')

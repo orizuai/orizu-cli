@@ -50,7 +50,7 @@ Use the prompt control plane when you want runs, candidates, score charts, Paret
 1. Push the candidate runner and prompt/judge prompt.
 2. Register a row scorer for reflection. GEPA reflection requires row-level feedback.
 3. Snapshot a dataset version and create a train/validation split set.
-4. Use `orizu optimizations run-gepa` for the common text-candidate case, or `orizu optimizations start` plus event logging for a custom optimizer.
+4. Use `orizu optimizations run-gepa` for the common text-candidate case. It uses official GEPA by default; `--engine legacy` is a frozen safety hatch while migration parity is proven. Use `orizu optimizations start` plus event logging for a custom optimizer.
 5. Use set scorers for selection/tracked reporting when the meaningful metric is batch-level; execute builtin set scorers with `orizu scorers exec` or submit precomputed aggregates with `orizu scores submit --aggregate`.
 6. Promote only candidates that passed validation.
 7. Write and attach an optimization report from the local logs or export artifact; see `optimization-reports.md`.

@@ -276,6 +276,7 @@ def main() -> None:
 
     run_metadata = {
         **metadata,
+        "engine": "legacy",
         "scorer_input_contract": scorer_input_contract,
         "scorer_candidate_output_field": scorer_candidate_output_field,
         "optimizer_package": "orizu-gepa-python",
