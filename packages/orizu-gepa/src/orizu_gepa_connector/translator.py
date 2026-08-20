@@ -47,10 +47,15 @@ def _row_results(event: dict[str, Any]) -> list[dict[str, Any]]:
     for row_id, score in scores.items():
         output = outputs.get(row_id) if isinstance(outputs, dict) else None
         side_info = output if isinstance(output, dict) else {}
+        adapter_row_id = side_info.get("row_id")
+        if adapter_row_id is None and str(row_id).isdigit():
+            raise ValueError(
+                "official GEPA callback carried positional row id without adapter row identity"
+            )
         feedback = feedbacks.get(row_id) if isinstance(feedbacks, dict) else None
         error = errors.get(row_id) if isinstance(errors, dict) else None
         rows.append({
-            "row_id": str(side_info.get("row_id", row_id)),
+            "row_id": str(adapter_row_id if adapter_row_id is not None else row_id),
             "score": score if isinstance(score, (int, float)) else None,
             # Official GEPA's typed callback has no feedback fields. The
             # adapter therefore carries them in its rollout side-info; accept

@@ -246,6 +246,14 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         self.assertEqual(translated["candidateId"], "seed")
         self.assertEqual(translated["payload"]["candidate_id"], "seed")
 
+    def test_translator_refuses_a_positional_valset_id_without_adapter_evidence(self):
+        """Kills the silent positional-id fallback that corrupts dashboard joins."""
+        with self.assertRaisesRegex(ValueError, "positional row id"):
+            translate_callback("on_valset_evaluated", {
+                "iteration": 1, "candidate_idx": 1,
+                "scores_by_val_id": {0: 0.8}, "outputs_by_val_id": {},
+            }, run_id=RUN_ID)
+
     def test_seed_valset_enriches_gepas_empty_output_map_from_preceding_evaluation(self):
         """Kills a seed baseline whose score exists but per-row evidence is empty."""
         sink = RecordingSink()
@@ -506,6 +514,103 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         self.assertEqual(result.best_idx, 1)
         self.assertEqual(result.candidates[1]["prompt"], "better")
 
+    def test_real_gepa_seed_valset_wire_event_uses_adapter_row_ids_not_positions(self):
+        """Kills seed enrichment that updates outputs but leaves GEPA's positional scores as wire IDs."""
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            candidate_dir = root_path / "candidate"; scorer_dir = root_path / "scorer"
+            candidate_dir.mkdir(); scorer_dir.mkdir()
+            (candidate_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}))
+            (scorer_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}))
+            (candidate_dir / "runner.py").write_text(
+                "import json, os\n"
+                "data=json.load(open(os.environ['ORIZU_RUNNER_INPUT_PATH']))\n"
+                "json.dump({'model_response': data['prompt']['body']}, open(os.environ['ORIZU_RUNNER_OUTPUT_PATH'], 'w'))\n"
+            )
+            (scorer_dir / "runner.py").write_text(
+                "import json, os\n"
+                "data=json.load(open(os.environ['ORIZU_RUNNER_INPUT_PATH']))\n"
+                "score = 1.0 if data['row']['candidate_output'] == 'better' else 0.2\n"
+                "json.dump({'score': score, 'feedback': 'recorded runner score'}, open(os.environ['ORIZU_RUNNER_OUTPUT_PATH'], 'w'))\n"
+            )
+            context = PromptContext(body="seed", body_kind="text", provider_settings={}, prompt_version_id="prompt", runner_version_id="runner")
+            adapter = RunnerEvaluationAdapter(
+                candidate_runner_dir=str(candidate_dir), scorer_runner_dir=str(scorer_dir), run_id=RUN_ID,
+                prompt_context=context, scorer_context=context,
+            )
+            sink = RecordingSink()
+            callback = OrizuCallback(sink, RUN_ID)
+            config = TextGepaConfig(max_iterations=1, minibatch_size=1, reflection_max_tokens=1024)
+            reflection_lm = make_gepa_reflection_lm(
+                context_supplier=lambda: (next(iter((adapter.last_candidate or {"prompt": "seed"}).values())), adapter.last_row_evaluations),
+                config=config,
+            )
+            import orizu_gepa_connector.reflection as reflection
+            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(response="better", prompt="fake reflection")):
+                run_official_gepa(
+                    seed_candidate={"prompt": "seed"}, trainset=[DatasetRow(id="train-row", row={})],
+                    valset=[DatasetRow(id="val-uuid-a", row={}), DatasetRow(id="val-uuid-b", row={})],
+                    adapter=adapter, callback=callback, hooks=LifecycleHooks(), max_metric_calls=16,
+                    stop_callbacks=[IterationBoundaryStopper(max_iterations=1)], reflection_lm=reflection_lm, config=config,
+                )
+
+        seed = next(event for event in sink.events if event["event_type"] == "seed_val_set_completed")
+        self.assertEqual(
+            [row["row_id"] for row in seed["payload"]["row_results"]],
+            ["val-uuid-a", "val-uuid-b"],
+        )
+
+    def test_real_gepa_child_valset_wire_event_matches_exact_validation_row_ids(self):
+        """Kills positional staged-evidence reattachment that substitutes train rows into child validation."""
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            candidate_dir = root_path / "candidate"; scorer_dir = root_path / "scorer"
+            candidate_dir.mkdir(); scorer_dir.mkdir()
+            (candidate_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}))
+            (scorer_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}))
+            (candidate_dir / "runner.py").write_text(
+                "import json, os\n"
+                "data=json.load(open(os.environ['ORIZU_RUNNER_INPUT_PATH']))\n"
+                "json.dump({'model_response': {'text': data['prompt']['body'], 'source_id': data['row']['source_id']}}, open(os.environ['ORIZU_RUNNER_OUTPUT_PATH'], 'w'))\n"
+            )
+            (scorer_dir / "runner.py").write_text(
+                "import json, os\n"
+                "data=json.load(open(os.environ['ORIZU_RUNNER_INPUT_PATH']))\n"
+                "score = 1.0 if data['row']['candidate_output']['text'] == 'better' else 0.2\n"
+                "json.dump({'score': score, 'feedback': 'recorded runner score'}, open(os.environ['ORIZU_RUNNER_OUTPUT_PATH'], 'w'))\n"
+            )
+            context = PromptContext(body="seed", body_kind="text", provider_settings={}, prompt_version_id="prompt", runner_version_id="runner")
+            adapter = RunnerEvaluationAdapter(
+                candidate_runner_dir=str(candidate_dir), scorer_runner_dir=str(scorer_dir), run_id=RUN_ID,
+                prompt_context=context, scorer_context=context,
+            )
+            sink = RecordingSink()
+            callback = OrizuCallback(sink, RUN_ID)
+            config = TextGepaConfig(max_iterations=1, minibatch_size=2, reflection_max_tokens=1024)
+            reflection_lm = make_gepa_reflection_lm(
+                context_supplier=lambda: (next(iter((adapter.last_candidate or {"prompt": "seed"}).values())), adapter.last_row_evaluations),
+                config=config,
+            )
+            import orizu_gepa_connector.reflection as reflection
+            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(response="better", prompt="fake reflection")):
+                run_official_gepa(
+                    seed_candidate={"prompt": "seed"},
+                    trainset=[DatasetRow(id="train-uuid-a", row={"source_id": "train-uuid-a"}), DatasetRow(id="train-uuid-b", row={"source_id": "train-uuid-b"})],
+                    valset=[DatasetRow(id="val-uuid-a", row={"source_id": "val-uuid-a"}), DatasetRow(id="val-uuid-b", row={"source_id": "val-uuid-b"})],
+                    adapter=adapter, callback=callback, hooks=LifecycleHooks(), max_metric_calls=24,
+                    stop_callbacks=[IterationBoundaryStopper(max_iterations=1)], reflection_lm=reflection_lm, config=config,
+                )
+
+        child = next(event for event in sink.events if event["event_type"] == "child_val_set_completed")
+        self.assertEqual(
+            [row["row_id"] for row in child["payload"]["row_results"]],
+            ["val-uuid-a", "val-uuid-b"],
+        )
+        self.assertEqual(
+            [row["output"]["source_id"] for row in child["payload"]["row_results"]],
+            ["val-uuid-a", "val-uuid-b"],
+        )
+
     def test_real_callback_buffers_a_proposal_until_gepa_assigns_the_child_id(self):
         """Kills a callback that emits reflection before the lineage can join it."""
         sink = RecordingSink()
@@ -704,6 +809,7 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         """Kills production callback methods that only unit-shaped events reach."""
         sink = RecordingSink()
         callback = OrizuCallback(sink, RUN_ID)
+        callback.validation_row_ids = ["validation"]
         optimize(seed_candidate={"prompt": "seed"}, trainset=[{"id": "train"}], valset=[{"id": "validation"}],
                  adapter=DeterministicAdapter(), max_metric_calls=8, callbacks=[callback],
                  display_progress_bar=False, raise_on_exception=True)
@@ -991,6 +1097,32 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
             {name: record[name] for name in ("latency_ms", "token_in", "token_out", "cost_usd", "cached")},
             {"latency_ms": 12, "token_in": 3, "token_out": 5, "cost_usd": 0.01, "cached": True},
         )
+
+    def test_child_valset_uses_the_latest_staged_evaluation_not_train_row_position(self):
+        """Kills staged-evidence flattening that treats train order as valset identity."""
+        sink = RecordingSink()
+        callback = OrizuCallback(sink, RUN_ID)
+        callback.on_evaluation_start({"iteration": 1, "inputs": [DatasetRow(id="train-row", row={})]})
+        callback.on_evaluation_end({
+            "iteration": 1, "candidate_idx": 4, "is_seed_candidate": False,
+            "scores": [0.1], "outputs": [{"row_id": "train-row", "output": "train"}],
+        })
+        callback.on_evaluation_start({"iteration": 1, "inputs": [DatasetRow(id="val-row", row={})]})
+        callback.on_evaluation_end({
+            "iteration": 1, "candidate_idx": 4, "is_seed_candidate": False,
+            "scores": [0.8], "outputs": [{"row_id": "val-row", "output": "validation"}],
+        })
+        callback.on_valset_evaluated({
+            "iteration": 1, "candidate_idx": 4, "scores_by_val_id": {0: 0.8},
+            "outputs_by_val_id": {}, "parent_ids": [0],
+        })
+
+        child = sink.events[-1]
+        self.assertEqual(child["event_type"], "child_val_set_completed")
+        self.assertEqual(child["payload"]["row_results"], [{
+            "row_id": "val-row", "score": 0.8, "feedback": None,
+            "error": None, "output": "validation",
+        }])
 
     def test_local_artifact_failure_marks_the_callback_as_non_durable(self):
         """Kills a swallowed local append failure that otherwise permits success."""

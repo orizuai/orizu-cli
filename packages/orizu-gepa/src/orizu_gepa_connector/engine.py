@@ -15,6 +15,38 @@ from .callbacks import LifecycleHooks, OrizuCallback
 from .preflight import validate_seed_and_scorer
 
 
+def _row_id(row: Any, index: int) -> str:
+    value = getattr(row, "id", row.get("id") if isinstance(row, dict) else None)
+    if value is None:
+        raise ValueError(f"GEPA dataset row at index {index} is missing its id")
+    return str(value)
+
+
+class _RowIdentityLoader:
+    """Expose Orizu dataset ids to GEPA instead of its positional list ids."""
+
+    def __init__(self, rows: Sequence[Any]):
+        self._rows_by_id = {_row_id(row, index): row for index, row in enumerate(rows)}
+        if len(self._rows_by_id) != len(rows):
+            raise ValueError("GEPA datasets require unique DatasetRow ids")
+
+    def all_ids(self) -> list[str]:
+        return list(self._rows_by_id)
+
+    def fetch(self, row_ids: Sequence[str]) -> list[Any]:
+        return [self._rows_by_id[str(row_id)] for row_id in row_ids]
+
+    def __len__(self) -> int:
+        return len(self._rows_by_id)
+
+
+def _with_row_identities(rows: Sequence[Any]) -> Any:
+    """Keep caller-supplied loaders, otherwise prevent cross-split cache aliasing."""
+    if hasattr(rows, "all_ids") and hasattr(rows, "fetch"):
+        return rows
+    return _RowIdentityLoader(rows)
+
+
 class SeedValidationRefused(RuntimeError):
     """Raised before a run is started when the scored seed has no gradient."""
 
@@ -96,6 +128,13 @@ def run_official_gepa(
     consumed.  The actual GEPA loop remains responsible for every later
     stopping boundary.
     """
+    # Full-valset evaluations bypass GEPA's evaluation callbacks. Give the
+    # callback the real adapter so it can turn GEPA's positional score keys
+    # into the adapter's durable dataset row identities.
+    if isinstance(callback, OrizuCallback):
+        callback.evaluation_adapter = adapter
+        callback.validation_row_ids = [_row_id(row, index) for index, row in enumerate(valset)]
+
     if not seed_already_validated:
         validate_seed_before_run(
             seed_candidate=seed_candidate,
@@ -133,4 +172,6 @@ def run_official_gepa(
     }
     if reflection_lm is not None:
         kwargs["reflection_lm"] = reflection_lm
+    kwargs["trainset"] = _with_row_identities(trainset)
+    kwargs["valset"] = _with_row_identities(valset)
     return optimize(**kwargs)

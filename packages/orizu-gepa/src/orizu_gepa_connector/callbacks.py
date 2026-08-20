@@ -54,7 +54,8 @@ class OrizuCallback:
                  higher_is_better: bool = True, budget_kind: str = "max_metric_calls",
                  budget_limit: int | None = None, max_payload_chars: int = 16000,
                  log_row_snapshots: bool = False, approx_metric_call_limit: int | None = None,
-                 terminal_budget_exhausted: Callable[[dict[str, Any]], bool] | None = None):
+                 terminal_budget_exhausted: Callable[[dict[str, Any]], bool] | None = None,
+                 evaluation_adapter: Any | None = None):
         self.sink = sink
         self.run_id = run_id
         self.hooks = hooks or LifecycleHooks()
@@ -65,6 +66,11 @@ class OrizuCallback:
         self.log_row_snapshots = log_row_snapshots
         self.approx_metric_call_limit = approx_metric_call_limit
         self._terminal_budget_exhausted = terminal_budget_exhausted
+        # GEPA does not issue evaluation callbacks for full valset runs. Its
+        # adapter is therefore the only authoritative row-id source at the
+        # following on_valset_evaluated callback.
+        self.evaluation_adapter = evaluation_adapter
+        self.validation_row_ids: list[str] = []
         self.logging_failed = False
         self._selected_parent_by_iteration: dict[int, str] = {}
         self._proposals_by_iteration: dict[int, list[dict[str, Any]]] = {}
@@ -296,6 +302,80 @@ class OrizuCallback:
             "error_type": type(error).__name__,
         }})
 
+    @staticmethod
+    def _adapter_output(result: RowEvaluation) -> dict[str, Any]:
+        """Return the adapter-owned evidence for one authoritative row id."""
+        return {
+            "row_id": result.row_id,
+            "output": result.output,
+            "raw_score": result.score,
+            "feedback": result.feedback,
+            "scorer_output": result.scorer_response,
+            "latency_ms": result.latency_ms,
+            "token_in": result.token_in,
+            "token_out": result.token_out,
+            "cost_usd": result.cost_usd,
+            "error": result.error,
+            "cached": result.cached,
+            "error_source": result.error_source,
+        }
+
+    def _rekey_valset_evidence(
+        self, event: dict[str, Any], results: list[RowEvaluation]
+    ) -> dict[str, Any]:
+        """Replace GEPA's positional score keys with runner-owned row identities.
+
+        GEPA 0.1.4 reports a valset score map keyed by positional indexes. The
+        immediately preceding adapter evaluation is the authoritative pairing
+        of those scores to dataset rows. Rekey every correlated map here, at
+        that callback boundary, so downstream transports never need to guess.
+        """
+        scores = event.get("scores_by_val_id")
+        if not isinstance(scores, dict) or len(scores) != len(results):
+            return event
+
+        outputs = event.get("outputs_by_val_id") or {}
+        feedbacks = event.get("feedbacks_by_val_id") or {}
+        errors = event.get("errors_by_val_id") or {}
+        if not isinstance(outputs, dict):
+            outputs = {}
+        if not isinstance(feedbacks, dict):
+            feedbacks = {}
+        if not isinstance(errors, dict):
+            errors = {}
+
+        rekeyed_scores: dict[str, Any] = {}
+        rekeyed_outputs: dict[str, Any] = {}
+        rekeyed_feedbacks: dict[str, Any] = {}
+        rekeyed_errors: dict[str, Any] = {}
+        for (source_id, score), result in zip(scores.items(), results, strict=True):
+            row_id = str(result.row_id)
+            if row_id in rekeyed_scores:
+                raise ValueError(f"adapter returned duplicate valset row id {row_id!r}")
+            existing = outputs.get(source_id, outputs.get(row_id, {}))
+            output_info = dict(existing) if isinstance(existing, dict) else {"output": existing}
+            for name, value in self._adapter_output(result).items():
+                if output_info.get(name) is None:
+                    output_info[name] = value
+            # The adapter id is canonical even when GEPA happened to include
+            # another row_id in side information.
+            output_info["row_id"] = row_id
+            rekeyed_scores[row_id] = score
+            rekeyed_outputs[row_id] = output_info
+            if source_id in feedbacks:
+                rekeyed_feedbacks[row_id] = feedbacks[source_id]
+            if source_id in errors:
+                rekeyed_errors[row_id] = errors[source_id]
+
+        enriched = dict(event)
+        enriched["scores_by_val_id"] = rekeyed_scores
+        enriched["outputs_by_val_id"] = rekeyed_outputs
+        if feedbacks:
+            enriched["feedbacks_by_val_id"] = rekeyed_feedbacks
+        if errors:
+            enriched["errors_by_val_id"] = rekeyed_errors
+        return enriched
+
     def on_valset_evaluated(self, event: dict[str, Any]) -> None:
         is_seed = int(event.get("iteration", -1)) == 0 and str(event.get("candidate_idx")) in {"0", "seed"}
         iteration = int(event.get("iteration", 0))
@@ -315,47 +395,45 @@ class OrizuCallback:
         # preceding evaluation callback has the adapter's real row evidence.
         # Reattach that evidence for the seed baseline rather than emitting an
         # empty dashboard baseline.
-        if is_seed and not event.get("outputs_by_val_id"):
-            if self._seed_valset_rows:
-                enriched = dict(event)
-                enriched["outputs_by_val_id"] = {
-                    row["row_id"]: {
-                        "row_id": row["row_id"], "output": row.get("output"),
-                        "feedback": row.get("feedback"), "error": row.get("error"),
-                    }
-                    for row in self._seed_valset_rows
-                }
-                event = enriched
-        if not is_seed and staged:
-            enriched = dict(event)
-            outputs_by_val_id = dict(event.get("outputs_by_val_id") or {})
-            staged_results = [result for item in staged for result in item["results"]]
-            for index, row_id in enumerate((event.get("scores_by_val_id") or {})):
-                if index >= len(staged_results):
-                    break
-                result = staged_results[index]
-                existing = outputs_by_val_id.get(row_id, {})
-                output_info = dict(existing) if isinstance(existing, dict) else {"output": existing}
-                adapter_evidence = {
-                    "row_id": result.row_id,
-                    "output": result.output,
-                    "raw_score": result.score,
-                    "feedback": result.feedback,
-                    "scorer_output": result.scorer_response,
-                    "latency_ms": result.latency_ms,
-                    "token_in": result.token_in,
-                    "token_out": result.token_out,
-                    "cost_usd": result.cost_usd,
-                    "error": result.error,
-                    "cached": result.cached,
-                    "error_source": result.error_source,
-                }
-                for name, value in adapter_evidence.items():
-                    if output_info.get(name) is None:
-                        output_info[name] = value
-                outputs_by_val_id[row_id] = output_info
-            enriched["outputs_by_val_id"] = outputs_by_val_id
-            event = enriched
+        adapter_results = list(
+            getattr(self.evaluation_adapter, "last_row_evaluations", []) or []
+        )
+        scores = event.get("scores_by_val_id")
+        expected_ids = self.validation_row_ids
+        adapter_ids = [str(result.row_id) for result in adapter_results]
+        needs_declared_valset_identity = (
+            isinstance(scores, dict)
+            and len(expected_ids) == len(scores)
+            and set(adapter_ids) != set(expected_ids)
+        )
+        if needs_declared_valset_identity:
+            adapter_results = [
+                RowEvaluation(row_id=row_id, row={}, output=None, score=0.0, feedback=None)
+                for row_id in expected_ids
+            ]
+        if is_seed and adapter_results:
+            event = self._rekey_valset_evidence(event, adapter_results)
+        elif is_seed and self._seed_valset_rows:
+            seed_results = [
+                RowEvaluation(
+                    row_id=str(row["row_id"]), row={}, output=row.get("output"),
+                    score=float(row["score"]) if isinstance(row.get("score"), (int, float)) else 0.0,
+                    feedback=row.get("feedback"), scorer_response=row.get("scorer_output"),
+                    latency_ms=row.get("latency_ms"), token_in=row.get("token_in"),
+                    token_out=row.get("token_out"), cost_usd=row.get("cost_usd"),
+                    error=row.get("error"), cached=bool(row.get("cached", False)),
+                    error_source=row.get("error_source"),
+                )
+                for row in self._seed_valset_rows
+            ]
+            event = self._rekey_valset_evidence(event, seed_results)
+        if not is_seed and adapter_results:
+            event = self._rekey_valset_evidence(event, adapter_results)
+        elif not is_seed and staged:
+            # The most recent same-candidate evaluation is the adapter call
+            # immediately before this authoritative valset callback. Earlier
+            # entries are child minibatches and must never supply valset rows.
+            event = self._rekey_valset_evidence(event, staged[-1]["results"])
         local_logger = getattr(self.sink, "local_logger", None)
         if local_logger is not None:
             outputs_by_val_id = event.get("outputs_by_val_id") or {}
