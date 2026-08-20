@@ -106,6 +106,7 @@ import {
 } from './report-comments-cli.js'
 import { diffCommentsCommand } from './diff-comments-cli.js'
 import { exportOptimizationRunCommand } from './optimization-export-cli.js'
+import { getGepaPythonPathEntries } from './gepa-python-paths.js'
 
 export { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
 
@@ -2532,20 +2533,10 @@ function removeFlagWithValue(args: string[], flag: string): string[] {
   return filtered
 }
 
-function bundledOrizuGepaPythonPath(): string | null {
-  const candidates = [
-    fileURLToPath(new URL('../vendor/orizu-gepa-python/src', import.meta.url)),
-    fileURLToPath(new URL('../../orizu-gepa-python/src', import.meta.url)),
-  ]
-
-  return candidates.find(candidate => existsSync(candidate)) ?? null
-}
-
 async function runGepaOptimization() {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const baseUrl = getBaseUrl()
   const python = getArg('--python') || process.env.PYTHON || 'python3'
-  const bundledPythonPath = bundledOrizuGepaPythonPath()
   let forwardedArgs = removeFlagWithValue(cliArgs.slice(2), '--python')
 
   // ALI-1159 (ADR-007): GEPA executes ad-hoc local runner dirs while
@@ -2570,10 +2561,7 @@ async function runGepaOptimization() {
       forwardedArgs = ['--project', project, ...forwardedArgs]
     }
 
-    const pythonPathEntries = [
-      bundledPythonPath,
-      process.env.PYTHONPATH,
-    ].filter((entry): entry is string => Boolean(entry))
+    const pythonPathEntries = getGepaPythonPathEntries(process.env.PYTHONPATH)
 
     result = spawnSync(python, ['-m', 'orizu_gepa.cli', ...forwardedArgs], {
       stdio: 'inherit',

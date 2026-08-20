@@ -25,6 +25,29 @@ Note: the one task we do _not_ let you perform from your CLI is any reviews assi
 
 By default, the CLI talks to `https://orizu.ai`.
 
+## Updating bundled GEPA
+
+The CLI ships a verified, source-only copy of official GEPA so optimization
+users never need `pip` or a network connection. To upgrade it, make a PR that
+updates the version, release commit, and SHA-256 pin in
+`scripts/vendor-gepa-python.mjs`, then re-runs the refresh command with the
+matching downloaded wheel:
+
+```bash
+node scripts/vendor-gepa-python.mjs --refresh --archive /path/to/gepa-<version>-py3-none-any.whl
+```
+
+Commit the refreshed `gepa-python-source.zip` and run the CLI packaging test.
+`npm pack` verifies that archive and materializes only the shipped source tree;
+it never downloads GEPA.
+
+For a development checkout, materialize that same verified source before local
+work that imports GEPA:
+
+```bash
+node scripts/vendor-gepa-python.mjs
+```
+
 ## Install
 
 Install the CLI globally with your package manager:
