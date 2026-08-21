@@ -1,0 +1,66 @@
+# Fully transitive skilled-proposer dependency pins.
+#
+# This file is the human-reviewed input to refresh-skilled-proposer-lock.mjs.
+# Do not install from it: the customer path installs skilled-proposer.lock with
+# --require-hashes and --only-binary=:all:.
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+annotated-types==0.8.0
+anyio==4.14.2
+async-timeout==5.0.1 ; python_version == "3.10"
+attrs==26.1.0
+cachetools==7.1.7
+certifi==2026.7.22
+charset-normalizer==3.5.1
+click==8.4.2
+cloudpickle==3.1.2
+diskcache==5.6.3
+distro==1.9.0
+dspy==3.3.0
+exceptiongroup==1.3.1 ; python_version == "3.10"
+fastuuid==0.14.0
+filelock==3.32.3
+frozenlist==1.8.0
+fsspec==2026.7.0
+gepa==0.1.1
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface-hub==1.28.0
+idna==3.19
+importlib-metadata==8.9.0
+jinja2==3.1.6
+jiter==0.16.0
+json-repair==0.63.3
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+litellm==1.97.0
+markupsafe==3.0.3
+multidict==6.7.1
+openai==2.54.0
+orjson==3.12.0
+packaging==26.3
+propcache==0.5.2
+pydantic==2.13.4
+pydantic-core==2.46.4
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+pyyaml==6.0.3
+referencing==0.37.0
+regex==2026.7.19
+requests==2.34.2
+rpds-py==0.30.0 ; python_version == "3.10"
+rpds-py==2026.6.3 ; python_version >= "3.11" and python_version < "3.15"
+skilled-proposer==0.1.2
+sniffio==1.3.1
+tenacity==9.1.4
+tiktoken==0.14.0
+tokenizers==0.23.1
+tqdm==4.70.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+urllib3==2.7.0
+yarl==1.24.5
+zipp==4.1.0

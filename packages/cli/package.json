@@ -9,6 +9,7 @@
   "files": [
     "README.md",
     "dist",
+    "requirements",
     "scripts",
     "src",
     "tsconfig.json",
