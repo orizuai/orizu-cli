@@ -100,6 +100,46 @@ class DeterministicAdapter:
         return {component: "better" for component in components_to_update}
 
 
+class SkilledProposerBridgeImportTests(unittest.TestCase):
+    def test_bridge_module_imports_without_dspy_and_names_use_refusal(self):
+        """Kills a connector import that turns the optional DSPy dependency into a CI/runtime requirement."""
+        script = """
+import builtins
+import importlib
+
+real_import = builtins.__import__
+def blocked_dspy(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == 'dspy' or name.startswith('dspy.'):
+        raise ModuleNotFoundError("No module named 'dspy'", name='dspy')
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = blocked_dspy
+bridge = importlib.import_module('orizu_gepa_connector.skilled_proposer_bridge')
+from orizu_gepa.optimizer import TextGepaConfig
+observability = bridge.ProposalObservability.local_for_test()
+try:
+    bridge.make_skilled_proposer_bridge(
+        config=TextGepaConfig(),
+        observability=observability,
+        budget=bridge.ProposalCallBudget(),
+    )
+except RuntimeError as error:
+    assert str(error) == 'ALI_1505_DSPY_UNAVAILABLE', str(error)
+else:
+    raise AssertionError('expected ALI_1505_DSPY_UNAVAILABLE')
+print('lazy bridge import verified')
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=REPOSITORY_ROOT,
+            env=dict(os.environ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class CapturingCallback:
     def __init__(self):
         self.events = []

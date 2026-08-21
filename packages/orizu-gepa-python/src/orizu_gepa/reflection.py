@@ -151,6 +151,7 @@ def _read_json_response_with_retries(
     retry_attempts: int,
     failure_prefix: str,
     ssl_fallback: Callable[[], _JsonHttpResponse] | None = None,
+    ssl_context: ssl.SSLContext | None = None,
 ) -> _JsonHttpResponse:
     timeout_seconds = _validate_positive_http_config(timeout_seconds, "reflection_http_timeout_seconds")
     retry_attempts = _validate_positive_http_config(retry_attempts, "reflection_retry_attempts")
@@ -158,7 +159,10 @@ def _read_json_response_with_retries(
     for attempt in range(retry_attempts):
         attempt_started = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            urlopen_kwargs: dict[str, Any] = {"timeout": timeout_seconds}
+            if ssl_context is not None:
+                urlopen_kwargs["context"] = ssl_context
+            with urllib.request.urlopen(request, **urlopen_kwargs) as response:
                 try:
                     data = json.loads(response.read().decode("utf-8"))
                 except json.JSONDecodeError as error:
@@ -384,7 +388,13 @@ def _model_for_forced_provider(model: str, provider: str) -> str:
 
 
 def complete_reflection_messages(
-    *, model: str, messages: list[dict[str, Any]], config: TextGepaConfig,
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    config: TextGepaConfig,
+    endpoint_override: str | None = None,
+    ssl_cert_file: str | None = None,
+    api_key_override: str | None = None,
 ) -> ProviderCompletion:
     """Complete explicit provider messages through the frozen sync transport.
 
@@ -394,15 +404,38 @@ def complete_reflection_messages(
     """
     provider = "openai" if model.startswith("openai/") else "anthropic"
     provider_model = _provider_model(model, provider)
+    if endpoint_override is not None and api_key_override is None:
+        raise ReflectionProviderError(
+            "ALI_1505_ENDPOINT_OVERRIDE_API_KEY_REQUIRED",
+            "endpoint_override requires an explicit api_key_override",
+        )
+    endpoint = endpoint_override or (
+        "https://api.openai.com/v1/responses"
+        if provider == "openai"
+        else "https://api.anthropic.com/v1/messages"
+    )
+    # The loopback harness uses HTTP and deliberately synthetic certificate
+    # paths. Production HTTPS traffic receives the explicitly resolved CA.
+    try:
+        ssl_context = (
+            ssl.create_default_context(cafile=ssl_cert_file)
+            if ssl_cert_file and endpoint.startswith("https://")
+            else None
+        )
+    except (FileNotFoundError, ssl.SSLError) as error:
+        raise ReflectionProviderError(
+            "ALI_1505_SSL_CONTEXT_FAILED",
+            f"Reflection LM could not create an SSL context: {error}",
+        ) from error
     if provider == "anthropic":
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = api_key_override or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise ReflectionProviderError(
                 "ALI_1505_ANTHROPIC_API_KEY_MISSING", "ANTHROPIC_API_KEY is required for the default reflective LM"
             )
         payload = _build_anthropic_completion_payload(provider_model, messages, config)
         request = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
+            endpoint,
             data=json.dumps(payload).encode("utf-8"),
             method="POST",
             headers={
@@ -416,7 +449,8 @@ def complete_reflection_messages(
             timeout_seconds=config.reflection_http_timeout_seconds,
             retry_attempts=config.reflection_retry_attempts,
             failure_prefix="Reflection LM failed",
-            ssl_fallback=lambda: _read_anthropic_response_with_curl(api_key, payload),
+            ssl_fallback=(lambda: _read_anthropic_response_with_curl(api_key, payload)) if endpoint_override is None else None,
+            ssl_context=ssl_context,
         )
         parts = response.data.get("content") or []
         text = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
@@ -428,14 +462,14 @@ def complete_reflection_messages(
             provider=provider,
         )
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = api_key_override or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ReflectionProviderError(
             "ALI_1505_OPENAI_API_KEY_MISSING", "OPENAI_API_KEY is required for OpenAI reflection models"
         )
     payload = _build_openai_completion_payload(provider_model, messages, config)
     request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
+        endpoint,
         data=json.dumps(payload).encode("utf-8"),
         method="POST",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -445,6 +479,7 @@ def complete_reflection_messages(
         timeout_seconds=config.reflection_http_timeout_seconds,
         retry_attempts=config.reflection_retry_attempts,
         failure_prefix="OpenAI reflection LM failed",
+        ssl_context=ssl_context,
     )
     usage = _openai_usage(response.data)
     text = _extract_openai_output_text(response.data)

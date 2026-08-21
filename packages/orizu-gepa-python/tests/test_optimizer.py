@@ -1584,6 +1584,66 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(completion.usage, {"input_tokens": 19, "output_tokens": 7, "total_tokens": 26})
         self.assertEqual(completion.request_id, "req_openai_opaque")
 
+    def test_endpoint_override_requires_an_explicit_credential(self):
+        """Kills an override that leaks an ambient provider credential to its caller-controlled destination."""
+        with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "ambient-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen") as urlopen, \
+             self.assertRaises(ReflectionProviderError) as raised:
+            complete_reflection_messages(
+                model="openai/gpt-test",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+                endpoint_override="http://127.0.0.1:9443/v1/responses",
+            )
+
+        self.assertEqual(raised.exception.code, "ALI_1505_ENDPOINT_OVERRIDE_API_KEY_REQUIRED")
+        urlopen.assert_not_called()
+
+    def test_endpoint_override_uses_only_the_explicit_credential_and_ssl_context(self):
+        """Kills dropped endpoint, certificate, or explicit-key arguments at the extracted transport boundary."""
+        response = _FakeHttpResponse({
+            "output_text": "improved",
+            "usage": {"input_tokens": 19, "output_tokens": 7, "total_tokens": 26},
+        })
+        ssl_context = object()
+        with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "ambient-key"}), \
+             mock.patch("orizu_gepa.reflection.ssl.create_default_context", return_value=ssl_context) as create_context, \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=response) as urlopen:
+            completion = complete_reflection_messages(
+                model="openai/gpt-test",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+                endpoint_override="https://127.0.0.1:9443/v1/responses",
+                ssl_cert_file="/synthetic/ca.pem",
+                api_key_override="loopback-only-key",
+            )
+
+        self.assertEqual(completion.text, "improved")
+        create_context.assert_called_once_with(cafile="/synthetic/ca.pem")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://127.0.0.1:9443/v1/responses")
+        self.assertEqual(request.get_header("Authorization"), "Bearer loopback-only-key")
+        self.assertIs(urlopen.call_args.kwargs["context"], ssl_context)
+
+    def test_ssl_context_setup_failure_has_a_named_provider_error(self):
+        """Kills an uncoded CA-file exception before an overridden HTTPS request starts."""
+        for error in (FileNotFoundError("missing CA"), ssl.SSLError("bad CA")):
+            with self.subTest(error=type(error).__name__), \
+                 mock.patch("orizu_gepa.reflection.ssl.create_default_context", side_effect=error), \
+                 mock.patch("orizu_gepa.reflection.urllib.request.urlopen") as urlopen, \
+                 self.assertRaises(ReflectionProviderError) as raised:
+                complete_reflection_messages(
+                    model="openai/gpt-test",
+                    messages=[{"role": "user", "content": "prompt"}],
+                    config=TextGepaConfig(reflection_max_tokens=128),
+                    endpoint_override="https://127.0.0.1:9443/v1/responses",
+                    ssl_cert_file="/synthetic/ca.pem",
+                    api_key_override="loopback-only-key",
+                )
+
+            self.assertEqual(raised.exception.code, "ALI_1505_SSL_CONTEXT_FAILED")
+            urlopen.assert_not_called()
+
     def test_bare_model_reflect_with_openai_uses_openai_endpoint(self):
         """Kills removal of forced-provider model qualification from the direct OpenAI caller."""
         response = _FakeHttpResponse({
