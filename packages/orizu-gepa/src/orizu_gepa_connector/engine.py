@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+import dataclasses
 import json
 import random
 from typing import Any
@@ -13,6 +14,7 @@ from orizu_gepa.optimizer import TextGepaConfig
 
 from .callbacks import LifecycleHooks, OrizuCallback
 from .preflight import validate_seed_and_scorer
+from .stop_conditions import ProposalBudgetStopper
 
 
 def _row_id(row: Any, index: int) -> str:
@@ -84,8 +86,8 @@ def _preflight_row_evidence(rows: list[Any], scores: list[float], outputs: list[
     return evidence
 
 
-def validate_seed_before_run(*, seed_candidate: dict[str, str], valset: list[Any], adapter: Any,
-                             hooks: LifecycleHooks, allow_degenerate_seed: bool) -> dict[str, Any]:
+def _validate_seed_before_run(*, seed_candidate: dict[str, str], valset: list[Any], adapter: Any,
+                              hooks: LifecycleHooks, allow_degenerate_seed: bool) -> tuple[dict[str, Any], Any, list[Any]]:
     """Cheap scorer preflight; GEPA owns the single full seed validation."""
     # The approved cap bounds preflight spend. With a binary scorer and a seed
     # that is correct 70% of the time, all three sampled rows can still score
@@ -103,7 +105,41 @@ def validate_seed_before_run(*, seed_candidate: dict[str, str], valset: list[Any
     hooks.emit("seed_validated", verdict)
     if not verdict["allowed"]:
         raise SeedValidationRefused(verdict)
+    return verdict, seed_evaluation, preflight_rows
+
+
+def validate_seed_before_run(*, seed_candidate: dict[str, str], valset: list[Any], adapter: Any,
+                             hooks: LifecycleHooks, allow_degenerate_seed: bool) -> dict[str, Any]:
+    """Validate the seed and return the durable public preflight verdict."""
+    verdict, _evaluation, _rows = _validate_seed_before_run(
+        seed_candidate=seed_candidate,
+        valset=valset,
+        adapter=adapter,
+        hooks=hooks,
+        allow_degenerate_seed=allow_degenerate_seed,
+    )
     return verdict
+
+
+class _PreflightReusingAdapter:
+    """Serve GEPA's immediate seed evaluation from the completed preflight."""
+
+    def __init__(self, adapter: Any, seed_candidate: dict[str, str], rows: list[Any], evaluation: Any):
+        self._adapter = adapter
+        self._seed_candidate = seed_candidate
+        self._rows = rows
+        self._evaluation = evaluation
+        self._served_seed = False
+
+    def evaluate(self, batch: list[Any], candidate: dict[str, str], capture_traces: bool = False):
+        if (not self._served_seed and not capture_traces and candidate == self._seed_candidate
+                and list(batch) == self._rows):
+            self._served_seed = True
+            return self._evaluation
+        return self._adapter.evaluate(batch, candidate, capture_traces=capture_traces)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._adapter, name)
 
 
 def run_official_gepa(
@@ -112,12 +148,14 @@ def run_official_gepa(
     trainset: list[Any],
     valset: list[Any],
     adapter: Any,
-    callback: OrizuCallback,
+    callback: Any,
     hooks: LifecycleHooks,
     max_metric_calls: int | None = None,
     stop_callbacks: Sequence[Callable[[Any], bool]] = (),
     allow_degenerate_seed: bool = False,
     reflection_lm: Callable[[str], str] | None = None,
+    custom_candidate_proposer: Callable[..., dict[str, str]] | None = None,
+    proposal_budget: Any | None = None,
     seed_already_validated: bool = False,
     config: TextGepaConfig | None = None,
 ) -> Any:
@@ -135,14 +173,33 @@ def run_official_gepa(
         callback.evaluation_adapter = adapter
         callback.validation_row_ids = [_row_id(row, index) for index, row in enumerate(valset)]
 
+    preflight_evaluation = None
+    preflight_rows: list[Any] = []
     if not seed_already_validated:
-        validate_seed_before_run(
+        _verdict, preflight_evaluation, preflight_rows = _validate_seed_before_run(
             seed_candidate=seed_candidate,
             valset=valset,
             adapter=adapter,
             hooks=hooks,
             allow_degenerate_seed=allow_degenerate_seed,
         )
+
+    # GEPA 0.1.4 reads this optional protocol attribute directly in its
+    # reflective proposer, even when a custom proposer owns the call. Our
+    # runner adapter supplies it; lightweight adapters used by the real GEPA
+    # boundary do not. Normalize the vendor's optional slot without replacing
+    # an adapter-owned proposer.
+    if custom_candidate_proposer is not None and not hasattr(adapter, "propose_new_texts"):
+        adapter.propose_new_texts = None
+
+    gepa_adapter = adapter
+    if custom_candidate_proposer is not None and preflight_evaluation is not None:
+        # A one-row low metric ceiling otherwise pays for this same seed row a
+        # second time inside GEPA before it reaches the custom proposal. The
+        # cached result is already a real evaluator result from this call's
+        # mandatory preflight; only the duplicate evaluator invocation is
+        # removed, never the separate proposal ledger.
+        gepa_adapter = _PreflightReusingAdapter(adapter, seed_candidate, preflight_rows, preflight_evaluation)
 
     config = config or TextGepaConfig()
     candidate_selection_strategy: Any = config.candidate_selection_strategy
@@ -154,17 +211,31 @@ def run_official_gepa(
             rng=random.Random(config.seed),
         )
 
+    owned_stop_callbacks = list(stop_callbacks)
+    if proposal_budget is not None:
+        owned_stop_callbacks.append(ProposalBudgetStopper(proposal_budget))
+
+    reflection_minibatch_size = config.minibatch_size
+    if custom_candidate_proposer is not None and max_metric_calls is not None:
+        # GEPA's metric stopper is evaluated at iteration boundaries.  Do not
+        # let its default three-row reflection batch overshoot a deliberately
+        # smaller evaluator-only ceiling before that boundary is observed.
+        reflection_minibatch_size = min(
+            reflection_minibatch_size,
+            max(1, max_metric_calls - len(valset)),
+        )
+
     kwargs: dict[str, Any] = {
         "seed_candidate": seed_candidate,
         "trainset": trainset,
         "valset": valset,
-        "adapter": adapter,
+        "adapter": gepa_adapter,
         "callbacks": [callback],
-        "stop_callbacks": list(stop_callbacks) or None,
+        "stop_callbacks": owned_stop_callbacks or None,
         "max_metric_calls": max_metric_calls,
         "candidate_selection_strategy": candidate_selection_strategy,
         "skip_perfect_score": config.skip_perfect_parent_reflection,
-        "reflection_minibatch_size": config.minibatch_size,
+        "reflection_minibatch_size": reflection_minibatch_size,
         "cache_evaluation": config.cache_evaluations,
         "seed": config.seed,
         "display_progress_bar": False,
@@ -172,6 +243,18 @@ def run_official_gepa(
     }
     if reflection_lm is not None:
         kwargs["reflection_lm"] = reflection_lm
+    if custom_candidate_proposer is not None:
+        kwargs["custom_candidate_proposer"] = custom_candidate_proposer
     kwargs["trainset"] = _with_row_identities(trainset)
     kwargs["valset"] = _with_row_identities(valset)
-    return optimize(**kwargs)
+    result = optimize(**kwargs)
+    if custom_candidate_proposer is not None and preflight_evaluation is not None:
+        # GEPA's state correctly counts its seed evaluation, but this run
+        # served that evaluation from the already-accounted launch preflight.
+        # Its public metric result must consequently retain M1's convention:
+        # GEPA result counts exclude the one caller preflight, while the
+        # adapter's physical count is result + one.
+        total = getattr(result, "total_metric_calls", None)
+        if isinstance(total, int):
+            result = dataclasses.replace(result, total_metric_calls=max(0, total - len(preflight_rows)))
+    return result

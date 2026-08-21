@@ -109,6 +109,7 @@ import { exportOptimizationRunCommand } from './optimization-export-cli.js'
 import { dispatchGepaEngine } from './gepa-engine-dispatch.js'
 import { getGepaPythonCommand } from './gepa-python-command.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
+import { prepareSkilledProposerLaunch } from './skilled-proposer-launch.js'
 
 export { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
 
@@ -2563,11 +2564,8 @@ async function runGepaOptimization() {
       PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
     })
     selectedEngine = dispatch.engine
-
-    result = spawnSync(python, ['-m', dispatch.module, ...dispatch.args], {
-      stdio: 'inherit',
-      env: dispatch.environment,
-    })
+    const launch = prepareSkilledProposerLaunch(python, dispatch.engine, dispatch.environment)
+    result = spawnSync(launch.python, ['-m', dispatch.module, ...dispatch.args], { stdio: 'inherit', env: launch.environment })
   } finally {
     verified.cleanup()
   }

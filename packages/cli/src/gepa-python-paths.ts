@@ -34,9 +34,12 @@ export function bundledOrizuGepaConnectorPythonPath(): string | null {
 }
 
 export function bundledOfficialGepaPythonPath(): string | null {
-  const candidates = [
-    fileURLToPath(new URL('../vendor/gepa-python/src', import.meta.url)),
-  ]
+  const sourceArchive = fileURLToPath(new URL('../gepa-python-source.zip', import.meta.url))
+  const vendor = fileURLToPath(new URL('../vendor/gepa-python/src', import.meta.url))
+  // The checked-in pinned wheel is directly importable from PYTHONPATH in a
+  // source checkout. Published packages intentionally omit that archive and
+  // must resolve only the verified tree materialized by prepack.
+  const candidates = prefersLiveSource() ? [sourceArchive, vendor] : [vendor]
 
   return resolveGepaPythonPath(candidates)
 }

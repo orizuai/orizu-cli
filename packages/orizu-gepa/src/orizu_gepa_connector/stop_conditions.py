@@ -36,3 +36,20 @@ class MaxCandidateProposalsStopper:
 
     def __call__(self, state):
         return self.proposal_count() >= self.max_candidate_proposals
+
+
+class ProposalBudgetStopper:
+    """Stop only between GEPA iterations after an owned proposal budget trips.
+
+    A custom candidate proposer does not pass through GEPA's ``reflection_lm``
+    or its cost tracking.  Its typed DSPy bridge instead records raw provider
+    usage in an Orizu-owned ledger.  This stopper deliberately reads only that
+    ledger and never changes ``state.total_num_evals``: metric-call budgeting
+    remains evaluator-only.
+    """
+
+    def __init__(self, proposal_budget):
+        self.proposal_budget = proposal_budget
+
+    def __call__(self, state):
+        return self.proposal_budget.has_safe_boundary_stop() and state.i >= 0

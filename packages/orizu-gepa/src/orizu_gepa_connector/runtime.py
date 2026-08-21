@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -524,7 +525,38 @@ def run_from_environment() -> dict[str, Any]:
             proposal_count=lambda: callback.candidate_proposals,
         ))
     try:
-        reflection_lm = make_gepa_reflection_lm(
+        proposal_observability: Any | None = None
+        proposal_budget: Any | None = None
+        custom_candidate_proposer = None
+        if os.environ.get("ORIZU_CANDIDATE_PROPOSER") == "skilled-proposer":
+            # DSPy and skilled-proposer are installed only in the manager
+            # published opt-in venv.  Keeping this import inside the exact
+            # selection branch preserves the established no-flag process.
+            from .skilled_proposer_bridge import (
+                ProposalCallBudget,
+                ProposalObservability,
+                make_skilled_proposer_from_environment,
+            )
+            artifact_root = (local_logger.directory if local_logger is not None
+                             else Path.cwd() / ".orizu" / "proposal-observability" / run_id)
+            proposal_budget = ProposalCallBudget(
+                max_calls=_optional_int("ORIZU_PROPOSAL_MAX_CALLS"),
+                max_tokens=_optional_int("ORIZU_PROPOSAL_MAX_TOKENS"),
+            )
+            proposal_observability = ProposalObservability(
+                event_log_root=artifact_root / "proposal-observability",
+                durable_failure_root=artifact_root / "proposal-failures",
+                budget=proposal_budget,
+            )
+            custom_candidate_proposer = make_skilled_proposer_from_environment(
+                config=config,
+                observability=proposal_observability,
+                budget=proposal_budget,
+            )
+            if custom_candidate_proposer is None:
+                raise RuntimeError("ALI_1505_PROPOSER_FACTORY_REFUSED_SELECTED_VALUE")
+
+        reflection_lm = None if custom_candidate_proposer is not None else make_gepa_reflection_lm(
             context_supplier=lambda: (
                 next(iter((adapter.last_candidate or seed_candidate).values())),
                 adapter.last_row_evaluations,
@@ -541,6 +573,8 @@ def run_from_environment() -> dict[str, Any]:
                                    callback=callback, hooks=hooks, max_metric_calls=effective_metric_limit,
                                    stop_callbacks=stoppers, allow_degenerate_seed=config.allow_degenerate_seed,
                                    reflection_lm=reflection_lm, seed_already_validated=True,
+                                   custom_candidate_proposer=custom_candidate_proposer,
+                                   proposal_budget=proposal_budget,
                                    config=config)
         require_durable_logging(sink, callback)
         best_id = str(result.best_idx)
@@ -605,12 +639,15 @@ def run_from_environment() -> dict[str, Any]:
                 promoted_prompt_version_id=promoted_prompt_version_id,
                 budget=budget,
             ))
-            local_logger.write_lm_stats(
-                total_cost=float(getattr(reflection_lm, "total_cost", 0.0)),
-                total_tokens_in=int(getattr(reflection_lm, "total_tokens_in", 0)),
-                total_tokens_out=int(getattr(reflection_lm, "total_tokens_out", 0)),
-                total_tokens=int(getattr(reflection_lm, "total_tokens", 0)),
-            )
+            if proposal_observability is not None:
+                proposal_observability.write_terminal_lm_stats_artifact()
+            else:
+                local_logger.write_lm_stats(
+                    total_cost=float(getattr(reflection_lm, "total_cost", 0.0)),
+                    total_tokens_in=int(getattr(reflection_lm, "total_tokens_in", 0)),
+                    total_tokens_out=int(getattr(reflection_lm, "total_tokens_out", 0)),
+                    total_tokens=int(getattr(reflection_lm, "total_tokens", 0)),
+                )
         if budget_exhausted:
             client.update_run(
                 run_id,

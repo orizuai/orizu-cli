@@ -34,6 +34,8 @@ const VALUE_OPTIONS: EnvironmentOption[] = [
   { flag: '--budget', environment: 'ORIZU_BUDGET' },
   { flag: '--max-iterations', environment: 'ORIZU_MAX_ITERATIONS' },
   { flag: '--max-candidate-proposals', environment: 'ORIZU_MAX_CANDIDATE_PROPOSALS' },
+  { flag: '--proposal-max-calls', environment: 'ORIZU_PROPOSAL_MAX_CALLS' },
+  { flag: '--proposal-max-tokens', environment: 'ORIZU_PROPOSAL_MAX_TOKENS' },
   { flag: '--max-full-evals', environment: 'ORIZU_MAX_FULL_EVALS' },
   { flag: '--max-metric-calls', environment: 'ORIZU_MAX_METRIC_CALLS' },
   { flag: '--minibatch-size', environment: 'ORIZU_MINIBATCH_SIZE' },
@@ -170,6 +172,10 @@ const CONTROLLED_ENVIRONMENT_NAMES = new Set([
   'ORIZU_SAMPLING_STRATEGY',
   'ORIZU_SELECTION_STRATEGY',
   'ORIZU_MAX_PAYLOAD_CHARS',
+  // Candidate selection is an explicit opt-in.  Clearing it before option
+  // translation prevents an inherited environment from selecting a proposer
+  // on an otherwise byte-for-byte normal official-GEPA launch.
+  'ORIZU_CANDIDATE_PROPOSER',
 ])
 
 function optionValueOrThrow(args: string[], index: number, flag: string, allowEmpty = false): { value: string; nextIndex: number } {
@@ -218,6 +224,15 @@ function translateOfficialOptions(args: string[], project: string, environment: 
       index = parsed.nextIndex
       continue
     }
+    if (flag === '--candidate-proposer') {
+      const parsed = optionValueOrThrow(args, index, flag)
+      if (parsed.value !== 'skilled-proposer') {
+        throw new Error('--candidate-proposer must be skilled-proposer')
+      }
+      connectorEnvironment.ORIZU_CANDIDATE_PROPOSER = parsed.value
+      index = parsed.nextIndex
+      continue
+    }
     const option = VALUE_OPTIONS_BY_FLAG.get(flag)
     if (option) {
       const parsed = optionValueOrThrow(args, index, flag, option.allowEmpty)
@@ -259,6 +274,11 @@ function translateOfficialOptions(args: string[], project: string, environment: 
   if (budgetFlags.length > 1) {
     throw new Error('Budget options are mutually exclusive; choose at most one of --budget, --max-metric-calls, --max-full-evals, --max-iterations, --max-candidate-proposals')
   }
+  if ((connectorEnvironment.ORIZU_PROPOSAL_MAX_CALLS !== undefined
+       || connectorEnvironment.ORIZU_PROPOSAL_MAX_TOKENS !== undefined)
+      && connectorEnvironment.ORIZU_CANDIDATE_PROPOSER !== 'skilled-proposer') {
+    throw new Error('--proposal-max-calls and --proposal-max-tokens require --candidate-proposer skilled-proposer')
+  }
 
   const reflectionModel = connectorEnvironment.ORIZU_REFLECTION_MODEL ?? 'anthropic/claude-opus-4-7'
   if (!reflectionModel.startsWith('openai/') && connectorEnvironment.ORIZU_REFLECTION_MAX_TOKENS === undefined) {
@@ -283,8 +303,10 @@ function validatedMetadata(raw: string | undefined): string {
 export function dispatchGepaEngine(args: string[], project: string, environment: NodeJS.ProcessEnv): GepaEngineDispatch {
   const selected = removeEngine(args)
   if (selected.engine === 'legacy') {
-    if (selected.args.some(argument => argument === '--max-candidate-proposals' || argument.startsWith('--max-candidate-proposals='))) {
-      throw new Error('--max-candidate-proposals is supported by the official GEPA engine only')
+    for (const flag of ['--max-candidate-proposals', '--candidate-proposer', '--proposal-max-calls', '--proposal-max-tokens']) {
+      if (selected.args.some(argument => argument === flag || argument.startsWith(`${flag}=`))) {
+        throw new Error(`${flag} is supported by the official GEPA engine only`)
+      }
     }
     validateLegacyMetadata(selected.args)
     return {
