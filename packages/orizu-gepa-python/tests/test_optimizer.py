@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import ssl
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -34,9 +36,13 @@ from orizu_gepa.optimizer import (
     resolve_num_threads,
 )
 from orizu_gepa.reflection import (
+    ProviderCompletion,
+    ReflectionProviderError,
     build_anthropic_reflection_payload,
     build_openai_reflection_payload,
+    complete_reflection_messages,
     reflect_with_anthropic,
+    reflect_with_openai,
 )
 
 
@@ -1428,8 +1434,262 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(anthropic_payload["max_tokens"], 2048)
         self.assertEqual(openai_payload["max_output_tokens"], 2048)
 
+    def test_extracted_anthropic_completion_preserves_measured_usage_request_id_and_latency(self):
+        """Kills extraction that returns text but discards measured Anthropic usage."""
+        response = _FakeHttpResponse(
+            {
+                "id": "msg_opaque",
+                "content": [{"type": "text", "text": "improved"}],
+                "usage": {
+                    "input_tokens": 17,
+                    "output_tokens": 5,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0},
+                },
+            },
+            headers={"request-id": "req_anthropic_opaque"},
+        )
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=response):
+            completion = complete_reflection_messages(
+                model="anthropic/claude-haiku-4-5",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+            )
+
+        self.assertEqual(completion.text, "improved")
+        self.assertEqual(completion.usage, {"input_tokens": 17, "output_tokens": 5, "total_tokens": 22})
+        self.assertEqual(completion.request_id, "req_anthropic_opaque")
+        self.assertGreaterEqual(completion.latency_ms, 0)
+
+    def test_anthropic_ssl_failure_falls_back_to_curl_with_request_id(self):
+        """Kills curl fallback cleanup or write-only header handling that loses a billable completion."""
+        ssl_failure = urllib.error.URLError(
+            ssl.SSLCertVerificationError(1, "certificate verify failed")
+        )
+
+        def fake_curl(arguments, **_kwargs):
+            headers_path = arguments[arguments.index("--dump-header") + 1]
+            Path(headers_path).write_text(
+                "HTTP/2 200\r\nrequest-id: req_anthropic_curl\r\n\r\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                stdout=json.dumps({
+                    "content": [{"type": "text", "text": "improved via curl"}],
+                    "usage": {"input_tokens": 23, "output_tokens": 7},
+                }),
+                stderr="",
+            )
+
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", side_effect=ssl_failure), \
+             mock.patch("orizu_gepa.reflection.subprocess.run", side_effect=fake_curl):
+            completion = complete_reflection_messages(
+                model="anthropic/claude-haiku-4-5",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+            )
+
+        self.assertEqual(completion.text, "improved via curl")
+        self.assertEqual(completion.usage, {"input_tokens": 23, "output_tokens": 7, "total_tokens": 30})
+        self.assertEqual(completion.request_id, "req_anthropic_curl")
+
+    def test_anthropic_usage_includes_exclusive_cache_input_tokens(self):
+        """Kills accounting that drops Anthropic cache creation and cache read tokens."""
+        response = _FakeHttpResponse({
+            "content": [{"type": "text", "text": "improved"}],
+            "usage": {
+                "input_tokens": 17,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 4,
+            },
+        })
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=response):
+            completion = complete_reflection_messages(
+                model="anthropic/claude-haiku-4-5",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+            )
+
+        self.assertEqual(completion.usage, {
+            "input_tokens": 24,
+            "output_tokens": 5,
+            "total_tokens": 29,
+        })
+
+    def test_anthropic_usage_rejects_invalid_optional_cache_tokens(self):
+        """Kills acceptance of malformed optional cache counters as provider facts."""
+        response = _FakeHttpResponse({
+            "content": [{"type": "text", "text": "improved"}],
+            "usage": {
+                "input_tokens": 17,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": -1,
+            },
+        })
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=response), \
+             self.assertRaises(ReflectionProviderError) as raised:
+            complete_reflection_messages(
+                model="anthropic/claude-haiku-4-5",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+            )
+
+        self.assertEqual(raised.exception.code, "ALI_1505_PROVIDER_USAGE_INVALID")
+
+    def test_extracted_openai_completion_preserves_measured_usage_and_x_request_id(self):
+        """Kills extraction that assumes Anthropic fields or estimates OpenAI usage."""
+        response = _FakeHttpResponse(
+            {
+                "id": "resp_opaque",
+                "output": [{
+                    "id": "msg_opaque",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "phase": "final",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "improved",
+                        "annotations": [],
+                        "logprobs": [],
+                    }],
+                }],
+                "usage": {
+                    "input_tokens": 19,
+                    "output_tokens": 7,
+                    "total_tokens": 26,
+                    "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                },
+            },
+            headers={"x-request-id": "req_openai_opaque"},
+        )
+        with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=response):
+            completion = complete_reflection_messages(
+                model="openai/gpt-test",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+            )
+
+        self.assertEqual(completion.text, "improved")
+        self.assertEqual(completion.usage, {"input_tokens": 19, "output_tokens": 7, "total_tokens": 26})
+        self.assertEqual(completion.request_id, "req_openai_opaque")
+
+    def test_bare_model_reflect_with_openai_uses_openai_endpoint(self):
+        """Kills removal of forced-provider model qualification from the direct OpenAI caller."""
+        response = _FakeHttpResponse({
+            "output_text": "improved",
+            "usage": {"input_tokens": 19, "output_tokens": 7, "total_tokens": 26},
+        })
+        with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=response) as urlopen:
+            result = reflect_with_openai(
+                "initial",
+                [],
+                TextGepaConfig(reflection_model="gpt-4o", reflection_max_tokens=128),
+            )
+
+        self.assertEqual(result.response, "improved")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.openai.com/v1/responses")
+
+    def test_extracted_completion_names_missing_provider_usage(self):
+        """Kills a success path that silently turns absent provider usage into zero or an estimate."""
+        response = _FakeHttpResponse(
+            {"content": [{"type": "text", "text": "improved"}]},
+            headers={"request-id": "req_anthropic_opaque"},
+        )
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=response), \
+             self.assertRaises(ReflectionProviderError) as raised:
+            complete_reflection_messages(
+                model="anthropic/claude-haiku-4-5",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+            )
+
+        self.assertEqual(raised.exception.code, "ALI_1505_PROVIDER_USAGE_MISSING")
+
+    def test_extracted_completion_names_provider_http_failures(self):
+        """Kills an extracted transport that collapses measured provider failures into opaque errors."""
+        failure = urllib.error.HTTPError(
+            "https://api.openai.com/v1/responses",
+            400,
+            "Bad Request",
+            hdrs={"x-request-id": "req_openai_opaque"},
+            fp=io.BytesIO(b'{"error":{"code":"opaque","message":"opaque","param":null,"type":"opaque"}}'),
+        )
+        with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", side_effect=failure), \
+             self.assertRaises(ReflectionProviderError) as raised:
+            complete_reflection_messages(
+                model="openai/gpt-test",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(reflection_max_tokens=128),
+            )
+
+        self.assertEqual(raised.exception.code, "ALI_1505_PROVIDER_HTTP_FAILURE")
+
+    def test_frozen_reflection_caller_dispatches_through_extracted_transport(self):
+        """Kills a parallel legacy HTTP path that bypasses complete_reflection_messages."""
+        response = _FakeHttpResponse(
+            {
+                "id": "msg_opaque",
+                "content": [{"type": "text", "text": "improved"}],
+                "usage": {"input_tokens": 17, "output_tokens": 5},
+            },
+            headers={"request-id": "req_anthropic_opaque"},
+        )
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             mock.patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=response) as urlopen:
+            result = reflect_with_anthropic(
+                "initial",
+                [],
+                TextGepaConfig(reflection_max_tokens=128),
+            )
+
+        self.assertEqual(result.response, "improved")
+        self.assertEqual(result.usage, {"input_tokens": 17, "output_tokens": 5, "total_tokens": 22})
+        self.assertEqual(urlopen.call_count, 1)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.anthropic.com/v1/messages")
+        self.assertEqual(json.loads(request.data.decode("utf-8"))["messages"], [{"role": "user", "content": result.prompt}])
+
+    def test_frozen_reflection_caller_invokes_the_extracted_transport_with_its_frozen_prompt(self):
+        """Kills a frozen caller that leaves the new shared extraction path unused."""
+        completion = ProviderCompletion(
+            text="improved",
+            usage={"input_tokens": 17, "output_tokens": 5, "total_tokens": 22},
+            request_id="req_anthropic_opaque",
+            latency_ms=1.0,
+            provider="anthropic",
+        )
+        config = TextGepaConfig(reflection_max_tokens=128)
+        with mock.patch("orizu_gepa.reflection.complete_reflection_messages", return_value=completion) as transport:
+            result = reflect_with_anthropic("initial", [], config)
+
+        transport.assert_called_once()
+        self.assertEqual(transport.call_args.kwargs, {
+            "model": config.reflection_model,
+            "messages": [{"role": "user", "content": result.prompt}],
+            "config": config,
+        })
+        self.assertEqual(result.response, "improved")
+
     def test_anthropic_reflection_retries_timeout_then_succeeds(self):
-        response = _FakeHttpResponse({"content": [{"type": "text", "text": "improved"}]})
+        response = _FakeHttpResponse({
+            "content": [{"type": "text", "text": "improved"}],
+            "usage": {"input_tokens": 17, "output_tokens": 5},
+        })
 
         with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
             with mock.patch(
@@ -1453,6 +1713,31 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(urlopen.call_args_list[0].kwargs["timeout"], 12)
         sleep.assert_called_once_with(5.0)
 
+    def test_reflection_latency_measures_only_the_successful_retry_attempt(self):
+        """Kills latency timing that includes time spent in retry backoff."""
+        response = _FakeHttpResponse({
+            "content": [{"type": "text", "text": "improved"}],
+            "usage": {"input_tokens": 17, "output_tokens": 5},
+        })
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+             mock.patch(
+                 "orizu_gepa.reflection.urllib.request.urlopen",
+                 side_effect=[TimeoutError("read timed out"), response],
+             ), \
+             mock.patch("orizu_gepa.reflection.time.sleep"), \
+             mock.patch("orizu_gepa.reflection.random.uniform", return_value=0.0), \
+             mock.patch("orizu_gepa.reflection.time.monotonic", side_effect=[10.0, 20.0, 20.25]):
+            completion = complete_reflection_messages(
+                model="anthropic/claude-haiku-4-5",
+                messages=[{"role": "user", "content": "prompt"}],
+                config=TextGepaConfig(
+                    reflection_max_tokens=128,
+                    reflection_retry_attempts=2,
+                ),
+            )
+
+        self.assertEqual(completion.latency_ms, 250.0)
+
     def test_anthropic_reflection_retries_429_then_succeeds(self):
         too_many_requests = urllib.error.HTTPError(
             "https://api.anthropic.com/v1/messages",
@@ -1461,7 +1746,10 @@ class OptimizerTests(unittest.TestCase):
             hdrs=None,
             fp=io.BytesIO(b'{"error":"busy"}'),
         )
-        response = _FakeHttpResponse({"content": [{"type": "text", "text": "improved"}]})
+        response = _FakeHttpResponse({
+            "content": [{"type": "text", "text": "improved"}],
+            "usage": {"input_tokens": 17, "output_tokens": 5},
+        })
 
         with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
             with mock.patch(
@@ -1508,8 +1796,9 @@ class OptimizerTests(unittest.TestCase):
 
 
 class _FakeHttpResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, headers=None):
         self.payload = payload
+        self.headers = headers or {}
 
     def __enter__(self):
         return self

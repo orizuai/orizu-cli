@@ -150,13 +150,16 @@ class LocalOptimizationLogger:
             "parent_context_chars": parent_context_chars,
         })
 
-    def write_lm_stats(self, *, total_cost: float, total_tokens_in: int, total_tokens_out: int) -> None:
+    def write_lm_stats(
+        self, *, total_cost: float, total_tokens_in: int, total_tokens_out: int, total_tokens: int,
+    ) -> None:
         """Record connector reflection usage in the local run's stable JSON form."""
         _write_json(self.directory / "lm_stats.json", {
             "reflection": {
                 "total_cost": total_cost,
                 "total_tokens_in": total_tokens_in,
                 "total_tokens_out": total_tokens_out,
+                "total_tokens": total_tokens,
             },
         })
 

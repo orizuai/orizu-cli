@@ -24,6 +24,7 @@ from gepa.core.callbacks import (
 
 from orizu_gepa.optimizer import Budget, DatasetRow, PromptContext, RowEvaluation
 from orizu_gepa.optimizer import TextGepaConfig
+from orizu_gepa.reflection import ReflectionProviderError, RetryableReflectionProviderError
 from orizu_gepa_connector.adapter import RunnerEvaluationAdapter, ScorerContractError
 from orizu_gepa_connector.callbacks import LifecycleHooks, OrizuCallback
 from orizu_gepa_connector.engine import SeedValidationRefused, run_official_gepa
@@ -503,7 +504,10 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
                 config=config,
             )
             import orizu_gepa_connector.reflection as reflection
-            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(response="better", prompt="fake reflection")):
+            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(
+                response="better", prompt="fake reflection",
+                usage={"input_tokens": 17, "output_tokens": 5, "total_tokens": 22},
+            )):
                 result = run_official_gepa(
                     seed_candidate={"prompt": "seed"}, trainset=[DatasetRow(id="train", row={})],
                     valset=[DatasetRow(id="validation", row={})], adapter=adapter,
@@ -546,7 +550,10 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
                 config=config,
             )
             import orizu_gepa_connector.reflection as reflection
-            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(response="better", prompt="fake reflection")):
+            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(
+                response="better", prompt="fake reflection",
+                usage={"input_tokens": 17, "output_tokens": 5, "total_tokens": 22},
+            )):
                 run_official_gepa(
                     seed_candidate={"prompt": "seed"}, trainset=[DatasetRow(id="train-row", row={})],
                     valset=[DatasetRow(id="val-uuid-a", row={}), DatasetRow(id="val-uuid-b", row={})],
@@ -592,7 +599,10 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
                 config=config,
             )
             import orizu_gepa_connector.reflection as reflection
-            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(response="better", prompt="fake reflection")):
+            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(
+                response="better", prompt="fake reflection",
+                usage={"input_tokens": 17, "output_tokens": 5, "total_tokens": 22},
+            )):
                 run_official_gepa(
                     seed_candidate={"prompt": "seed"},
                     trainset=[DatasetRow(id="train-uuid-a", row={"source_id": "train-uuid-a"}), DatasetRow(id="train-uuid-b", row={"source_id": "train-uuid-b"})],
@@ -895,6 +905,7 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         original = reflection.reflect_with_provider
         class Result:
             response = "new prompt"
+            usage = {"input_tokens": 17, "output_tokens": 5, "total_tokens": 22}
         try:
             reflection.reflect_with_provider = lambda parent, rows, config: (seen.append((parent, rows)) or Result())
             lm = make_gepa_reflection_lm(
@@ -975,6 +986,100 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         run_note = next(event for event in client.events if event["event_type"] == "run_note")
         self.assertIn("reflection failed: ValueError", run_note["payload"]["message"])
 
+    def test_reflection_usage_validation_failure_is_durably_recorded(self):
+        """Kills provider-usage validation outside the durable reflection failure boundary."""
+        import orizu_gepa_connector.reflection as reflection
+        from orizu_gepa.local_log import LocalOptimizationLogger
+
+        with tempfile.TemporaryDirectory() as root:
+            client = DurableRecordingClient()
+            sink = MandatoryEventSink(client, RUN_ID, LocalOptimizationLogger.create(root, RUN_ID))
+            callback = OrizuCallback(sink, RUN_ID)
+            lm = make_gepa_reflection_lm(
+                context_supplier=lambda: ("seed", []),
+                config=TextGepaConfig(reflection_max_tokens=1024),
+                failure_reporter=callback.record_reflection_failure,
+            )
+            with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(
+                response="improved",
+                prompt="provider prompt",
+                usage=None,
+            )), self.assertRaisesRegex(RuntimeError, "ALI_1505_PROVIDER_USAGE_MISSING"):
+                lm("GEPA-owned renderer input")
+            events = [json.loads(line) for line in (Path(root) / RUN_ID / "events.jsonl").read_text().splitlines()]
+
+        failure = next(event for event in events if event["event_type"] == "reflection_failed")
+        self.assertIn("ALI_1505_PROVIDER_USAGE_MISSING", failure["payload"]["message"])
+
+    def test_provider_error_codes_survive_in_the_durable_failure_message(self):
+        """Kills provider exceptions whose stable code exists only on a discarded attribute."""
+        import orizu_gepa_connector.reflection as reflection
+        from orizu_gepa.local_log import LocalOptimizationLogger
+
+        for error_type, code in (
+            (ReflectionProviderError, "ALI_1505_PROVIDER_HTTP_FAILURE"),
+            (RetryableReflectionProviderError, "ALI_1505_PROVIDER_TIMEOUT"),
+        ):
+            with self.subTest(error_type=error_type.__name__), tempfile.TemporaryDirectory() as root:
+                client = DurableRecordingClient()
+                sink = MandatoryEventSink(client, RUN_ID, LocalOptimizationLogger.create(root, RUN_ID))
+                callback = OrizuCallback(sink, RUN_ID)
+                lm = make_gepa_reflection_lm(
+                    context_supplier=lambda: ("seed", []),
+                    config=TextGepaConfig(reflection_max_tokens=1024),
+                    failure_reporter=callback.record_reflection_failure,
+                )
+                provider_error = error_type(code, "provider rejected the request")
+                with patch.object(reflection, "reflect_with_provider", side_effect=provider_error), \
+                     self.assertRaises(error_type):
+                    lm("GEPA-owned renderer input")
+                events = [
+                    json.loads(line)
+                    for line in (Path(root) / RUN_ID / "events.jsonl").read_text().splitlines()
+                ]
+
+            failure = next(event for event in events if event["event_type"] == "reflection_failed")
+            self.assertIn(code, failure["payload"]["message"])
+
+    def test_openai_refusal_still_counts_provider_reported_usage(self):
+        """Kills HTTP-200 refusal handling that drops usage before raising the missing-output error."""
+        class RefusalResponse:
+            headers = {"x-request-id": "req_openai_refusal"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "id": "resp_refusal",
+                    "status": "incomplete",
+                    "output": [{
+                        "type": "message",
+                        "status": "incomplete",
+                        "content": [{"type": "refusal", "refusal": "cannot comply"}],
+                    }],
+                    "usage": {"input_tokens": 31, "output_tokens": 2, "total_tokens": 33},
+                }).encode("utf-8")
+
+        lm = make_gepa_reflection_lm(
+            context_supplier=lambda: ("seed", []),
+            config=TextGepaConfig(
+                reflection_model="openai/gpt-test",
+                reflection_max_tokens=128,
+            ),
+        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), \
+             patch("orizu_gepa.reflection.urllib.request.urlopen", return_value=RefusalResponse()), \
+             self.assertRaisesRegex(ReflectionProviderError, "ALI_1505_OPENAI_OUTPUT_TEXT_MISSING"):
+            lm("GEPA-owned renderer input")
+
+        self.assertEqual(lm.total_tokens_in, 31)
+        self.assertEqual(lm.total_tokens_out, 2)
+        self.assertEqual(lm.total_tokens, 33)
+
     def test_official_gepa_writes_the_frozen_local_artifact_set_and_reflection_usage(self):
         """Kills official event-only logging that omits local evaluation, result, and LM evidence."""
         from orizu_gepa.local_log import LocalOptimizationLogger
@@ -993,7 +1098,10 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
             import orizu_gepa_connector.reflection as reflection
             original = reflection.reflect_with_provider
             try:
-                reflection.reflect_with_provider = lambda *_args: SimpleNamespace(response="better", prompt="recorded prompt")
+                reflection.reflect_with_provider = lambda *_args: SimpleNamespace(
+                    response="better", prompt="recorded prompt",
+                    usage={"input_tokens": 17, "output_tokens": 5, "total_tokens": 22},
+                )
                 result = run_official_gepa(
                     seed_candidate={"prompt": "seed"}, trainset=[{"id": "train"}], valset=[{"id": "validation"}],
                     adapter=ReflectionOnlyAdapter(), callback=callback, hooks=LifecycleHooks(),
@@ -1162,8 +1270,8 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
 
         self.assertEqual(record["prompt"], "frozen provider prompt")
 
-    def test_reflection_usage_counts_a_failed_provider_attempt(self):
-        """Kills LM statistics that make a failed retry look like no attempt."""
+    def test_reflection_usage_does_not_estimate_a_failed_provider_attempt(self):
+        """Kills character-based accounting when no provider usage was reported."""
         import orizu_gepa_connector.reflection as reflection
 
         lm = make_gepa_reflection_lm(
@@ -1172,23 +1280,27 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         with patch.object(reflection, "reflect_with_provider", side_effect=RuntimeError("timeout")):
             with self.assertRaisesRegex(RuntimeError, "timeout"):
                 lm("GEPA input")
-        self.assertGreater(lm.total_tokens_in, 0)
+        self.assertEqual(lm.total_tokens_in, 0)
+        self.assertEqual(lm.total_tokens_out, 0)
 
-    def test_reflection_usage_counts_the_frozen_provider_prompt_not_parent_text(self):
-        """Kills token accounting based on an input other than the sent provider prompt."""
-        from orizu_gepa.optimizer import build_reflection_prompt
+    def test_reflection_usage_uses_exact_provider_usage_not_character_estimates(self):
+        """Kills connector accounting that ignores parsed provider usage."""
         import orizu_gepa_connector.reflection as reflection
 
         config = TextGepaConfig(reflection_max_tokens=1024)
         parent_text = "short parent"
         parent_rows = [RowEvaluation("row", {"question": "q"}, "output", 0.2, "feedback")]
-        sent_prompt = build_reflection_prompt(parent_text, parent_rows, config)
         lm = make_gepa_reflection_lm(
             context_supplier=lambda: (parent_text, parent_rows), config=config,
         )
-        with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(response="child", prompt=sent_prompt)):
+        with patch.object(reflection, "reflect_with_provider", return_value=SimpleNamespace(
+            response="a response whose character length must not affect usage",
+            usage={"input_tokens": 31, "output_tokens": 11, "total_tokens": 42},
+        )):
             lm("GEPA renderer input")
-        self.assertEqual(lm.total_tokens_in, max(1, len(sent_prompt) // 4))
+        self.assertEqual(lm.total_tokens_in, 31)
+        self.assertEqual(lm.total_tokens_out, 11)
+        self.assertEqual(lm.total_tokens, 42)
 
     def test_connector_config_covers_every_frozen_reflection_transport_attribute(self):
         """Kills a connector config missing a frozen transport attribute by name."""
@@ -1237,7 +1349,10 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
                 return False
 
             def read(self):
-                return json.dumps({"content": [{"type": "text", "text": legacy_response}]}).encode("utf-8")
+                return json.dumps({
+                    "content": [{"type": "text", "text": legacy_response}],
+                    "usage": {"input_tokens": 17, "output_tokens": 5},
+                }).encode("utf-8")
 
         def fake_urlopen(request, *, timeout):
             seen_payloads.append((json.loads(request.data), timeout))

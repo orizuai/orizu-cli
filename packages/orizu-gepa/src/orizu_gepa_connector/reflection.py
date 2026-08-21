@@ -26,11 +26,9 @@ class GepaReflectionLM:
     GEPA intentionally catches reflection failures per proposal.  That keeps an
     optimization alive, but means the connector is the final durable boundary
     for the actual exception.  This wrapper records it *before* re-raising to
-    GEPA's safe helper and exposes the same estimated usage shape as GEPA's
-    ``TrackingLM``.
+    GEPA's safe helper and exposes provider-measured token usage in GEPA's
+    ``TrackingLM``-shaped fields.
     """
-
-    _CHARS_PER_TOKEN = 4
 
     def __init__(
         self,
@@ -46,6 +44,7 @@ class GepaReflectionLM:
         self._success_reporter = success_reporter
         self._total_tokens_in = 0
         self._total_tokens_out = 0
+        self._total_tokens = 0
 
     @property
     def total_cost(self) -> float:
@@ -59,15 +58,39 @@ class GepaReflectionLM:
     def total_tokens_out(self) -> int:
         return self._total_tokens_out
 
+    @property
+    def total_tokens(self) -> int:
+        return self._total_tokens
+
+    def _account_usage(self, usage: Any) -> None:
+        if not isinstance(usage, dict):
+            raise RuntimeError("ALI_1505_PROVIDER_USAGE_MISSING: reflection transport returned no provider usage")
+        try:
+            input_tokens = int(usage["input_tokens"])
+            output_tokens = int(usage["output_tokens"])
+            total_tokens = int(usage["total_tokens"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("ALI_1505_PROVIDER_USAGE_INVALID: reflection transport returned invalid provider usage") from error
+        if min(input_tokens, output_tokens, total_tokens) < 0:
+            raise RuntimeError("ALI_1505_PROVIDER_USAGE_INVALID: reflection transport returned negative provider usage")
+        self._total_tokens_in += input_tokens
+        self._total_tokens_out += output_tokens
+        self._total_tokens += total_tokens
+
     def __call__(self, gepa_prompt: str) -> str:
         parent_text, parent_results = self._context_supplier()
         try:
             # Prompt validation is part of the provider attempt. Keep it
             # inside this boundary so GEPA cannot silently swallow its error.
             provider_prompt = build_reflection_prompt(parent_text, parent_results, self._config)
-            self._total_tokens_in += max(1, len(provider_prompt) // self._CHARS_PER_TOKEN)
             result = reflect_with_provider(parent_text, parent_results, self._config)
+            response = result.response
+            provider_prompt = getattr(result, "prompt", provider_prompt)
+            self._account_usage(getattr(result, "usage", None))
         except Exception as error:
+            billable_usage = getattr(error, "usage", None)
+            if billable_usage is not None:
+                self._account_usage(billable_usage)
             if self._failure_reporter is not None:
                 self._failure_reporter(
                     error=error,
@@ -76,9 +99,6 @@ class GepaReflectionLM:
                     parent_results=parent_results,
                 )
             raise
-        response = result.response
-        provider_prompt = getattr(result, "prompt", provider_prompt)
-        self._total_tokens_out += max(1, len(response) // self._CHARS_PER_TOKEN)
         if self._success_reporter is not None:
             self._success_reporter(str(provider_prompt))
         return response

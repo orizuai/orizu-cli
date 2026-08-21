@@ -609,6 +609,7 @@ def run_from_environment() -> dict[str, Any]:
                 total_cost=float(getattr(reflection_lm, "total_cost", 0.0)),
                 total_tokens_in=int(getattr(reflection_lm, "total_tokens_in", 0)),
                 total_tokens_out=int(getattr(reflection_lm, "total_tokens_out", 0)),
+                total_tokens=int(getattr(reflection_lm, "total_tokens", 0)),
             )
         if budget_exhausted:
             client.update_run(

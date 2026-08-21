@@ -145,6 +145,9 @@ class ReflectionResult:
     prompt: str
     response: str
     candidate_text: str
+    usage: dict[str, int] | None = None
+    request_id: str | None = None
+    latency_ms: float | None = None
 
 
 class RetryableReflectionError(RuntimeError):

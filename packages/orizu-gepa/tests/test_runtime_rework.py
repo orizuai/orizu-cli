@@ -268,7 +268,7 @@ class RuntimeReworkContracts(unittest.TestCase):
                 candidates=[{"prompt": "seed"}, {"prompt": "child"}],
                 num_full_val_evals=1,
             )
-            reflection_lm = SimpleNamespace(total_cost=0.0, total_tokens_in=4, total_tokens_out=2)
+            reflection_lm = SimpleNamespace(total_cost=0.0, total_tokens_in=4, total_tokens_out=2, total_tokens=6)
 
             def two_iteration_engine(**kwargs):
                 """Recorded official-GEPA callback/result shape: two proposals, one full eval."""
@@ -303,10 +303,17 @@ class RuntimeReworkContracts(unittest.TestCase):
                  patch.object(runtime, "run_official_gepa", side_effect=two_iteration_engine):
                 returned_summary = runtime.run_from_environment()
             artifact = json.loads((Path(root) / "run" / "result.json").read_text())
+            lm_stats = json.loads((Path(root) / "run" / "lm_stats.json").read_text())
 
         self.assertAlmostEqual(artifact["best_score"], 0.8)
         self.assertAlmostEqual(artifact["seed_score"], 0.2)
         self.assertEqual(artifact["promoted_prompt_version_id"], "promoted-prompt")
+        self.assertEqual(lm_stats["reflection"], {
+            "total_cost": 0.0,
+            "total_tokens_in": 4,
+            "total_tokens_out": 2,
+            "total_tokens": 6,
+        })
         # Runtime owns lifecycle output only. The connector entry point prints
         # the one final machine-readable summary after this return value.
         stdout_lines = stdout.getvalue().splitlines()
