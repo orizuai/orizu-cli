@@ -3,6 +3,12 @@
   "version": "0.0.3",
   "private": false,
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./instruction-set-loader": { "types": "./dist/instruction-set-loader.d.ts", "default": "./dist/instruction-set-loader.js" }
+  },
   "bin": {
     "orizu": "dist/index.js"
   },

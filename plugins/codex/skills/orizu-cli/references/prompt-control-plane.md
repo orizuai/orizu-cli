@@ -43,6 +43,16 @@ orizu instruction-sets show planner --project core/evals --status active --json
 The default starts on the seed profile version and is movable. A profile with a production version
 resolves to that tuple; a profile without one resolves to the default.
 
+Sync an offline runner directory with `orizu instruction-sets sync planner
+--out ./instructions --project core/evals`. The layout is `manifest.json`,
+`default/<key>.md`, and `profiles/<identity-slug>/<key>.md`; loaders are
+`loadInstructionSet(dir, name, modelConfigIdentity)` in TypeScript and
+`load_instruction_set(dir, name, model_config_identity)` in Python. A
+Git-pinned component is recorded in the manifest but is intentionally not
+downloaded; either loader raises `instruction_set_component_unavailable`. A
+missing or unreadable local component file is distinct:
+`instruction_set_component_unreadable`.
+
 Execution/privacy defaults:
 
 - Runner subprocesses receive only the file-contract paths plus a small allowlist of provider/runtime environment variables. Orizu API tokens are not passed into runner processes.

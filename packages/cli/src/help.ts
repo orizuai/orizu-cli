@@ -68,6 +68,14 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     examples: ['orizu instruction-sets show research --project core/evals', 'orizu instruction-sets show research --json'],
   },
   {
+    path: ['instruction-sets', 'sync'],
+    usage: 'orizu instruction-sets sync <set> --out <dir> [--model-config <identity>] [--project <team/project>] [--json]',
+    summary: 'Write an instruction set for offline runner loading.',
+    group: 'Instruction sets',
+    options: [{ name: '--out <dir>', help: 'Destination parent directory.', required: true }, { name: '--model-config <identity>', help: 'Sync only one profile plus default.' }, { name: '--project <team/project>', help: 'Project slug.' }, { name: '--json', help: 'Print source transport JSON.' }],
+    examples: ['orizu instruction-sets sync planner --out ./instructions --project core/evals'],
+  },
+  {
     path: ['login'],
     usage: 'orizu login [--no-prompt-if-logged-in]',
     summary: 'Open the browser login flow and store CLI credentials for the selected server.',

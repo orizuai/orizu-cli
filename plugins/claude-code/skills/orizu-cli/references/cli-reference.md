@@ -82,10 +82,22 @@ orizu projects create --name "Quality Eval" --team my-team
 ```bash
 orizu instruction-sets list --project my-team/quality-eval [--status active|archived|all] [--json]
 orizu instruction-sets show <set> --project my-team/quality-eval [--status active|archived|all] [--json]
+orizu instruction-sets sync <set> --out ./instructions --project my-team/quality-eval [--model-config <identity>] [--json]
 ```
 
 `list` returns each instruction set and its ordered shape. `show` returns the
 default and every model-config profile's production state.
+
+`sync` writes `<out>/<set>/manifest.json`, `default/<key>.md`, and
+`profiles/<identity-slug>/<key>.md` for offline execution. TypeScript runners
+use `loadInstructionSet(dir, name, modelConfigIdentity)` from `orizu`; Python
+runners use `orizu_gepa_connector.instruction_set_loader.load_instruction_set`.
+Both select that model config's production tuple or the default without a
+network call. Git-pinned components have no local bytes: loading one raises
+`instruction_set_component_unavailable` until the runner supplies those bytes.
+An existing manifest file that cannot be read is instead
+`instruction_set_component_unreadable`, which means re-sync or repair disk
+state rather than supplying a Git-pinned component.
 
 ### Apps
 
@@ -430,3 +442,15 @@ Hugging Face / external dataset auth:
 Worker assignment reads are self-only:
 - Regular members cannot see other assignees' queues or response payloads.
 - Use `tasks status` and `tasks export` for operator-side reporting.
+### Offline instruction-set sync
+
+`orizu instruction-sets sync <set> --project <team/project> --out <dir>` writes
+an atomic local manifest. A resolver failure for either the default or any
+selected profile refuses the entire sync as `instruction_set_unresolvable`; the
+route never silently downgrades a failed production tuple to default bytes. A
+filtered `--model-config` sync records `filteredTo`, and a loader must refuse an
+identity excluded by that marker with `instruction_set_profile_not_synced`.
+
+Use `import { loadInstructionSet } from 'orizu/instruction-set-loader'` for the
+small typed TypeScript loader surface; Python uses
+`from orizu_gepa_connector import load_instruction_set`.
