@@ -714,13 +714,14 @@ orizu --local optimizations run-gepa \
 
 Useful GEPA flags:
 
-- `--engine official|legacy` defaults to `official`, which runs the bundled official GEPA connector. Use `legacy` only as the frozen recovery hatch; it keeps the historical Python loop and does not support `--max-candidate-proposals`.
+- `--engine official|legacy` defaults to `official`, which runs the bundled official GEPA connector. Use `legacy` only as the frozen recovery hatch; it keeps the historical Python loop and does not support `--max-candidate-proposals` or the skilled proposer.
 - `--scorer-input-contract gepa|flat_row` selects the scorer-runner input shape. Use `flat_row` to reuse a judge runner written for `runners exec --scorer-version` without a hand-written adapter; add `--scorer-candidate-field <row-field>` when that judge reads the candidate output from a specific row field (e.g. `draft`). Passing a candidate field under the `gepa` contract is refused at launch, not silently ignored. See "Scorer-Runner Input Contracts" above.
 - `--allow-degenerate-seed` opts out of the launch-time refusal when the seed scores the worst possible value on every validation row. Leave it off by default — a uniformly-worst seed is almost always a scorer contract mismatch.
 - Budget controls are mutually exclusive: choose at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, `--max-iterations <n>`, or `--max-candidate-proposals <n>`. With none provided, `run-gepa` defaults to `--budget auto`, the balanced medium preset. `--max-candidate-proposals` is available only with `--engine official`.
 - `--minibatch-size <n>` defaults to 3.
 - `--num-threads auto|N` defaults to `auto`; auto caps row-evaluation concurrency from mini-batch size, validation-set size, 2x CPU count, memory estimate, file-descriptor limit, and a 64-thread default ceiling. Set `ORIZU_GEPA_AUTO_THREADS_MAX` or use `--num-threads <n>` only when the runner/provider capacity is known.
-- `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`.
+- `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`. With `epsilon_greedy`, `--epsilon <n>` controls the random-selection probability (default `0.1`, clamped to `0`–`1`).
+- `--objective <text>` replaces the reflection objective when the optimization goal differs from the default instruction to maximize evaluator score while preserving intended behavior.
 - `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
 - `--reflection-max-tokens <n>` is explicit provider config, not a global default. It maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI can omit it unless the user wants a cap.
 - `--reflection-retry-attempts` and `--reflection-http-timeout-seconds` tune transient reflection-provider retries. Exhausted retryable failures log `reflection_failed`, count against candidate-proposal budget, and continue with the next iteration.
@@ -730,6 +731,24 @@ Useful GEPA flags:
 - `--log-row-snapshots` includes raw row and reflection text in events; leave off by default.
 - `--log-dir <dir>` controls the local log root; default is `logs`.
 - `--no-local-log` disables local trace files. Use this only when the environment must not persist raw rows or reflection context.
+
+### Skilled proposer
+
+`--candidate-proposer skilled-proposer` selects the skilled proposer; omission keeps the default official proposer. The flag is official-engine-only and accepts that one value. A missing value is refused before launch as `--candidate-proposer requires a value that does not start with --`; another value is refused as `--candidate-proposer must be skilled-proposer`; selecting it with `--engine legacy` is refused with `--candidate-proposer is supported by the official GEPA engine only`.
+
+`--proposal-max-calls <positive-integer>` and `--proposal-max-tokens <positive-integer>` default to unset and are valid only with the skilled proposer. A missing operand names that flag; using either ceiling without the selection produces `--proposal-max-calls and --proposal-max-tokens require --candidate-proposer skilled-proposer`; the legacy-engine error names the individual flag. Integer and positive-value validation happens in the connector after launch and names `ORIZU_PROPOSAL_MAX_CALLS` or `ORIZU_PROPOSAL_MAX_TOKENS`.
+
+The call ceiling counts each transport-bearing proposer bridge call after its success or failure is recorded; provider retries inside one bridge call remain one counted call. The token ceiling uses accumulated provider-derived `total_tokens`, including recorded usage from unsuccessful completions. Both ceilings stop new proposal work at the next safe boundary, so an in-flight call can meet or pass a ceiling. They govern only the skilled proposer and remain independent of overall GEPA controls such as `--max-metric-calls`; set at least one proposal ceiling and one overall GEPA ceiling, then start the run only when both limits match the intended experiment.
+
+#### Managed environment lifecycle and recovery
+
+The selected `run-gepa` invocation prepares the environment automatically. It preflights CPython 3.10–3.14, installs the checked-in exact-version and SHA-256 lock with binary-only selection on first use, smoke-tests the staged environment, and publishes it atomically. Use `--python <command>` to select that interpreter; otherwise a nonempty `PYTHON` is used, falling back to `python3`. Supported wheel targets are macOS arm64 on macOS 15 or later and glibc 2.28 or later on Linux x86_64. Run the selected command; managed-environment readiness is proven when optimizer execution begins without an `ALI_1505_*` environment diagnostic.
+
+Published environments live under the working-directory-relative `.orizu/cache/skilled-proposer/venvs/<publish-key>`. The key covers the manager schema, lock digest, and interpreter/platform identity, so changing working directory, OS, kernel, interpreter, or lock can build another environment. Matching environments are validated before reuse, and concurrent first uses wait for the same atomic publication. Reclaim old environments by deleting the entire regenerable `.orizu/cache/skilled-proposer` directory, then rerun from the intended working directory until preflight completes.
+
+A nonempty `SSL_CERT_FILE` is passed unchanged to both pip and provider traffic. Empty or absent values trigger best-effort system-bundle discovery. `ALI_1505_SSL_CERT_FILE_UNRESOLVED` means pip fell back to its bundled trust store and provider traffic may need an explicit PEM bundle; `ALI_1505_SSL_CONTEXT_FAILED` means the explicit path or PEM contents must be corrected. Set the working bundle and retry until the selected run passes TLS setup.
+
+An interrupted first build leaves no published partial environment, so retry the same selected command. For `ALI_1505_UNSUPPORTED_CPYTHON`, choose an admitted interpreter with `--python` or `PYTHON`; for lock, wheel, install, validation, or publication diagnostics, preserve the named code and retry until the optimization starts. The CLI owns the lock and installation path; lock refresh remains a reviewed release operation.
 
 Local `run-gepa` logs:
 
