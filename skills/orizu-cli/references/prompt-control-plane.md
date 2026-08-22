@@ -43,6 +43,10 @@ orizu instruction-sets push ./orizu.instruction-set.json --project core/evals
 orizu instruction-sets profiles new planner --project core/evals --model-config anthropic/claude-haiku
 orizu instruction-sets profiles promote planner --project core/evals --model-config anthropic/claude-haiku --version 2
 orizu instruction-sets profiles rollback planner --project core/evals --model-config anthropic/claude-haiku --to 1
+orizu instruction-sets default show planner --project core/evals
+orizu instruction-sets default move planner --project core/evals --model-config anthropic/claude-haiku --version 2
+orizu instruction-sets shape add planner --project core/evals --key safety --from ./orizu.instruction-set.json
+orizu instruction-sets shape remove planner --project core/evals --key safety
 ```
 
 The manifest contains `name`, ordered `shape`, and `components`; every shape key
@@ -52,6 +56,17 @@ profile. Create materializes each named profile with its complete base-plus-
 override tuple. The default starts on the seed profile version. A profile with a
 production version resolves to that tuple; a profile without one resolves to the
 default.
+
+Shape changes create unpromoted profile heads but leave the default and
+production pointers in place. The instruction set does not resolve for affected
+model configs until those pointers move to their new shape-change versions; use
+the follow-up commands printed by the text CLI.
+
+Before a human moves a default, `default show` lists the model configs whose
+resolution would change. A move targets a version by model-config identity and
+version number, and the database rejects an unsealed or non-commit-anchored
+tuple. Shape changes create a new `shape_change` version for every profile;
+they do not repoint the default or any production label.
 
 Sync an offline runner directory with `orizu instruction-sets sync planner
 --out ./instructions --project core/evals`. The layout is `manifest.json`,

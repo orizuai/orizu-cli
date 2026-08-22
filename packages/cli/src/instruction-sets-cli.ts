@@ -1,5 +1,5 @@
 import { authedFetch } from './http.js'
-import { loadInstructionSetManifest } from './instruction-set-manifest.js'
+import { loadInstructionSetManifest, MAX_INSTRUCTION_SET_COMPONENT_BYTES } from './instruction-set-manifest.js'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -121,7 +121,61 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
 export async function instructionSetsCommand(args: string[], io: InstructionSetsCommandIo): Promise<number> {
   const positionals = positionalArgs(args)
   const [subcommand, reference] = positionals
+  if (subcommand === 'default' && reference === 'move') {
+    const version = argValue(args, '--version')
+    if (!version || !/^[0-9]+$/u.test(version) || Number(version) < 1) throw new Error('--version must be a positive integer')
+  }
   const project = await io.resolveProjectSlug(argValue(args, '--project'))
+  if (subcommand === 'default') {
+    const operation = reference; const set = positionals[2]; const identity = argValue(args, '--model-config'); const version = argValue(args, '--version')
+    if ((operation !== 'show' && operation !== 'move') || !set) throw new Error('Usage: instruction-sets default show|move <set> --project <team/project> [--model-config <identity> --version <n>] [--json]')
+    if (operation === 'move' && (!identity || !version || !/^[0-9]+$/u.test(version) || Number(version) < 1)) throw new Error('--version must be a positive integer')
+    const path = `/api/cli/instruction-sets/${encodeURIComponent(set)}/default?project=${encodeURIComponent(project)}`
+    if (operation === 'show') {
+      const payload = await responsePayload(await authedFetch(path, { method: 'GET' }), 'Instruction sets default show')
+      if (io.json) io.print(JSON.stringify(payload)); else io.print(`Default: v${(payload.default as { versionNumber?: number } | undefined)?.versionNumber ?? '?'}`)
+      return 0
+    }
+    if (!io.json) {
+      const impact = await responsePayload(await authedFetch(path, { method: 'GET' }), 'Instruction sets default show')
+      const resolvesToDefault = Array.isArray(impact.resolvesToDefault) ? impact.resolvesToDefault.filter((item): item is string => typeof item === 'string') : []
+      io.print(`These model configs resolve to the default: ${resolvesToDefault.join(', ')}`)
+    }
+    const payload = await responsePayload(await authedFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelConfigIdentity: identity, versionNumber: Number(version) }) }), 'Instruction sets default move')
+    if (io.json) io.print(JSON.stringify(payload)); else io.print(`Default moved to ${identity} v${version}`)
+    return 0
+  }
+  if (subcommand === 'shape') {
+    const operation = reference; const set = positionals[2]; const key = argValue(args, '--key'); const from = argValue(args, '--from')
+    if ((operation !== 'add' && operation !== 'remove') || !set || !key || (operation === 'add' && !from)) throw new Error('Usage: instruction-sets shape add|remove <set> --project <team/project> --key <key> [--from <manifest>] [--json]')
+    let component: { body: string } | undefined
+    if (operation === 'add') {
+      let manifest: unknown
+      try { manifest = JSON.parse(readFileSync(from!, 'utf8')) } catch { throw new Error('instruction_set_manifest_invalid_json') }
+      const source = manifest && typeof manifest === 'object' && Array.isArray((manifest as { components?: unknown }).components)
+        ? (manifest as { components: unknown[] }).components.find((item): item is { key?: unknown; text?: unknown } => Boolean(item && typeof item === 'object' && (item as { key?: unknown }).key === key))
+        : undefined
+      if (!source || typeof source.text !== 'string' || Buffer.byteLength(source.text, 'utf8') > MAX_INSTRUCTION_SET_COMPONENT_BYTES) throw new Error(`Instruction set manifest has no component for key: ${key}`)
+      component = { body: source.text }
+    }
+    const payload = await responsePayload(await authedFetch(`/api/cli/instruction-sets/${encodeURIComponent(set)}/shape?project=${encodeURIComponent(project)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ operation, key, ...(component ? { component } : {}) }) }), `Instruction sets shape ${operation}`)
+    if (io.json) io.print(JSON.stringify(payload)); else {
+      io.print(`Shape ${operation === 'add' ? 'added' : 'removed'}: ${key}`)
+      const affected = Array.isArray(payload.affected) ? payload.affected : []
+      const identities = [...new Set(affected.flatMap(pointer => pointer && typeof pointer === 'object' && typeof (pointer as { modelConfigIdentity?: unknown }).modelConfigIdentity === 'string' ? [(pointer as { modelConfigIdentity: string }).modelConfigIdentity] : []))]
+      if (identities.length) io.print(`${set} does not resolve for these model configs until the pointers move: ${identities.join(', ')}`)
+      for (const pointer of affected) if (pointer && typeof pointer === 'object') {
+        const item = pointer as { modelConfigIdentity?: unknown; pointer?: unknown; stalePointerVersionNumber?: unknown; headVersionNumber?: unknown; branchedFromVersionNumber?: unknown }
+        if (typeof item.modelConfigIdentity === 'string' && (item.pointer === 'production' || item.pointer === 'default') && typeof item.headVersionNumber === 'number') {
+          const command = item.pointer === 'production' ? 'profiles promote' : 'default move'
+          const operatorAction = item.pointer === 'production' ? 'promote' : 'default move'
+          if (typeof item.stalePointerVersionNumber === 'number' && typeof item.branchedFromVersionNumber === 'number' && item.branchedFromVersionNumber !== item.stalePointerVersionNumber) io.print(`${operatorAction} would move ${item.pointer} from v${item.stalePointerVersionNumber}'s text to v${item.headVersionNumber} = v${item.branchedFromVersionNumber}'s text + ${key}`)
+          io.print(`Follow up: instruction-sets ${command} ${set} --project ${project} --model-config ${item.modelConfigIdentity} --version ${item.headVersionNumber}`)
+        }
+      }
+    }
+    return 0
+  }
   if (subcommand === 'profiles') {
     const operation = reference; const set = positionals[2]; const identity = argValue(args, '--model-config')
     if ((operation !== 'new' && operation !== 'promote' && operation !== 'rollback') || !set || !identity) throw new Error('Usage: instruction-sets profiles new|promote|rollback <set> --project <team/project> --model-config <identity> [--version <n>|--to <n>] [--json]')

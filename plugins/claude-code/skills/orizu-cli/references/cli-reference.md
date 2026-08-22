@@ -88,6 +88,10 @@ orizu instruction-sets sync <set> --out ./instructions --project my-team/quality
 orizu instruction-sets profiles new <set> --project my-team/quality-eval --model-config <identity> [--json]
 orizu instruction-sets profiles promote <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
 orizu instruction-sets profiles rollback <set> --project my-team/quality-eval --model-config <identity> --to <n> [--json]
+orizu instruction-sets default show <set> --project my-team/quality-eval [--json]
+orizu instruction-sets default move <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
+orizu instruction-sets shape add <set> --project my-team/quality-eval --key <key> --from <manifest> [--json]
+orizu instruction-sets shape remove <set> --project my-team/quality-eval --key <key> [--json]
 ```
 
 `list` returns each instruction set and its ordered shape. `show` returns the
@@ -104,6 +108,14 @@ wraps a prompt, only default-profile promote and rollback also move the wrapped
 prompt's production label in the same transaction and print `default profile →
 prompt label`. This coupling is one-way: moving the prompt label directly does
 not repoint the profile.
+
+`default show` reports the default and the model configs that currently resolve
+to it. `default move` is human-only and first reads that impact before moving
+the pointer to a sealed, commit-anchored profile version. `shape add` and
+`shape remove` create a new complete version for every profile; they never move
+the default or a production label. The set does not resolve for affected model
+configs until those pointers move to the new shape-change profile versions; the
+text CLI prints the required follow-up commands.
 
 The manifest is a JSON object with `name`, ordered `shape`, and `components`.
 Every component supplies `{ key, text }` or `{ key, path }`; paths are relative
