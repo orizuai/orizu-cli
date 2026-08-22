@@ -40,6 +40,9 @@ orizu instruction-sets list --project core/evals --status active --json
 orizu instruction-sets show planner --project core/evals --status active --json
 orizu instruction-sets create ./orizu.instruction-set.json --project core/evals --model-config anthropic/claude-haiku
 orizu instruction-sets push ./orizu.instruction-set.json --project core/evals
+orizu instruction-sets profiles new planner --project core/evals --model-config anthropic/claude-haiku
+orizu instruction-sets profiles promote planner --project core/evals --model-config anthropic/claude-haiku --version 2
+orizu instruction-sets profiles rollback planner --project core/evals --model-config anthropic/claude-haiku --to 1
 ```
 
 The manifest contains `name`, ordered `shape`, and `components`; every shape key
@@ -59,6 +62,20 @@ Git-pinned component is recorded in the manifest but is intentionally not
 downloaded; either loader raises `instruction_set_component_unavailable`. A
 missing or unreadable local component file is distinct:
 `instruction_set_component_unreadable`.
+
+Use `profiles new` to seed an additional model-config profile from the default;
+hosted agents may do this because it does not move production. Use `profiles
+promote` to move only that profile's production label; use `profiles rollback
+--to <n>` to create a new rollback version from the target version's component
+tuple **and settings version** before moving it. Promotion and rollback are
+human-only because they move production labels.
+
+For a single-component instruction set that wraps an existing prompt, only a
+promotion or rollback of the set's default profile also moves that prompt's
+`production` label in the same transaction. The coupling is intentionally
+one-way: a later direct prompt-label move does not change the instruction-set
+profile label. Human CLI output names the prompt as `default profile → prompt
+label` when a profile command performed this mirror.
 
 Execution/privacy defaults:
 

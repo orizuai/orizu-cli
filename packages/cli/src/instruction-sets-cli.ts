@@ -119,8 +119,27 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
 }
 
 export async function instructionSetsCommand(args: string[], io: InstructionSetsCommandIo): Promise<number> {
-  const [subcommand, reference] = positionalArgs(args)
+  const positionals = positionalArgs(args)
+  const [subcommand, reference] = positionals
   const project = await io.resolveProjectSlug(argValue(args, '--project'))
+  if (subcommand === 'profiles') {
+    const operation = reference; const set = positionals[2]; const identity = argValue(args, '--model-config')
+    if ((operation !== 'new' && operation !== 'promote' && operation !== 'rollback') || !set || !identity) throw new Error('Usage: instruction-sets profiles new|promote|rollback <set> --project <team/project> --model-config <identity> [--version <n>|--to <n>] [--json]')
+    const encodedSet = encodeURIComponent(set); const encodedIdentity = encodeURIComponent(identity)
+    const version = argValue(args, '--version'); const to = argValue(args, '--to')
+    if ((operation === 'promote' && (!version || !/^[0-9]+$/u.test(version) || Number(version) < 1)) || (operation === 'rollback' && (!to || !/^[0-9]+$/u.test(to) || Number(to) < 1))) throw new Error(operation === 'promote' ? '--version must be a positive integer' : '--to must be a positive integer')
+    const path = operation === 'new' ? `/api/cli/instruction-sets/${encodedSet}/profiles` : operation === 'promote' ? `/api/cli/instruction-sets/${encodedSet}/profiles/${encodedIdentity}/label` : `/api/cli/instruction-sets/${encodedSet}/profiles/${encodedIdentity}/rollback`
+    const body = operation === 'new' ? { modelConfigIdentity: identity } : operation === 'promote' ? { versionNumber: Number(version) } : { to: Number(to) }
+    const payload = await responsePayload(await authedFetch(`${path}?project=${encodeURIComponent(project)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), `Instruction sets profiles ${operation}`)
+    if (io.json) io.print(JSON.stringify(payload))
+    else {
+      const profile = payload.profile as { modelConfigIdentity?: string; versionNumber?: number } | undefined
+      io.print(`${profile?.modelConfigIdentity || identity}: v${profile?.versionNumber ?? '?'} ${operation === 'new' ? 'created' : operation === 'promote' ? 'promoted' : 'rolled back'}`)
+      const mirrored = payload.mirroredPromptLabel as { promptName?: unknown; promptId?: unknown } | undefined
+      if (mirrored && (typeof mirrored.promptName === 'string' || typeof mirrored.promptId === 'string')) io.print(`also moved production for prompt ${typeof mirrored.promptName === 'string' ? mirrored.promptName : mirrored.promptId} (default profile → prompt label)`)
+    }
+    return 0
+  }
   if (subcommand === 'create' || subcommand === 'push') {
     if (!reference || reference.startsWith('--')) throw new Error('Usage: instruction-sets create|push <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]')
     const manifest = loadInstructionSetManifest(reference); const modelConfig = argValue(args, '--model-config'); const runnerVersion = argValue(args, '--runner-version')

@@ -85,11 +85,25 @@ orizu instruction-sets show <set> --project my-team/quality-eval [--status activ
 orizu instruction-sets create ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--model-config <identity>] [--json]
 orizu instruction-sets push ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--json]
 orizu instruction-sets sync <set> --out ./instructions --project my-team/quality-eval [--model-config <identity>] [--json]
+orizu instruction-sets profiles new <set> --project my-team/quality-eval --model-config <identity> [--json]
+orizu instruction-sets profiles promote <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
+orizu instruction-sets profiles rollback <set> --project my-team/quality-eval --model-config <identity> --to <n> [--json]
 ```
 
 `list` returns each instruction set and its ordered shape. `show` returns the
 default and every model-config profile's production state. `create` and `push`
 read a local manifest; JSON output is one document per line.
+
+`profiles new` copies the default tuple into a model-config profile without
+changing its production resolution; hosted agents may create this seed because
+it does not move production. `profiles promote` moves that profile to a
+version, and `profiles rollback` creates a new version copied from `--to`,
+including that target version's settings version, before moving production.
+These label-moving commands are human-only. For a single-component set that
+wraps a prompt, only default-profile promote and rollback also move the wrapped
+prompt's production label in the same transaction and print `default profile →
+prompt label`. This coupling is one-way: moving the prompt label directly does
+not repoint the profile.
 
 The manifest is a JSON object with `name`, ordered `shape`, and `components`.
 Every component supplies `{ key, text }` or `{ key, path }`; paths are relative
