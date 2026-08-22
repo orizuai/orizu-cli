@@ -12,6 +12,33 @@ from typing import Any
 from .optimizer import DatasetRow, PromptContext
 
 
+def _instruction_set_from_wire(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    model_config = value.get("modelConfig")
+    components = value.get("components")
+    if not isinstance(model_config, dict) or not isinstance(components, dict):
+        return None
+    normalized_components: dict[str, Any] = {}
+    for key, component in components.items():
+        if isinstance(component, str):
+            normalized_components[key] = component
+        elif isinstance(component, dict):
+            normalized_components[key] = dict(component)
+        else:
+            return None
+    return {
+        "name": value.get("name"),
+        "model_config": model_config,
+        "shape": value.get("shape"),
+        "profile_version_id": value.get("profileVersionId"),
+        "version_number": value.get("versionNumber"),
+        "prompt_component_key": value.get("promptComponentKey"),
+        "components": normalized_components,
+        "pinned_components": value.get("pinnedComponents") or {},
+    }
+
+
 def _format_number(value: Any) -> str | None:
     if isinstance(value, bool):
         return None
@@ -161,6 +188,8 @@ class OrizuClient:
             prompt_version_id=prompt["promptVersionId"],
             runner_version_id=prompt["runnerVersionId"],
             prompt_id=prompt.get("promptId"),
+            instruction_set=_instruction_set_from_wire(data.get("instructionSet")),
+            body_present="body" in prompt,
         ), rows
 
     def fetch_scorer_exec_context(
@@ -200,6 +229,8 @@ class OrizuClient:
             prompt_version_id=prompt["promptVersionId"],
             runner_version_id=prompt["runnerVersionId"],
             prompt_id=prompt.get("promptId"),
+            instruction_set=_instruction_set_from_wire(data.get("instructionSet")),
+            body_present="body" in prompt,
             # The request may use a legacy prompt-version alias. Persist and
             # submit the canonical executable scorer version returned by the
             # server so optimization runs never mix the two ID namespaces.

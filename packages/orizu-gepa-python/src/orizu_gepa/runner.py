@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import zipfile
+import re
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,7 @@ ALLOWED_RUNNER_ENV_KEYS = {
 
 def read_manifest(runner_dir: str | Path) -> dict[str, Any]:
     path = Path(runner_dir) / "manifest.json"
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _safe_extract_zip(zip_path: Path, destination: Path) -> None:
@@ -64,7 +65,7 @@ def _safe_extract_zip(zip_path: Path, destination: Path) -> None:
         archive.extractall(destination)
 
 
-def _runner_env(input_path: Path, output_path: Path) -> dict[str, str]:
+def _runner_env(input_path: Path, output_path: Path, instruction_set_dir: Path | None = None) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -72,7 +73,132 @@ def _runner_env(input_path: Path, output_path: Path) -> dict[str, str]:
     }
     env["ORIZU_RUNNER_INPUT_PATH"] = str(input_path)
     env["ORIZU_RUNNER_OUTPUT_PATH"] = str(output_path)
+    env.pop("ORIZU_INSTRUCTION_SET_DIR", None)
+    if instruction_set_dir is not None:
+        env["ORIZU_INSTRUCTION_SET_DIR"] = str(instruction_set_dir)
     return env
+
+
+def _instruction_component(component: Any) -> tuple[str | None, dict[str, str] | None]:
+    if isinstance(component, str):
+        return component, None
+    if not isinstance(component, dict):
+        raise RuntimeError("instruction_set_unresolvable")
+    body = component.get("body")
+    if isinstance(body, str):
+        return body, None
+    repo_path = component.get("repoPath", component.get("repo_path"))
+    content_sha = component.get("contentSha", component.get("content_sha"))
+    commit_sha = component.get("commitSha", component.get("commit_sha"))
+    if all(isinstance(value, str) and value for value in (repo_path, content_sha, commit_sha)):
+        return None, {"repoPath": repo_path, "contentSha": content_sha, "commitSha": commit_sha}
+    raise RuntimeError("instruction_set_unresolvable")
+
+
+SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_segment(value: str) -> None:
+    if not SAFE_SEGMENT.fullmatch(value) or value in {".", ".."} or value.startswith("."):
+        raise RuntimeError("instruction_set_path_unsafe")
+
+
+def _slug(identity: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", identity.replace("/", "__"))
+
+
+def _write_instruction_set_layout(root: Path, instruction_set: dict[str, Any]) -> None:
+    """Mirror the CLI syncToDisk manifest/layout for one exact tuple."""
+    name = instruction_set.get("name")
+    shape = instruction_set.get("shape")
+    model_config = instruction_set.get("model_config", instruction_set.get("modelConfig"))
+    if not isinstance(name, str) or not isinstance(shape, list) or not all(isinstance(key, str) for key in shape):
+        raise RuntimeError("instruction_set_unresolvable")
+    if not isinstance(model_config, dict) or not isinstance(model_config.get("identity"), str):
+        raise RuntimeError("instruction_set_unresolvable")
+    components = dict(instruction_set.get("components") or {})
+    components.update(instruction_set.get("pinned_components", instruction_set.get("pinnedComponents", {})) or {})
+    if any(key not in components for key in shape):
+        raise RuntimeError("instruction_set_tuple_incomplete")
+    if not isinstance(components, dict):
+        raise RuntimeError("instruction_set_unresolvable")
+    profile_version_id = instruction_set.get("profile_version_id", instruction_set.get("profileVersionId"))
+    version_number = instruction_set.get("version_number", instruction_set.get("versionNumber"))
+    if not isinstance(profile_version_id, str) or not isinstance(version_number, int):
+        raise RuntimeError("instruction_set_unresolvable")
+
+    _safe_segment(name)
+    for key in shape:
+        _safe_segment(key)
+    identity = model_config["identity"]
+    slug = _slug(identity)
+    _safe_segment(slug)
+    destination = root / name
+    destination.mkdir(parents=True, exist_ok=True)
+
+    def write_material(relative_root: str) -> dict[str, Any]:
+        files: dict[str, str] = {}
+        pinned_components: dict[str, dict[str, str]] = {}
+        for key in sorted(shape):
+            if key not in components:
+                raise RuntimeError("instruction_set_unresolvable")
+            body, pin = _instruction_component(components[key])
+            if body is not None:
+                relative = f"{relative_root}/{key}.md"
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(body, encoding="utf-8")
+                files[key] = relative
+            elif pin is not None:
+                pinned_components[key] = pin
+        material: dict[str, Any] = {
+            "profileVersionId": profile_version_id,
+            "versionNumber": version_number,
+            "modelConfigIdentity": identity,
+            "resolvedFrom": "exact_profile_version",
+            "files": files,
+        }
+        if pinned_components:
+            material["pinnedComponents"] = pinned_components
+        return material
+
+    material = write_material("default")
+    profile = {
+        "modelConfigIdentity": identity,
+        "slug": slug,
+        "resolvedFrom": "exact_profile_version",
+        "production": write_material(f"profiles/{slug}"),
+    }
+    manifest = {
+        "manifestVersion": 1,
+        "name": name,
+        "shape": shape,
+        "default": material,
+        "profiles": [profile],
+    }
+    (destination / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _runner_instruction_set_payload(instruction_set: dict[str, Any]) -> dict[str, Any]:
+    """The runner receives the tuple, while sync-only provenance stays on disk."""
+    components: dict[str, Any] = {}
+    pinned_components: dict[str, Any] = dict(instruction_set.get("pinned_components", instruction_set.get("pinnedComponents", {})) or {})
+    for key, component in (instruction_set.get("components") or {}).items():
+        body, pin = _instruction_component(component)
+        if body is not None:
+            components[key] = body
+        elif pin is not None:
+            pinned_components[key] = pin
+    payload = {
+        "name": instruction_set.get("name"),
+        "model_config": instruction_set.get("model_config", instruction_set.get("modelConfig")),
+        "shape": instruction_set.get("shape"),
+        **({"prompt_component_key": instruction_set["prompt_component_key"]} if isinstance(instruction_set.get("prompt_component_key"), str) else {}),
+        "components": components,
+    }
+    if pinned_components:
+        payload["pinned_components"] = pinned_components
+    return payload
 
 
 def _bounded_stream(value: str) -> str:
@@ -102,6 +228,7 @@ def run_file_contract_runner(
     prompt_version_id: str,
     runner_version_id: str,
     run_id: str | None,
+    prompt_body_present: bool = True,
     timeout_seconds: int = DEFAULT_RUNNER_TIMEOUT_SECONDS,
     extra_payload: dict[str, Any] | None = None,
 ) -> RunnerCallResult:
@@ -114,26 +241,37 @@ def run_file_contract_runner(
     with tempfile.TemporaryDirectory(prefix="orizu-gepa-call-") as temp_dir:
         input_path = Path(temp_dir) / "input.json"
         output_path = Path(temp_dir) / "output.json"
+        instruction_set = (extra_payload or {}).get("instruction_set")
+        instruction_set_dir = Path(temp_dir) / "instruction-set" if isinstance(instruction_set, dict) else None
+        if instruction_set_dir is not None:
+            _write_instruction_set_layout(instruction_set_dir, instruction_set)
         # Extra payload first: the core file-contract keys are authoritative
         # and never overridable by adapter-supplied companions.
+        prompt = {
+            "body_kind": body_kind,
+            "provider_settings": provider_settings,
+        }
+        # The exec-context response decides whether this key exists. Runners
+        # mirror it; no local shape heuristic may silently remove body bytes.
+        if prompt_body_present:
+            prompt["body"] = prompt_body
+        payload_extra = dict(extra_payload or {})
+        if isinstance(instruction_set, dict):
+            payload_extra["instruction_set"] = _runner_instruction_set_payload(instruction_set)
         input_path.write_text(json.dumps({
-            **(extra_payload or {}),
+            **payload_extra,
             "row": row,
-            "prompt": {
-                "body": prompt_body,
-                "body_kind": body_kind,
-                "provider_settings": provider_settings,
-            },
+            "prompt": prompt,
             "prompt_version_id": prompt_version_id,
             "runner_version_id": runner_version_id,
             "run_id": run_id,
-        }, ensure_ascii=False))
+        }, ensure_ascii=False), encoding="utf-8")
 
         try:
             result = subprocess.run(
                 command,
                 cwd=runner_path,
-                env=_runner_env(input_path, output_path),
+                env=_runner_env(input_path, output_path, instruction_set_dir),
                 text=True,
                 capture_output=True,
                 check=False,
@@ -152,7 +290,7 @@ def run_file_contract_runner(
             raise RuntimeError(
                 f"Runner failed with exit code {result.returncode}: {stderr or stdout}"
             )
-        data = json.loads(output_path.read_text())
+        data = json.loads(output_path.read_text(encoding="utf-8"))
         known = {
             "model_response",
             "raw_api_response",
@@ -176,6 +314,19 @@ def run_file_contract_runner(
 
 def make_candidate_runner(runner_dir: str | Path, run_id: str | None):
     def _run(candidate_text: str, row: DatasetRow, prompt_context: PromptContext, candidate_id: str) -> RunnerCallResult:
+        instruction_set = prompt_context.instruction_set
+        if instruction_set:
+            prompt_component_key = instruction_set.get("prompt_component_key")
+            if not isinstance(prompt_component_key, str):
+                raise RuntimeError("instruction_set_candidate_component_unresolvable")
+            instruction_set = dict(instruction_set)
+            instruction_set["components"] = {
+                **dict(instruction_set.get("components") or {}),
+                prompt_component_key: candidate_text,
+            }
+            pinned_components = dict(instruction_set.get("pinned_components") or {})
+            pinned_components.pop(prompt_component_key, None)
+            instruction_set["pinned_components"] = pinned_components
         return run_file_contract_runner(
             runner_dir=runner_dir,
             row=row.row,
@@ -185,6 +336,7 @@ def make_candidate_runner(runner_dir: str | Path, run_id: str | None):
             prompt_version_id=prompt_context.prompt_version_id,
             runner_version_id=prompt_context.runner_version_id,
             run_id=run_id,
+            extra_payload={"instruction_set": instruction_set} if instruction_set else None,
         )
     return _run
 
@@ -318,10 +470,13 @@ def make_scorer_runner(
                 "candidate_raw_response": candidate_result.raw_api_response,
                 "candidate_error": candidate_result.error,
             }
+        if scorer_context.instruction_set:
+            extra_payload = {**(extra_payload or {}), "instruction_set": scorer_context.instruction_set}
         return run_file_contract_runner(
             runner_dir=runner_dir,
             row=scorer_row,
             prompt_body=scorer_context.body,
+            prompt_body_present=scorer_context.body_present,
             body_kind=scorer_context.body_kind,
             provider_settings=scorer_context.provider_settings,
             prompt_version_id=scorer_context.prompt_version_id,

@@ -39,10 +39,10 @@ async function responsePayload(response: Response, action: string): Promise<Reco
 }
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
-interface SyncComponent { body?: string; repoPath?: string; contentSha?: string; commitSha?: string }
-interface SyncMaterial { profileVersionId: string; versionNumber: number; modelConfigIdentity: string; resolvedFrom: string; components: Record<string, SyncComponent> }
-interface SyncProfile { modelConfigIdentity: string; resolvedFrom: string; production: SyncMaterial | null }
-interface SyncSet { name: string; shape: string[]; default: SyncMaterial; profiles: SyncProfile[]; filteredTo?: string[] }
+export interface SyncComponent { body?: string; repoPath?: string; contentSha?: string; commitSha?: string }
+export interface SyncMaterial { profileVersionId: string; versionNumber: number; modelConfigIdentity: string; resolvedFrom: string; components: Record<string, SyncComponent> }
+export interface SyncProfile { modelConfigIdentity: string; resolvedFrom: string; production: SyncMaterial | null }
+export interface SyncSet { name: string; shape: string[]; default: SyncMaterial; profiles: SyncProfile[]; filteredTo?: string[] }
 function safeSegment(value: string) { if (!SAFE_SEGMENT.test(value) || value === '.' || value === '..' || value.startsWith('.')) throw new Error('instruction_set_path_unsafe') }
 function slug(identity: string) { return identity.replaceAll('/', '__').replace(/[^A-Za-z0-9._-]/gu, '_') }
 function stable(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n` }

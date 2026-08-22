@@ -86,7 +86,8 @@ import { workbenchCommand } from './workbench-cli.js'
 import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredentialInvocation } from './git-credential.js'
-import { instructionSetsCommand } from './instruction-sets-cli.js'; export { loadInstructionSet } from './instruction-set-loader.js'
+import { instructionSetsCommand, syncToDisk } from './instruction-sets-cli.js'; export { loadInstructionSet } from './instruction-set-loader.js'
+import { runnerInputInstructionSet, runnerInputPrompt, runnerInstructionSetSyncSet, type RunnerInstructionSet } from './runner-instruction-set-contract.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
 import { readMarkdownReportInput } from './markdown-report-input.js'
 import { promptPushErrorMessage, promptReportCommand } from './prompt-report-cli.js'
@@ -232,7 +233,7 @@ interface ScoreSubmitInput {
 
 interface RunnerExecContext {
   prompt: {
-    body: string | null
+    body?: string | null
     bodyKind: string
     providerSettings: Record<string, unknown>
     promptId?: string
@@ -244,6 +245,7 @@ interface RunnerExecContext {
     metricKey: string
     higherIsBetter: boolean
   } | null
+  instructionSet?: RunnerInstructionSet
   rows: Array<{
     id: string
     row: Record<string, unknown>
@@ -5807,7 +5809,7 @@ function readRunnerManifest(runnerDir: string): { command: string[]; supports_bo
 
 const RUNNER_TIMEOUT_MS = 120_000
 const RUNNER_OUTPUT_MAX_BYTES = 2 * 1024 * 1024
-const RUNNER_ENV_ALLOWLIST = new Set([
+export const RUNNER_ENV_ALLOWLIST = new Set([
   'PATH',
   'SystemRoot',
   'WINDIR',
@@ -5825,7 +5827,7 @@ const RUNNER_ENV_ALLOWLIST = new Set([
   'GOOGLE_API_KEY',
 ])
 
-function runnerSubprocessEnv(inputPath: string, outputPath: string): NodeJS.ProcessEnv {
+function runnerSubprocessEnv(inputPath: string, outputPath: string, instructionSetDir?: string): NodeJS.ProcessEnv {
   const env = {} as NodeJS.ProcessEnv
   for (const key of RUNNER_ENV_ALLOWLIST) {
     const value = process.env[key]
@@ -5835,6 +5837,8 @@ function runnerSubprocessEnv(inputPath: string, outputPath: string): NodeJS.Proc
   }
   env.ORIZU_RUNNER_INPUT_PATH = inputPath
   env.ORIZU_RUNNER_OUTPUT_PATH = outputPath
+  delete env.ORIZU_INSTRUCTION_SET_DIR
+  if (instructionSetDir) env.ORIZU_INSTRUCTION_SET_DIR = instructionSetDir
   return env
 }
 
@@ -5941,7 +5945,6 @@ async function runnersExec() {
       })()
     : await materializeRunnerVersion(resolvedRunnerVersionId)
   const runnerDir = materializedRunner.runnerDir
-
   try {
     assertSnapshotManifestConfined(runnerDir, runnerDirArg ? '--runner-dir' : '--runner-version')
     // Inside the try (codex round-6 P3): a bad manifest must not leak the dir.
@@ -5951,22 +5954,19 @@ async function runnersExec() {
         `Runner does not support prompt body kind '${context.prompt.bodyKind}'. Supported kinds: ${manifest.supports_body_kind.join(', ')}`
       )
     }
-
     const resultLines: string[] = []
     for (const row of context.rows) {
       const tempDir = mkdtempSync(join(tmpdir(), 'orizu-runner-'))
       const inputPath = join(tempDir, 'input.json')
       const outputPath = join(tempDir, 'output.json')
-
+      const instructionSetDir = context.instructionSet ? join(tempDir, 'instruction-set') : undefined
       try {
         const modelOutput = row.row.model_output ?? row.row.modelOutput ?? row.row.output ?? null
+        if (instructionSetDir && context.instructionSet) syncToDisk(instructionSetDir, runnerInstructionSetSyncSet(context.instructionSet))
         writeFileSync(inputPath, JSON.stringify({
           row: row.row,
-          prompt: {
-            body: context.prompt.body,
-            body_kind: context.prompt.bodyKind,
-            provider_settings: context.prompt.providerSettings,
-          },
+          prompt: runnerInputPrompt(context.prompt),
+          ...(context.instructionSet ? { instruction_set: runnerInputInstructionSet(context.instructionSet) } : {}),
           subject: scorerVersion
             ? {
                 type: 'scorer_row',
@@ -5994,7 +5994,7 @@ async function runnersExec() {
 
         const result = spawnSync(manifest.command[0], manifest.command.slice(1), {
           cwd: runnerDir,
-          env: runnerSubprocessEnv(inputPath, outputPath),
+          env: runnerSubprocessEnv(inputPath, outputPath, instructionSetDir),
           encoding: 'utf8',
           maxBuffer: RUNNER_OUTPUT_MAX_BYTES,
           timeout: RUNNER_TIMEOUT_MS,

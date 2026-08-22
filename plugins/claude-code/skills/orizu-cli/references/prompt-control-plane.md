@@ -79,7 +79,7 @@ label` when a profile command performed this mirror.
 
 Execution/privacy defaults:
 
-- Runner subprocesses receive only the file-contract paths plus a small allowlist of provider/runtime environment variables. Orizu API tokens are not passed into runner processes.
+- Runner subprocesses receive the input/output file-contract paths plus a small allowlist of provider/runtime environment variables. Orizu API tokens are not passed into runner processes. When an execution carries an instruction set, `ORIZU_INSTRUCTION_SET_DIR` is set explicitly to a fresh per-row synced layout; it is absent for legacy executions and is never inherited from the shell.
 - `orizu optimizations run-gepa` redacts dataset row payloads and reflection text in logged events by default. Use `--log-row-snapshots` only when the customer explicitly wants raw row and prompt text in the optimization event stream.
 - `run-gepa` still writes complete local traces under `logs/<optimization_run_id>` by default. Treat those logs as sensitive: they include row inputs, model outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, and candidate text.
 - Runner artifacts, runner output, score result uploads, and optimization event payloads are size-capped. If a run needs larger observability payloads, store the large artifact separately and log a pointer.
@@ -100,7 +100,7 @@ Required file: `manifest.json`.
 }
 ```
 
-For `runners exec`, the command must read input JSON from `ORIZU_RUNNER_INPUT_PATH` and write output JSON to `ORIZU_RUNNER_OUTPUT_PATH`.
+For `runners exec`, the command must read input JSON from `ORIZU_RUNNER_INPUT_PATH` and write output JSON to `ORIZU_RUNNER_OUTPUT_PATH`. When present, `ORIZU_INSTRUCTION_SET_DIR` contains the same layout written by `instruction-sets sync`; use `loadInstructionSet`/`load_instruction_set` to read materialized component text. Pinned components are represented in the manifest and are intentionally not materialized as `.md` files.
 
 Input shape:
 
@@ -116,11 +116,23 @@ Input shape:
       "max_tokens": 4096
     }
   },
+  "instruction_set": {
+    "name": "planner",
+    "model_config": { "identity": "openai/gpt-5.4" },
+    "shape": ["system", "tools"],
+    "prompt_component_key": "system",
+    "components": { "system": "inline component bytes" },
+    "pinned_components": {
+      "tools": { "repoPath": "skills/tools.md", "contentSha": "…", "commitSha": "…" }
+    }
+  },
   "prompt_version_id": "uuid",
   "runner_version_id": "uuid",
   "run_id": null
 }
 ```
+
+`instruction_set` is additive. `prompt_component_key` names the shape component that contains the requested prompt version; candidate evaluation replaces that component's seed bytes with the candidate. `components` is in shape order and contains only inline text; Git-only components are absent there and appear in `pinned_components` with camelCase Git pins. Runners mirror whether the exec-context response contains `prompt.body`; the explicit `instructionSetProfileVersionId` parameter is a server surface that ALI-1536 will start sending. The route keeps byte-identical `prompt.body` for every implicit prompt-version caller and omits it only for an explicit multi-component tuple; explicit set-of-one responses retain it. Top-level JSON key order is not part of the contract.
 
 Output shape:
 

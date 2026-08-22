@@ -87,6 +87,8 @@ class PromptContext:
     scorer_version_id: str | None = None
     metric_key: str | None = None
     higher_is_better: bool = True
+    instruction_set: dict[str, Any] | None = None
+    body_present: bool = True
 
 
 @dataclass(frozen=True)
