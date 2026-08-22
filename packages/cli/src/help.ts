@@ -51,6 +51,8 @@ const GROUPS: CliGroupDoc[] = [
 ]
 
 export const COMMAND_DOCS: CliCommandDoc[] = [
+  { path: ['instruction-sets', 'create'], usage: 'orizu instruction-sets create <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]', summary: 'Create an instruction set from a local manifest.', group: 'Instruction sets', options: [{ name: '--runner-version <id>', help: 'Pin the runner version for component prompt versions.' }, { name: '--model-config <identity>', help: 'Select the default model configuration.' }, { name: '--json', help: 'Print one JSON document.' }], examples: ['orizu instruction-sets create ./orizu.instruction-set.json --project core/evals --model-config anthropic/claude-haiku'] },
+  { path: ['instruction-sets', 'push'], usage: 'orizu instruction-sets push <manifest> --project <team/project> [--runner-version <id>] [--json]', summary: 'Push a new instruction-set profile version.', group: 'Instruction sets', options: [{ name: '--runner-version <id>', help: 'Pin the runner version for changed component prompt versions.' }, { name: '--json', help: 'Print one JSON document.' }], examples: ['orizu instruction-sets push ./orizu.instruction-set.json --project core/evals'] },
   {
     path: ['instruction-sets', 'list'],
     usage: 'orizu instruction-sets list [--project <team/project>] [--status active|archived|all] [--json]',

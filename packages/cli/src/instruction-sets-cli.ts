@@ -1,4 +1,5 @@
 import { authedFetch } from './http.js'
+import { loadInstructionSetManifest } from './instruction-set-manifest.js'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -120,6 +121,37 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
 export async function instructionSetsCommand(args: string[], io: InstructionSetsCommandIo): Promise<number> {
   const [subcommand, reference] = positionalArgs(args)
   const project = await io.resolveProjectSlug(argValue(args, '--project'))
+  if (subcommand === 'create' || subcommand === 'push') {
+    if (!reference || reference.startsWith('--')) throw new Error('Usage: instruction-sets create|push <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]')
+    const manifest = loadInstructionSetManifest(reference); const modelConfig = argValue(args, '--model-config'); const runnerVersion = argValue(args, '--runner-version')
+    const path = subcommand === 'create' ? '/api/cli/instruction-sets' : `/api/cli/instruction-sets/${encodeURIComponent(manifest.name)}/versions`
+    const body = subcommand === 'create'
+      ? { ...manifest, ...(modelConfig ? { modelConfigIdentity: modelConfig } : {}), ...(runnerVersion ? { runnerVersionId: runnerVersion } : {}) }
+      : { shape: manifest.shape, components: manifest.components, ...(runnerVersion ? { runnerVersionId: runnerVersion } : {}) }
+    const payload = await responsePayload(await authedFetch(`${path}?project=${encodeURIComponent(project)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), `Instruction sets ${subcommand}`)
+    if (io.json) io.print(JSON.stringify(payload))
+    else {
+      const set = payload.instructionSet as { name?: string; profiles?: unknown[] } | undefined
+      const pushed = Array.isArray(payload.pushed) ? payload.pushed : []
+      const unchanged = Array.isArray(payload.unchanged) ? payload.unchanged : []
+      const skipped = Array.isArray(payload.skipped) ? payload.skipped : []
+      if (subcommand === 'create') {
+        const profiles = Array.isArray(set?.profiles) ? set.profiles : []
+        io.print(`${set?.name || manifest.name}: ${profiles.length} profile(s) created`)
+      } else {
+        const describe = (value: unknown) => {
+          if (typeof value === 'string') return value
+          if (value && typeof value === 'object') {
+            const row = value as { modelConfigIdentity?: unknown; versionNumber?: unknown }
+            return `${typeof row.modelConfigIdentity === 'string' ? row.modelConfigIdentity : 'unknown'}${typeof row.versionNumber === 'number' ? ` v${row.versionNumber}` : ''}`
+          }
+          return 'unknown'
+        }
+        io.print(`${set?.name || manifest.name}: pushed ${pushed.map(describe).join(', ') || 'none'}; unchanged ${unchanged.map(describe).join(', ') || 'none'}; skipped ${skipped.map(describe).join(', ') || 'none'}`)
+      }
+    }
+    return 0
+  }
   const status = argValue(args, '--status') || 'active'
   if (subcommand !== 'list' && subcommand !== 'show' && subcommand !== 'sync') throw new Error('Usage: instruction-sets list|show|sync')
   if (subcommand === 'sync') {

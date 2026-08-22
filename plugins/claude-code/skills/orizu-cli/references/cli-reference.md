@@ -82,11 +82,22 @@ orizu projects create --name "Quality Eval" --team my-team
 ```bash
 orizu instruction-sets list --project my-team/quality-eval [--status active|archived|all] [--json]
 orizu instruction-sets show <set> --project my-team/quality-eval [--status active|archived|all] [--json]
+orizu instruction-sets create ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--model-config <identity>] [--json]
+orizu instruction-sets push ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--json]
 orizu instruction-sets sync <set> --out ./instructions --project my-team/quality-eval [--model-config <identity>] [--json]
 ```
 
 `list` returns each instruction set and its ordered shape. `show` returns the
-default and every model-config profile's production state.
+default and every model-config profile's production state. `create` and `push`
+read a local manifest; JSON output is one document per line.
+
+The manifest is a JSON object with `name`, ordered `shape`, and `components`.
+Every component supplies `{ key, text }` or `{ key, path }`; paths are relative
+to the manifest. Set-wide components must cover the complete shape. A component
+may add `modelConfig` for a profile override: `create` materializes that named
+profile with the set-wide tuple plus its overrides, while `push` updates named
+profiles already present on the set. `push` refuses a manifest whose shape
+differs from the stored set.
 
 `sync` writes `<out>/<set>/manifest.json`, `default/<key>.md`, and
 `profiles/<identity-slug>/<key>.md` for offline execution. TypeScript runners

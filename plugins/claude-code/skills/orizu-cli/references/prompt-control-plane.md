@@ -32,16 +32,23 @@ Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. 
 ## Instruction sets
 
 An instruction set is a named, ordered shape of components with one profile
-per model config. In this first read-only surface, existing prompts appear as
-sets of one component. Inspect them with:
+per model config. Existing prompts appear as sets of one component. Inspect or
+write them with:
 
 ```bash
 orizu instruction-sets list --project core/evals --status active --json
 orizu instruction-sets show planner --project core/evals --status active --json
+orizu instruction-sets create ./orizu.instruction-set.json --project core/evals --model-config anthropic/claude-haiku
+orizu instruction-sets push ./orizu.instruction-set.json --project core/evals
 ```
 
-The default starts on the seed profile version and is movable. A profile with a production version
-resolves to that tuple; a profile without one resolves to the default.
+The manifest contains `name`, ordered `shape`, and `components`; every shape key
+needs a set-wide component (`key` plus `text` or a manifest-relative `path`). A
+component may additionally specify `modelConfig` to override that key in a named
+profile. Create materializes each named profile with its complete base-plus-
+override tuple. The default starts on the seed profile version. A profile with a
+production version resolves to that tuple; a profile without one resolves to the
+default.
 
 Sync an offline runner directory with `orizu instruction-sets sync planner
 --out ./instructions --project core/evals`. The layout is `manifest.json`,
