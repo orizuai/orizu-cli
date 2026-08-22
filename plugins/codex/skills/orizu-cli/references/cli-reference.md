@@ -166,6 +166,18 @@ orizu datasets clone --dataset <datasetId|datasetUrl> --name "Batch 1 Copy"
 
 Dataset version and split-set commands used by prompt runs are covered in `prompt-control-plane.md`.
 
+### Model configs
+
+```bash
+orizu model-configs create azure/gpt-5.4-mini --settings @settings.json --project my-team/quality-eval
+orizu model-configs list --project my-team/quality-eval --json
+orizu model-configs show azure/gpt-5.4-mini --project my-team/quality-eval
+orizu model-configs settings set azure/gpt-5.4-mini --settings '{"temperature":0.3}' --project my-team/quality-eval
+orizu model-configs copy openai/gpt-5.4-mini --to azure/gpt-5.4-mini --project my-team/quality-eval
+```
+
+Model identities are lowercase `provider/model` values and unique within a project. Creating a config creates settings version 1 (with `{}` when `--settings` is omitted). `settings set` appends a settings version and advances the current pointer; `copy` snapshots the source’s current settings and display name into version 1 for the new identity. `--settings` accepts a JSON object or `@file`; all commands support `--json`.
+
 Supported file types:
 - `.csv`
 - `.json` (array of objects)

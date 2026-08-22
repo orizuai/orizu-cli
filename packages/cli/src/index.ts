@@ -66,6 +66,7 @@ import {
   workspaceExists,
 } from './workspace.js'
 import { connectorsCommand } from './connectors-cli.js'
+import { modelConfigsCommand } from './model-configs-cli.js'
 import { ARTIFACT_MAX_BYTES, runnerOptimizerCommand } from './artifact-pull.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
@@ -6548,9 +6549,8 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
   if (command === 'git-credential') { process.exitCode = await runGitCredentialInvocation(cliArgs.slice(1), { stdin: readFileSync(0, 'utf8'), cwd: process.cwd(), print: printLine, printErr: printError }); return }
   if (command === 'github' && subcommand === 'link') { const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal(); const team = getOptionalArgValue('--team') || (await resolveSetupTeam(null, noInput, false)).slug; await runGithubLink(team, { print: printLine, fetcher: authedFetch, openUrl: openInBrowser, confirm: (org) => askYesNo(`Connect this team to GitHub org '${org}'?`, true) }); return }
-  if (command === 'connectors' || command === 'manifests') {
-    const moduleCommand = command === 'connectors' ? connectorsCommand : manifestsCommand
-    process.exitCode = await moduleCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
+  if (command === 'connectors' || command === 'manifests' || command === 'model-configs') {
+    process.exitCode = await (command === 'connectors' ? connectorsCommand : command === 'manifests' ? manifestsCommand : modelConfigsCommand)(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
     return
   }
   if (command === 'instruction-sets') { process.exitCode = await instructionSetsCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return }
