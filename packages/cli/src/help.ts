@@ -35,6 +35,7 @@ const GROUPS: CliGroupDoc[] = [
   { name: 'Teams', summary: 'Manage teams and team memberships.' },
   { name: 'Projects', summary: 'Manage projects inside teams.' },
   { name: 'Prompts and judges', summary: 'Work with versioned prompt and judge artifacts.' },
+  { name: 'Instruction sets', summary: 'Inspect the project-scoped instruction-set control plane.' },
   { name: 'Report comments', summary: 'Review and mutate anchored report comments across prompt, optimization, and task reports.' },
   { name: 'Diff comments', summary: 'Export inline comments with recoverable prompt-diff context.' },
   { name: 'Scorers and runners', summary: 'Register scorers, push runnable artifacts, execute runners, and submit scores.' },
@@ -50,6 +51,22 @@ const GROUPS: CliGroupDoc[] = [
 ]
 
 export const COMMAND_DOCS: CliCommandDoc[] = [
+  {
+    path: ['instruction-sets', 'list'],
+    usage: 'orizu instruction-sets list [--project <team/project>] [--status active|archived|all] [--json]',
+    summary: 'List instruction sets in a project.',
+    group: 'Instruction sets',
+    options: [{ name: '--project <team/project>', help: 'Project slug (defaults to configured context).' }, { name: '--status <active|archived|all>', help: 'Filter archived instruction sets.' }, { name: '--json', help: 'Print JSON.' }],
+    examples: ['orizu instruction-sets list --project core/evals', 'orizu instruction-sets list --status archived --json'],
+  },
+  {
+    path: ['instruction-sets', 'show'],
+    usage: 'orizu instruction-sets show <set> [--project <team/project>] [--status active|archived|all] [--json]',
+    summary: 'Show an instruction set shape, default, and profile production state.',
+    group: 'Instruction sets',
+    options: [{ name: '--project <team/project>', help: 'Project slug (defaults to configured context).' }, { name: '--status <active|archived|all>', help: 'Filter archived instruction sets.' }, { name: '--json', help: 'Print JSON.' }],
+    examples: ['orizu instruction-sets show research --project core/evals', 'orizu instruction-sets show research --json'],
+  },
   {
     path: ['login'],
     usage: 'orizu login [--no-prompt-if-logged-in]',

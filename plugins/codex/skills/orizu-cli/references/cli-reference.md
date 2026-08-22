@@ -77,6 +77,16 @@ orizu projects list --team my-team
 orizu projects create --name "Quality Eval" --team my-team
 ```
 
+### Instruction sets
+
+```bash
+orizu instruction-sets list --project my-team/quality-eval [--status active|archived|all] [--json]
+orizu instruction-sets show <set> --project my-team/quality-eval [--status active|archived|all] [--json]
+```
+
+`list` returns each instruction set and its ordered shape. `show` returns the
+default and every model-config profile's production state.
+
 ### Apps
 
 ```bash

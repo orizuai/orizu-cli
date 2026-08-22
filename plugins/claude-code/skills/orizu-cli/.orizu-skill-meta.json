@@ -1,6 +1,6 @@
 {
   "name": "orizu-cli",
-  "skillHash": "sha256:410c9b4336b9249099c267abe491f72fe3d2ac748c7bbd30ff272670c2bd14a8",
+  "skillHash": "sha256:ce58abd610e5d38c0a8d6cc515016718b865a6e09ef8e164309ccbabfcdf2273",
   "cliVersion": "0.0.3",
   "pluginVersion": "0.1.0",
   "source": "plugin-bundle",

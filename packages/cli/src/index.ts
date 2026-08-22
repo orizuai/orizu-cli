@@ -85,6 +85,7 @@ import { workbenchCommand } from './workbench-cli.js'
 import { hostedCommand } from './hosted-session-cli.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredentialInvocation } from './git-credential.js'
+import { instructionSetsCommand } from './instruction-sets-cli.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
 import { readMarkdownReportInput } from './markdown-report-input.js'
 import { promptPushErrorMessage, promptReportCommand } from './prompt-report-cli.js'
@@ -6552,6 +6553,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
     process.exitCode = await moduleCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
     return
   }
+  if (command === 'instruction-sets') { process.exitCode = await instructionSetsCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return }
   if (command === 'team' && (subcommand === 'kill-agents' || subcommand === 'release-agents')) {
     process.exitCode = await killSwitchCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, printErr: printError })
     return

@@ -29,6 +29,20 @@ Use this reference for the Phase 0 prompt, judge, scorer, runner, score, run, an
 
 Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. API keys to Orizu.
 
+## Instruction sets
+
+An instruction set is a named, ordered shape of components with one profile
+per model config. In this first read-only surface, existing prompts appear as
+sets of one component. Inspect them with:
+
+```bash
+orizu instruction-sets list --project core/evals --status active --json
+orizu instruction-sets show planner --project core/evals --status active --json
+```
+
+The default starts on the seed profile version and is movable. A profile with a production version
+resolves to that tuple; a profile without one resolves to the default.
+
 Execution/privacy defaults:
 
 - Runner subprocesses receive only the file-contract paths plus a small allowlist of provider/runtime environment variables. Orizu API tokens are not passed into runner processes.
