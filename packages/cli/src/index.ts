@@ -72,6 +72,7 @@ import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { acceptScoreRunCommand } from './scores-accept-cli.js'
 import { listOptimizationRunsCommand } from './optimizations-list-cli.js'
+import { promoteOptimizationCommand } from './optimizations-promote-cli.js'
 import {
   archiveArtifactCommand,
   listAssignmentsCommand,
@@ -6385,7 +6386,12 @@ export async function main(rawArgs = process.argv.slice(2)) {
     await listOptimizationRunsCommand(cliArgs.slice(2), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
     return
   }
-
+  if (command === 'optimizations' && subcommand === 'promote') {
+    await promoteOptimizationCommand(cliArgs.slice(2), {
+      json: hasJsonFlag(), print: printLine, resolveProjectSlug, fetcher: authedFetch,
+    })
+    return
+  }
   if (
     command === 'optimizations' &&
     (

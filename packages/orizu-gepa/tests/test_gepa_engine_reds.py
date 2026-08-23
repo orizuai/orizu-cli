@@ -1033,6 +1033,19 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         self.assertEqual(translated["payload"]["components"], {"prompt": "better"})
         self.assertEqual(translated["payload"]["response"], "<new_text>better</new_text>")
 
+    def test_optimization_start_preserves_the_full_tuple_seed_map(self):
+        """Kills choosing an arbitrary seed component as the tuple seed."""
+        translated = translate_callback("on_optimization_start", {
+            "seed_candidate": {"system": "system seed", "tools": "tools seed"},
+            "trainset_size": 1,
+            "valset_size": 1,
+        }, run_id=RUN_ID)
+        self.assertEqual(translated["eventType"], "run_started")
+        self.assertEqual(translated["payload"]["seed_components"], {
+            "system": "system seed", "tools": "tools seed",
+        })
+        self.assertNotIn("components", translated["payload"])
+
     def test_real_gepa_engine_stops_only_after_a_completed_iteration(self):
         """Kills an iteration stopper that stops during GEPA's evaluation/proposal stages."""
         callback = CapturingCallback()

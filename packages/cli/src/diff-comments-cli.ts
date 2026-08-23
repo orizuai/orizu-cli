@@ -36,6 +36,7 @@ interface DiffCommentPayloadComment {
   body: string
   author: DiffCommentAuthor
   createdAt: string
+  componentKey?: string | null
   anchor: { side: 'old' | 'new'; line: number }
   context: {
     lineText: string
@@ -364,6 +365,9 @@ function printDiffComments(ctx: DiffCommentsCliContext, payload: DiffCommentsPay
         `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, String(comment.anchor.line + 1))}`
       )
       printHumanTextBlock(ctx, comment.body)
+      if (typeof comment.componentKey === 'string' && comment.componentKey) {
+        ctx.printLine(`    Component: ${sanitizeHumanInlineText(ctx.sanitizeTerminalText, comment.componentKey)}`)
+      }
 
       if (comment.contextUnavailableReason) {
         ctx.printLine(

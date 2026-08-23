@@ -22,10 +22,11 @@ Use this reference for the Phase 0 prompt, judge, scorer, runner, score, run, an
 7. For common text-candidate optimization, prefer `orizu optimizations run-gepa`; it starts the run and logs events for you.
 8. After `run-gepa`, inspect `logs/<optimization_run_id>` first; it is the complete local trace for coding-agent analysis.
 9. Use `orizu optimizations export <run-id> --out <run-id>.optimization.json` when the local log is missing or the run happened elsewhere.
-10. Write and attach a markdown report for finished, failed, or cancelled runs; use `optimization-reports.md` for structure and diagnostic guidance.
-11. For custom optimizers, start an optimization run before local execution, then stream events into that run.
-12. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
-13. Promote only accepted candidates; rejected candidates stay in optimization events.
+10. Promote an accepted candidate with `orizu optimizations promote <run-id> --candidate <id> [--label production]`; tuple output reports its profile version and each component as changed or carried.
+11. Write and attach a markdown report for finished, failed, or cancelled runs; use `optimization-reports.md` for structure and diagnostic guidance.
+12. For custom optimizers, start an optimization run before local execution, then stream events into that run.
+13. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
+14. Promote only accepted candidates; rejected candidates stay in optimization events.
 
 Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. API keys to Orizu.
 
@@ -852,6 +853,11 @@ orizu --local optimizations export <optimization-run-id> \
 ```
 
 Use export when the local log is unavailable, the run happened on another machine, or a coding agent needs a portable single JSON artifact. The export fetches all optimization events, derives seed vs best, Pareto frontier, score-over-time, candidates, iterations, minibatch rows, and validation rows, and rehydrates row inputs from the dataset version artifact when possible. Server events may not contain row snapshots or reflection prompts unless the run used `--log-row-snapshots`; reflection responses are included for bundled `run-gepa` runs.
+
+Both diff-comment read routes (`/api/optimization-runs/<run-id>/diff-comments` and
+`/api/prompts/<prompt-id>/diff-comments`) return `componentKey` for tuple
+comments. Preserve it on writes and use it in grouping keys: equal line ranges
+from different instruction-set components are distinct comments.
 
 The v1 export keeps the run row's `best_candidate_id` in
 `summary.bestCandidateId` when event derivation rejects that identifier as an

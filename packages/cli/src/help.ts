@@ -570,6 +570,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     summary: 'List optimization runs with explicit archive visibility.',
     group: 'Optimizations',
   },
+  { path: ['optimizations', 'promote'], usage: 'orizu optimizations promote <run-id> --candidate <id> [--label production] [--project <team/project>] [--json]', summary: 'Promote a selected optimization candidate.', group: 'Optimizations', options: [{ name: '--candidate <id>', help: 'Candidate to promote.', required: true }, { name: '--label production', help: 'Move the new tuple profile version to production.' }, { name: '--project <team/project>', help: 'Project slug (defaults to configured context).' }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu optimizations promote <run-id> --candidate candidate-2 --label production'] },
   {
     path: ['optimizations', 'archive'],
     usage: 'orizu optimizations archive <run-id> [--project <team/project>] [--json]',

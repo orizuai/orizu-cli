@@ -98,9 +98,10 @@ def translate_callback(event_name: str, event: dict[str, Any], *, run_id: str, *
 
     if event_name == "on_optimization_start":
         event_type = "run_started"
+        payload.pop("components", None)
         payload.update({
             "seed_candidate_text": next(iter(components.values()), None),
-            "components": components,
+            "seed_components": components,
             "trainset_size": event.get("trainset_size"),
             "valset_size": event.get("valset_size"),
         })
