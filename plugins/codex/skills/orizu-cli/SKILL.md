@@ -176,6 +176,7 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - `references/building-apps.md` — labeler app contract, design principles, common patterns, offline smoke test.
 - `references/building-judges.md` — judge/scorer authoring + TPR/TNR validation.
 - `references/optimization-with-gepa.md` — GEPA optimization loop, with DSPy only as external context.
+- `references/migrate-existing-gepa-setup.md` — migrating a customer's existing official-GEPA script into Orizu, ending in `orizu scorers verify-parity` before any optimization.
 - `references/optimization-reports.md` — report template, GEPA diagnostics, kappa/confusion-matrix guidance, and next-step recommendations.
 - `scripts/test-app.mjs` — smoke test for `App.tsx` + schemas before `orizu apps create` (runs on plain `node`).
 

@@ -73,6 +73,8 @@ import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { acceptScoreRunCommand } from './scores-accept-cli.js'
 import { listOptimizationRunsCommand } from './optimizations-list-cli.js'
 import { promoteOptimizationCommand } from './optimizations-promote-cli.js'
+import { scorersCommand } from './scorers-cli.js'
+import { verifyScorerParityCommand } from './scorers-verify-parity.js'
 import {
   archiveArtifactCommand,
   listAssignmentsCommand,
@@ -5780,7 +5782,7 @@ async function downloadAnnotations() {
   printLine(`Saved ${format.toUpperCase()} export to ${sanitizeTerminalText(filename)}`)
 }
 
-function readRunnerManifest(runnerDir: string): { command: string[]; supports_body_kind?: string[] } {
+export function readRunnerManifest(runnerDir: string): { command: string[]; supports_body_kind?: string[] } {
   const manifestPath = join(runnerDir, 'manifest.json')
   const raw = readSourceFile(manifestPath)
   const manifest = JSON.parse(raw) as {
@@ -5808,8 +5810,8 @@ function readRunnerManifest(runnerDir: string): { command: string[]; supports_bo
   }
 }
 
-const RUNNER_TIMEOUT_MS = 120_000
-const RUNNER_OUTPUT_MAX_BYTES = 2 * 1024 * 1024
+export const RUNNER_TIMEOUT_MS = 120_000
+export const RUNNER_OUTPUT_MAX_BYTES = 2 * 1024 * 1024
 export const RUNNER_ENV_ALLOWLIST = new Set([
   'PATH',
   'SystemRoot',
@@ -5828,7 +5830,7 @@ export const RUNNER_ENV_ALLOWLIST = new Set([
   'GOOGLE_API_KEY',
 ])
 
-function runnerSubprocessEnv(inputPath: string, outputPath: string, instructionSetDir?: string): NodeJS.ProcessEnv {
+export function runnerSubprocessEnv(inputPath: string, outputPath: string, instructionSetDir?: string): NodeJS.ProcessEnv {
   const env = {} as NodeJS.ProcessEnv
   for (const key of RUNNER_ENV_ALLOWLIST) {
     const value = process.env[key]
@@ -5852,7 +5854,7 @@ function boundedRunnerOutput(value: string | Buffer | null | undefined): string 
   return `${buffer.subarray(0, RUNNER_OUTPUT_MAX_BYTES).toString('utf8')}\n[truncated]`
 }
 
-async function materializeRunnerVersion(runnerVersionId: string): Promise<{ runnerDir: string; cleanup: () => void }> {
+export async function materializeRunnerVersion(runnerVersionId: string): Promise<{ runnerDir: string; cleanup: () => void }> {
   const response = await authedFetch(`/api/cli/runner-versions/${encodeURIComponent(runnerVersionId)}/download`)
   if (!response.ok) {
     throw new Error(`Failed to download runner version: ${await response.text()}`)
@@ -6303,29 +6305,17 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
-  if (command === 'scorers' && subcommand === 'list') {
-    await listScorers()
-    return
-  }
-
-  if (command === 'scorers' && subcommand === 'register') {
-    await registerScorer()
-    return
-  }
-
-  if (command === 'scorers' && subcommand === 'detail') {
-    await showScorerDetail()
-    return
-  }
-
-  if (command === 'scorers' && subcommand === 'labels' && cliArgs[2] === 'set') {
-    await setScorerLabel()
-    return
-  }
-
-  if (command === 'scorers' && subcommand === 'exec') {
-    await execScorer()
-    return
+  if (command === 'scorers') {
+    const scorersExit = await scorersCommand(cliArgs, {
+      list: listScorers, register: registerScorer, detail: showScorerDetail,
+      labelsSet: setScorerLabel, exec: execScorer,
+      verifyParity: args => verifyScorerParityCommand(args, {
+        json: hasJsonFlag(), print: printLine, printErr: printError,
+        materializeRunnerVersion, readRunnerManifest, runnerSubprocessEnv,
+        timeoutMs: RUNNER_TIMEOUT_MS, maxOutputBytes: RUNNER_OUTPUT_MAX_BYTES,
+      }),
+    })
+    if (scorersExit !== null) { process.exitCode = scorersExit; return }
   }
 
   if ((command === 'runners' || command === 'optimizers') && subcommand === 'push') {

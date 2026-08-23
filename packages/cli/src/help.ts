@@ -499,6 +499,12 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Scorers and runners',
   },
   {
+    path: ['scorers', 'verify-parity'],
+    usage: 'orizu scorers verify-parity --scorer-version <id> --dataset-version <id> --split-set <id> [--split <name>] --outputs <outputs.jsonl> --original <module:function> [--scorer-input-contract gepa|flat_row] [--scorer-candidate-field <row-field>] [--runner-dir <dir>] [--python <cmd>] [--tolerance <float>] [--limit <n>] [--json]',
+    summary: 'Prove a migrated scorer runner scores rows the same as the original Python metric.',
+    group: 'Scorers and runners',
+  },
+  {
     path: ['scores', 'submit'],
     usage: 'orizu scores submit <results.jsonl|results.json> --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) [--aggregate] [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]',
     summary: 'Submit score results for a scorer against a prompt version or optimization candidate.',
