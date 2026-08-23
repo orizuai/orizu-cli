@@ -9,7 +9,9 @@ import tempfile
 import time
 import urllib.error
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from unittest import mock
 
 from orizu_gepa.client import OrizuClient, OrizuEventSink
@@ -92,6 +94,40 @@ class OptimizerTests(unittest.TestCase):
             DatasetRow("val-1", {"expected": "improved"}),
             DatasetRow("val-2", {"expected": "improved"}),
         ]
+
+    def test_real_client_attributes_an_explicit_component_map_to_its_profile_not_prompts(self):
+        """Mutant killed: write component prompt ids and misattribute whole-map scores."""
+        received: list[dict[str, object]] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"optimization_run_id":"run-1"}')
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
+        thread.start()
+        try:
+            client = OrizuClient(api_url=f"http://127.0.0.1:{server.server_port}", token="test")
+            self.assertEqual(client.start_run(
+                project="team/project", optimizer_version_id="optimizer", prompt_version_id=None,
+                instruction_set_profile_version_id="profile-version", scorer_version_id="scorer",
+                dataset_version_id="dataset", split_set_id="split-set", train_split="train", validation_split="validation",
+            ), "run-1")
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(received, [{
+            "optimizerVersionId": "optimizer", "promptVersionIds": [], "instructionSetProfileVersionId": "profile-version",
+            "scorers": [{"scorerVersionId": "scorer", "role": "selection"}, {"scorerVersionId": "scorer", "role": "reflection"}],
+            "datasetVersionId": "dataset", "splitSetId": "split-set", "trainSplitName": "train", "validationSplitName": "validation", "metadata": {},
+        }])
 
     def test_logs_required_gepa_lifecycle_and_promotes_best_child(self):
         sink = FakeSink()

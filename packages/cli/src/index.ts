@@ -110,6 +110,7 @@ import {
 import { diffCommentsCommand } from './diff-comments-cli.js'
 import { exportOptimizationRunCommand } from './optimization-export-cli.js'
 import { dispatchGepaEngine } from './gepa-engine-dispatch.js'
+import { resolveGepaInstructionSetProfileVersion } from './instruction-set-gepa-launch.js'
 import { getGepaPythonCommand } from './gepa-python-command.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
 import { prepareSkilledProposerLaunch } from './skilled-proposer-launch.js'
@@ -2527,14 +2528,12 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
 
 // ALI-1073 list moved to optimizations-list-cli.ts (line ratchet, ALI-976);
 // ALI-1175 labels its best scores as agent-reported evidence there.
-
 async function runGepaOptimization() {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const baseUrl = getBaseUrl()
   const runGepa = getGepaPythonCommand(cliArgs.slice(2), process.env)
   const python = runGepa.python
   let forwardedArgs = runGepa.args
-
   // ALI-1159 (ADR-007): GEPA executes ad-hoc local runner dirs while
   // attributing records to registered runner version ids — verify the bytes
   // ARE those versions before the optimizer spawns. Scans the forwarded argv
@@ -2543,7 +2542,6 @@ async function runGepaOptimization() {
   // so a post-hash mutation of the original dirs cannot change what runs.
   const verified = await verifyGepaRunnerDirsFromArgs(forwardedArgs)
   forwardedArgs = verified.args
-
   let result
   let selectedEngine = 'official'
   try {
@@ -2553,11 +2551,9 @@ async function runGepaOptimization() {
     // rotation crossing the hash + lookup round-trips cannot hand the child a
     // stale bearer.
     const token = resolveAuthTokenForBaseUrl(baseUrl)
-
     if (!forwardedArgs.includes('--project')) {
       forwardedArgs = ['--project', project, ...forwardedArgs]
     }
-
     const dispatch = dispatchGepaEngine(forwardedArgs, project, {
       ...process.env,
       ORIZU_API_URL: baseUrl,
@@ -2567,13 +2563,17 @@ async function runGepaOptimization() {
       PYTHONPATH: getGepaPythonPathEntries(process.env.PYTHONPATH).join(delimiter),
       PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
     })
+    const instructionSetName = dispatch.environment.ORIZU_INSTRUCTION_SET_NAME
+    const modelConfigIdentity = dispatch.environment.ORIZU_MODEL_CONFIG_IDENTITY
+    const instructionSetProfileVersionId = instructionSetName && modelConfigIdentity
+      ? await resolveGepaInstructionSetProfileVersion(instructionSetName, modelConfigIdentity, project) : undefined
+    if (instructionSetProfileVersionId) dispatch.environment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID = instructionSetProfileVersionId
     selectedEngine = dispatch.engine
     const launch = prepareSkilledProposerLaunch(python, dispatch.engine, dispatch.environment)
     result = spawnSync(launch.python, ['-m', dispatch.module, ...dispatch.args], { stdio: 'inherit', env: launch.environment })
   } finally {
     verified.cleanup()
   }
-
   if (result.error) {
     throw new Error(`${selectedEngine} GEPA engine failed: ${result.error.message}`, { cause: result.error })
   }

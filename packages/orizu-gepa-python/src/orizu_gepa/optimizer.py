@@ -81,7 +81,7 @@ class PromptContext:
     body: str | None
     body_kind: str
     provider_settings: dict[str, Any]
-    prompt_version_id: str
+    prompt_version_id: str | None
     runner_version_id: str
     prompt_id: str | None = None
     scorer_version_id: str | None = None
@@ -525,7 +525,7 @@ class TextGepaConfig:
 class TextGepaResult:
     run_id: str
     best_candidate_id: str
-    best_candidate_text: str
+    best_candidate_text: str | dict[str, str]
     best_score: float
     seed_score: float
     promoted_prompt_version_id: str | None
@@ -573,7 +573,7 @@ class EventSink(Protocol):
         ...
 
 
-CandidateRunner = Callable[[str, DatasetRow, PromptContext, str], RunnerCallResult]
+CandidateRunner = Callable[[str | dict[str, str], DatasetRow, PromptContext, str], RunnerCallResult]
 ScorerRunner = Callable[[DatasetRow, RunnerCallResult, PromptContext, str], RunnerCallResult]
 Reflector = Callable[[str, list[RowEvaluation], TextGepaConfig], ReflectionResult]
 
@@ -892,7 +892,7 @@ class EvaluationCache:
     def key(
         self,
         *,
-        candidate_text: str,
+        candidate_text: str | dict[str, str],
         row: DatasetRow,
         split: str,
         prompt_context: PromptContext,
@@ -1111,7 +1111,7 @@ def _candidate_id(iteration: int, text: str) -> str:
 
 def evaluate_candidate(
     *,
-    candidate_text: str,
+    candidate_text: str | dict[str, str],
     candidate_id: str,
     rows: list[DatasetRow],
     split: str,

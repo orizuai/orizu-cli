@@ -103,11 +103,13 @@ class MandatoryEventSink:
 
 
 def _required_environment() -> dict[str, str]:
-    names = (
-        "ORIZU_PROJECT", "ORIZU_OPTIMIZER_VERSION_ID", "ORIZU_PROMPT_VERSION_ID",
+    names = [
+        "ORIZU_PROJECT", "ORIZU_OPTIMIZER_VERSION_ID",
         "ORIZU_DATASET_VERSION_ID", "ORIZU_SPLIT_SET_ID", "ORIZU_SCORER_VERSION_ID",
         "ORIZU_RUNNER_VERSION_ID", "ORIZU_CANDIDATE_RUNNER_DIR", "ORIZU_SCORER_RUNNER_DIR",
-    )
+    ]
+    if not os.environ.get("ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID"):
+        names.append("ORIZU_PROMPT_VERSION_ID")
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise RuntimeError("missing connector environment: " + ", ".join(missing))
@@ -220,7 +222,7 @@ def build_config_from_environment() -> TextGepaConfig:
     )
 
 
-def resolved_budget(config: TextGepaConfig, *, trainset_size: int, valset_size: int):
+def resolved_budget(config: TextGepaConfig, *, trainset_size: int, valset_size: int, num_components: int = 1):
     """Resolve the frozen legacy budget once for display *and* enforcement."""
     from orizu_gepa.optimizer import Budget
 
@@ -228,7 +230,7 @@ def resolved_budget(config: TextGepaConfig, *, trainset_size: int, valset_size: 
         config,
         trainset_size=trainset_size,
         valset_size=valset_size,
-        num_components=1,
+        num_components=num_components,
     )
 
 
@@ -243,12 +245,23 @@ def validate_launch_contract(
     *,
     candidate_runner_dir: str | None = None,
     scorer_runner_dir: str | None = None,
+    pinned_components: dict[str, Any] | None = None,
+    instruction_set_shape: list[str] | None = None,
+    auto_promote: bool = False,
 ) -> None:
     """Refuse M1-unsupported topology before creating a run row."""
     if _enabled("ORIZU_USE_MERGE") or os.environ.get("ORIZU_MAX_MERGE_INVOCATIONS"):
         raise RuntimeError("merge is unsupported by the official GEPA connector (ALI-1506)")
-    if len(seed_candidate) != 1:
-        raise RuntimeError("multi-component candidates are unsupported by the official GEPA connector (ALI-1507)")
+    pinned = pinned_components or {}
+    if pinned:
+        raise RuntimeError("instruction_set_pinned_components_unsupported: " + ", ".join(sorted(pinned)))
+    if instruction_set_shape is not None:
+        missing = [key for key in instruction_set_shape if key not in seed_candidate]
+        extra = [key for key in seed_candidate if key not in instruction_set_shape]
+        if missing or extra:
+            raise RuntimeError("instruction_set_tuple_shape_mismatch: " + ", ".join(missing or extra))
+    if auto_promote and len(seed_candidate) != 1:
+        raise RuntimeError("instruction_set_candidate_promotion_unsupported")
     if os.environ.get("ORIZU_SAMPLING_STRATEGY") or os.environ.get("ORIZU_SELECTION_STRATEGY"):
         raise RuntimeError("P×N sampling/selection is unsupported by the official GEPA connector (ALI-1507)")
     if candidate_runner_dir is None or scorer_runner_dir is None:
@@ -400,13 +413,16 @@ def run_from_environment() -> dict[str, Any]:
     validation_split = os.environ.get("ORIZU_VALIDATION_SPLIT", "validation")
     config = build_config_from_environment()
     client = OrizuClient.from_env()
+    profile_version_id = os.environ.get("ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID")
     prompt_context, trainset = client.fetch_exec_context(
-        prompt_version_id=env["ORIZU_PROMPT_VERSION_ID"], runner_version_id=env["ORIZU_RUNNER_VERSION_ID"],
+        prompt_version_id=os.environ.get("ORIZU_PROMPT_VERSION_ID"), runner_version_id=env["ORIZU_RUNNER_VERSION_ID"],
         dataset_version_id=env["ORIZU_DATASET_VERSION_ID"], split_set_id=env["ORIZU_SPLIT_SET_ID"], split=train_split,
+        instruction_set_profile_version_id=profile_version_id,
     )
     _, valset = client.fetch_exec_context(
-        prompt_version_id=env["ORIZU_PROMPT_VERSION_ID"], runner_version_id=env["ORIZU_RUNNER_VERSION_ID"],
+        prompt_version_id=os.environ.get("ORIZU_PROMPT_VERSION_ID"), runner_version_id=env["ORIZU_RUNNER_VERSION_ID"],
         dataset_version_id=env["ORIZU_DATASET_VERSION_ID"], split_set_id=env["ORIZU_SPLIT_SET_ID"], split=validation_split,
+        instruction_set_profile_version_id=profile_version_id,
     )
     scorer_context, _ = client.fetch_scorer_exec_context(
         scorer_version_id=env["ORIZU_SCORER_VERSION_ID"], runner_version_id=os.environ.get("ORIZU_SCORER_RUNNER_VERSION_ID"),
@@ -424,11 +440,20 @@ def run_from_environment() -> dict[str, Any]:
             f"scorer-contract failure before launch for {env['ORIZU_SCORER_VERSION_ID']}: {error}"
         ) from error
     hooks = LifecycleHooks()
-    seed_candidate = {"prompt": prompt_context.body or ""}
+    instruction_set = prompt_context.instruction_set or {}
+    shape = instruction_set.get("shape") if isinstance(instruction_set.get("shape"), list) else None
+    components = instruction_set.get("components") if isinstance(instruction_set.get("components"), dict) else None
+    if profile_version_id and (not shape or not components):
+        raise RuntimeError("instruction_set_tuple_incomplete")
+    seed_candidate = ({key: components[key] for key in shape if isinstance(components.get(key), str)}
+                      if profile_version_id and shape and components else {"prompt": prompt_context.body or ""})
     validate_launch_contract(
         seed_candidate,
         candidate_runner_dir=env["ORIZU_CANDIDATE_RUNNER_DIR"],
         scorer_runner_dir=env["ORIZU_SCORER_RUNNER_DIR"],
+        pinned_components=instruction_set.get("pinned_components") if profile_version_id and isinstance(instruction_set, dict) else None,
+        instruction_set_shape=shape if profile_version_id else None,
+        auto_promote=config.auto_promote,
     )
     preflight_adapter = RunnerEvaluationAdapter(
         candidate_runner_dir=env["ORIZU_CANDIDATE_RUNNER_DIR"], scorer_runner_dir=env["ORIZU_SCORER_RUNNER_DIR"],
@@ -450,7 +475,7 @@ def run_from_environment() -> dict[str, Any]:
     except ScorerContractError as error:
         raise RuntimeError(f"scorer-contract failure before launch for {env['ORIZU_SCORER_VERSION_ID']}: {error}") from error
     preflight_metric_calls = int(preflight_verdict.get("preflight_metric_calls", 0))
-    budget = resolved_budget(config, trainset_size=len(trainset), valset_size=len(valset))
+    budget = resolved_budget(config, trainset_size=len(trainset), valset_size=len(valset), num_components=len(seed_candidate))
     budget_kind, budget_limit = budget.budget_kind, budget.limit
     metadata = {
         **_metadata_from_environment(),
@@ -464,11 +489,23 @@ def run_from_environment() -> dict[str, Any]:
         "dataset_size": len(trainset) + len(valset), "train_count": len(trainset), "validation_count": len(valset),
         "num_threads": preflight_adapter.num_threads_plan.to_payload(),
     }
+    is_multi_component_instruction_set = bool(
+        profile_version_id and isinstance(shape, list) and len(shape) > 1
+    )
     run_id = client.start_run(
         project=env["ORIZU_PROJECT"], optimizer_version_id=env["ORIZU_OPTIMIZER_VERSION_ID"],
-        prompt_version_id=env["ORIZU_PROMPT_VERSION_ID"], scorer_version_id=scorer_context.scorer_version_id or env["ORIZU_SCORER_VERSION_ID"],
+        # A set of one is the legacy prompt subject.  Only a genuine component
+        # map is attributed to the profile version instead of a prompt version.
+        prompt_version_id=(
+            None if is_multi_component_instruction_set else prompt_context.prompt_version_id
+        ),
+        instruction_set_profile_version_id=(
+            profile_version_id if is_multi_component_instruction_set else None
+        ),
+        scorer_version_id=scorer_context.scorer_version_id or env["ORIZU_SCORER_VERSION_ID"],
         dataset_version_id=env["ORIZU_DATASET_VERSION_ID"], split_set_id=env["ORIZU_SPLIT_SET_ID"],
         train_split=train_split, validation_split=validation_split, metadata=metadata,
+        model_config_settings_version_id=instruction_set.get("model_config_settings_version_id") if isinstance(instruction_set, dict) else None,
     )
     print(json.dumps({"optimization_run_id": run_id}), flush=True)
     # The frozen sink treats ``None`` as no local artifact writer.  Keep that
@@ -558,7 +595,7 @@ def run_from_environment() -> dict[str, Any]:
 
         reflection_lm = None if custom_candidate_proposer is not None else make_gepa_reflection_lm(
             context_supplier=lambda: (
-                next(iter((adapter.last_candidate or seed_candidate).values())),
+                adapter.last_candidate or seed_candidate,
                 adapter.last_row_evaluations,
             ),
             config=config,
@@ -575,7 +612,8 @@ def run_from_environment() -> dict[str, Any]:
                                    reflection_lm=reflection_lm, seed_already_validated=True,
                                    custom_candidate_proposer=custom_candidate_proposer,
                                    proposal_budget=proposal_budget,
-                                   config=config)
+                                   config=config,
+                                   module_selector=os.environ.get("ORIZU_COMPONENT_SELECTOR", "round_robin").replace("-", "_"))
         require_durable_logging(sink, callback)
         best_id = str(result.best_idx)
         best_score = float(result.val_aggregate_scores[result.best_idx])
@@ -622,7 +660,7 @@ def run_from_environment() -> dict[str, Any]:
             promoted_prompt_version_id = sink.promote_candidate(
                 candidate_id=best_id,
                 prompt_id=prompt_id,
-                parent_prompt_version_id=env["ORIZU_PROMPT_VERSION_ID"],
+                parent_prompt_version_id=prompt_context.prompt_version_id,
                 body=next(iter(best_candidate.values())),
                 body_kind=prompt_context.body_kind,
                 provider_settings=prompt_context.provider_settings,
@@ -630,10 +668,12 @@ def run_from_environment() -> dict[str, Any]:
                 label=config.promotion_label,
             )
         if local_logger is not None:
+            best_candidate = result.candidates[result.best_idx]
             local_logger.write_result(TextGepaResult(
                 run_id=run_id,
                 best_candidate_id=best_id,
-                best_candidate_text=next(iter(result.candidates[result.best_idx].values())),
+                best_candidate_text=(best_candidate if len(best_candidate) > 1
+                                     else next(iter(best_candidate.values()))),
                 best_score=best_score,
                 seed_score=seed_score,
                 promoted_prompt_version_id=promoted_prompt_version_id,

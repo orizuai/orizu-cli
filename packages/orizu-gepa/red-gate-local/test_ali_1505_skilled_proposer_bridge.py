@@ -201,14 +201,14 @@ class BridgeE2E(unittest.TestCase):
                 endpoint_override=provider.url,
             )
             proposal = proposer(
-                candidate={"prompt": "old"},
-                reflective_dataset={"prompt": [{"Feedback": "improve"}]},
-                components_to_update=["prompt"],
+                candidate={"system": "old system", "tools": "old tools"},
+                reflective_dataset={"system": [{"Feedback": "improve"}], "tools": [{"Feedback": "improve"}]},
+                components_to_update=["system", "tools"],
             )
 
         self.assertIsInstance(proposer, SkilledProposer)
-        self.assertEqual(proposal["prompt"], "factory result")
-        self.assertEqual(len(_RecordingProvider.requests), 1)
+        self.assertEqual(proposal, {"system": "factory result", "tools": "factory result"})
+        self.assertEqual(len(_RecordingProvider.requests), 2)
         self.assertEqual(observability.events[0]["source"], "skilled_proposer")
 
     def test_factory_is_inert_without_the_exact_opt_in_value(self):

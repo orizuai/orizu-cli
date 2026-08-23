@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
+import json
 from typing import Any
 
-from orizu_gepa.optimizer import build_reflection_prompt
+from orizu_gepa.optimizer import DEFAULT_REFLECTION_PROMPT_TEMPLATE, build_reflection_prompt
 from orizu_gepa.reflection import reflect_with_provider
 
 
@@ -33,7 +35,7 @@ class GepaReflectionLM:
     def __init__(
         self,
         *,
-        context_supplier: Callable[[], tuple[str, list[Any]]],
+        context_supplier: Callable[[], tuple[str | dict[str, str], list[Any]]],
         config: Any,
         failure_reporter: Callable[..., None] | None,
         success_reporter: Callable[[str], None] | None,
@@ -78,7 +80,14 @@ class GepaReflectionLM:
         self._total_tokens += total_tokens
 
     def __call__(self, gepa_prompt: str) -> str:
-        parent_text, parent_results = self._context_supplier()
+        parent_candidate, parent_results = self._context_supplier()
+        parent_text = (
+            json.dumps(parent_candidate, sort_keys=True, separators=(",", ":"))
+            if isinstance(parent_candidate, dict) and len(parent_candidate) > 1
+            else next(iter(parent_candidate.values()))
+            if isinstance(parent_candidate, dict)
+            else parent_candidate
+        )
         try:
             # Prompt validation is part of the provider attempt. Keep it
             # inside this boundary so GEPA cannot silently swallow its error.
@@ -103,10 +112,61 @@ class GepaReflectionLM:
             self._success_reporter(str(provider_prompt))
         return response
 
+    def reflect(
+        self,
+        candidate: dict[str, str],
+        reflective_dataset: Any,
+        components_to_update: list[str],
+    ) -> tuple[Any, "GepaReflectionLM"]:
+        """Implement GEPA's component-aware ReflectionLM protocol.
+
+        The callable protocol has no selected-component information.  GEPA's
+        newer protocol does, so tuples must use it rather than reverse-engineer
+        a key from a rendered vendor prompt.
+        """
+        from gepa.proposer.reflective_mutation.reflection_lm import ReflectionProposal
+
+        _, parent_results = self._context_supplier()
+        full_candidate = candidate
+        proposal = ReflectionProposal(new_texts={}, prompts={}, raw_lm_outputs={})
+        for component in components_to_update:
+            if component not in candidate:
+                continue
+            parent_text = candidate[component]
+            others = {key: value for key, value in full_candidate.items() if key != component}
+            config = self._config
+            if others:
+                template = config.reflection_prompt_template or DEFAULT_REFLECTION_PROMPT_TEMPLATE
+                config = replace(
+                    config,
+                    reflection_prompt_template=(
+                        f"{template}\n\nOther instruction-set components (read-only): "
+                        f"{json.dumps(others, sort_keys=True, ensure_ascii=False)}"
+                    ),
+                )
+            provider_prompt = ""
+            try:
+                provider_prompt = build_reflection_prompt(parent_text, parent_results, config)
+                result = reflect_with_provider(parent_text, parent_results, config)
+                self._account_usage(getattr(result, "usage", None))
+            except Exception as error:
+                billable_usage = getattr(error, "usage", None)
+                if billable_usage is not None:
+                    self._account_usage(billable_usage)
+                if self._failure_reporter is not None:
+                    self._failure_reporter(error=error, gepa_prompt=provider_prompt, parent_text=parent_text, parent_results=parent_results)
+                raise
+            proposal.new_texts[component] = result.response
+            proposal.prompts[component] = getattr(result, "prompt", provider_prompt)
+            proposal.raw_lm_outputs[component] = result.response
+            if self._success_reporter is not None:
+                self._success_reporter(str(proposal.prompts[component]))
+        return proposal, self
+
 
 def make_gepa_reflection_lm(
     *,
-    context_supplier: Callable[[], tuple[str, list[Any]]],
+    context_supplier: Callable[[], tuple[str | dict[str, str], list[Any]]],
     config: Any,
     failure_reporter: Callable[..., None] | None = None,
     success_reporter: Callable[[str], None] | None = None,

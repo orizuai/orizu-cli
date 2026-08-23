@@ -32,6 +32,7 @@ def _instruction_set_from_wire(value: Any) -> dict[str, Any] | None:
         "model_config": model_config,
         "shape": value.get("shape"),
         "profile_version_id": value.get("profileVersionId"),
+        "model_config_settings_version_id": value.get("modelConfigSettingsVersionId"),
         "version_number": value.get("versionNumber"),
         "prompt_component_key": value.get("promptComponentKey"),
         "components": normalized_components,
@@ -129,18 +130,25 @@ class OrizuClient:
         *,
         project: str,
         optimizer_version_id: str,
-        prompt_version_id: str,
+        prompt_version_id: str | None,
+        prompt_version_ids: list[str] | None = None,
+        instruction_set_profile_version_id: str | None = None,
         scorer_version_id: str,
         dataset_version_id: str,
         split_set_id: str,
         train_split: str,
         validation_split: str,
+        model_config_settings_version_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
         query = urllib.parse.urlencode({"project": project})
+        input_prompt_version_ids = sorted(set(prompt_version_ids or ([prompt_version_id] if prompt_version_id else [])))
+        if not input_prompt_version_ids and not instruction_set_profile_version_id:
+            raise RuntimeError("optimization run requires at least one prompt version id")
         data = self._request("POST", f"/api/cli/optimization-runs?{query}", {
             "optimizerVersionId": optimizer_version_id,
-            "promptVersionIds": [prompt_version_id],
+            "promptVersionIds": input_prompt_version_ids,
+            **({"instructionSetProfileVersionId": instruction_set_profile_version_id} if instruction_set_profile_version_id else {}),
             "scorers": [
                 {
                     "scorerVersionId": scorer_version_id,
@@ -156,25 +164,31 @@ class OrizuClient:
             "trainSplitName": train_split,
             "validationSplitName": validation_split,
             "metadata": metadata or {},
+            **({"modelConfigSettingsVersionId": model_config_settings_version_id} if model_config_settings_version_id else {}),
         })
         return data["optimization_run_id"]
 
     def fetch_exec_context(
         self,
         *,
-        prompt_version_id: str,
+        prompt_version_id: str | None,
         runner_version_id: str,
         dataset_version_id: str,
         split_set_id: str,
         split: str,
+        instruction_set_profile_version_id: str | None = None,
     ) -> tuple[PromptContext, list[DatasetRow]]:
-        query = urllib.parse.urlencode({
-            "promptVersion": prompt_version_id,
+        params = {
             "runnerVersion": runner_version_id,
             "datasetVersion": dataset_version_id,
             "splitSet": split_set_id,
             "split": split,
-        })
+        }
+        if prompt_version_id:
+            params["promptVersion"] = prompt_version_id
+        query = urllib.parse.urlencode(params)
+        if instruction_set_profile_version_id:
+            query = f"{query}&" + urllib.parse.urlencode({"instructionSetProfileVersionId": instruction_set_profile_version_id})
         data = self._request("GET", f"/api/cli/runners/exec-context?{query}")
         prompt = data["prompt"]
         rows = [
@@ -185,7 +199,7 @@ class OrizuClient:
             body=prompt.get("body"),
             body_kind=prompt.get("bodyKind") or "text",
             provider_settings=prompt.get("providerSettings") or {},
-            prompt_version_id=prompt["promptVersionId"],
+            prompt_version_id=prompt.get("promptVersionId"),
             runner_version_id=prompt["runnerVersionId"],
             prompt_id=prompt.get("promptId"),
             instruction_set=_instruction_set_from_wire(data.get("instructionSet")),

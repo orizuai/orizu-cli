@@ -178,7 +178,6 @@ class RuntimeReworkContracts(unittest.TestCase):
         """Kills launch guards that GEPA callback exceptions cannot enforce."""
         for env, seed, name in (
             ({"ORIZU_USE_MERGE": "1"}, {"prompt": "seed"}, "merge"),
-            ({}, {"prompt": "seed", "other": "second"}, "multi-component"),
             ({"ORIZU_SAMPLING_STRATEGY": "pxn"}, {"prompt": "seed"}, "P×N"),
             ({"ORIZU_SELECTION_STRATEGY": "top_k"}, {"prompt": "seed"}, "P×N"),
         ):

@@ -8,10 +8,9 @@ import json
 import subprocess
 import tempfile
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from gepa import optimize
 from gepa.core.adapter import EvaluationBatch
@@ -22,8 +21,10 @@ from gepa.core.callbacks import (
     ValsetEvaluatedEvent,
 )
 
+from orizu_gepa.client import OrizuClient
 from orizu_gepa.optimizer import Budget, DatasetRow, PromptContext, RowEvaluation
 from orizu_gepa.optimizer import TextGepaConfig
+from orizu_gepa.local_log import LocalOptimizationLogger
 from orizu_gepa.reflection import ReflectionProviderError, RetryableReflectionProviderError
 from orizu_gepa_connector.adapter import RunnerEvaluationAdapter, ScorerContractError
 from orizu_gepa_connector.callbacks import LifecycleHooks, OrizuCallback
@@ -80,11 +81,12 @@ class DeterministicAdapter:
     """Our permitted adapter seam: GEPA itself owns the optimization loop."""
 
     def evaluate(self, batch, candidate, capture_traces=False):
-        score = 1.0 if candidate["prompt"] == "better" else 0.2
+        candidate_text = candidate.get("prompt", next(iter(candidate.values())))
+        score = 1.0 if all(value == "better" for value in candidate.values()) else 0.2
         trajectories = ([{"feedback": "Use better", "row_id": row["id"]} for row in batch]
                         if capture_traces else None)
         return EvaluationBatch(
-            outputs=[{"answer": candidate["prompt"], "row_id": row["id"]} for row in batch],
+            outputs=[{"answer": candidate_text, "row_id": row["id"]} for row in batch],
             scores=[score for _ in batch],
             trajectories=trajectories,
             num_metric_calls=len(batch),
@@ -235,6 +237,700 @@ class DurableRecordingClient:
 
 
 class OfficialGepaEngineRedContracts(unittest.TestCase):
+    def test_runtime_launches_the_shape_ordered_tuple_through_the_real_engine_boundary(self):
+        """Mutants killed: ignore the profile/tuple/settings snapshot, budget one component, or drop GEPA's selector."""
+        instruction_set = {
+            "name": "planner", "shape": ["tools", "system"],
+            "profile_version_id": "15350000-0000-4000-8000-000000000002",
+            "model_config_settings_version_id": "15360000-0000-4000-8000-000000000001",
+            "components": {"tools": "Tools bytes\n", "system": "System bytes\n"},
+            "pinned_components": {},
+        }
+        prompt_context = PromptContext(
+            body=None, body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="prompt-version-1", runner_version_id="runner-version-1",
+            instruction_set=instruction_set, body_present=False,
+        )
+        scorer_context = PromptContext(
+            body="score", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="scorer-prompt", runner_version_id="runner-version-1",
+            scorer_version_id="scorer-version-1",
+        )
+        client = DurableRecordingClient()
+        client.fetch_exec_context = MagicMock(side_effect=[(prompt_context, [{"id": "train"}]), (prompt_context, [{"id": "validation"}])])
+        client.fetch_scorer_exec_context = MagicMock(return_value=(scorer_context, []))
+        client.start_run = MagicMock(return_value=RUN_ID)
+        adapter = MagicMock()
+        adapter.last_candidate = {"tools": "better tools", "system": "better system"}
+        adapter.last_row_evaluations = []
+        adapter.num_threads_plan.to_payload.return_value = {"requested": 1, "effective": 1}
+        local_logger = MagicMock()
+        budget = Budget("max_metric_calls", 10, 10)
+        result = SimpleNamespace(best_idx=0, val_aggregate_scores=[0.5], total_metric_calls=1,
+                                 candidates=[{"tools": "better tools", "system": "better system"}], num_full_val_evals=1)
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_PROMPT_VERSION_ID": "prompt-version-1", "ORIZU_DATASET_VERSION_ID": "dataset-version-1",
+            "ORIZU_SPLIT_SET_ID": "split-set-1", "ORIZU_SCORER_VERSION_ID": "scorer-version-1",
+            "ORIZU_RUNNER_VERSION_ID": "runner-version-1", "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "/scorer", "ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID": instruction_set["profile_version_id"],
+            "ORIZU_COMPONENT_SELECTOR": "round-robin",
+            "ORIZU_VERIFIED_RUNNER_DIRS": "[\"/candidate\", \"/scorer\"]",
+        }
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "build_config_from_environment", return_value=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1)), \
+             patch.object(runtime, "resolve_scorer_input_contract", return_value=("candidate", "candidate")), \
+             patch.object(runtime, "RunnerEvaluationAdapter", return_value=adapter), \
+             patch.object(runtime, "validate_seed_before_run", return_value={"preflight_metric_calls": 0}), \
+             patch.object(runtime, "resolved_budget", return_value=budget) as resolve_budget, \
+             patch.object(runtime, "create_local_logger_from_environment", return_value=local_logger), \
+             patch.object(runtime, "make_gepa_reflection_lm") as make_reflection_lm, \
+             patch.object(runtime, "run_official_gepa", return_value=result) as run_engine:
+            runtime.run_from_environment()
+
+        self.assertEqual(client.fetch_exec_context.call_args_list[0].kwargs["instruction_set_profile_version_id"], instruction_set["profile_version_id"])
+        self.assertEqual(run_engine.call_args.kwargs["seed_candidate"], {"tools": "Tools bytes\n", "system": "System bytes\n"})
+        self.assertEqual(list(run_engine.call_args.kwargs["seed_candidate"]), ["tools", "system"])
+        self.assertEqual(client.start_run.call_args.kwargs["model_config_settings_version_id"], instruction_set["model_config_settings_version_id"])
+        self.assertIsNone(client.start_run.call_args.kwargs["prompt_version_id"])
+        self.assertEqual(
+            client.start_run.call_args.kwargs["instruction_set_profile_version_id"],
+            instruction_set["profile_version_id"],
+        )
+        self.assertEqual(resolve_budget.call_args.kwargs["num_components"], 2)
+        self.assertEqual(run_engine.call_args.kwargs["module_selector"], "round_robin")
+        self.assertEqual(make_reflection_lm.call_args.kwargs["context_supplier"]()[0], adapter.last_candidate)
+        self.assertEqual(local_logger.write_result.call_args.args[0].best_candidate_text, result.candidates[0])
+
+    def test_reflection_bridge_reflects_the_selected_tuple_component_not_a_rendered_map(self):
+        """Mutant killed: pass the whole tuple JSON to the vendor reflection provider."""
+        captured: list[str] = []
+        reflection_lm = make_gepa_reflection_lm(
+            context_supplier=lambda: ({"tools": "Tools bytes", "system": "System bytes"}, []),
+            config=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1),
+        )
+        import orizu_gepa_connector.reflection as reflection
+        with patch.object(reflection, "reflect_with_provider", side_effect=lambda parent_text, *_args: (
+            captured.append(parent_text) or SimpleNamespace(
+                response="better", prompt="provider prompt", usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+        )):
+            proposal, _ = reflection_lm.reflect(
+                {"tools": "Tools bytes", "system": "System bytes"}, {}, ["system"]
+            )
+        self.assertEqual(proposal.new_texts, {"system": "better"})
+        self.assertEqual(captured, ["System bytes"])
+
+    def test_reflection_bridge_keeps_a_set_of_one_candidate_as_the_legacy_bare_value(self):
+        """Mutant killed: JSON-serialize every candidate map before provider reflection."""
+        captured: list[str] = []
+        reflection_lm = make_gepa_reflection_lm(
+            context_supplier=lambda: ({"prompt": "Legacy prompt bytes\n"}, []),
+            config=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1),
+        )
+        import orizu_gepa_connector.reflection as reflection
+        with patch.object(reflection, "reflect_with_provider", side_effect=lambda parent_text, *_args: (
+            captured.append(parent_text) or SimpleNamespace(
+                response="better", prompt="provider prompt", usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+        )):
+            proposal, _ = reflection_lm.reflect({"prompt": "Legacy prompt bytes\n"}, {}, ["prompt"])
+        self.assertEqual(proposal.new_texts, {"prompt": "better"})
+        self.assertEqual(captured, ["Legacy prompt bytes\n"])
+
+    def test_required_environment_allows_an_explicit_instruction_set_without_a_prompt_id(self):
+        """Mutant Q1 killed: require ORIZU_PROMPT_VERSION_ID even on the explicit tuple path."""
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_DATASET_VERSION_ID": "dataset-version-1", "ORIZU_SPLIT_SET_ID": "split-set-1",
+            "ORIZU_SCORER_VERSION_ID": "scorer-version-1", "ORIZU_RUNNER_VERSION_ID": "runner-version-1",
+            "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate", "ORIZU_SCORER_RUNNER_DIR": "/scorer",
+            "ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID": "profile-version-1",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertNotIn("ORIZU_PROMPT_VERSION_ID", runtime._required_environment())
+
+    def test_required_environment_refuses_a_legacy_launch_without_a_prompt_id(self):
+        """Mutant Q1 killed: allow a legacy launch to reach the connector with no prompt id."""
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_DATASET_VERSION_ID": "dataset-version-1", "ORIZU_SPLIT_SET_ID": "split-set-1",
+            "ORIZU_SCORER_VERSION_ID": "scorer-version-1", "ORIZU_RUNNER_VERSION_ID": "runner-version-1",
+            "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate", "ORIZU_SCORER_RUNNER_DIR": "/scorer",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "missing connector environment: ORIZU_PROMPT_VERSION_ID"):
+                runtime._required_environment()
+
+    def test_client_omits_prompt_version_query_parameter_for_an_explicit_instruction_set(self):
+        """Mutant Q2 killed: serialize promptVersion=None into the exec-context request."""
+        response = {"prompt": {"body": None, "bodyKind": "text", "promptVersionId": "prompt", "runnerVersionId": "runner"}, "rows": []}
+        with patch.object(OrizuClient, "_request", return_value=response) as request:
+            client = OrizuClient(api_url="https://example.invalid", token="test")
+            client.fetch_exec_context(
+                prompt_version_id=None, runner_version_id="runner", dataset_version_id="dataset",
+                split_set_id="split-set", split="train", instruction_set_profile_version_id="profile",
+            )
+        self.assertNotIn("promptVersion=", request.call_args.args[1])
+
+    def test_runtime_names_an_incomplete_tuple_refusal_before_engine_launch(self):
+        """Mutant killed: translate the route's 409 tuple failure into a generic connector crash."""
+        client = DurableRecordingClient()
+        client.fetch_exec_context = MagicMock(side_effect=RuntimeError("GET /api/cli/runners/exec-context failed: 409 {\"error\":\"instruction_set_tuple_incomplete: tools\"}"))
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_PROMPT_VERSION_ID": "prompt-version-1", "ORIZU_DATASET_VERSION_ID": "dataset-version-1",
+            "ORIZU_SPLIT_SET_ID": "split-set-1", "ORIZU_SCORER_VERSION_ID": "scorer-version-1",
+            "ORIZU_RUNNER_VERSION_ID": "runner-version-1", "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "/scorer", "ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID": "profile-version-1",
+        }
+        with patch.dict(os.environ, env, clear=True), patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "build_config_from_environment", return_value=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1)), \
+             patch.object(runtime, "run_official_gepa") as run_engine:
+            with self.assertRaisesRegex(RuntimeError, "instruction_set_tuple_incomplete: tools"):
+                runtime.run_from_environment()
+        run_engine.assert_not_called()
+
+    def test_runtime_refuses_a_shape_mismatch_before_start_run(self):
+        """Mutant killed: bypass the real launch guard and optimize a partial tuple."""
+        prompt_context = PromptContext(
+            body=None, body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="prompt-version-1", runner_version_id="runner-version-1",
+            instruction_set={"shape": ["system", "tools"], "components": {"system": "System bytes\n"}, "pinned_components": {}},
+            body_present=False,
+        )
+        client = DurableRecordingClient()
+        client.fetch_exec_context = MagicMock(return_value=(prompt_context, []))
+        client.fetch_scorer_exec_context = MagicMock(return_value=(PromptContext(
+            body="score", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="scorer-prompt", runner_version_id="runner-version-1", scorer_version_id="scorer-version-1",
+        ), []))
+        client.start_run = MagicMock(return_value=RUN_ID)
+        adapter = MagicMock()
+        adapter.num_threads_plan.to_payload.return_value = {"requested": 1, "effective": 1}
+        result = SimpleNamespace(best_idx=0, val_aggregate_scores=[0.5], total_metric_calls=1,
+                                 candidates=[{"system": "better system"}], num_full_val_evals=1)
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_PROMPT_VERSION_ID": "prompt-version-1", "ORIZU_DATASET_VERSION_ID": "dataset-version-1",
+            "ORIZU_SPLIT_SET_ID": "split-set-1", "ORIZU_SCORER_VERSION_ID": "scorer-version-1",
+            "ORIZU_RUNNER_VERSION_ID": "runner-version-1", "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "/scorer", "ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID": "profile-version-1",
+            "ORIZU_VERIFIED_RUNNER_DIRS": "[\"/candidate\", \"/scorer\"]",
+        }
+        with patch.dict(os.environ, env, clear=True), patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "build_config_from_environment", return_value=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1)), \
+             patch.object(runtime, "resolve_scorer_input_contract", return_value=("candidate", "candidate")), \
+             patch.object(runtime, "RunnerEvaluationAdapter", return_value=adapter), \
+             patch.object(runtime, "validate_seed_before_run", return_value={"preflight_metric_calls": 0}), \
+             patch.object(runtime, "resolved_budget", return_value=Budget("max_metric_calls", 10, 10)), \
+             patch.object(runtime, "create_local_logger_from_environment", return_value=None), \
+             patch.object(runtime, "run_official_gepa", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "instruction_set_tuple_shape_mismatch: tools"):
+                runtime.run_from_environment()
+        client.start_run.assert_not_called()
+
+    def test_runtime_refuses_pinned_tuple_before_start_run(self):
+        """Mutant killed: omit pinned components when the real launch guard sees the tuple."""
+        prompt_context = PromptContext(
+            body=None, body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="prompt-version-1", runner_version_id="runner-version-1",
+            instruction_set={"shape": ["system", "tools"], "components": {"system": "System bytes\n"},
+                             "pinned_components": {"tools": {"repoPath": "skills/tools.md", "contentSha": "a" * 64, "commitSha": "b" * 40}}},
+            body_present=False,
+        )
+        client = DurableRecordingClient()
+        client.fetch_exec_context = MagicMock(return_value=(prompt_context, []))
+        client.fetch_scorer_exec_context = MagicMock(return_value=(PromptContext(
+            body="score", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="scorer-prompt", runner_version_id="runner-version-1", scorer_version_id="scorer-version-1",
+        ), []))
+        client.start_run = MagicMock(return_value=RUN_ID)
+        adapter = MagicMock()
+        adapter.num_threads_plan.to_payload.return_value = {"requested": 1, "effective": 1}
+        result = SimpleNamespace(best_idx=0, val_aggregate_scores=[0.5], total_metric_calls=1,
+                                 candidates=[{"system": "better system"}], num_full_val_evals=1)
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_PROMPT_VERSION_ID": "prompt-version-1", "ORIZU_DATASET_VERSION_ID": "dataset-version-1",
+            "ORIZU_SPLIT_SET_ID": "split-set-1", "ORIZU_SCORER_VERSION_ID": "scorer-version-1",
+            "ORIZU_RUNNER_VERSION_ID": "runner-version-1", "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "/scorer", "ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID": "profile-version-1",
+            "ORIZU_VERIFIED_RUNNER_DIRS": "[\"/candidate\", \"/scorer\"]",
+        }
+        with patch.dict(os.environ, env, clear=True), patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "build_config_from_environment", return_value=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1)), \
+             patch.object(runtime, "resolve_scorer_input_contract", return_value=("candidate", "candidate")), \
+             patch.object(runtime, "RunnerEvaluationAdapter", return_value=adapter), \
+             patch.object(runtime, "validate_seed_before_run", return_value={"preflight_metric_calls": 0}), \
+             patch.object(runtime, "resolved_budget", return_value=Budget("max_metric_calls", 10, 10)), \
+             patch.object(runtime, "create_local_logger_from_environment", return_value=None), \
+             patch.object(runtime, "run_official_gepa", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "instruction_set_pinned_components_unsupported: tools"):
+                runtime.run_from_environment()
+        client.start_run.assert_not_called()
+
+    def test_runtime_keeps_an_implicit_instruction_set_launch_on_the_legacy_single_prompt_seed(self):
+        """Mutant killed: infer the explicit tuple path from exec-context data alone."""
+        prompt_context = PromptContext(
+            body="Legacy prompt bytes\n", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="prompt-version-1", runner_version_id="runner-version-1", prompt_id="prompt-id",
+            instruction_set={"shape": ["tools", "system"], "components": {"tools": "Tools bytes\n", "system": "System bytes\n"}, "pinned_components": {}},
+        )
+        scorer_context = PromptContext(
+            body="score", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="scorer-prompt", runner_version_id="runner-version-1", scorer_version_id="scorer-version-1",
+        )
+        client = DurableRecordingClient()
+        client.fetch_exec_context = MagicMock(side_effect=[(prompt_context, [{"id": "train"}]), (prompt_context, [{"id": "validation"}])])
+        client.fetch_scorer_exec_context = MagicMock(return_value=(scorer_context, []))
+        client.start_run = MagicMock(return_value=RUN_ID)
+        client.promote_candidate = MagicMock(return_value="promoted-version")
+        adapter = MagicMock(); adapter.num_threads_plan.to_payload.return_value = {"requested": 1, "effective": 1}
+        result = SimpleNamespace(best_idx=1, val_aggregate_scores=[0.2, 0.9], total_metric_calls=1,
+                                 candidates=[{"prompt": "Legacy prompt bytes\n"}, {"prompt": "Better legacy prompt\n"}], num_full_val_evals=1)
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_PROMPT_VERSION_ID": "prompt-version-1", "ORIZU_DATASET_VERSION_ID": "dataset-version-1",
+            "ORIZU_SPLIT_SET_ID": "split-set-1", "ORIZU_SCORER_VERSION_ID": "scorer-version-1",
+            "ORIZU_RUNNER_VERSION_ID": "runner-version-1", "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "/scorer", "ORIZU_VERIFIED_RUNNER_DIRS": "[\"/candidate\", \"/scorer\"]",
+            "ORIZU_AUTO_PROMOTE": "1", "ORIZU_REFLECTION_MODEL": "openai/test",
+        }
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "resolve_scorer_input_contract", return_value=("candidate", "candidate")), \
+             patch.object(runtime, "RunnerEvaluationAdapter", return_value=adapter), \
+             patch.object(runtime, "validate_seed_before_run", return_value={"preflight_metric_calls": 0}), \
+             patch.object(runtime, "resolved_budget", return_value=Budget("max_metric_calls", 10, 10)), \
+             patch.object(runtime, "create_local_logger_from_environment", return_value=None), \
+             patch.object(runtime, "run_official_gepa", return_value=result) as run_engine:
+            runtime.run_from_environment()
+        self.assertEqual(run_engine.call_args.kwargs["seed_candidate"], {"prompt": "Legacy prompt bytes\n"})
+        self.assertEqual(client.promote_candidate.call_args.kwargs["body"], "Better legacy prompt\n")
+
+    def test_runtime_writes_a_set_of_one_best_candidate_as_the_legacy_result_json_string(self):
+        """Mutant killed: write every best candidate map verbatim to result.json."""
+        prompt_context = PromptContext(
+            body="Legacy prompt bytes\n", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="prompt-version-1", runner_version_id="runner-version-1", prompt_id="prompt-id",
+            instruction_set={"shape": ["prompt"], "components": {"prompt": "Legacy prompt bytes\n"}, "pinned_components": {}},
+        )
+        scorer_context = PromptContext(
+            body="score", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="scorer-prompt", runner_version_id="runner-version-1", scorer_version_id="scorer-version-1",
+        )
+        client = DurableRecordingClient()
+        client.fetch_exec_context = MagicMock(side_effect=[(prompt_context, [{"id": "train"}]), (prompt_context, [{"id": "validation"}])])
+        client.fetch_scorer_exec_context = MagicMock(return_value=(scorer_context, []))
+        client.start_run = MagicMock(return_value=RUN_ID)
+        adapter = MagicMock(); adapter.num_threads_plan.to_payload.return_value = {"requested": 1, "effective": 1}
+        result = SimpleNamespace(best_idx=1, val_aggregate_scores=[0.2, 0.9], total_metric_calls=1,
+                                 candidates=[{"prompt": "Legacy prompt bytes\n"}, {"prompt": "Better legacy prompt\n"}], num_full_val_evals=1)
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_PROMPT_VERSION_ID": "prompt-version-1", "ORIZU_DATASET_VERSION_ID": "dataset-version-1",
+            "ORIZU_SPLIT_SET_ID": "split-set-1", "ORIZU_SCORER_VERSION_ID": "scorer-version-1",
+            "ORIZU_RUNNER_VERSION_ID": "runner-version-1", "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "/scorer", "ORIZU_VERIFIED_RUNNER_DIRS": "[\"/candidate\", \"/scorer\"]",
+            "ORIZU_REFLECTION_MODEL": "openai/test",
+        }
+        with tempfile.TemporaryDirectory() as root:
+            local_logger = LocalOptimizationLogger.create(root, RUN_ID)
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+                 patch.object(runtime, "resolve_scorer_input_contract", return_value=("candidate", "candidate")), \
+                 patch.object(runtime, "RunnerEvaluationAdapter", return_value=adapter), \
+                 patch.object(runtime, "validate_seed_before_run", return_value={"preflight_metric_calls": 0}), \
+                 patch.object(runtime, "resolved_budget", return_value=Budget("max_metric_calls", 10, 10)), \
+                 patch.object(runtime, "create_local_logger_from_environment", return_value=local_logger), \
+                 patch.object(runtime, "run_official_gepa", return_value=result):
+                runtime.run_from_environment()
+            artifact = json.loads((Path(root) / RUN_ID / "result.json").read_text())
+        self.assertEqual(artifact["best_candidate_text"], "Better legacy prompt\n")
+
+    def test_runtime_refuses_multi_component_auto_promotion_before_start_run(self):
+        """Mutant killed: pass a tuple through to prompt-only auto-promotion's first-value body write."""
+        prompt_context = PromptContext(
+            body=None, body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="prompt-version-1", runner_version_id="runner-version-1", prompt_id="prompt-id",
+            instruction_set={"shape": ["system", "tools"], "components": {"system": "System bytes\n", "tools": "Tools bytes\n"}, "pinned_components": {}},
+            body_present=False,
+        )
+        client = DurableRecordingClient()
+        client.fetch_exec_context = MagicMock(return_value=(prompt_context, []))
+        client.fetch_scorer_exec_context = MagicMock(return_value=(PromptContext(
+            body="score", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="scorer-prompt", runner_version_id="runner-version-1", scorer_version_id="scorer-version-1",
+        ), []))
+        client.start_run = MagicMock(return_value=RUN_ID)
+        client.promote_candidate = MagicMock(return_value="promoted-version")
+        adapter = MagicMock()
+        adapter.num_threads_plan.to_payload.return_value = {"requested": 1, "effective": 1}
+        result = SimpleNamespace(best_idx=1, val_aggregate_scores=[0.2, 0.9], total_metric_calls=1,
+                                 candidates=[{"system": "System bytes\n", "tools": "Tools bytes\n"}, {"system": "better system", "tools": "better tools"}], num_full_val_evals=1)
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_PROMPT_VERSION_ID": "prompt-version-1", "ORIZU_DATASET_VERSION_ID": "dataset-version-1",
+            "ORIZU_SPLIT_SET_ID": "split-set-1", "ORIZU_SCORER_VERSION_ID": "scorer-version-1",
+            "ORIZU_RUNNER_VERSION_ID": "runner-version-1", "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "/scorer", "ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID": "profile-version-1",
+            "ORIZU_VERIFIED_RUNNER_DIRS": "[\"/candidate\", \"/scorer\"]", "ORIZU_AUTO_PROMOTE": "1",
+            "ORIZU_REFLECTION_MODEL": "openai/test",
+        }
+        with patch.dict(os.environ, env, clear=True), patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "resolve_scorer_input_contract", return_value=("candidate", "candidate")), \
+             patch.object(runtime, "RunnerEvaluationAdapter", return_value=adapter), \
+             patch.object(runtime, "validate_seed_before_run", return_value={"preflight_metric_calls": 0}), \
+             patch.object(runtime, "resolved_budget", return_value=Budget("max_metric_calls", 10, 10)), \
+             patch.object(runtime, "create_local_logger_from_environment", return_value=None), \
+             patch.object(runtime, "run_official_gepa", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "instruction_set_candidate_promotion_unsupported"):
+                runtime.run_from_environment()
+        client.start_run.assert_not_called()
+
+    def test_runtime_keeps_set_of_one_auto_promotion_available(self):
+        """Mutant killed: refuse the pre-existing one-component auto-promotion path with tuple protection."""
+        prompt_context = PromptContext(
+            body="System bytes\n", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="prompt-version-1", runner_version_id="runner-version-1", prompt_id="prompt-id",
+            instruction_set={"shape": ["system"], "components": {"system": "System bytes\n"}, "pinned_components": {}},
+        )
+        client = DurableRecordingClient()
+        client.fetch_exec_context = MagicMock(return_value=(prompt_context, []))
+        client.fetch_scorer_exec_context = MagicMock(return_value=(PromptContext(
+            body="score", body_kind="text", provider_settings={"model": "gpt-5.4"},
+            prompt_version_id="scorer-prompt", runner_version_id="runner-version-1", scorer_version_id="scorer-version-1",
+        ), []))
+        client.start_run = MagicMock(return_value=RUN_ID)
+        client.promote_candidate = MagicMock(return_value="promoted-version")
+        adapter = MagicMock()
+        adapter.num_threads_plan.to_payload.return_value = {"requested": 1, "effective": 1}
+        result = SimpleNamespace(best_idx=1, val_aggregate_scores=[0.2, 0.9], total_metric_calls=1,
+                                 candidates=[{"system": "System bytes\n"}, {"system": "better system"}], num_full_val_evals=1)
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version-1",
+            "ORIZU_PROMPT_VERSION_ID": "prompt-version-1", "ORIZU_DATASET_VERSION_ID": "dataset-version-1",
+            "ORIZU_SPLIT_SET_ID": "split-set-1", "ORIZU_SCORER_VERSION_ID": "scorer-version-1",
+            "ORIZU_RUNNER_VERSION_ID": "runner-version-1", "ORIZU_CANDIDATE_RUNNER_DIR": "/candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "/scorer", "ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID": "profile-version-1",
+            "ORIZU_VERIFIED_RUNNER_DIRS": "[\"/candidate\", \"/scorer\"]", "ORIZU_AUTO_PROMOTE": "1",
+            "ORIZU_REFLECTION_MODEL": "openai/test",
+        }
+        with patch.dict(os.environ, env, clear=True), patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "resolve_scorer_input_contract", return_value=("candidate", "candidate")), \
+             patch.object(runtime, "RunnerEvaluationAdapter", return_value=adapter), \
+             patch.object(runtime, "validate_seed_before_run", return_value={"preflight_metric_calls": 0}), \
+             patch.object(runtime, "resolved_budget", return_value=Budget("max_metric_calls", 10, 10)), \
+             patch.object(runtime, "create_local_logger_from_environment", return_value=None), \
+             patch.object(runtime, "run_official_gepa", return_value=result):
+            runtime.run_from_environment()
+        client.start_run.assert_called_once()
+        self.assertEqual(client.start_run.call_args.kwargs["prompt_version_id"], "prompt-version-1")
+        self.assertIsNone(client.start_run.call_args.kwargs["instruction_set_profile_version_id"])
+        self.assertEqual(client.promote_candidate.call_args.kwargs["body"], "better system")
+
+    def test_pinned_instruction_set_tuple_is_refused_before_a_run_exists(self):
+        """Mutant killed: turn a git-pinned component into an empty optimizable body."""
+        from orizu_gepa_connector.runtime import validate_launch_contract
+
+        with self.assertRaisesRegex(RuntimeError, "instruction_set_pinned_components_unsupported: tools"):
+            validate_launch_contract(
+                {"system": "seed system"},
+                pinned_components={"tools": {"repoPath": "skills/tools.md", "contentSha": "a" * 64, "commitSha": "b" * 40}},
+            )
+
+    def test_client_explicit_profile_fetch_preserves_measured_tuple_shape_and_order(self):
+        """Mutant killed: fetch implicitly, use prompt.body, or reorder the server's shape-ordered tuple."""
+        from orizu_gepa.client import OrizuClient
+
+        response = {
+            "prompt": {"bodyKind": "text", "providerSettings": {"model": "gpt-5.4"}, "promptVersionId": "prompt-version-1", "runnerVersionId": "runner-version-1"},
+            "instructionSet": {
+                "name": "planner", "modelConfig": {"identity": "openai/gpt-5.4"},
+                "shape": ["tools", "system"], "profileVersionId": "15350000-0000-4000-8000-000000000002",
+                "versionNumber": 2, "modelConfigSettingsVersionId": "15360000-0000-4000-8000-000000000001",
+                "components": {"tools": "Tools bytes\n", "system": "System bytes\n"}, "pinnedComponents": {},
+            }, "rows": [],
+        }
+        client = OrizuClient(api_url="http://example.test", token="test")
+        with patch.object(OrizuClient, "_request", return_value=response) as request:
+            context, rows = client.fetch_exec_context(
+                prompt_version_id="prompt-version-1", runner_version_id="runner-version-1",
+                dataset_version_id="dataset-version-1", split_set_id="split-set-1", split="validation",
+                instruction_set_profile_version_id="15350000-0000-4000-8000-000000000002",
+            )
+        self.assertEqual(rows, [])
+        self.assertEqual(context.instruction_set["components"], {"tools": "Tools bytes\n", "system": "System bytes\n"})
+        self.assertEqual(list(context.instruction_set["components"]), ["tools", "system"])
+        self.assertIn("instructionSetProfileVersionId=15350000-0000-4000-8000-000000000002", request.call_args.args[1])
+
+    def test_multi_component_auto_promotion_is_refused_with_a_named_code(self):
+        """Mutant killed: post a partial tuple to the prompt-only promotion endpoint."""
+        from orizu_gepa_connector.runtime import validate_launch_contract
+
+        with self.assertRaisesRegex(RuntimeError, "instruction_set_candidate_promotion_unsupported"):
+            validate_launch_contract({"system": "seed", "tools": "seed"}, auto_promote=True)
+
+    def test_run_creation_records_the_resolved_model_config_settings_version(self):
+        """Mutant killed: discard the settings-version snapshot after exec-context resolution."""
+        from orizu_gepa.client import OrizuClient
+
+        client = OrizuClient(api_url="http://example.test", token="test")
+        with patch.object(OrizuClient, "_request", return_value={"optimization_run_id": "run-1"}) as request:
+            client.start_run(
+                project="team/project", optimizer_version_id="optimizer-version-1", prompt_version_id="prompt-version-1",
+                scorer_version_id="scorer-version-1", dataset_version_id="dataset-version-1", split_set_id="split-set-1",
+                train_split="train", validation_split="validation",
+                model_config_settings_version_id="15360000-0000-4000-8000-000000000001",
+            )
+        self.assertEqual(request.call_args.args[2]["modelConfigSettingsVersionId"], "15360000-0000-4000-8000-000000000001")
+
+    def test_multi_component_launch_is_accepted_before_a_run_exists(self):
+        """Mutant killed: retain the one-component refusal before start_run can execute."""
+        from orizu_gepa_connector.runtime import validate_launch_contract
+
+        validate_launch_contract({"system": "seed system", "tools": "seed tools"})
+
+    def test_shape_and_seed_pair_mismatch_is_named_before_a_run_exists(self):
+        """Mutant killed: accept a partial tuple merely because it has one valid component key."""
+        from orizu_gepa_connector.runtime import validate_launch_contract
+
+        with self.assertRaisesRegex(RuntimeError, "instruction_set_tuple_shape_mismatch: tools"):
+            validate_launch_contract(
+                {"system": "seed system"},
+                instruction_set_shape=["system", "tools"],
+            )
+
+    def test_resolved_budget_scales_with_the_tuple_shape(self):
+        """Mutant killed: keep num_components fixed at one when resolving a preset budget."""
+        from orizu_gepa_connector.runtime import resolved_budget
+
+        one = resolved_budget(TextGepaConfig(budget="light"), trainset_size=2, valset_size=2, num_components=1)
+        two = resolved_budget(TextGepaConfig(budget="light"), trainset_size=2, valset_size=2, num_components=2)
+        self.assertEqual(one.limit, 388)
+        self.assertEqual(one.approx_metric_call_limit, 388)
+        self.assertEqual(two.limit, 742)
+        self.assertEqual(two.approx_metric_call_limit, 742)
+
+    def test_connector_passes_the_measured_module_selector_to_real_gepa(self):
+        """Mutant killed: omit GEPA's module_selector or pass the unrecognized component_selector name."""
+        selected_components: list[list[str]] = []
+
+        class SelectorRecordingAdapter(DeterministicAdapter):
+            def make_reflective_dataset(self, candidate, evaluation, components_to_update):
+                selected_components.append(list(components_to_update))
+                return super().make_reflective_dataset(candidate, evaluation, components_to_update)
+
+        run_official_gepa(
+            seed_candidate={"system": "seed system", "tools": "seed tools"},
+            trainset=[{"id": "train-1"}], valset=[{"id": "validation-1"}],
+            adapter=SelectorRecordingAdapter(), callback=OrizuCallback(RecordingSink(), RUN_ID),
+            hooks=LifecycleHooks(), stop_callbacks=[IterationBoundaryStopper(max_iterations=1)],
+            allow_degenerate_seed=True, module_selector="all",
+        )
+        self.assertTrue(selected_components)
+        self.assertEqual(selected_components[0], ["system", "tools"])
+
+    def test_connector_round_robin_rotates_one_shape_key_each_round(self):
+        """Mutant killed: map round-robin to all, or leave GEPA on its accidental historical default."""
+        selected_components: list[list[str]] = []
+
+        class SelectorRecordingAdapter(DeterministicAdapter):
+            def make_reflective_dataset(self, candidate, evaluation, components_to_update):
+                selected_components.append(list(components_to_update))
+                return super().make_reflective_dataset(candidate, evaluation, components_to_update)
+
+        run_official_gepa(
+            seed_candidate={"system": "seed system", "tools": "seed tools"},
+            trainset=[{"id": "train-1"}], valset=[{"id": "validation-1"}],
+            adapter=SelectorRecordingAdapter(), callback=OrizuCallback(RecordingSink(), RUN_ID),
+            hooks=LifecycleHooks(), stop_callbacks=[IterationBoundaryStopper(max_iterations=2)],
+            allow_degenerate_seed=True, module_selector="round_robin",
+        )
+        self.assertEqual(selected_components[:2], [["system"], ["tools"]])
+
+    def test_real_reflection_bridge_updates_only_the_round_robin_component(self):
+        """Mutants killed: P1 serializes the tuple; P4 writes every proposal to the first key."""
+        import orizu_gepa_connector.reflection as reflection
+        from orizu_gepa.optimizer import build_reflection_prompt
+
+        calls: list[tuple[str, str]] = []
+        sink = RecordingSink()
+        class BridgeAdapter(DeterministicAdapter):
+            propose_new_texts = None
+        def provider(parent, rows, config):
+            prompt = build_reflection_prompt(parent, rows, config)
+            calls.append((parent, prompt))
+            return SimpleNamespace(response=f"better {parent}", prompt=prompt,
+                                   usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+        lm = make_gepa_reflection_lm(
+            context_supplier=lambda: ({"system": "seed system", "tools": "seed tools"}, []),
+            config=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1),
+        )
+        with patch.object(reflection, "reflect_with_provider", side_effect=provider):
+            run_official_gepa(
+                seed_candidate={"system": "seed system", "tools": "seed tools"},
+                trainset=[{"id": "train"}], valset=[{"id": "validation"}], adapter=BridgeAdapter(),
+                callback=OrizuCallback(sink, RUN_ID), hooks=LifecycleHooks(), reflection_lm=lm,
+                stop_callbacks=[IterationBoundaryStopper(max_iterations=1)], allow_degenerate_seed=True,
+                module_selector="round_robin",
+            )
+        proposal = next(event for event in sink.events if event["event_type"] == "candidate_proposed")["payload"]
+        self.assertEqual(calls[0][0], "seed system")
+        self.assertIn('Other instruction-set components (read-only): {"tools": "seed tools"}', calls[0][1])
+        self.assertEqual(proposal["components_to_update"], ["system"])
+        self.assertEqual(proposal["components"], {"system": "better seed system", "tools": "seed tools"})
+
+    def test_real_reflection_bridge_updates_each_all_component_and_keeps_set_of_one_legacy_prompt(self):
+        """Mutants killed: P2 adds tuple context to a singleton; P4 aliases all rewrites to one key."""
+        import orizu_gepa_connector.reflection as reflection
+        from orizu_gepa.optimizer import build_reflection_prompt
+
+        calls: list[tuple[str, str]] = []
+        class BridgeAdapter(DeterministicAdapter):
+            propose_new_texts = None
+        def provider(parent, rows, config):
+            prompt = build_reflection_prompt(parent, rows, config)
+            calls.append((parent, prompt))
+            return SimpleNamespace(response=f"better {parent}", prompt=prompt,
+                                   usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+        lm = make_gepa_reflection_lm(
+            context_supplier=lambda: ({"system": "seed system", "tools": "seed tools"}, []),
+            config=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1),
+        )
+        sink = RecordingSink()
+        with patch.object(reflection, "reflect_with_provider", side_effect=provider):
+            run_official_gepa(
+                seed_candidate={"system": "seed system", "tools": "seed tools"},
+                trainset=[{"id": "train"}], valset=[{"id": "validation"}], adapter=BridgeAdapter(),
+                callback=OrizuCallback(sink, RUN_ID), hooks=LifecycleHooks(), reflection_lm=lm,
+                stop_callbacks=[IterationBoundaryStopper(max_iterations=1)], allow_degenerate_seed=True,
+                module_selector="all",
+            )
+        proposal = next(event for event in sink.events if event["event_type"] == "candidate_proposed")["payload"]
+        self.assertEqual([parent for parent, _ in calls], ["seed system", "seed tools"])
+        self.assertEqual(proposal["components"], {"system": "better seed system", "tools": "better seed tools"})
+        singleton_calls: list[str] = []
+        singleton = make_gepa_reflection_lm(
+            context_supplier=lambda: ({"prompt": "Legacy prompt bytes\n"}, []),
+            config=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1),
+        )
+        with patch.object(reflection, "reflect_with_provider", side_effect=lambda parent, rows, config: (
+            singleton_calls.append(build_reflection_prompt(parent, rows, config)) or
+            SimpleNamespace(response="better", prompt=singleton_calls[-1], usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+        )):
+            singleton.reflect({"prompt": "Legacy prompt bytes\n"}, {"prompt": [{}]}, ["prompt"])
+        self.assertNotIn("Other instruction-set components", singleton_calls[0])
+
+    def test_tuple_reflection_failure_reports_the_frozen_provider_prompt(self):
+        """Mutant R8 killed: report an empty GEPA prompt after the vendor request fails."""
+        import orizu_gepa_connector.reflection as reflection
+
+        reports: list[dict[str, object]] = []
+        lm = make_gepa_reflection_lm(
+            context_supplier=lambda: ({"system": "seed system", "tools": "seed tools"}, []),
+            config=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1),
+            failure_reporter=lambda **report: reports.append(report),
+        )
+        with patch.object(reflection, "reflect_with_provider", side_effect=RuntimeError("vendor unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "vendor unavailable"):
+                lm.reflect({"system": "seed system", "tools": "seed tools"}, {}, ["system"])
+        self.assertIn("seed system", str(reports[0]["gepa_prompt"]))
+
+    def test_tuple_reflection_uses_gepas_candidate_not_the_adapter_last_candidate(self):
+        """Mutant R7 killed: reflect adapter state instead of GEPA's selected parent candidate."""
+        import orizu_gepa_connector.reflection as reflection
+
+        captured: list[str] = []
+        lm = make_gepa_reflection_lm(
+            context_supplier=lambda: ({"system": "stale adapter system", "tools": "stale adapter tools"}, []),
+            config=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1),
+        )
+        templates: list[str] = []
+        with patch.object(reflection, "reflect_with_provider", side_effect=lambda parent, _results, cfg: (
+            captured.append(parent) or templates.append(cfg.reflection_prompt_template) or SimpleNamespace(response="better", prompt="provider", usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+        )):
+            lm.reflect({"system": "GEPA system", "tools": "GEPA tools"}, {}, ["tools"])
+        self.assertEqual(captured, ["GEPA tools"])
+        self.assertEqual(len(templates), 1)
+        self.assertIn('Other instruction-set components (read-only): {"system": "GEPA system"}', templates[0])
+        self.assertNotIn("stale adapter", templates[0])
+
+    def test_tuple_reflection_without_a_custom_template_keeps_the_full_default_prompt(self):
+        """Mutant killed: tuple reflection falls back to a one-line stub instead of DEFAULT_REFLECTION_PROMPT_TEMPLATE."""
+        import orizu_gepa_connector.reflection as reflection
+        from orizu_gepa.optimizer import DEFAULT_REFLECTION_PROMPT_TEMPLATE
+
+        templates: list[str] = []
+        lm = make_gepa_reflection_lm(
+            context_supplier=lambda: ({}, []),
+            config=TextGepaConfig(reflection_model="openai/test", reflection_max_tokens=1),
+        )
+        with patch.object(reflection, "reflect_with_provider", side_effect=lambda _parent, _results, cfg: (
+            templates.append(cfg.reflection_prompt_template) or SimpleNamespace(response="better", prompt="provider", usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+        )):
+            lm.reflect({"system": "GEPA system", "tools": "GEPA tools"}, {}, ["tools"])
+        self.assertEqual(len(templates), 1)
+        self.assertTrue(templates[0].startswith(DEFAULT_REFLECTION_PROMPT_TEMPLATE), templates[0][:120])
+        self.assertIn('Other instruction-set components (read-only): {"system": "GEPA system"}', templates[0])
+
+    def test_skilled_proposer_path_receives_every_component_selected_by_gepa(self):
+        """Mutant killed: skilled-proposer's historical ['prompt'] loop ignores the selected tuple keys."""
+        proposals: list[tuple[dict[str, str], list[str]]] = []
+
+        def skilled_proposer(candidate, reflective_dataset, components_to_update):
+            proposals.append((dict(candidate), list(components_to_update)))
+            return {key: f"better {key}" for key in components_to_update}
+
+        run_official_gepa(
+            seed_candidate={"system": "seed system", "tools": "seed tools"},
+            trainset=[{"id": "train-1"}], valset=[{"id": "validation-1"}],
+            adapter=DeterministicAdapter(), callback=OrizuCallback(RecordingSink(), RUN_ID),
+            hooks=LifecycleHooks(), stop_callbacks=[IterationBoundaryStopper(max_iterations=1)],
+            allow_degenerate_seed=True, custom_candidate_proposer=skilled_proposer,
+            module_selector="all",
+        )
+        self.assertEqual(proposals[0], (
+            {"system": "seed system", "tools": "seed tools"},
+            ["system", "tools"],
+        ))
+
+    def test_real_gepa_round_robin_candidate_proposal_carries_the_full_tuple_and_selected_component(self):
+        """Mutant killed: read selected keys from ProposalEnd or emit only the rewrite delta."""
+        sink = RecordingSink()
+        callback = OrizuCallback(sink, RUN_ID)
+        run_official_gepa(
+            seed_candidate={"system": "seed system", "tools": "seed tools"},
+            trainset=[{"id": "train-1"}], valset=[{"id": "validation-1"}],
+            adapter=DeterministicAdapter(), callback=callback, hooks=LifecycleHooks(),
+            stop_callbacks=[IterationBoundaryStopper(max_iterations=1)], allow_degenerate_seed=True,
+            module_selector="round_robin",
+        )
+        proposal = next(event for event in sink.events if event["event_type"] == "candidate_proposed")
+        self.assertEqual(proposal["payload"], {
+            "components": {"system": "better", "tools": "seed tools"},
+            "components_to_update": ["system"],
+            "payload_truncated": False,
+        })
+
+    def test_real_gepa_all_candidate_proposal_carries_every_component_without_legacy_body(self):
+        """Mutant killed: emit a partial map or a legacy body for a multi-component tuple."""
+        sink = RecordingSink()
+        callback = OrizuCallback(sink, RUN_ID)
+        run_official_gepa(
+            seed_candidate={"system": "seed system", "tools": "seed tools"},
+            trainset=[{"id": "train-1"}], valset=[{"id": "validation-1"}],
+            adapter=DeterministicAdapter(), callback=callback, hooks=LifecycleHooks(),
+            stop_callbacks=[IterationBoundaryStopper(max_iterations=1)], allow_degenerate_seed=True,
+            module_selector="all",
+        )
+        proposal = next(event for event in sink.events if event["event_type"] == "candidate_proposed")
+        self.assertNotIn("body", proposal["payload"])
+        self.assertEqual(proposal["payload"]["components"], {"system": "better", "tools": "better"})
+        self.assertEqual(proposal["payload"]["components_to_update"], ["system", "tools"])
+
     def test_real_gepa_callback_translates_validation_components_and_truncation(self):
         """Kills split rewriting, raw candidate text, and silent payload truncation."""
         event: ValsetEvaluatedEvent = {
@@ -427,6 +1123,61 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         self.assertIsInstance(result.outputs[0]["latency_ms"], int)
         self.assertEqual(result.trajectories[0]["Feedback"], "runner feedback")
         self.assertEqual(lower_result.scores, [0.0])
+
+    def test_real_runner_adapter_passes_a_multi_component_candidate_to_the_runner_as_a_tuple(self):
+        """Mutant killed: collapse the candidate at the adapter boundary before the runner subprocess."""
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            candidate_dir = root_path / "candidate"; scorer_dir = root_path / "scorer"
+            candidate_dir.mkdir(); scorer_dir.mkdir()
+            (candidate_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}))
+            (scorer_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}))
+            (candidate_dir / "runner.py").write_text(
+                "import json, os\n"
+                "data=json.load(open(os.environ['ORIZU_RUNNER_INPUT_PATH']))\n"
+                "assert 'body' not in data['prompt']\n"
+                "json.dump({'model_response': data['instruction_set']['components']}, open(os.environ['ORIZU_RUNNER_OUTPUT_PATH'], 'w'))\n"
+            )
+            (scorer_dir / "runner.py").write_text(
+                "import json, os\njson.dump({'score': 1.0}, open(os.environ['ORIZU_RUNNER_OUTPUT_PATH'], 'w'))\n"
+            )
+            context = PromptContext(
+                body=None, body_kind="text", provider_settings={}, prompt_version_id="prompt-v", runner_version_id="runner-v",
+                instruction_set={"name": "planner", "model_config": {"identity": "openai/gpt-5.4"},
+                                 "shape": ["tools", "system"], "profile_version_id": "profile-version-1", "version_number": 1,
+                                 "prompt_component_key": "system", "components": {"tools": "seed tools", "system": "seed system"}},
+                body_present=False,
+            )
+            adapter = RunnerEvaluationAdapter(candidate_runner_dir=str(candidate_dir), scorer_runner_dir=str(scorer_dir), run_id=RUN_ID, prompt_context=context, scorer_context=context)
+            result = adapter.evaluate([DatasetRow(id="row-1", row={})], {"tools": "NEW TOOLS", "system": "NEW SYSTEM"})
+        self.assertEqual(result.outputs[0]["output"], {"tools": "NEW TOOLS", "system": "NEW SYSTEM"})
+
+    def test_real_runner_adapter_keeps_a_legacy_candidate_string_inside_a_wrapped_tuple_context(self):
+        """Mutant killed: omit legacy prompt.body because the wrapper's shape has multiple keys."""
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            candidate_dir = root_path / "candidate"; scorer_dir = root_path / "scorer"
+            candidate_dir.mkdir(); scorer_dir.mkdir()
+            (candidate_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}))
+            (scorer_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}))
+            (candidate_dir / "runner.py").write_text(
+                "import json, os\n"
+                "input_bytes=open(os.environ['ORIZU_RUNNER_INPUT_PATH']).read()\n"
+                "assert input_bytes == '{\"instruction_set\": {\"name\": \"planner\", \"model_config\": {\"identity\": \"openai/gpt-5.4\"}, \"shape\": [\"tools\", \"system\"], \"prompt_component_key\": \"system\", \"components\": {\"tools\": \"seed tools\", \"system\": \"LEGACY CANDIDATE\"}}, \"row\": {}, \"prompt\": {\"body_kind\": \"text\", \"provider_settings\": {}, \"body\": \"LEGACY CANDIDATE\"}, \"prompt_version_id\": \"prompt-v\", \"runner_version_id\": \"runner-v\", \"run_id\": \"real-gepa-red-run\"}'\n"
+                "json.dump({'model_response': 'legacy runner ran'}, open(os.environ['ORIZU_RUNNER_OUTPUT_PATH'], 'w'))\n"
+            )
+            (scorer_dir / "runner.py").write_text(
+                "import json, os\njson.dump({'score': 1.0}, open(os.environ['ORIZU_RUNNER_OUTPUT_PATH'], 'w'))\n"
+            )
+            context = PromptContext(
+                body="seed system", body_kind="text", provider_settings={}, prompt_version_id="prompt-v", runner_version_id="runner-v",
+                instruction_set={"name": "planner", "model_config": {"identity": "openai/gpt-5.4"},
+                                 "shape": ["tools", "system"], "profile_version_id": "profile-version-1", "version_number": 1,
+                                 "prompt_component_key": "system", "components": {"tools": "seed tools", "system": "seed system"}},
+            )
+            adapter = RunnerEvaluationAdapter(candidate_runner_dir=str(candidate_dir), scorer_runner_dir=str(scorer_dir), run_id=RUN_ID, prompt_context=context, scorer_context=context)
+            result = adapter.evaluate([DatasetRow(id="row-1", row={})], {"prompt": "LEGACY CANDIDATE"})
+        self.assertEqual(result.outputs[0]["output"], "legacy runner ran")
 
     def test_default_gepa_contract_scorer_launches_without_candidate_field(self):
         """Kills resolved model_output forwarding into the default GEPA contract."""
@@ -996,7 +1747,7 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         failed = next(event for event in event_rows if event["event_type"] == "reflection_failed")
         self.assertEqual(failed["payload"]["error_type"], "SentinelReflectionError")
         self.assertEqual(failed["payload"]["message"], "recorded reflective payload cannot be parsed")
-        self.assertEqual(failed["payload"]["parent_text_chars"], 23017)
+        self.assertEqual(failed["payload"]["parent_text_chars"], 4)
         self.assertEqual(failed["payload"]["parent_result_count"], 1)
         self.assertEqual(reflection_rows[0]["status"], "failed")
         self.assertEqual(reflection_rows[0]["error_type"], "SentinelReflectionError")

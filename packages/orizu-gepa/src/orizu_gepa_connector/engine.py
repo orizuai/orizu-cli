@@ -158,6 +158,7 @@ def run_official_gepa(
     proposal_budget: Any | None = None,
     seed_already_validated: bool = False,
     config: TextGepaConfig | None = None,
+    module_selector: str = "round_robin",
 ) -> Any:
     """Run GEPA after the launch-time seed check and emit named lifecycle hooks.
 
@@ -200,6 +201,10 @@ def run_official_gepa(
         # mandatory preflight; only the duplicate evaluator invocation is
         # removed, never the separate proposal ledger.
         gepa_adapter = _PreflightReusingAdapter(adapter, seed_candidate, preflight_rows, preflight_evaluation)
+    if custom_candidate_proposer is not None:
+        # GEPA refuses an adapter-owned proposer alongside its explicit custom
+        # proposer. The latter is the selected skilled-proposer path.
+        gepa_adapter.propose_new_texts = None
 
     config = config or TextGepaConfig()
     candidate_selection_strategy: Any = config.candidate_selection_strategy
@@ -240,9 +245,13 @@ def run_official_gepa(
         "seed": config.seed,
         "display_progress_bar": False,
         "raise_on_exception": True,
+        "module_selector": module_selector,
     }
     if reflection_lm is not None:
         kwargs["reflection_lm"] = reflection_lm
+        # The connector implements GEPA's component-aware strategy protocol;
+        # passing it as a bare callable would discard the selected component.
+        kwargs["reflection_strategy"] = reflection_lm
     if custom_candidate_proposer is not None:
         kwargs["custom_candidate_proposer"] = custom_candidate_proposer
     kwargs["trainset"] = _with_row_identities(trainset)

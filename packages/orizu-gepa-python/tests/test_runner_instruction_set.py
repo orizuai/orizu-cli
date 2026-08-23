@@ -32,6 +32,40 @@ MULTI_COMPONENT_SET = {
 
 
 class RunnerInstructionSetContractTests(unittest.TestCase):
+    def test_candidate_runner_substitutes_every_multi_component_candidate_value(self):
+        """Mutant killed: evaluate only the first tuple component or rewrite the prompt key."""
+        multi = {
+            "name": "planner",
+            "model_config": {"identity": "openai/gpt-5.4", "settings": {}},
+            "shape": ["system", "tools"],
+            "profile_version_id": "profile-version-2",
+            "version_number": 2,
+            "components": {"system": "seed system", "tools": "seed tools"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner_dir = Path(temp_dir)
+            (runner_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}), encoding="utf-8")
+            (runner_dir / "runner.py").write_text(
+                "import json, os\nfrom pathlib import Path\n"
+                "root = Path(os.environ['ORIZU_INSTRUCTION_SET_DIR']) / 'planner' / 'default'\n"
+                "payload = json.loads(Path(os.environ['ORIZU_RUNNER_INPUT_PATH']).read_text(encoding='utf-8'))\n"
+                "Path(os.environ['ORIZU_RUNNER_OUTPUT_PATH']).write_text(json.dumps({'model_response': {'components': payload['instruction_set']['components'], 'layout': {key: (root / f'{key}.md').read_text(encoding='utf-8') for key in ('system', 'tools')}, 'has_body': 'body' in payload['prompt']}, 'error': None}), encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            candidate_runner = make_candidate_runner(runner_dir, None)
+            result = candidate_runner(
+                {"system": "new system", "tools": "new tools"},
+                DatasetRow(id="row-1", row={"id": "row-1"}),
+                PromptContext(body=None, body_kind="text", provider_settings={}, prompt_version_id="prompt-version-1", runner_version_id="runner-version-1", instruction_set=multi, body_present=False),
+                "candidate-1",
+            )
+
+        self.assertEqual(result.model_response, {
+            "components": {"system": "new system", "tools": "new tools"},
+            "layout": {"system": "new system", "tools": "new tools"},
+            "has_body": False,
+        })
+
     def test_candidate_runner_overlays_candidate_bytes_into_the_named_component(self):
         """Mutant killed: forward the seed instruction set without the candidate overlay."""
         single = {
@@ -61,6 +95,31 @@ class RunnerInstructionSetContractTests(unittest.TestCase):
                 "candidate-1",
             )
         self.assertEqual(result.model_response, {"component": "candidate bytes", "layout": "candidate bytes"})
+
+    def test_candidate_runner_accepts_an_implicit_candidate_key_covered_only_by_a_pin(self):
+        """Mutant Q3 killed: validate candidate keys against mutable components but not pins."""
+        instruction_set = {
+            "name": "legacy", "model_config": {"identity": "openai/gpt-5.4", "settings": {}},
+            "shape": ["tools", "system"], "profile_version_id": "profile-version-1", "version_number": 1,
+            "prompt_component_key": "system",
+            "components": {"tools": "seed tools"},
+            "pinned_components": {"system": {"repoPath": "system.md", "contentSha": "a" * 64, "commitSha": "b" * 40}},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner_dir = Path(temp_dir)
+            (runner_dir / "manifest.json").write_text(json.dumps({"command": [sys.executable, "runner.py"]}), encoding="utf-8")
+            (runner_dir / "runner.py").write_text(
+                "import json, os\nfrom pathlib import Path\n"
+                "payload=json.loads(Path(os.environ['ORIZU_RUNNER_INPUT_PATH']).read_text())\n"
+                "Path(os.environ['ORIZU_RUNNER_OUTPUT_PATH']).write_text(json.dumps({'model_response': payload['instruction_set']['components'], 'error': None}))\n",
+                encoding="utf-8",
+            )
+            result = make_candidate_runner(runner_dir, None)(
+                "implicit replacement", DatasetRow(id="row", row={}),
+                PromptContext(body="implicit replacement", body_kind="text", provider_settings={}, prompt_version_id="prompt", runner_version_id="runner", instruction_set=instruction_set),
+                "candidate",
+            )
+        self.assertEqual(result.model_response, {"tools": "seed tools", "system": "implicit replacement"})
 
     def test_scorer_runner_forwards_the_tuple_and_layout_to_its_subprocess(self):
         """Mutant killed: omit scorer_context.instruction_set from extra payload."""

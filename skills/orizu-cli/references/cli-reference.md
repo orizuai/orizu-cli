@@ -98,7 +98,7 @@ orizu instruction-sets shape remove <set> --project my-team/quality-eval --key <
 default and every model-config profile's production state. `create` and `push`
 read a local manifest; JSON output is one document per line.
 
-`profiles new` copies the default tuple into a model-config profile without
+`profiles new` copies the default component map into a model-config profile without
 changing its production resolution; hosted agents may create this seed because
 it does not move production. `profiles promote` moves that profile to a
 version, and `profiles rollback` creates a new version copied from `--to`,
@@ -121,7 +121,7 @@ The manifest is a JSON object with `name`, ordered `shape`, and `components`.
 Every component supplies `{ key, text }` or `{ key, path }`; paths are relative
 to the manifest. Set-wide components must cover the complete shape. A component
 may add `modelConfig` for a profile override: `create` materializes that named
-profile with the set-wide tuple plus its overrides, while `push` updates named
+profile with the set-wide component map plus its overrides, while `push` updates named
 profiles already present on the set. `push` refuses a manifest whose shape
 differs from the stored set.
 
@@ -129,7 +129,7 @@ differs from the stored set.
 `profiles/<identity-slug>/<key>.md` for offline execution. TypeScript runners
 use `loadInstructionSet(dir, name, modelConfigIdentity)` from `orizu`; Python
 runners use `orizu_gepa_connector.instruction_set_loader.load_instruction_set`.
-Both select that model config's production tuple or the default without a
+Both select that model config's production component map or the default without a
 network call. Git-pinned components have no local bytes: loading one raises
 `instruction_set_component_unavailable` until the runner supplies those bytes.
 An existing manifest file that cannot be read is instead
@@ -484,7 +484,7 @@ Worker assignment reads are self-only:
 `orizu instruction-sets sync <set> --project <team/project> --out <dir>` writes
 an atomic local manifest. A resolver failure for either the default or any
 selected profile refuses the entire sync as `instruction_set_unresolvable`; the
-route never silently downgrades a failed production tuple to default bytes. A
+route never silently downgrades a failed production component map to default bytes. A
 filtered `--model-config` sync records `filteredTo`, and a loader must refuse an
 identity excluded by that marker with `instruction_set_profile_not_synced`.
 

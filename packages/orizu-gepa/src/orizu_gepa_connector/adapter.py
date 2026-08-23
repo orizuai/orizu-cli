@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from gepa.core.adapter import EvaluationBatch
@@ -59,8 +60,13 @@ class RunnerEvaluationAdapter:
         self.last_candidate: dict[str, str] | None = None
 
     def evaluate(self, batch: list[Any], candidate: dict[str, str], capture_traces: bool = False) -> EvaluationBatch:
+        # The exec-context can describe a multi-component wrapper for a
+        # legacy prompt run.  The candidate is the execution contract: only a
+        # map with more than one value is a tuple rewrite.
+        is_multi_component_tuple = len(candidate) > 1
         component = next(iter(candidate))
-        candidate_text = candidate[component]
+        candidate_text: str | dict[str, str] = dict(candidate) if is_multi_component_tuple else candidate[component]
+        candidate_id = json.dumps(candidate, sort_keys=True, separators=(",", ":")) if is_multi_component_tuple else component
         outputs: list[dict[str, Any]] = []
         scores: list[float] = []
         trajectories: list[dict[str, Any]] = []
@@ -74,7 +80,7 @@ class RunnerEvaluationAdapter:
         try:
             row_evaluations = evaluate_candidate(
                 candidate_text=candidate_text,
-                candidate_id=component,
+                candidate_id=candidate_id,
                 rows=batch,
                 split="official_gepa",
                 prompt_context=self.prompt_context,

@@ -2,6 +2,8 @@
 
 How to optimize text candidates against validated judges/scorers. For Orizu-tracked runs, prefer `prompt-control-plane.md` and the bundled `orizu optimizations run-gepa` command when optimizing one text candidate. Use this reference for GEPA mechanics, custom optimizer implementations, and optional DSPy context for customers already using DSPy.
 
+For an instruction set, select the profile explicitly with `--instruction-set <name> --model-config <identity>` rather than `--prompt` or `--prompt-version` (those selectors are mutually exclusive). The connector resolves that model config's production profile, or the set default, and optimizes its complete component map. `--component-selector round-robin` is the default and updates one component per round; `--component-selector all` updates every component per round. A multi-component candidate is sent as a component map, while a set of one keeps the existing prompt-body contract. Git-pinned components and malformed component maps are refused before a run starts; multi-component auto-promotion is deliberately refused until component-map promotion is available.
+
 ## Inputs
 
 You should arrive here with:

@@ -107,6 +107,13 @@ The connector intentionally imports the frozen `orizu_gepa` sources through
 `PYTHONPATH`; packaging that sibling source as a pip dependency is M2 /
 ALI-1503 scope, so this package must not add it as a dependency.
 
+## Local result contract
+
+`result.json` records `best_candidate_text` as a string for a one-component
+candidate, preserving the legacy prompt artifact exactly. For a genuine
+multi-component candidate (a map with more than one key), it records the full
+component map so no rewritten component is discarded.
+
 The TS wrapper resolves the real GEPA package from the vendored CLI copy when
 available, otherwise from `.venv-gepa`. If neither import location exists, it
 fails rather than silently skipping the official engine.

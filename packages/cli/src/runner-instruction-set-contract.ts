@@ -5,6 +5,7 @@ export interface RunnerInstructionSet {
   modelConfig: Record<string, unknown>
   shape: string[]
   profileVersionId: string
+  modelConfigSettingsVersionId?: string
   versionNumber: number
   promptComponentKey?: string
   components: Record<string, string>
@@ -55,6 +56,7 @@ export function runnerInputInstructionSet(instructionSet: RunnerInstructionSet):
     name: instructionSet.name,
     model_config: instructionSet.modelConfig,
     shape: instructionSet.shape,
+    ...(instructionSet.modelConfigSettingsVersionId ? { model_config_settings_version_id: instructionSet.modelConfigSettingsVersionId } : {}),
     ...(instructionSet.promptComponentKey ? { prompt_component_key: instructionSet.promptComponentKey } : {}),
     components: instructionSet.components,
     ...(Object.keys(instructionSet.pinnedComponents || {}).length > 0 ? { pinned_components: instructionSet.pinnedComponents } : {}),

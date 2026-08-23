@@ -248,9 +248,12 @@ class OrizuCallback:
     def on_proposal_start(self, event: dict[str, Any]) -> None:
         iteration = int(event["iteration"])
         self._flush_pending_parent_minibatches(iteration)
+        parent_candidate = event.get("parent_candidate")
         self._reflection_contexts[iteration] = {
             "iteration": iteration,
             "parent_candidate_id": self._selected_parent_by_iteration.get(iteration),
+            "components_to_update": list(event.get("components") or []),
+            "parent_candidate": dict(parent_candidate) if isinstance(parent_candidate, dict) else None,
         }
         self._emit("on_proposal_start", event)
 
@@ -495,18 +498,29 @@ class OrizuCallback:
     def _emit_buffered_proposal(self, event: dict[str, Any], candidate_id: str) -> None:
         iteration = int(event["iteration"])
         parent_id = self._selected_parent_by_iteration.get(iteration)
-        components = event.get("new_instructions") or {}
+        context = self._reflection_contexts.get(iteration, {})
+        parent_candidate = context.get("parent_candidate")
+        new_instructions = event.get("new_instructions") or {}
+        components = {
+            **(parent_candidate if isinstance(parent_candidate, dict) else {}),
+            **(new_instructions if isinstance(new_instructions, dict) else {}),
+        }
         bounded_components = {}
         truncated = False
         for key, value in components.items():
             bounded, did_truncate = _bounded(value, self.max_payload_chars)
             bounded_components[key] = bounded
             truncated = truncated or did_truncate
+        selected = list(context.get("components_to_update") or [])
         body, body_truncated = _bounded(next(iter(components.values()), None), self.max_payload_chars)
+        payload = {"components": bounded_components, "components_to_update": selected,
+                   "payload_truncated": truncated or body_truncated}
+        if ((isinstance(parent_candidate, dict) and len(parent_candidate) == 1)
+                or (parent_candidate is None and len(components) == 1)):
+            payload["body"] = body
         self.sink.emit(
             "candidate_proposed",
-            {"body": body, "components": bounded_components,
-             "payload_truncated": truncated or body_truncated},
+            payload,
             iteration=iteration,
             candidate_id=candidate_id,
             parent_candidate_id=parent_id,

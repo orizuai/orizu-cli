@@ -31,8 +31,8 @@ Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. 
 
 ## Instruction sets
 
-An instruction set is a named, ordered shape of components with one profile
-per model config. Existing prompts appear as sets of one component. Inspect or
+An instruction set is a set of named components (key → text); order carries no meaning.
+It has one profile per model config. Existing prompts appear as sets of one component. Inspect or
 write them with:
 
 ```bash
@@ -49,12 +49,12 @@ orizu instruction-sets shape add planner --project core/evals --key safety --fro
 orizu instruction-sets shape remove planner --project core/evals --key safety
 ```
 
-The manifest contains `name`, ordered `shape`, and `components`; every shape key
+The manifest contains `name`, `shape` (the set of component keys; order carries no meaning), and `components`; every shape key
 needs a set-wide component (`key` plus `text` or a manifest-relative `path`). A
 component may additionally specify `modelConfig` to override that key in a named
 profile. Create materializes each named profile with its complete base-plus-
-override tuple. The default starts on the seed profile version. A profile with a
-production version resolves to that tuple; a profile without one resolves to the
+override component map. The default starts on the seed profile version. A profile with a
+production version resolves to that component map; a profile without one resolves to the
 default.
 
 Shape changes create unpromoted profile heads but leave the default and
@@ -65,7 +65,7 @@ the follow-up commands printed by the text CLI.
 Before a human moves a default, `default show` lists the model configs whose
 resolution would change. A move targets a version by model-config identity and
 version number, and the database rejects an unsealed or non-commit-anchored
-tuple. Shape changes create a new `shape_change` version for every profile;
+component map. Shape changes create a new `shape_change` version for every profile;
 they do not repoint the default or any production label.
 
 Sync an offline runner directory with `orizu instruction-sets sync planner
@@ -82,7 +82,7 @@ Use `profiles new` to seed an additional model-config profile from the default;
 hosted agents may do this because it does not move production. Use `profiles
 promote` to move only that profile's production label; use `profiles rollback
 --to <n>` to create a new rollback version from the target version's component
-tuple **and settings version** before moving it. Promotion and rollback are
+component map **and settings version** before moving it. Promotion and rollback are
 human-only because they move production labels.
 
 For a single-component instruction set that wraps an existing prompt, only a
@@ -147,7 +147,7 @@ Input shape:
 }
 ```
 
-`instruction_set` is additive. `prompt_component_key` names the shape component that contains the requested prompt version; candidate evaluation replaces that component's seed bytes with the candidate. `components` is in shape order and contains only inline text; Git-only components are absent there and appear in `pinned_components` with camelCase Git pins. Runners mirror whether the exec-context response contains `prompt.body`; the explicit `instructionSetProfileVersionId` parameter is a server surface that ALI-1536 will start sending. The route keeps byte-identical `prompt.body` for every implicit prompt-version caller and omits it only for an explicit multi-component tuple; explicit set-of-one responses retain it. Top-level JSON key order is not part of the contract.
+`instruction_set` is additive. `prompt_component_key` names the component that contains the requested legacy prompt version; candidate evaluation replaces that component's seed bytes with the candidate. `components` contains only inline text; Git-only components are absent there and appear in `pinned_components` with camelCase Git pins. Runners mirror whether the exec-context response contains `prompt.body`; the explicit `instructionSetProfileVersionId` parameter is a server surface that ALI-1536 sends. The route keeps byte-identical `prompt.body` for every implicit prompt-version caller and omits it only for an explicit multi-component map; explicit set-of-one responses retain it. Top-level JSON key order is not part of the contract.
 
 Output shape:
 

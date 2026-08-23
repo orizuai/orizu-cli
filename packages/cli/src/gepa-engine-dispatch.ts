@@ -53,6 +53,8 @@ const VALUE_OPTIONS: EnvironmentOption[] = [
   { flag: '--seed', environment: 'ORIZU_SEED' },
   { flag: '--promotion-label', environment: 'ORIZU_PROMOTION_LABEL', allowEmpty: true },
   { flag: '--log-dir', environment: 'ORIZU_LOCAL_LOG_DIR' },
+  { flag: '--instruction-set', environment: 'ORIZU_INSTRUCTION_SET_NAME' },
+  { flag: '--model-config', environment: 'ORIZU_MODEL_CONFIG_IDENTITY' },
 ]
 
 const BOOLEAN_OPTIONS = [
@@ -172,10 +174,12 @@ const CONTROLLED_ENVIRONMENT_NAMES = new Set([
   'ORIZU_SAMPLING_STRATEGY',
   'ORIZU_SELECTION_STRATEGY',
   'ORIZU_MAX_PAYLOAD_CHARS',
+  'ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID',
   // Candidate selection is an explicit opt-in.  Clearing it before option
   // translation prevents an inherited environment from selecting a proposer
   // on an otherwise byte-for-byte normal official-GEPA launch.
   'ORIZU_CANDIDATE_PROPOSER',
+  'ORIZU_COMPONENT_SELECTOR',
 ])
 
 function optionValueOrThrow(args: string[], index: number, flag: string, allowEmpty = false): { value: string; nextIndex: number } {
@@ -204,6 +208,8 @@ function translateOfficialOptions(args: string[], project: string, environment: 
   connectorEnvironment.ORIZU_PROJECT = project
 
   let metadata: string | undefined
+  let hasInstructionSet = false
+  let hasCandidateVersion = false
   const budgetFlags: string[] = []
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]
@@ -212,6 +218,7 @@ function translateOfficialOptions(args: string[], project: string, environment: 
     }
 
     const flag = argument.includes('=') ? argument.slice(0, argument.indexOf('=')) : argument
+    if (flag === '--candidate-version-id') hasCandidateVersion = true
     if (flag === '--project') {
       const parsed = optionValueOrThrow(args, index, flag)
       connectorEnvironment.ORIZU_PROJECT = parsed.value
@@ -254,6 +261,14 @@ function translateOfficialOptions(args: string[], project: string, environment: 
       connectorEnvironment[option.environment] = option.json
         ? jsonObjectValue(parsed.value, option.flag)
         : option.readFile ? textValue(parsed.value) : parsed.value
+      if (flag === '--instruction-set') hasInstructionSet = true
+      index = parsed.nextIndex
+      continue
+    }
+    if (flag === '--component-selector') {
+      const parsed = optionValueOrThrow(args, index, flag)
+      if (!['round-robin', 'all'].includes(parsed.value)) throw new Error('--component-selector must be one of round-robin, all')
+      connectorEnvironment.ORIZU_COMPONENT_SELECTOR = parsed.value.replace('-', '_')
       index = parsed.nextIndex
       continue
     }
@@ -274,6 +289,9 @@ function translateOfficialOptions(args: string[], project: string, environment: 
   if (budgetFlags.length > 1) {
     throw new Error('Budget options are mutually exclusive; choose at most one of --budget, --max-metric-calls, --max-full-evals, --max-iterations, --max-candidate-proposals')
   }
+  if (hasInstructionSet && hasCandidateVersion) throw new Error('--instruction-set and --candidate-version-id are mutually exclusive')
+  if (hasInstructionSet && connectorEnvironment.ORIZU_MODEL_CONFIG_IDENTITY === undefined) throw new Error('--instruction-set requires --model-config')
+  if (hasInstructionSet && connectorEnvironment.ORIZU_COMPONENT_SELECTOR === undefined) connectorEnvironment.ORIZU_COMPONENT_SELECTOR = 'round_robin'
   if ((connectorEnvironment.ORIZU_PROPOSAL_MAX_CALLS !== undefined
        || connectorEnvironment.ORIZU_PROPOSAL_MAX_TOKENS !== undefined)
       && connectorEnvironment.ORIZU_CANDIDATE_PROPOSER !== 'skilled-proposer') {
@@ -303,7 +321,7 @@ function validatedMetadata(raw: string | undefined): string {
 export function dispatchGepaEngine(args: string[], project: string, environment: NodeJS.ProcessEnv): GepaEngineDispatch {
   const selected = removeEngine(args)
   if (selected.engine === 'legacy') {
-    for (const flag of ['--max-candidate-proposals', '--candidate-proposer', '--proposal-max-calls', '--proposal-max-tokens']) {
+    for (const flag of ['--instruction-set', '--model-config', '--component-selector', '--max-candidate-proposals', '--candidate-proposer', '--proposal-max-calls', '--proposal-max-tokens']) {
       if (selected.args.some(argument => argument === flag || argument.startsWith(`${flag}=`))) {
         throw new Error(`${flag} is supported by the official GEPA engine only`)
       }

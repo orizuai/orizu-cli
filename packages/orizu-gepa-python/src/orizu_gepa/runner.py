@@ -193,6 +193,7 @@ def _runner_instruction_set_payload(instruction_set: dict[str, Any]) -> dict[str
         "name": instruction_set.get("name"),
         "model_config": instruction_set.get("model_config", instruction_set.get("modelConfig")),
         "shape": instruction_set.get("shape"),
+        **({"model_config_settings_version_id": instruction_set["model_config_settings_version_id"]} if isinstance(instruction_set.get("model_config_settings_version_id"), str) else {}),
         **({"prompt_component_key": instruction_set["prompt_component_key"]} if isinstance(instruction_set.get("prompt_component_key"), str) else {}),
         "components": components,
     }
@@ -313,29 +314,45 @@ def run_file_contract_runner(
 
 
 def make_candidate_runner(runner_dir: str | Path, run_id: str | None):
-    def _run(candidate_text: str, row: DatasetRow, prompt_context: PromptContext, candidate_id: str) -> RunnerCallResult:
+    def _run(candidate_text: str | dict[str, str], row: DatasetRow, prompt_context: PromptContext, candidate_id: str) -> RunnerCallResult:
         instruction_set = prompt_context.instruction_set
         if instruction_set:
-            prompt_component_key = instruction_set.get("prompt_component_key")
-            if not isinstance(prompt_component_key, str):
+            is_tuple_rewrite = isinstance(candidate_text, dict) and len(candidate_text) > 1
+            if not isinstance(candidate_text, dict):
+                prompt_component_key = instruction_set.get("prompt_component_key")
+                candidate_components = {prompt_component_key: candidate_text} if isinstance(prompt_component_key, str) else None
+            else:
+                candidate_components = candidate_text
+            if not candidate_components or not all(isinstance(key, str) and isinstance(value, str) for key, value in candidate_components.items()):
                 raise RuntimeError("instruction_set_candidate_component_unresolvable")
             instruction_set = dict(instruction_set)
-            instruction_set["components"] = {
-                **dict(instruction_set.get("components") or {}),
-                prompt_component_key: candidate_text,
-            }
+            existing_components = dict(instruction_set.get("components") or {})
             pinned_components = dict(instruction_set.get("pinned_components") or {})
-            pinned_components.pop(prompt_component_key, None)
+            if not set(candidate_components).issubset(set(existing_components) | set(pinned_components)):
+                raise RuntimeError("instruction_set_candidate_component_unresolvable")
+            instruction_set["components"] = {
+                **existing_components,
+                **candidate_components,
+            }
+            for key in candidate_components:
+                pinned_components.pop(key, None)
             instruction_set["pinned_components"] = pinned_components
+            # The candidate is the execution contract. Legacy string rewrites
+            # preserve the body the server supplied; only a genuine tuple
+            # rewrite omits it.
+            prompt_body = None if is_tuple_rewrite else candidate_text
+        else:
+            prompt_body = candidate_text
         return run_file_contract_runner(
             runner_dir=runner_dir,
             row=row.row,
-            prompt_body=candidate_text,
+            prompt_body=prompt_body,
             body_kind=prompt_context.body_kind,
             provider_settings=prompt_context.provider_settings,
             prompt_version_id=prompt_context.prompt_version_id,
             runner_version_id=prompt_context.runner_version_id,
             run_id=run_id,
+            prompt_body_present=not instruction_set or not is_tuple_rewrite,
             extra_payload={"instruction_set": instruction_set} if instruction_set else None,
         )
     return _run
