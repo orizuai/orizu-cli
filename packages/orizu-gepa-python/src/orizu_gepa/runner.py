@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -138,6 +139,7 @@ def _write_instruction_set_layout(root: Path, instruction_set: dict[str, Any]) -
 
     def write_material(relative_root: str) -> dict[str, Any]:
         files: dict[str, str] = {}
+        synced_content_sha256: dict[str, str] = {}
         pinned_components: dict[str, dict[str, str]] = {}
         for key in sorted(shape):
             if key not in components:
@@ -149,6 +151,7 @@ def _write_instruction_set_layout(root: Path, instruction_set: dict[str, Any]) -
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(body, encoding="utf-8")
                 files[key] = relative
+                synced_content_sha256[key] = hashlib.sha256(body.encode("utf-8")).hexdigest()
             elif pin is not None:
                 pinned_components[key] = pin
         material: dict[str, Any] = {
@@ -157,6 +160,7 @@ def _write_instruction_set_layout(root: Path, instruction_set: dict[str, Any]) -
             "modelConfigIdentity": identity,
             "resolvedFrom": "exact_profile_version",
             "files": files,
+            "syncedContentSha256": synced_content_sha256,
         }
         if pinned_components:
             material["pinnedComponents"] = pinned_components
@@ -169,10 +173,28 @@ def _write_instruction_set_layout(root: Path, instruction_set: dict[str, Any]) -
         "resolvedFrom": "exact_profile_version",
         "production": write_material(f"profiles/{slug}"),
     }
+    authoring_components = [
+        {
+            "key": key,
+            "path": relative,
+            "syncedContentSha256": material["syncedContentSha256"][key],
+        }
+        for key, relative in material["files"].items()
+    ]
+    authoring_components.extend(
+        {
+            "key": key,
+            "modelConfig": identity,
+            "path": relative,
+            "syncedContentSha256": profile["production"]["syncedContentSha256"][key],
+        }
+        for key, relative in profile["production"]["files"].items()
+    )
     manifest = {
         "manifestVersion": 1,
         "name": name,
         "shape": shape,
+        "components": authoring_components,
         "default": material,
         "profiles": [profile],
     }

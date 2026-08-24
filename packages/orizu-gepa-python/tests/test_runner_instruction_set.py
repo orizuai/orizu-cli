@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -337,6 +338,41 @@ Path(os.environ["ORIZU_RUNNER_OUTPUT_PATH"]).write_text(json.dumps(output))
             payload = {**MULTI_COMPONENT_SET, "components": {"system": "héllo 🤖"}, "pinned_components": {"tools": MULTI_COMPONENT_SET["pinned_components"]["tools"]}}
             _write_instruction_set_layout(root, payload)
             self.assertEqual((root / "planner" / "default" / "system.md").read_bytes(), "héllo 🤖".encode("utf-8"))
+
+    def test_writes_typescript_authoring_paths_and_hashes_from_file_bytes(self):
+        """Mutants killed: emit a wrong authoring path or hash pre-write text instead of written bytes."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "instruction-set"
+            _write_instruction_set_layout(root, MULTI_COMPONENT_SET)
+            destination = root / "planner"
+            manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+
+            expected_paths = {
+                (None, "system"): "default/system.md",
+                ("openai/gpt-5.4", "system"): "profiles/openai__gpt-5.4/system.md",
+            }
+            observed_components = {
+                (component.get("modelConfig"), component["key"]): component
+                for component in manifest["components"]
+            }
+            self.assertEqual(set(observed_components), set(expected_paths))
+
+            for component_identity_and_key, relative_path in expected_paths.items():
+                component = observed_components[component_identity_and_key]
+                written_path = destination / relative_path
+                written_hash = hashlib.sha256(written_path.read_bytes()).hexdigest()
+                self.assertEqual(component["path"], relative_path)
+                self.assertEqual(component["syncedContentSha256"], written_hash)
+
+            expected_hash = hashlib.sha256("System bytes\n".encode("utf-8")).hexdigest()
+            self.assertEqual(manifest["default"]["files"], {"system": "default/system.md"})
+            self.assertEqual(manifest["default"]["syncedContentSha256"], {"system": expected_hash})
+            self.assertEqual(manifest["profiles"][0]["production"]["files"], {
+                "system": "profiles/openai__gpt-5.4/system.md",
+            })
+            self.assertEqual(manifest["profiles"][0]["production"]["syncedContentSha256"], {
+                "system": expected_hash,
+            })
 
     def test_all_pinned_tuple_writes_manifest_without_component_files(self):
         """Mutant killed: create the destination only as a side effect of inline text."""

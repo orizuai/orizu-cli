@@ -1,8 +1,9 @@
 import { authedFetch } from './http.js'
-import { loadInstructionSetManifest, MAX_INSTRUCTION_SET_COMPONENT_BYTES } from './instruction-set-manifest.js'
+import { loadInstructionSetManifest, MAX_INSTRUCTION_SET_COMPONENT_BYTES, type InstructionSetManifest } from './instruction-set-manifest.js'
+import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 export interface InstructionSetsCommandIo {
   json: boolean
@@ -42,15 +43,17 @@ const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
 export interface SyncComponent { body?: string; repoPath?: string; contentSha?: string; commitSha?: string }
 export interface SyncMaterial { profileVersionId: string; versionNumber: number; modelConfigIdentity: string; resolvedFrom: string; components: Record<string, SyncComponent> }
 export interface SyncProfile { modelConfigIdentity: string; resolvedFrom: string; production: SyncMaterial | null }
-export interface SyncSet { name: string; slug?: string; shape: string[]; default: SyncMaterial; profiles: SyncProfile[]; filteredTo?: string[] }
+export interface SyncSet { name: string; slug?: string; description?: string | null; shape: string[]; default: SyncMaterial; profiles: SyncProfile[]; filteredTo?: string[] }
 function safeSegment(value: string) { if (!SAFE_SEGMENT.test(value) || value === '.' || value === '..' || value.startsWith('.')) throw new Error('instruction_set_path_unsafe') }
 function slug(identity: string) { return identity.replaceAll('/', '__').replace(/[^A-Za-z0-9._-]/gu, '_') }
 function stable(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n` }
+function sha256(value: string): string { return createHash('sha256').update(value, 'utf8').digest('hex') }
 
 export interface SyncFileOps { writeFileSync: typeof writeFileSync; renameSync?: typeof renameSync }
 
 function writeMaterial(root: string, material: SyncMaterial, shape: string[], manifestRoot: string, fileOps: SyncFileOps = { writeFileSync }) {
   const files: Record<string, string> = {}
+  const syncedContentSha256: Record<string, string> = {}
   const pinnedComponents: Record<string, unknown> = {}
   for (const key of [...shape].sort()) {
     safeSegment(key)
@@ -61,10 +64,11 @@ function writeMaterial(root: string, material: SyncMaterial, shape: string[], ma
       const target = join(root, ...relative.split('/'))
       mkdirSync(join(target, '..'), { recursive: true })
       fileOps.writeFileSync(target, component.body)
+      syncedContentSha256[key] = sha256(component.body)
     } else if (component?.repoPath && component?.contentSha && component?.commitSha) pinnedComponents[key] = { repoPath: component.repoPath, contentSha: component.contentSha, commitSha: component.commitSha }
     else throw new Error('instruction_set_unresolvable')
   }
-  return { profileVersionId: material.profileVersionId, versionNumber: material.versionNumber, modelConfigIdentity: material.modelConfigIdentity, resolvedFrom: material.resolvedFrom, files, ...(Object.keys(pinnedComponents).length ? { pinnedComponents } : {}) }
+  return { profileVersionId: material.profileVersionId, versionNumber: material.versionNumber, modelConfigIdentity: material.modelConfigIdentity, resolvedFrom: material.resolvedFrom, files, syncedContentSha256, ...(Object.keys(pinnedComponents).length ? { pinnedComponents } : {}) }
 }
 
 // Only the scratch paths THIS run created are ever removed; a user's own
@@ -104,7 +108,13 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
       modelConfigIdentity: profile.modelConfigIdentity, slug: slug(profile.modelConfigIdentity), resolvedFrom: profile.resolvedFrom,
       production: profile.production ? writeMaterial(temp, profile.production, set.shape, `profiles/${slug(profile.modelConfigIdentity)}`, fileOps) : null,
     })).sort((a, b) => a.modelConfigIdentity.localeCompare(b.modelConfigIdentity))
-    const manifest = { manifestVersion: 1, name: set.name, shape: set.shape, default: defaultMaterial, profiles, ...(set.filteredTo ? { filteredTo: [...set.filteredTo].sort() } : {}) }
+    const components = [
+      ...Object.entries(defaultMaterial.files).map(([key, path]) => ({ key, path, syncedContentSha256: defaultMaterial.syncedContentSha256[key] })),
+      ...profiles.flatMap(profile => profile.production
+        ? Object.entries(profile.production.files).map(([key, path]) => ({ key, modelConfig: profile.modelConfigIdentity, path, syncedContentSha256: profile.production!.syncedContentSha256[key] }))
+        : []),
+    ]
+    const manifest = { manifestVersion: 1, name: set.name, ...(Object.hasOwn(set, 'description') ? { description: set.description ?? null } : {}), shape: set.shape, components, default: defaultMaterial, profiles, ...(set.filteredTo ? { filteredTo: [...set.filteredTo].sort() } : {}) }
     fileOps.writeFileSync(join(temp, 'manifest.json'), stable(manifest))
     backup = join(out, `.${set.name}.${randomUUID()}.bak`)
     if (existsSync(destination)) move(destination, backup)
@@ -124,6 +134,13 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   if (subcommand === 'default' && reference === 'move') {
     const version = argValue(args, '--version')
     if (!version || !/^[0-9]+$/u.test(version) || Number(version) < 1) throw new Error('--version must be a positive integer')
+  }
+  let writeManifest: InstructionSetManifest | undefined
+  if (subcommand === 'create' || subcommand === 'push') {
+    if (!reference || reference.startsWith('--')) throw new Error(subcommand === 'create'
+      ? 'Usage: orizu instructions create <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]'
+      : 'Usage: orizu instructions push <manifest> --project <team/project> [--set <slug-or-exact-name>] [--runner-version <id>] [--json]')
+    writeManifest = loadInstructionSetManifest(reference)
   }
   const project = await io.resolveProjectSlug(argValue(args, '--project'))
   if (subcommand === 'default') {
@@ -195,15 +212,12 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     return 0
   }
   if (subcommand === 'create' || subcommand === 'push') {
-    if (!reference || reference.startsWith('--')) throw new Error(subcommand === 'create'
-      ? 'Usage: orizu instructions create <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]'
-      : 'Usage: orizu instructions push <manifest> --project <team/project> [--set <slug-or-exact-name>] [--runner-version <id>] [--json]')
-    const manifest = loadInstructionSetManifest(reference); const modelConfig = argValue(args, '--model-config'); const runnerVersion = argValue(args, '--runner-version')
+    const manifest = writeManifest!; const modelConfig = argValue(args, '--model-config'); const runnerVersion = argValue(args, '--runner-version')
     const setReference = argValue(args, '--set') || manifest.name
     const path = subcommand === 'create' ? '/api/cli/instruction-sets' : `/api/cli/instruction-sets/${encodeURIComponent(setReference)}/versions`
     const body = subcommand === 'create'
       ? { ...manifest, ...(modelConfig ? { modelConfigIdentity: modelConfig } : {}), ...(runnerVersion ? { runnerVersionId: runnerVersion } : {}) }
-      : { shape: manifest.shape, components: manifest.components, ...(runnerVersion ? { runnerVersionId: runnerVersion } : {}) }
+      : { shape: manifest.shape, components: manifest.components, ...(Object.hasOwn(manifest, 'description') ? { description: manifest.description } : {}), ...(runnerVersion ? { runnerVersionId: runnerVersion } : {}) }
     const payload = await responsePayload(await authedFetch(`${path}?project=${encodeURIComponent(project)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), `Instruction sets ${subcommand}`)
     if (io.json) io.print(JSON.stringify(payload))
     else {
@@ -275,13 +289,15 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   if (subcommand === 'list') {
     const sets = Array.isArray(payload.instructionSets) ? payload.instructionSets : []
     for (const item of sets) {
-      const set = item as { name?: string; slug?: string; shape?: string[]; status?: string }
+      const set = item as { name?: string; slug?: string; description?: string | null; shape?: string[]; status?: string }
       io.print(`${set.name || 'unnamed'}${set.slug ? ` [${set.slug}]` : ''}${set.status === 'archived' ? ' [archived]' : ''}${set.shape ? ` (${set.shape.join(', ')})` : ''}`)
+      if (set.description) io.print(`  ${sanitizeHumanInlineText(sanitizeTerminalText, set.description)}`)
     }
     return 0
   }
-  const set = payload.instructionSet as { name?: string; shape?: string[]; status?: string; default?: { versionNumber?: number } | null; profiles?: Array<{ modelConfigIdentity?: string | null; production?: { versionNumber?: number } | null; latestVersionNumber?: number | null }> } | undefined
+  const set = payload.instructionSet as { name?: string; description?: string | null; shape?: string[]; status?: string; default?: { versionNumber?: number } | null; profiles?: Array<{ modelConfigIdentity?: string | null; production?: { versionNumber?: number } | null; latestVersionNumber?: number | null }> } | undefined
   io.print(`${set?.name || reference}${set?.status === 'archived' ? ' [archived]' : ''}: ${set?.shape?.join(', ') || ''}`)
+  if (set?.description) io.print(`Description: ${sanitizeHumanInlineText(sanitizeTerminalText, set.description)}`)
   if (set?.default) io.print(`Default: v${set.default.versionNumber ?? '?'}`)
   for (const profile of set?.profiles || []) {
     io.print(`${profile.modelConfigIdentity || 'unspecified'}: production ${profile.production ? `v${profile.production.versionNumber}` : '—'}, latest ${profile.latestVersionNumber ?? '—'}`)
