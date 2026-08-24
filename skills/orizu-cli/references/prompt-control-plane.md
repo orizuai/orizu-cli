@@ -1,6 +1,6 @@
-# Prompt Control Plane
+# Instruction Control Plane
 
-Use this reference for the Phase 0 prompt, judge, scorer, runner, score, run, and optimization event control plane. These commands are for coding agents that need to push local artifacts into Orizu, run them locally, submit scores, and stream optimization progress back to the platform.
+Use this reference for the Phase 0 instruction, judge, scorer, runner, score, run, and optimization event control plane. These commands are for coding agents that need to push local artifacts into Orizu, run them locally, submit scores, and stream optimization progress back to the platform, except for instruction-set mutations and pointer moves explicitly marked for a human using the local CLI.
 
 ## Contents
 
@@ -16,13 +16,13 @@ Use this reference for the Phase 0 prompt, judge, scorer, runner, score, run, an
 1. Verify auth: `orizu --local whoami`.
 2. Export API context for scripts: `eval "$(orizu --local env --project <team>/<project>)"`.
 3. Create immutable dataset versions before creating splits.
-4. Push runners before prompts, judges, or prompt-runner scorers; prompt versions pin runner versions.
-5. Register scorers after their backing prompt/runner exists, then bind headline/tracked scorers to prompts when the UI should show those metrics.
+4. Push runners before preparing instruction-set handoffs, judges, or prompt-runner scorers; instruction components pin runner versions. A human curator runs the instruction-set mutation after the runner version exists.
+5. Register scorers after their backing judge prompt/runner exists, then bind headline/tracked scorers to instruction components when the UI should show those metrics.
 6. Use `runners exec` to prove the runner contract locally before submitting runs or score runs.
 7. For common text-candidate optimization, prefer `orizu optimizations run-gepa`; it starts the run and logs events for you.
 8. After `run-gepa`, inspect `logs/<optimization_run_id>` first; it is the complete local trace for coding-agent analysis.
 9. Use `orizu optimizations export <run-id> --out <run-id>.optimization.json` when the local log is missing or the run happened elsewhere.
-10. Promote an accepted candidate with `orizu optimizations promote <run-id> --candidate <id> [--label production]`; tuple output reports its profile version and each component as changed or carried.
+10. Create a profile version from an accepted candidate with `orizu optimizations promote <run-id> --candidate <id>`; output reports its profile version and each component as changed or carried. Give that version to a human to inspect and move the production pointer.
 11. Write and attach a markdown report for finished, failed, or cancelled runs; use `optimization-reports.md` for structure and diagnostic guidance.
 12. For custom optimizers, start an optimization run before local execution, then stream events into that run.
 13. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
@@ -32,31 +32,43 @@ Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. 
 
 ## Instruction sets
 
-An instruction set is a set of named components (key → text); order carries no meaning.
-It has one profile per model config. Existing prompts appear as sets of one component. Inspect or
-write them with:
+An instruction set has a fixed, ordered shape of named components (key → text).
+It has one profile per model config. Existing prompts appear as one-component
+sets. Inspect or write them with the customer-facing `orizu instructions`
+namespace:
 
 ```bash
-orizu instruction-sets list --project core/evals --status active --json
-orizu instruction-sets show planner --project core/evals --status active --json
-orizu instruction-sets create ./orizu.instruction-set.json --project core/evals --model-config anthropic/claude-haiku
-orizu instruction-sets push ./orizu.instruction-set.json --project core/evals
-orizu instruction-sets profiles new planner --project core/evals --model-config anthropic/claude-haiku
-orizu instruction-sets profiles promote planner --project core/evals --model-config anthropic/claude-haiku --version 2
-orizu instruction-sets profiles rollback planner --project core/evals --model-config anthropic/claude-haiku --to 1
-orizu instruction-sets default show planner --project core/evals
-orizu instruction-sets default move planner --project core/evals --model-config anthropic/claude-haiku --version 2
-orizu instruction-sets shape add planner --project core/evals --key safety --from ./orizu.instruction-set.json
-orizu instruction-sets shape remove planner --project core/evals --key safety
+orizu instructions list --project core/evals --status active --json
+orizu instructions show planner --project core/evals --status active --json
+# Human/local CLI only: a human runs create/push; hosted agents may run profiles new.
+orizu instructions create ./orizu.instruction-set.json --project core/evals --model-config anthropic/claude-haiku
+orizu instructions push ./orizu.instruction-set.json --project core/evals --set planner
+orizu instructions profiles new planner --project core/evals --model-config anthropic/claude-haiku
+# Human/local CLI only: profile production-pointer moves.
+orizu instructions profiles promote planner --project core/evals --model-config anthropic/claude-haiku --version 2
+orizu instructions profiles rollback planner --project core/evals --model-config anthropic/claude-haiku --to 1
+orizu instructions default show planner --project core/evals
+# Human/local CLI only: the set-wide default-pointer move.
+orizu instructions default move planner --project core/evals --model-config anthropic/claude-haiku --version 2
+# Human/local CLI only: shape mutations.
+orizu instructions shape add planner --project core/evals --key safety --from ./orizu.instruction-set.json
+orizu instructions shape remove planner --project core/evals --key safety
+# Human/local CLI only: visibility mutations.
+orizu instructions archive planner --project core/evals --json
+orizu instructions restore planner --project core/evals --json
 ```
 
-The manifest contains `name`, `shape` (the set of component keys; order carries no meaning), and `components`; every shape key
-needs a set-wide component (`key` plus `text` or a manifest-relative `path`). A
-component may additionally specify `modelConfig` to override that key in a named
-profile. Create materializes each named profile with its complete base-plus-
-override component map. The default starts on the seed profile version. A profile with a
-production version resolves to that component map; a profile without one resolves to the
-default.
+The manifest contains `name`, optional unversioned `description`, the ordered
+component-key `shape`, and `components`; every shape key needs a set-wide
+component (`key` plus `text` or a manifest-relative `path`). A component may
+additionally specify `modelConfig` to override that key in a named profile.
+Create materializes each named profile with its complete base-plus-override
+component map. The default starts on the seed profile version. A profile with a
+production version resolves to that component map; a profile without one
+resolves to the default. Sets accept either their stable slug or exact display
+name. Archiving changes list visibility only, so archived sets still resolve
+and sync; use `--status archived` or `--status all` to find them before
+restoring.
 
 Shape changes create unpromoted profile heads but leave the default and
 production pointers in place. The instruction set does not resolve for affected
@@ -69,7 +81,7 @@ version number, and the database rejects an unsealed or non-commit-anchored
 component map. Shape changes create a new `shape_change` version for every profile;
 they do not repoint the default or any production label.
 
-Sync an offline runner directory with `orizu instruction-sets sync planner
+Sync an offline runner directory with `orizu instructions sync planner
 --out ./instructions --project core/evals`. The layout is `manifest.json`,
 `default/<key>.md`, and `profiles/<identity-slug>/<key>.md`; loaders are
 `loadInstructionSet(dir, name, modelConfigIdentity)` in TypeScript and
@@ -83,7 +95,7 @@ Use `profiles new` to seed an additional model-config profile from the default;
 hosted agents may do this because it does not move production. Use `profiles
 promote` to move only that profile's production label; use `profiles rollback
 --to <n>` to create a new rollback version from the target version's component
-component map **and settings version** before moving it. Promotion and rollback are
+map **and settings version** before moving it. Promotion and rollback are
 human-only because they move production labels.
 
 For a single-component instruction set that wraps an existing prompt, only a
@@ -96,7 +108,7 @@ label` when a profile command performed this mirror.
 Execution/privacy defaults:
 
 - Runner subprocesses receive the input/output file-contract paths plus a small allowlist of provider/runtime environment variables. Orizu API tokens are not passed into runner processes. When an execution carries an instruction set, `ORIZU_INSTRUCTION_SET_DIR` is set explicitly to a fresh per-row synced layout; it is absent for legacy executions and is never inherited from the shell.
-- `orizu optimizations run-gepa` redacts dataset row payloads and reflection text in logged events by default. Use `--log-row-snapshots` only when the customer explicitly wants raw row and prompt text in the optimization event stream.
+- `orizu optimizations run-gepa` redacts dataset row payloads and reflection text in logged events by default. Use `--log-row-snapshots` only when the customer explicitly wants raw row and component text in the optimization event stream.
 - `run-gepa` still writes complete local traces under `logs/<optimization_run_id>` by default. Treat those logs as sensitive: they include row inputs, model outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, and candidate text.
 - Runner artifacts, runner output, score result uploads, and optimization event payloads are size-capped. If a run needs larger observability payloads, store the large artifact separately and log a pointer.
 
@@ -116,7 +128,7 @@ Required file: `manifest.json`.
 }
 ```
 
-For `runners exec`, the command must read input JSON from `ORIZU_RUNNER_INPUT_PATH` and write output JSON to `ORIZU_RUNNER_OUTPUT_PATH`. When present, `ORIZU_INSTRUCTION_SET_DIR` contains the same layout written by `instruction-sets sync`; use `loadInstructionSet`/`load_instruction_set` to read materialized component text. Pinned components are represented in the manifest and are intentionally not materialized as `.md` files.
+For `runners exec`, the command must read input JSON from `ORIZU_RUNNER_INPUT_PATH` and write output JSON to `ORIZU_RUNNER_OUTPUT_PATH`. When present, `ORIZU_INSTRUCTION_SET_DIR` contains the same layout written by `instructions sync`; use `loadInstructionSet`/`load_instruction_set` to read materialized component text. Pinned components are represented in the manifest and are intentionally not materialized as `.md` files.
 
 Input shape:
 
@@ -237,36 +249,15 @@ seed before iterating. If the seed scores the worst possible value on every
 validation row (0.0 for higher-is-better, 1.0 for lower-is-better), errors on
 every row, or returns nothing parseable, the run fails loudly with a
 contract-mismatch diagnosis instead of silently burning budget on zeroed
-candidates. A uniformly-worst seed is almost always a harness bug, not a bad
-prompt; override with `--allow-degenerate-seed` only when the seed genuinely
+candidates. A uniformly-worst seed is almost always a harness bug, not bad
+component values; override with `--allow-degenerate-seed` only when the seed genuinely
 deserves the worst score everywhere.
 
-### Prompt Or Judge Directory
+### Judge Directory
 
 Required files: `orizu.prompt.json` plus the body file referenced by `body_file`.
 
-Generator prompt:
-
-```json
-{
-  "name": "hip-note-generator",
-  "role": "production_inference",
-  "description": "Generates a HIP note label.",
-  "body_file": "prompt.md",
-  "body_kind": "text",
-  "version_label": "v1",
-  "provider_settings": {
-    "model": "claude-sonnet-4-6",
-    "temperature": 0,
-    "max_tokens": 4096
-  },
-  "provenance": {
-    "kind": "coding-agent-edit"
-  }
-}
-```
-
-Judge prompt:
+Judge artifact:
 
 ```json
 {
@@ -461,11 +452,16 @@ orizu --local runners exec \
 
 Omit `--runner-dir` to download and materialize the pinned runner version from Orizu. `--out` may end in `.jsonl` or `.jsonl.gz`.
 
-### Prompts And Judges
+### Instructions And Judges
+
+Prepare the complete instruction-set manifest and hand it to a human curator;
+the judge remains an agent-writable git-canonical artifact.
 
 ```bash
-orizu --local prompts push ./prompt \
+# Human/local CLI only: a human curator with a user token runs this mutation.
+orizu --local instructions push ./orizu.instruction-set.json \
   --project <team>/<project> \
+  --set <slug-or-exact-name> \
   --runner-version <runner-version-id> \
   --json
 
@@ -475,22 +471,27 @@ orizu --local judges push ./judge \
   --json
 ```
 
-Both commands return `prompt_version_id`.
+Instruction push returns the updated set and profile versions. Judge push
+returns `prompt_version_id` for the judge artifact used by scorer bindings.
 
 List:
 
 ```bash
-orizu --local prompts list --project <team>/<project>
-orizu --local prompts list --project <team>/<project> --status archived
-orizu --local prompts list --project <team>/<project> --status all
+orizu --local instructions list --project <team>/<project>
+orizu --local instructions list --project <team>/<project> --status archived
+orizu --local instructions list --project <team>/<project> --status all
 orizu --local judges list --project <team>/<project>
 ```
 
-Prompt and judge lists show active artifacts by default. Use `--status archived`
-or `--status all` when you need archived artifacts.
+Instruction and judge lists show active artifacts by default. Use `--status
+archived` or `--status all` when you need archived artifacts. Existing prompts
+appear in the instruction list as one-component sets; see
+`instructions-after-prompts.md` for ownership output, deliberate standalone
+mutation refusals, and manual consolidation.
 
-Prompt and judge list tables include `ID`, `NAME`, `ROLE`, `STATUS`, `TOKENS`,
-`LINES`, `CHARS`, and `WORDS`, measured from the latest sealed version. `—`
+Compatibility prompt and judge list tables include `ID`, `NAME`, `ROLE`,
+`STATUS`, `TOKENS`, `LINES`, `CHARS`, and `WORDS`, measured from the latest
+sealed version. `—`
 means the canonical body could not be measured; zero remains `0`. The `~`
 prefix on token counts means approximate: Orizu uses one fixed, model-agnostic
 `gpt-tokenizer` encoding rather than claiming an exact count for every model.
@@ -504,12 +505,17 @@ first 500 sorted summaries are enriched per request, and canonical-body
 resolution has a 15-second server budget. A summary skipped by either bound
 carries null stats and `measurement_cap_exceeded`.
 
-Archive or restore a prompt:
+Archive or restore an instruction set by stable slug or exact name. A coding
+agent prepares the exact set reference and hands the mutation to a human:
 
 ```bash
-orizu --local prompts archive <prompt-id-or-name> --project <team>/<project>
-orizu --local prompts restore <prompt-id-or-name> --project <team>/<project>
+# Human/local CLI only: a human curator with a user token runs these mutations.
+orizu --local instructions archive <slug-or-exact-name> --project <team>/<project>
+orizu --local instructions restore <slug-or-exact-name> --project <team>/<project>
 ```
+
+Archive and restore affect visibility only. Archived sets still resolve and
+sync, and can be inspected with `instructions show --status archived|all`.
 
 List prompt comment threads for the latest version, or a specific label/version:
 
@@ -520,14 +526,19 @@ orizu --local comments list --prompt <prompt-id-or-name> \
   [--json]
 ```
 
-Human output shows the thread count, open/resolved counts, selected prompt text or source line, each top-level comment body, and replies. Use `--json` when an agent or script needs structured `summary` and `comments` data. Check unresolved comments before drafting or pushing the next prompt version.
+Human output shows the thread count, open/resolved counts, selected component
+text or source line, each top-level comment body, and replies. Use `--json` when
+an agent or script needs structured `summary` and `comments` data. Check
+unresolved comments before drafting or pushing the next instruction version.
 
-Move a mutable label:
+Move an instruction profile's production pointer (human-only):
 
 ```bash
-orizu --local prompts labels set hip-note-judge production \
+# Human/local CLI only: the human curator moves the production pointer.
+orizu --local instructions profiles promote hip-note-judge \
   --project <team>/<project> \
-  --version <prompt-version-id> \
+  --model-config <identity> \
+  --version <n> \
   --json
 ```
 
@@ -682,7 +693,7 @@ orizu --local scores submit ./candidate-scores.jsonl \
   --json
 ```
 
-Bind scorers to prompt UI surfaces:
+Bind scorers through the legacy component-compatibility surface:
 
 ```bash
 orizu --local prompts scorers set-headline <prompt-id> \
@@ -772,7 +783,9 @@ For bundled text-candidate GEPA-style optimization, let the CLI manage start/eve
 orizu --local optimizations run-gepa \
   --project <team>/<project> \
   --optimizer-version-id <optimizer-version-id> \
-  --candidate-version-id <prompt-version-id> \
+  --instruction-set <slug-or-exact-name> \
+  --model-config <identity> \
+  --component-selector all \
   --runner-version-id <runner-version-id> \
   --candidate-runner-dir ./candidate-runner \
   --scorer-version-id <row-scorer-version-id> \
@@ -790,6 +803,12 @@ orizu --local optimizations run-gepa \
 
 Useful GEPA flags:
 
+- `--instruction-set <slug-or-exact-name> --model-config <identity>` selects a
+  resolving instruction-set profile. `--component-selector round-robin|all`
+  controls which components GEPA proposes changing; `all` lets it optimize the
+  complete component map. `--candidate-version-id` remains a compatibility
+  input for a single legacy prompt version and is mutually exclusive with the
+  instruction-set selector.
 - `--engine official|legacy` defaults to `official`, which runs the bundled official GEPA connector. Use `legacy` only as the frozen recovery hatch; it keeps the historical Python loop and does not support `--max-candidate-proposals` or the skilled proposer.
 - `--scorer-input-contract gepa|flat_row` selects the scorer-runner input shape. Use `flat_row` to reuse a judge runner written for `runners exec --scorer-version` without a hand-written adapter; add `--scorer-candidate-field <row-field>` when that judge reads the candidate output from a specific row field (e.g. `draft`). Passing a candidate field under the `gepa` contract is refused at launch, not silently ignored. See "Scorer-Runner Input Contracts" above.
 - `--allow-degenerate-seed` opts out of the launch-time refusal when the seed scores the worst possible value on every validation row. Leave it off by default — a uniformly-worst seed is almost always a scorer contract mismatch.
@@ -801,9 +820,9 @@ Useful GEPA flags:
 - `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
 - `--reflection-max-tokens <n>` is explicit provider config, not a global default. It maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI can omit it unless the user wants a cap.
 - `--reflection-retry-attempts` and `--reflection-http-timeout-seconds` tune transient reflection-provider retries. Exhausted retryable failures log `reflection_failed`, count against candidate-proposal budget, and continue with the next iteration.
-- `--reflection-provider-settings <json|@file>` passes provider-native reflection settings separately from the prompt text. Anthropic example: `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`. OpenAI example: `{"reasoning":{"effort":"medium","summary":"auto"}}`.
+- `--reflection-provider-settings <json|@file>` passes provider-native reflection settings separately from the component text. Anthropic example: `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`. OpenAI example: `{"reasoning":{"effort":"medium","summary":"auto"}}`.
 - `--disable-evaluation-cache` turns off candidate/row/scorer cache reuse.
-- `--auto-promote --promotion-label <label>` promotes the best candidate at the end.
+- `--auto-promote --promotion-label <label>` can move a label to the best candidate at the end. Coding agents must not pass either flag; hand the accepted profile version to a human for any production-pointer move.
 - `--log-row-snapshots` includes raw row and reflection text in events; leave off by default.
 - `--log-dir <dir>` controls the local log root; default is `logs`.
 - `--no-local-log` disables local trace files. Use this only when the environment must not persist raw rows or reflection context.
@@ -854,10 +873,11 @@ orizu --local optimizations export <optimization-run-id> \
 
 Use export when the local log is unavailable, the run happened on another machine, or a coding agent needs a portable single JSON artifact. The export fetches all optimization events, derives seed vs best, Pareto frontier, score-over-time, candidates, iterations, minibatch rows, and validation rows, and rehydrates row inputs from the dataset version artifact when possible. Server events may not contain row snapshots or reflection prompts unless the run used `--log-row-snapshots`; reflection responses are included for bundled `run-gepa` runs.
 
-Both diff-comment read routes (`/api/optimization-runs/<run-id>/diff-comments` and
-`/api/prompts/<prompt-id>/diff-comments`) return `componentKey` for tuple
-comments. Preserve it on writes and use it in grouping keys: equal line ranges
-from different instruction-set components are distinct comments.
+Both diff-comment read routes (`/api/optimization-runs/<run-id>/diff-comments`
+and `/api/prompts/<prompt-id>/diff-comments`) return `componentKey` for
+multi-component comments. Preserve it on writes and use it in grouping keys:
+equal line ranges from different instruction-set components are distinct
+comments.
 
 The v1 export keeps the run row's `best_candidate_id` in
 `summary.bestCandidateId` when event derivation rejects that identifier as an

@@ -80,23 +80,39 @@ orizu projects create --name "Quality Eval" --team my-team
 ### Instruction sets
 
 ```bash
-orizu instruction-sets list --project my-team/quality-eval [--status active|archived|all] [--json]
-orizu instruction-sets show <set> --project my-team/quality-eval [--status active|archived|all] [--json]
-orizu instruction-sets create ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--model-config <identity>] [--json]
-orizu instruction-sets push ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--json]
-orizu instruction-sets sync <set> --out ./instructions --project my-team/quality-eval [--model-config <identity>] [--json]
-orizu instruction-sets profiles new <set> --project my-team/quality-eval --model-config <identity> [--json]
-orizu instruction-sets profiles promote <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
-orizu instruction-sets profiles rollback <set> --project my-team/quality-eval --model-config <identity> --to <n> [--json]
-orizu instruction-sets default show <set> --project my-team/quality-eval [--json]
-orizu instruction-sets default move <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
-orizu instruction-sets shape add <set> --project my-team/quality-eval --key <key> --from <manifest> [--json]
-orizu instruction-sets shape remove <set> --project my-team/quality-eval --key <key> [--json]
+orizu instructions list --project my-team/quality-eval [--status active|archived|all] [--json]
+orizu instructions show <set> --project my-team/quality-eval [--status active|archived|all] [--json]
+# Human/local CLI only: a human runs create/push; hosted agents may run profiles new and sync.
+orizu instructions create ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--model-config <identity>] [--json]
+orizu instructions push ./orizu.instruction-set.json --project my-team/quality-eval [--set <slug-or-exact-name>] [--runner-version <id>] [--json]
+orizu instructions sync <set> --out ./instructions --project my-team/quality-eval [--model-config <identity>] [--json]
+orizu instructions profiles new <set> --project my-team/quality-eval --model-config <identity> [--json]
+# Human/local CLI only: profile production-pointer moves.
+orizu instructions profiles promote <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
+orizu instructions profiles rollback <set> --project my-team/quality-eval --model-config <identity> --to <n> [--json]
+orizu instructions default show <set> --project my-team/quality-eval [--json]
+# Human/local CLI only: the set-wide default-pointer move.
+orizu instructions default move <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
+# Human/local CLI only: shape mutations.
+orizu instructions shape add <set> --project my-team/quality-eval --key <key> --from <manifest> [--json]
+orizu instructions shape remove <set> --project my-team/quality-eval --key <key> [--json]
+# Human/local CLI only: visibility mutations.
+orizu instructions archive <slug-or-exact-name> --project my-team/quality-eval [--json]
+orizu instructions restore <slug-or-exact-name> --project my-team/quality-eval [--json]
 ```
 
-`list` returns each instruction set and its ordered shape. `show` returns the
-default and every model-config profile's production state. `create` and `push`
-read a local manifest; JSON output is one document per line.
+`instructions` is the customer-facing command namespace. The legacy
+`instruction-sets` spelling remains a compatibility alias, but new workflows
+should not teach it. A set can be addressed by its stable slug or exact name;
+the slug does not change when the display name changes. `list` returns each
+instruction set and its ordered shape. `show` returns the default and every
+model-config profile's production state. Use `--status archived` or `--status
+all` to include archived sets. A human curator runs create, push, shape,
+archive, and restore mutations from the local CLI with a user token. Archive
+and restore change visibility only:
+archived sets continue to resolve and sync. `create` and `push` read a local
+manifest; JSON output is one document per line. `push --set` updates the named
+or slug-addressed set independently of the manifest's display name.
 
 `profiles new` copies the default component map into a model-config profile without
 changing its production resolution; hosted agents may create this seed because
@@ -117,11 +133,13 @@ the default or a production label. The set does not resolve for affected model
 configs until those pointers move to the new shape-change profile versions; the
 text CLI prints the required follow-up commands.
 
-The manifest is a JSON object with `name`, ordered `shape`, and `components`.
-Every component supplies `{ key, text }` or `{ key, path }`; paths are relative
-to the manifest. Set-wide components must cover the complete shape. A component
-may add `modelConfig` for a profile override: `create` materializes that named
-profile with the set-wide component map plus its overrides, while `push` updates named
+The manifest is a JSON object with `name`, optional unversioned `description`,
+ordered `shape`, and `components`. The description belongs to the instruction
+set rather than any profile and round-trips through sync. Every component
+supplies `{ key, text }` or `{ key, path }`; paths are relative to the manifest.
+Set-wide components must cover the complete shape. A component may add
+`modelConfig` for a profile override: `create` materializes that named profile
+with the set-wide component map plus its overrides, while `push` updates named
 profiles already present on the set. `push` refuses a manifest whose shape
 differs from the stored set.
 
@@ -347,9 +365,12 @@ Defaults:
 - format defaults to `jsonl`
 - output file defaults to `<taskId>.<format>`
 
-### Prompt Control Plane
+### Instruction Control Plane
 
-For prompts, judges, runners, run submission, optimizer artifacts, live event logging, and accepted-candidate promotion, read `prompt-control-plane.md`. For markdown reports attached to optimization runs, read `optimization-reports.md`.
+For instruction sets, judges, runners, run submission, optimizer artifacts,
+live event logging, and accepted-candidate promotion, read
+`prompt-control-plane.md`. For markdown reports attached to optimization runs,
+read `optimization-reports.md`.
 
 Diff-comment export:
 
@@ -481,7 +502,7 @@ Worker assignment reads are self-only:
 - Use `tasks status` and `tasks export` for operator-side reporting.
 ### Offline instruction-set sync
 
-`orizu instruction-sets sync <set> --project <team/project> --out <dir>` writes
+`orizu instructions sync <set> --project <team/project> --out <dir>` writes
 an atomic local manifest. A resolver failure for either the default or any
 selected profile refuses the entire sync as `instruction_set_unresolvable`; the
 route never silently downgrades a failed production component map to default bytes. A

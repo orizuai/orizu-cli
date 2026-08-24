@@ -1,21 +1,21 @@
 # Optimization With GEPA
 
-How to optimize text candidates against validated judges/scorers. For Orizu-tracked runs, prefer `prompt-control-plane.md` and the bundled `orizu optimizations run-gepa` command when optimizing one text candidate. Use this reference for GEPA mechanics, custom optimizer implementations, and optional DSPy context for customers already using DSPy.
+How to optimize an instruction-set profile against validated judges and scorers. For Orizu-tracked runs, a coding agent prepares the complete instruction-set manifest, a human curator creates or updates the set from the local CLI, and then the agent runs the bundled `orizu optimizations run-gepa` flow. Use this reference for GEPA mechanics, custom optimizer implementations, and optional DSPy context for customers already using DSPy.
 
-For an instruction set, select the profile explicitly with `--instruction-set <name> --model-config <identity>` rather than `--prompt` or `--prompt-version` (those selectors are mutually exclusive). The connector resolves that model config's production profile, or the set default, and optimizes its complete component map. `--component-selector round-robin` is the default and updates one component per round; `--component-selector all` updates every component per round. A multi-component candidate is sent as a component map, while a set of one keeps the existing prompt-body contract. Git-pinned components and malformed component maps are refused before a run starts; multi-component auto-promotion is deliberately refused until component-map promotion is available.
+Select the profile explicitly with `--instruction-set <slug-or-exact-name> --model-config <identity>`. Those two selectors replace the legacy `--candidate-version-id` path and cannot be combined with it. The connector resolves that model config's production profile, or the set default when the profile has no production version, and optimizes its complete component map. `--component-selector round-robin` is the default and updates one component per round; `--component-selector all` updates every component per round. The runner receives a multi-component candidate as a component map, while a one-component set keeps the existing single-body runner contract. Git-pinned components and malformed component maps are refused before a run starts. Automatic promotion is refused for multi-component sets. Human/local CLI only: after validation, a coding agent writes the complete component map back to the manifest and prepares exact handoff commands; a human curator runs `orizu instructions push` and `orizu instructions profiles promote`.
 
 ## Inputs
 
 You should arrive here with:
 - One or more **validated judges** (TPR > 90%, TNR > 90% on a held-out test set).
 - A **dataset** of inputs to optimize against — usually the same exported labels, plus any harder cases you've added since.
-- A **starting prompt or program** for the LLM application you want to improve.
+- An **instruction set** whose selected profile contains the starting component values for the LLM application you want to improve.
 
 If you don't have a validated judge, stop. Optimizing against an unvalidated judge means you'll hill-climb on a noisy or biased signal — Goodhart's law in action.
 
 ## Why GEPA-Style Optimization
 
-- **GEPA** is a gradient-free prompt optimizer that uses an LLM to propose prompt edits, scores candidates against your metric, and keeps the best. It's well-suited to prompt-level optimization where you can't backprop through the model.
+- **GEPA** is a gradient-free text optimizer that uses an LLM to propose component edits, scores candidates against your metric, and keeps the best. It is well-suited to instruction optimization where you cannot backpropagate through the model.
 - In Orizu, runners execute candidates, scorers produce metrics/feedback, and optimization events make the loop inspectable and promotable.
 - DSPy is not part of Orizu's bundled optimizer. Treat DSPy examples here as an external integration pattern only.
 
@@ -40,29 +40,30 @@ If you don't have a validated judge, stop. Optimizing against an unvalidated jud
               └──────────┬──────────────┘
                          ▼
               ┌─────────────────────────┐
-              │ Optimized prompt        │
+              │ Optimized profile       │
               │ Compare before/after    │
               └─────────────────────────┘
 ```
 
 ## Orizu-tracked optimization
 
-Use the prompt control plane when you want runs, candidates, score charts, Pareto/frontier views, and promotions in Orizu:
+Use the control plane described in `prompt-control-plane.md` when you want runs, candidates, score charts, Pareto/frontier views, and promotions in Orizu:
 
-1. Push the candidate runner and prompt/judge prompt.
-2. Register a row scorer for reflection. GEPA reflection requires row-level feedback.
-3. Snapshot a dataset version and create a train/validation split set.
-4. Use `orizu optimizations run-gepa` for the common text-candidate case. It uses official GEPA by default; `--engine legacy` is a frozen safety hatch while migration parity is proven. Use `orizu optimizations start` plus event logging for a custom optimizer.
-5. Use set scorers for selection/tracked reporting when the meaningful metric is batch-level; execute builtin set scorers with `orizu scorers exec` or submit precomputed aggregates with `orizu scores submit --aggregate`.
-6. Promote only candidates that passed validation.
-7. Write and attach an optimization report from the local logs or export artifact; see `optimization-reports.md`.
+1. Human/local CLI only: a human curator creates the instruction set from its prepared manifest with `orizu instructions create`, or pushes a new profile version with `orizu instructions push`. The coding agent prepares the manifest and handoff; keep the set's shape fixed during a run.
+2. Push the candidate runner and, for an LLM evaluator, the judge rubric with `orizu judges push`.
+3. Register a row scorer for reflection. GEPA reflection requires row-level feedback.
+4. Snapshot a dataset version and create a train/validation split set.
+5. Use `orizu optimizations run-gepa` with the set slug and model-config identity. It uses official GEPA by default; `--engine legacy` is a frozen safety hatch while migration parity is proven. Use `orizu optimizations start` plus event logging for a custom optimizer.
+6. Use set scorers for selection/tracked reporting when the meaningful metric is batch-level; execute builtin set scorers with `orizu scorers exec` or submit precomputed aggregates with `orizu scores submit --aggregate`.
+7. Promote only candidates that passed validation, as complete profile versions rather than individual components.
+8. Write and attach an optimization report from the local logs or export artifact; see `optimization-reports.md`.
 
-The bundled Orizu GEPA-style optimizer supports configurable budget, minibatch size (default 3), candidate selection strategy, reflection model/template, reflection provider settings, evaluation caching, and optional auto-promotion. It redacts row snapshots and reflection text by default; only pass `--log-row-snapshots` when raw data in event logs is intentional.
+The bundled Orizu GEPA-style optimizer supports configurable budget, minibatch size (default 3), candidate selection strategy, reflection model/template, reflection provider settings, evaluation caching, and optional auto-promotion, which is human-only; coding agents must not enable it. It redacts row snapshots and reflection text by default; only pass `--log-row-snapshots` when raw data in event logs is intentional.
 
 Reflection output contract:
-- The reflective LM's final text is used verbatim as the next candidate prompt.
-- The default reflection prompt asks for only the complete updated prompt body. Do not ask the model to wrap the candidate in markdown fences or tags; real prompts often contain those characters.
-- Put provider-native reasoning controls in `--reflection-provider-settings <json|@file>`, not in the prompt body. For OpenAI reasoning models, use a shape such as `{"reasoning":{"effort":"medium","summary":"auto"}}`. For Anthropic Claude models with thinking controls, use a shape such as `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`.
+- The reflective LM's final text is used verbatim as the next value of the selected component. With `round-robin`, other component values are read-only context; with `all`, each component is reflected independently and the results form one complete candidate profile.
+- The default reflection template asks for only the complete updated component value. Do not ask the model to wrap the value in markdown fences or tags; instruction components often contain those characters.
+- Put provider-native reasoning controls in `--reflection-provider-settings <json|@file>`, not in an instruction component. For OpenAI reasoning models, use a shape such as `{"reasoning":{"effort":"medium","summary":"auto"}}`. For Anthropic Claude models with thinking controls, use a shape such as `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`.
 - Reflection max-token limits are explicit. `--reflection-max-tokens <n>` maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI may omit it when no cap is desired.
 - Reflection HTTP calls retry transient failures by default (`--reflection-retry-attempts 3`, `--reflection-http-timeout-seconds 180`). Exhausted retryable failures emit `reflection_failed`, consume one candidate-proposal budget slot, and move to the next iteration instead of killing the run.
 
@@ -79,13 +80,13 @@ Since release `cli-v0.5.20` (`orizu@0.5.20` on npm), `run-gepa` defaults to the 
 - **Metric accounting differs.** Official counts include every evaluated row; legacy excluded some cached work. Do not compare raw metric-call totals across engines (details in ADR-019).
 - **Artifacts.** Both engines write `events.jsonl`, `evaluations.jsonl`, `reflections.jsonl`, and `result.json` locally; `lm_stats.json` (reflection usage) is official-only. Dashboard rendering is identical, and run metadata records `engine: official` or `engine: legacy`.
 
-Terminal semantics are unchanged between engines: exhausting any budget control other than `--max-iterations` ends the run `paused` (`pause_reason: budget_exhausted`) with no auto-promotion, while completing the configured `--max-iterations` is a normal `succeeded` finish that may auto-promote. A paused run's validated candidates can still be promoted manually — only automatic promotion is gated on how the run ended. Falling back to `--engine legacy` after a budget-exhausted pause reproduces the same paused outcome; it will not turn the run into a `succeeded` one.
+Terminal semantics are unchanged between engines: exhausting any budget control other than `--max-iterations` ends the run `paused` (`pause_reason: budget_exhausted`) with no auto-promotion, while completing the configured `--max-iterations` is a normal `succeeded` finish that may auto-promote only when the human-only option was deliberately enabled; coding agents must not enable it. A paused run's validated candidates can still be promoted manually by a human curator — only automatic promotion is gated on how the run ended. Falling back to `--engine legacy` after a budget-exhausted pause reproduces the same paused outcome; it will not turn the run into a `succeeded` one.
 
 **Fallback:** rerun with `--engine legacy` for the previous engine's exact behavior, dropping `--max-candidate-proposals` first if you used it (it is official-only; the CLI refuses it under legacy before launch). Legacy is frozen (no new features) and will be removed at the M3 milestone (ADR-019) — if you fall back because the official engine misbehaved, capture both run ids and report the pair.
 
 ### Compare the skilled proposer with the default
 
-Run two arms with the same candidate prompt/version, dataset version and split set, candidate and scorer runners, seed, reflection model/settings, thread count, and one shared overall budget such as `--max-candidate-proposals 1`. Keep the default arm unselected; add `--candidate-proposer skilled-proposer` plus bounded `--proposal-max-calls` and `--proposal-max-tokens` only to the selected arm. The comparison is ready when both terminal states, retained candidates, scores, proposal evidence, and total run usage are captured. A fixed GEPA seed aligns optimizer sampling but does not make provider or scorer calls deterministic, so treat the pair as process and outcome evidence rather than an intrinsic quality claim.
+Run two arms with the same instruction-set profile version, dataset version and split set, candidate and scorer runners, seed, reflection model/settings, thread count, and one shared overall budget such as `--max-candidate-proposals 1`. Keep the default arm unselected; add `--candidate-proposer skilled-proposer` plus bounded `--proposal-max-calls` and `--proposal-max-tokens` only to the selected arm. The comparison is ready when both terminal states, retained candidates, scores, proposal evidence, and total run usage are captured. A fixed GEPA seed aligns optimizer sampling but does not make provider or scorer calls deterministic, so treat the pair as process and outcome evidence rather than an intrinsic quality claim.
 
 For the selected arm, each provider-bearing proposal call appends `proposal-observability/events.jsonl`. Success records contain `source`, `status`, `attempt`, `correlation_id`, `provider`, `model`, nullable `request_id`, `latency_ms`, `cache_state`, and `usage.{input_tokens,output_tokens,total_tokens}`. Failure records contain `source`, `status`, `attempt`, `correlation_id`, `provider`, `cache_state`, `failure_code`, and optional `usage`; the latest durable failure is also written to `proposal-failures/latest.json` with `source`, `code`, `detail`, and optional `correlation_id`.
 
@@ -93,7 +94,7 @@ With local logging, those paths sit under `<log-dir>/<run-id>/`, and terminal `p
 
 ## Step 1: Wrap your application as an Orizu runner
 
-For Orizu-tracked optimization, the candidate runner receives one dataset row and one candidate text body through the file contract. The scorer runner, by default, receives a GEPA-shaped `row` — `{source_row, candidate_id, candidate_output, candidate_raw_response, candidate_error}` — and returns a score and feedback. See `prompt-control-plane.md` ("Scorer-Runner Input Contracts") for the exact runner I/O shapes.
+For Orizu-tracked optimization, the candidate runner receives one dataset row and the candidate profile through the file contract. A one-component profile is passed as a single body for runner compatibility; a multi-component profile is passed as a complete component map. The scorer runner, by default, receives a GEPA-shaped `row` — `{source_row, candidate_id, candidate_output, candidate_raw_response, candidate_error}` — and returns a score and feedback. See `prompt-control-plane.md` ("Scorer-Runner Input Contracts") for the exact runner I/O shapes.
 
 **Contract warning:** the GEPA scorer contract differs from the flat-row score-run contract used by `orizu runners exec --scorer-version`. A judge runner written for flat-row score runs will find no output to judge in the GEPA shape and silently score every candidate 0. Do not hand-write a wrapper runner: pass `--scorer-input-contract flat_row` (plus `--scorer-candidate-field <row-field>` if the judge reads the candidate output from a named row field such as `draft`) and `run-gepa` adapts the payload for you while keeping the registered runner bytes unchanged. `run-gepa` also validates the contract on the seed at launch and refuses a uniformly-worst-scoring seed with a diagnosis instead of burning budget.
 
@@ -132,7 +133,7 @@ class SupportAgent(dspy.Module):
         )
 ```
 
-If your real application is multi-step (retrieval + generation + tool use), build a multi-Module program. GEPA can optimize each step's prompt independently.
+If your real application is multi-step (retrieval + generation + tool use), build a multi-Module program. GEPA can optimize each module's instructions independently.
 
 ## Step 2: Register scorers
 
@@ -208,7 +209,7 @@ logs/<optimization_run_id>/
   result.json
 ```
 
-Use this directory as the primary artifact for coding-agent analysis. It contains the full row inputs, model outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, candidate text, and final result. Override the root with `--log-dir <dir>`; disable persistence with `--no-local-log` only when raw rows/reflection context must not be written to disk.
+Use this directory as the preferred artifact for coding-agent analysis. It contains the full row inputs, model outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, candidate text, and final result. Override the root with `--log-dir <dir>`; disable persistence with `--no-local-log` only when raw rows/reflection context must not be written to disk.
 
 If the local log is missing or the run happened elsewhere, export the server-side archive:
 
@@ -247,8 +248,8 @@ optimized_program.save("./optimized_support_agent.json")
 
 GEPA will:
 1. Run the program on `trainset`, score with `metric`.
-2. Use `reflection_lm` to propose prompt edits based on failures.
-3. Score candidate prompts on the trainset, keep the best.
+2. Use `reflection_lm` to propose instruction edits based on failures.
+3. Score candidate programs on the trainset, keep the best.
 4. Validate on `valset` to avoid overfitting.
 
 Orizu's bundled optimizer is intentionally narrower than DSPy GEPA today: text candidates only, local runner/scorer directories, and Orizu event logging built in.
@@ -287,8 +288,8 @@ print(f"After:  {after}")
 
 ## Step 6: Ship and feed the loop
 
-If the optimized prompt holds up on held-out:
-- Replace the production prompt.
+If the optimized profile holds up on held-out:
+- Promote the validated profile version to production; never promote one component by itself.
 - Sample new production traces over the next week.
 - Upload them as a new dataset (`primer.md` Step 1).
 - Annotate failures the optimized system *now* exhibits — they'll be different from the ones the previous version had.
@@ -304,7 +305,7 @@ Each pass through the loop reveals the next layer.
 - **Hiding regressions in the average.** Track per-failure-mode metrics, not just combined.
 - **Over-budgeting GEPA.** Heavy budgets give diminishing returns and burn LM spend. Start with `auto="light"`, scale up only if needed.
 - **Ignoring temperature.** Run optimization with the same LM config (model, temperature) you use in production. Optimizing against gpt-4o at temp=0 doesn't transfer to gpt-4o-mini at temp=0.7.
-- **Recreating Orizu logging by hand for text prompts.** Use `orizu optimizations run-gepa` unless the optimizer is genuinely custom.
+- **Recreating Orizu logging by hand for instruction sets.** Use `orizu optimizations run-gepa` unless the optimizer is genuinely custom.
 
 ## Checklist
 

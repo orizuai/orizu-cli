@@ -1,22 +1,29 @@
 # Migrating an existing GEPA setup into Orizu
 
 For a customer already running official GEPA from a plain script — inline
-`trainset`/`valset`, a seed prompt in a dict, their own `metric(row, output)`.
+`trainset`/`valset`, seed component values in a dict, and their own
+`metric(row, output)`. The dict becomes one instruction-set profile: its keys
+become the set's fixed shape, and its values become that profile's components.
+Use `orizu instructions` as the only creation and update path for those
+customer-owned instructions. A coding agent prepares the complete manifest;
+a human curator runs its mutations from the local CLI with a user token.
 
 The ordering rule: **nothing is optimized until parity is proven.** The last
 step before `run-gepa` is always `orizu scorers verify-parity`, which runs the
 migrated scorer runner under the exact payload `run-gepa` sends it and the
 customer's original metric over the same rows, and exits 0 only if they agree.
 
-Commands are shown with `--local`; drop it against a hosted server.
+Commands are shown with `--local`; drop it against a hosted server except for
+instruction-set mutations and pointer moves marked human-only, which a hosted
+agent prepares but never executes.
 
 ## 0. Read their script
 
 Note the row shape and which field is the stable id, `trainset`/`valset`
-membership, the seed candidate text, the metric's `module:function`, and what
-it returns (a float, a dict with `score`, or GEPA's `EvaluationResult` — all
-three are accepted; `objective_scores` is ignored). If rows have no stable id,
-add one now: every step below pairs on it.
+membership, the seed component map, the metric's `module:function`, and what it
+returns (a float, a dict with `score`, or GEPA's `EvaluationResult` — all three
+are accepted; `objective_scores` is ignored). If rows have no stable id, add
+one now: every step below pairs on it.
 
 ## 1. Set up, then export the rows
 
@@ -69,35 +76,48 @@ orizu --local datasets splits create <dataset-version-id> \
 `--from-file` preserves their partitions; the ratio flags
 (`--train/--validation/--test`) resample and must not be used here.
 
-## 3. Candidate runner and seed prompt
+## 3. Candidate runner and seed instruction set
 
-The candidate runner does what `task_lm` did: candidate prompt + row -> output.
+The candidate runner does what `task_lm` did: candidate profile + row ->
+output. A one-component profile keeps the single-body runner contract. For a
+multi-component profile, read the complete map from
+`input["instruction_set"]["components"]`; components belong only to this
+profile and are never shared across profiles or sets.
 
 ```bash
 orizu --local runners push ./candidate-runner \
   --project <team>/<project> --name gepa-candidate-runner --label default --json
 
-orizu --local prompts push ./prompt \
-  --project <team>/<project> --runner-version <candidate-runner-version-id> --json
+# Human/local CLI only: a human curator with a user token runs this mutation.
+orizu --local instructions create ./orizu.instruction-set.json \
+  --project <team>/<project> \
+  --runner-version <candidate-runner-version-id> \
+  --model-config <provider/model> --json
 ```
 
-`./prompt` holds `orizu.prompt.json` plus the body file it names. Only `name`
-is enforced (`app/api/cli/prompts/route.ts:220-221`); `body_file` defaults to
-`prompt.md`, `body_kind` to `text` (`packages/cli/src/index.ts:3966-3985`) and
-`provider_settings` to `{}`. Write all four anyway — a migration whose model
-settings are implicit is a migration nobody can reproduce:
+The manifest carries the instruction set's `name`, human-readable
+`description`, fixed `shape`, and component values. Put each original dict
+value in a file without changing its bytes. This one-component example maps
+the old `system` key to `system.md`:
 
 ```json
 {
-  "name": "gepa-seed-prompt",
-  "body_file": "prompt.md",
-  "body_kind": "text",
-  "provider_settings": { "model": "claude-sonnet-4-6", "temperature": 0 }
+  "name": "gepa-agent-instructions",
+  "description": "Instructions for the migrated GEPA application",
+  "shape": ["system"],
+  "components": [
+    { "key": "system", "path": "./system.md" }
+  ]
 }
 ```
 
-`prompt.md` carries their seed candidate text verbatim. Returns the seed
-`prompt_version_id`.
+For a multi-component seed, list every original key once in `shape`, in stable
+order, and add one component entry per key. `--model-config` selects the
+profile whose seed is created; it must name an existing model config with the
+same settings used by the original script. The JSON result includes the set's
+stable `slug` and its default profile version. Record the slug — later reads,
+optimization, archiving, and restoration should use it even if the display
+name changes.
 
 ## 4. Wrap their metric in a scorer runner
 
@@ -157,12 +177,12 @@ def metric(row, model_output):                      # what verify-parity calls
 orizu --local runners push ./scorer-runner \
   --project <team>/<project> --name gepa-scorer-runner --label default --json
 
-orizu --local prompts push ./scorer-prompt \
+orizu --local judges push ./judge \
   --project <team>/<project> --runner-version <scorer-runner-version-id> --json
 
 orizu --local scorers register --project <team>/<project> \
   --name gepa-migrated-metric --manifest ./scorer.manifest.json \
-  --prompt-version <scorer-prompt-version-id> \
+  --prompt-version <judge-version-id> \
   --runner-version <scorer-runner-version-id> \
   --label production --json                        # -> scorer_version_id
 ```
@@ -180,29 +200,39 @@ or `metric_key`, and `mode` must be `row` or `set`:
 }
 ```
 
-`prompt_runner` is the only kind `runners exec --scorer-version` and
-`verify-parity` can execute, and it requires a backing prompt version. For a
-pure-code metric with no judge text, `./scorer-prompt` is a short prompt
-version documenting the rubric; the runner never reads its body.
+`prompt_runner` is the only implementation kind that `runners exec
+--scorer-version` and `verify-parity` can execute, and the scorer contract
+currently names its backing judge artifact with `--prompt-version`. That flag
+receives the `prompt_version_id` returned by `orizu judges push`; do not replace
+the judge command with a standalone prompt mutation.
 
-## 5. Produce `outputs.jsonl` by running the seed once
+For an LLM metric, `./judge` contains the evaluator rubric the scorer runner
+executes. For a pure-code metric, keep a short judge rubric that documents the
+deterministic rule and expected output, even though the runner does not read
+its body. The judge is the evaluator artifact; the scorer is the metric
+contract that gives its numeric result a name, mode, and direction.
+
+## 5. Freeze the original setup's outputs
 
 A scorer scores *(row, output)*, so parity needs one candidate output per row.
+Use the customer's existing script to run its original `task_lm` once with
+the unchanged seed component map, and record the exact output passed to
+`metric(row, output)`. Write one file per partition. Each JSONL row is:
 
-```bash
-orizu --local runners exec \
-  --prompt-version <seed-prompt-version-id> \
-  --runner-version <candidate-runner-version-id> \
-  --dataset-version <dataset-version-id> \
-  --split-set <split-set-id> --split validation \
-  --out ./results.jsonl
-
-jq -c '{row_id: .row_id, model_output: .model_response}' ./results.jsonl > ./outputs.jsonl
+```json
+{"row_id":"<the row's stable id>","model_output":"<the exact output>"}
 ```
 
-`outputs.jsonl` must cover exactly the rows being checked: a missing or extra
-`row_id`, a duplicate, or a non-string `model_output` is refused before
-anything runs.
+Do not produce this evidence by running the migrated scorer or by starting an
+optimization. The output is a fixed subject shared by the original metric and
+the migrated scorer, so a mismatch isolates the scorer migration rather than
+mixing in candidate-runner or provider drift. After scorer parity is proven,
+characterize the candidate runner separately against these same rows before
+starting GEPA.
+
+Each partition's output file must cover exactly the rows being checked: a
+missing or extra `row_id`, a duplicate, or a non-string `model_output` is
+refused before anything runs.
 
 ## 6. Prove parity
 
@@ -211,7 +241,7 @@ orizu --local scorers verify-parity \
   --scorer-version <scorer-version-id> \
   --dataset-version <dataset-version-id> \
   --split-set <split-set-id> --split validation \
-  --outputs ./outputs.jsonl \
+  --outputs ./outputs-validation.jsonl \
   --original metric:metric \
   --json
 ```
@@ -237,9 +267,9 @@ orizu --local scorers verify-parity \
   the registered runner version; drifted bytes exit 2.
 - `--limit <n>` checks the first N rows of the partition — a smoke check, not
   the proof: it always reports `parity: false` with `scope: {compared, total}`,
-  so a limited run can never be mistaken for a full one. The same full
-  `outputs.jsonl` works: outputs must cover the limited rows and belong to the
-  split, and need not be trimmed to N.
+  so a limited run can never be mistaken for a full one. The full partition's
+  output file works: outputs must cover the limited rows, belong to the split,
+  and need not be trimmed to N.
 - A repeated option takes its LAST value, matching run-gepa's scalar options.
 - If a sampled row already has the candidate field as a key, the command exits 2
   rather than overwriting a value the original metric reads.
@@ -257,7 +287,8 @@ optimizes the wrong thing, and every number afterwards is wrong.
 proposals: a scorer that agrees on validation but diverges on a training row
 that exercises a different schema branch changes the experiment's result while
 passing this gate. Repeat steps 5 and 6 with `--split train` (its own
-`outputs.jsonl` from the same seed run) and require exit 0 on both.
+`outputs-train.jsonl` from the same frozen seed evaluation) and require exit 0
+on both.
 
 A `parity: true` report means every row of that partition was compared and
 agreed. A limited run reports `parity: false` with
@@ -273,7 +304,9 @@ orizu --local optimizers push ./optimizer \
 orizu --local optimizations run-gepa \
   --project <team>/<project> \
   --optimizer-version-id <optimizer-version-id> \
-  --candidate-version-id <seed-prompt-version-id> \
+  --instruction-set <instruction-set-slug> \
+  --model-config <provider/model> \
+  --component-selector round-robin \
   --runner-version-id <candidate-runner-version-id> \
   --candidate-runner-dir ./candidate-runner \
   --scorer-version-id <scorer-version-id> \
@@ -294,10 +327,37 @@ reflection model is refused at launch without it
 `packages/orizu-gepa/src/orizu_gepa_connector/runtime.py:193-196`). Drop it only
 if you also pass an `openai/...` `--reflection-model`.
 
+`--instruction-set` and `--model-config` select exactly one profile. The CLI
+uses that profile's production version when it has one and otherwise uses the
+set default; it refuses the legacy `--candidate-version-id` selector when the
+instruction-set selectors are present. `round-robin` updates one component per
+round; use `--component-selector all` only when every component should be
+reflected on each round.
+
 `./optimizer` needs `manifest.json` with `"optimizer_family": "gepa"`. See
 `references/optimization-with-gepa.md` for reflection-model and budget flags.
 Pass `--scorer-candidate-field <field>` here too if you passed it to
 `verify-parity`: the payload the runner sees must be the one parity was proven
-under. Afterwards, `orizu optimizations promote <run-id> --candidate <id>
---label production` promotes the winner — and with parity proven, its score is
-comparable to the seed score their own script reports.
+under. Afterwards, promote only a candidate that passed held-out validation.
+Copy the accepted candidate's complete component map back into the manifest's
+files, then prepare the exact commands for one new version of the selected
+profile. Both the push and the profile promotion are human-only: a coding agent
+prepares the validated manifest and exact handoff commands, but a human curator
+runs both from the local CLI with a user token.
+
+```bash
+# Human/local CLI only: a human curator with a user token runs this mutation.
+orizu --local instructions push ./orizu.instruction-set.json \
+  --project <team>/<project> --set <instruction-set-slug> \
+  --runner-version <candidate-runner-version-id> --json
+
+# Human/local CLI only: the human curator moves the production pointer.
+orizu --local instructions profiles promote <instruction-set-slug> \
+  --project <team>/<project> --model-config <provider/model> \
+  --version <new-profile-version-number> --json
+```
+
+The push creates a complete profile version. After the human promotion, only
+that profile's production pointer has moved; a component is never promoted by
+itself. With parity proven, its score is comparable to the seed score their own
+script reports.

@@ -1,20 +1,20 @@
 ---
 name: orizu-cli
-description: Use when the user wants to improve an LLM application's performance in a measurable way, or mentions Orizu by name. Triggers include improving model or agent performance, collecting human feedback on model outputs, converting feedback into evals, building or crafting evals, running prompt optimization (including one-off prompt tweaks the user is willing to validate with evals), working with Orizu datasets, tasks, apps, prompts, judges, scorers, runners, score runs, or optimization runs, hill-climbing on metrics, or building "continually learning" agents. Orizu is a platform for building evals first, then improving LLM applications by optimizing against them. The CLI handles human feedback collection, eval creation, versioned prompt and scorer artifacts, local runner execution, score submission, and prompt optimization. Do NOT use for prompt advice when the user has explicitly said they don't want to set up evals.
+description: Use when the user mentions Orizu or wants to measurably improve an LLM application, model, or agent; collect human feedback on model outputs; convert feedback into or build evals; optimize instructions (including one-off changes they will validate with evals); work with Orizu datasets, tasks, apps, instruction sets, model-config profiles, components, judges, scorers, runners, score runs, optimization runs, GEPA, or hill-climbing; migrate a prompts-era setup; or build continually learning agents. Start instruction artifacts at `orizu instructions`. Orizu builds evals first, then improves applications against them; its CLI covers feedback collection, eval creation, versioned instructions and evaluator artifacts, local runner execution, score submission, and instruction optimization. Do NOT use for instruction advice when the user explicitly does not want to set up evals.
 ---
 
 # Orizu
 
-Orizu improves LLM applications by building evals first, then optimizing against them. The end-to-end loop has four steps: **Upload → Annotate → Judge → Optimize**. The CLI covers human-eval collection plus the Phase 0 prompt control plane: prompts, judges, scorers, runners, local runner execution, score submission, packaged GEPA-style text optimization, and live optimization logging.
+Orizu improves LLM applications by building evals first, then optimizing against them. The end-to-end loop has four steps: **Upload → Annotate → Judge → Optimize**. Start instruction work with `orizu instructions`: it is the single surface for instruction sets, model-config profiles, their components, and the set-wide default. The CLI also covers human-eval collection, judges, scorers, runners, local runner execution, score submission, packaged GEPA-style text optimization, and live optimization logging. Do not create or mutate standalone prompts; use read-only prompt compatibility only to find the instruction set that owns legacy material.
 
 For end-to-end methodology and rationale, read `references/primer.md`. The reference docs below cover specific stages in depth.
 
 ## When to step aside
 
 Skip this skill when:
-- The user wants a one-off prompt tweak they explicitly won't validate with evals.
+- The user wants a one-off instruction edit they explicitly won't validate with evals.
 - The user has already said they don't want to set up evals.
-- The request is generic prompt-engineering theory unrelated to a specific app.
+- The request is generic instruction-writing theory unrelated to a specific app.
 
 # Orizu CLI basics
 
@@ -53,6 +53,24 @@ Projects live inside teams. Resolve or create both before any workflow command.
 - `orizu projects create --name "<project name>" --team <teamSlug>` — create a project.
 
 For team membership, app, dataset, and task command surfaces, see `references/cli-reference.md`.
+
+## Instruction artifacts: start here
+
+An instruction set is one customer-facing identity for an agent's instructions. Its manifest carries a `name`, optional `description`, fixed, ordered `shape`, and component values. Each model config has its own profile, and each profile owns its own component values; components are never shared between profiles or sets. The set's stable slug is its CLI reference even if the display name changes. Its default serves model configs that do not have a production profile version.
+
+Use one command surface throughout:
+
+```bash
+orizu instructions list --project <team>/<project>
+orizu instructions show <slug-or-exact-name> --project <team>/<project>
+# Human/local CLI only: a human runs create/push; hosted agents may run profiles new and sync.
+orizu instructions create ./orizu.instruction-set.json --project <team>/<project> --model-config <identity>
+orizu instructions push ./orizu.instruction-set.json --project <team>/<project> --set <slug-or-exact-name>
+orizu instructions profiles new <slug-or-exact-name> --project <team>/<project> --model-config <identity>
+orizu instructions sync <slug-or-exact-name> --out ./instructions --project <team>/<project>
+```
+
+For a prompts-era setup, read `references/instructions-after-prompts.md` before making changes. Legacy prompt read commands identify the owning instruction set and component key; continue from that set through `orizu instructions`.
 
 # Evals best practices
 
@@ -106,11 +124,11 @@ Deeper: `references/primer.md` (Step 2); `references/cli-reference.md` (apps + t
 
 ## 3. Judge — turn labels into automated evaluators
 
-Use the Phase 0 prompt control plane when the user wants judges stored in Orizu as versioned prompt artifacts, runner zips, scorer definitions, and submitted score results. Read **`references/prompt-control-plane.md`** before using those commands. When the user mentions prompt feedback, prompt comments, or asks what to focus on for the next prompt version, inspect comment threads with `orizu comments list --prompt <prompt-id-or-name> --project <team>/<project>` before editing or pushing.
+Use `orizu instructions` for the application instruction material being evaluated. Judges remain versioned evaluator artifacts with runner zips, scorer definitions, and submitted score results; read **`references/prompt-control-plane.md`** before using those compatible evaluator commands. When the user mentions legacy prompt feedback or comments, inspect the read-only threads with `orizu comments list --prompt <prompt-id-or-name> --project <team>/<project>`, find the owning instruction set, and revise that set through its manifest.
 
 Judge construction details are still useful when authoring the evaluator itself.
 
-A judge is the evaluator prompt artifact. A scorer is the metric contract that names what score is being produced and how it should be displayed, compared, and used in optimizations. For UI-visible prompt performance, register a scorer and submit score runs; do not rely only on raw `runs submit`.
+A judge is the evaluator artifact. A scorer is the metric contract that names what score is being produced and how it should be displayed, compared, and used in optimizations. For UI-visible instruction performance, register a scorer and submit score runs; do not rely only on raw `runs submit`.
 
 Set scorers are aggregate metric contracts. Use `orizu scorers exec` for builtin set metrics such as Cohen's kappa, accuracy, precision, recall, and F1; it consumes subject results or dependency row-scorer results, computes one aggregate, stores row evidence, and submits a canonical score run by default. If you already computed an aggregate locally, use `orizu scores submit --aggregate` with explicit `scoreValue`, `diagnostics`, `feedbackSummary`, and optional `rowEvidence`. `runners exec --scorer-version` remains a low-level row-runner compatibility command. Use a row-mode scorer, not a set scorer, for GEPA reflection because reflection needs per-row feedback.
 
@@ -131,7 +149,7 @@ Detailed walkthrough — code assertion patterns, LLM-judge prompt scaffold, tra
 
 ## 4. Optimize — hill-climb against validated judges
 
-Use the Phase 0 prompt control plane when the user wants an optimizer run to appear in Orizu, stream live events, or promote accepted candidates into the prompt timeline. For text-candidate GEPA-style optimization, prefer the bundled `orizu optimizations run-gepa` flow. Read **`references/prompt-control-plane.md`** before wiring those endpoints.
+Use the instruction control plane when the user wants an optimizer run to appear in Orizu, stream live events, or promote accepted candidates into the target instruction-set profile. For text-candidate GEPA-style optimization, prefer the bundled `orizu optimizations run-gepa` flow. Read **`references/prompt-control-plane.md`** before wiring those endpoints.
 
 GEPA details below are still useful for local optimizer implementation. DSPy is only relevant when the customer already uses DSPy or asks for an external DSPy GEPA implementation.
 
@@ -154,8 +172,8 @@ Bundled `run-gepa` reflection behavior:
 - **Scorer contract:** `run-gepa` sends the scorer runner a GEPA-shaped row (`{source_row, candidate_id, candidate_output, …}`), NOT the flat-row shape used by `runners exec --scorer-version`. A judge runner built for flat-row score runs will silently score every candidate 0 unless you pass `--scorer-input-contract flat_row` (add `--scorer-candidate-field <row-field>`, e.g. `draft`, when the judge reads the candidate output from a named row field). Do not hand-write an adapter runner — the flag applies the official adapter without changing the registered runner bytes, so it composes with `--scorer-runner-dir` content-sha verification. `run-gepa` validates the contract on the seed at launch and refuses a uniformly-worst-scoring seed with a diagnosis; `--allow-degenerate-seed` overrides only when the seed genuinely deserves the worst score everywhere. Both contracts: `references/prompt-control-plane.md` ("Scorer-Runner Input Contracts").
 - Budget controls are mutually exclusive. Use at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, `--max-iterations <n>`, or `--max-candidate-proposals <n>`. The proposal cap is official-engine-only. If none is provided, `run-gepa` uses `--budget auto`, the balanced medium preset.
 - **Skilled proposer:** opt in with `--candidate-proposer skilled-proposer` on the official engine; the selected run prepares or reuses its managed Python environment automatically. Bound proposal work with `--proposal-max-tokens` and `--proposal-max-calls`, independently of `--max-metric-calls`. Read `references/prompt-control-plane.md` ("Skilled proposer") for validation and recovery; readiness is proven when optimizer execution begins without an `ALI_1505_*` environment diagnostic.
-- The reflective LM's final text is used verbatim as the next candidate prompt. It should return only the complete updated prompt body, not analysis, labels, XML tags, or markdown fences.
-- Keep provider-native reasoning controls separate from the prompt text with `--reflection-provider-settings <json|@file>`.
+- The reflective LM's final text becomes the selected component's next value. It should return only the complete updated component value, not analysis, labels, XML tags, or markdown fences.
+- Keep provider-native reasoning controls separate from the component text with `--reflection-provider-settings <json|@file>`.
 - Reflection max-token limits are explicit config, not implicit defaults. Use `--reflection-max-tokens <n>` when a provider requires an output cap; this maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`.
 - Anthropic native Messages reflection requires `max_tokens`, so `run-gepa` with an `anthropic/...` reflection model must receive `--reflection-max-tokens <n>` and should fail fast if it is omitted. OpenAI reflection may omit `max_output_tokens` unless the user explicitly wants a cap.
 - Reflection HTTP calls retry transient provider failures by default (`--reflection-retry-attempts 3`, `--reflection-http-timeout-seconds 180`). Retryable failures include timeouts, connection reset/abort, HTTP 429, and common server/capacity statuses. If reflection still fails after retries, `run-gepa` logs `reflection_failed`, counts the proposal against budget, and continues to the next iteration.
@@ -172,7 +190,8 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 
 - `references/primer.md` — methodology end-to-end (read first when in doubt about *why*).
 - `references/cli-reference.md` — full CLI command surface.
-- `references/prompt-control-plane.md` — Phase 0 prompts, judges, scorers, runners, score submission, optimizer event logging, bundled GEPA, and promotion endpoints.
+- `references/prompt-control-plane.md` — instruction sets, judges, scorers, runners, score submission, optimizer event logging, bundled GEPA, and promotion endpoints.
+- `references/instructions-after-prompts.md` — finding the instruction set that owns prompts-era material and consolidating legacy one-component sets.
 - `references/building-apps.md` — labeler app contract, design principles, common patterns, offline smoke test.
 - `references/building-judges.md` — judge/scorer authoring + TPR/TNR validation.
 - `references/optimization-with-gepa.md` — GEPA optimization loop, with DSPy only as external context.
@@ -193,7 +212,7 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 - `--output-schema` JSON Schema validation surface is restricted to `type`, `required`, `properties`, `items`, `enum`.
 - Export defaults: `--format jsonl`, output `<taskId>.<format>`.
 - Task reports can be uploaded only after the task is `paused` or `completed`; rerun `tasks report set` or `tasks report upload` to replace the markdown report.
-- Prompt control-plane commands should use ids for dataset versions, split sets, prompt versions, scorer versions, runner versions, optimizer versions, and optimization runs.
+- Instruction and evaluation control-plane commands should use ids for dataset versions, split sets, component versions where compatibility commands require them, scorer versions, runner versions, optimizer versions, and optimization runs.
 - Optimization exports default to `<run-id>.optimization.json`; prefer the existing `logs/<run-id>` directory from `run-gepa` when it is available because it contains the full local trace without needing server rehydration.
 - When ending an optimization run, attach a markdown report with `--report-file` when possible. Use `references/optimization-reports.md` for what to include.
 - Use `orizu comments list --prompt <prompt-id-or-name> --project <team>/<project> [--label <label> | --version <id>] [--json]` to list prompt-level discussion threads with open/resolved status, selected text/line context, and replies.
@@ -201,8 +220,23 @@ Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DS
 
 # Where things live
 
-- **Orizu is the source of truth for run metadata and pointers**: production/default prompt/scorer/runner pointers, version lineage, score runs, optimization runs, and report history all live in Orizu — query them with `orizu ...` commands (e.g. `orizu prompts list`, `orizu prompts versions`, `orizu runs ...`), never by reading repo files.
+- **Orizu is the source of truth for run metadata and pointers**: instruction-set defaults, profile production pointers, scorer/runner pointers, version lineage, score runs, optimization runs, and report history all live in Orizu — query them with `orizu ...` commands (for example, `orizu instructions list`, `orizu instructions show`, and `orizu runs ...`), never by reading repo files.
 - **The repo is the working set (files only)**: source, configs, `App.tsx`, schemas, and local traces under `logs/<run-id>`. It is the scratch space you edit and commit; it does NOT hold the canonical pointer/run state — that is in Orizu.
-- **Hosted sessions ship a pre-authenticated CLI**: inside a hosted agent sandbox the `orizu` CLI is already authenticated via `ORIZU_TOKEN_FILE` (with `ORIZU_BASE_URL` pointing at the API). You do NOT run `orizu login` — just call `orizu ...`. The bearer carries **full team-curator authority while your session is active** (ADR-008): anything a curator-role human can read or write in your team — create/read/update projects, datasets (+ rows/artifact bytes), prompts, scorers, runners/optimizers, apps, tasks, runs, score runs, reports, and promotion-manifest proposals — you can too, across the whole team. (The full per-role access matrix lives in the Orizu repo at `docs/authorization-matrix.md`.)
-- **Git-canonical artifacts: always write with `--session`, and "committed" means bytes-in-branch**: prompts/judges, scorers, runners, and optimizers are git-canonical (ADR-007) — their bytes must live as commits on your session branch, not only as Orizu version rows. From a hosted session, always pass `--session <session-id>` on artifact writes (`prompts push`, `judges push`, `scorers register`, `runners push`, `optimizers push`); the legacy sessionless create routes reject agent bearers with a 403 pointing you back at `--session`. The definition of done for any artifact you claim to have committed is that the bytes are actually in the branch: run `git ls-files <path>` (and check the commit) before reporting an artifact as committed — an Orizu version id alone is not proof the bytes exist anywhere.
-- **Human-only actions will 403**: promotion-manifest **approval / apply / reject**, production and default pointer flips, session/credential lifecycle (starting or ending hosted sessions, minting tokens, deploy keys), integration/connector credential reads (secrets reach your sandbox only as environment variables resolved at boot — never via API/DB), and team/member/installation/billing management. Do not attempt them from a hosted session — they return 403 by design. Prepare a promotion manifest and hand it to a human curator to approve and apply.
+- **Hosted sessions ship a pre-authenticated CLI**: inside a hosted agent sandbox the `orizu` CLI is already authenticated via `ORIZU_TOKEN_FILE` (with `ORIZU_BASE_URL` pointing at the API). You do NOT run `orizu login` — just call `orizu ...`. The bearer carries **team-curator authority while your session is active**, except for the explicit human-only carveouts below (ADR-008 and the ALI-1558 instruction-write restriction). It can read and sync instruction sets and can perform ordinary curator work across the team. (The full per-role access matrix lives in the Orizu repo at `docs/authorization-matrix.md`.)
+- **Hosted `--session` applies to git-canonical artifacts, not instruction sets**: instruction sets and profiles are control-plane canonical (ADR-023), and their CLI mutations do not accept `--session`. A hosted agent may inspect them, sync them, and prepare a complete manifest, but a human curator using the local CLI with a user token must run the six catalog mutations listed below and all pointer moves. Judges, scorers, runners, and optimizers remain git-canonical for teams with a workbench repository; their hosted writes must carry `--session <session-id>`, and their bytes must live as commits on the session branch. The remaining session-scoped legacy prompt compatibility is not a standalone instruction workflow. Before calling any artifact committed, run `git ls-files <path>` and inspect the commit; an Orizu version id alone does not prove the bytes exist in a branch.
+- **Human-only actions will 403**: a hosted agent must hand the following commands
+  to a human curator using the local CLI with a user token. Human/local CLI only:
+  `orizu instructions create`, `orizu instructions push`,
+  `orizu instructions shape add`, `orizu instructions shape remove`,
+  `orizu instructions archive`, and `orizu instructions restore`.
+  Human/local CLI only: The measured response for `orizu instructions create` and `orizu instructions push` is `Sessionless registration is not available to the hosted agent: this artifact class is git-canonical (ADR-007) and its bytes must be committed to the session branch. Re-run with --session <session-id>.` Those commands have no `--session` flag, so do not retry them.
+  Human/local CLI only: The measured response for `orizu instructions shape add` and `orizu instructions shape remove` is `Agents cannot change instruction-set shapes`.
+  Human/local CLI only: The measured response for `orizu instructions archive` and `orizu instructions restore` is `Agent sessions cannot perform this action`.
+  Promotion-manifest **approval / apply / reject**, production and default
+  pointer flips, session/credential lifecycle (starting or ending hosted
+  sessions, minting tokens, deploy keys), integration/connector credential
+  reads (secrets reach your sandbox only as environment variables resolved at
+  boot — never via API/DB), and team/member/installation/billing management
+  are also human-only. Do not attempt them from a hosted session. Prepare the
+  manifest or proposal and hand it to a human curator to run, approve, or
+  apply.

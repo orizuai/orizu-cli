@@ -9,7 +9,7 @@ Orizu is a platform that helps you build continually learning agents and other L
 There are 3 key pillars to Orizu:
 1. **Human evaluation:** We consider human evaluation to be the gold standard, particularly when the humans involved are people with deep context and understanding of the output being evaluated. This is often the cross-functional team behind a product (product managers, engineers, designers, content writers, researchers, etc) or external experts (lawyers, engineers, writers, etc). Any good evaluation system relies on the presence of such high quality judgment to compare to. We provide tools that simplify the process of collecting the feedback from this audience.
 2. **Auto evaluation:** Ultimately, human experts can only review so much. As your data scales, you need to encode their knowledge, their opinions, their taste and judgment into auto-evaluations. We automate this for you using the data we help you collect above.
-3. **Optimization:** We turn your evals into an asset for you by building an automated hill-climbing workflow. We've started with prompt optimization because multiple studies and our own experience with our customers has shown strong measurable lifts with even relatively small datasets. Over time, we'll introduce additional capabilities, including optimizing your skills and other contextual information, and even model weights if your model provider allows finetuning.
+3. **Optimization:** We turn your evals into an asset for you by building an automated hill-climbing workflow. We've started with instruction optimization because multiple studies and our own experience with our customers has shown strong measurable lifts with even relatively small datasets. Over time, we'll introduce additional capabilities, including optimizing your skills and other contextual information, and even model weights if your model provider allows finetuning.
 
 ## CLI and Agent Skills
 
@@ -109,6 +109,9 @@ Agents are first-class users of this CLI: **every command supports `--json`**
 (as a prefix, `orizu --json teams list`, or a trailing flag) and emits a single
 machine-readable JSON document instead of formatted text. Discover the full
 command surface, including global options, with `orizu capabilities --json`.
+Hosted agents may read and sync instruction sets and prepare complete manifests,
+but a human curator using the local CLI with a user token must run instruction
+create, push, shape, archive, restore, and production/default pointer mutations.
 
 ## Authentication
 
@@ -186,19 +189,19 @@ orizu logout
     <td><code>orizu projects create --name "Support QA" --team ops-eval</code></td>
   </tr>
   <tr>
-    <td colspan="2"><strong>Prompts</strong></td>
+    <td colspan="2"><strong>Instruction sets and prompt reads</strong></td>
   </tr>
   <tr>
     <td>List prompts</td>
     <td><code>orizu prompts list --project ops-eval/support-qa [--status active|archived|all]</code></td>
   </tr>
   <tr>
-    <td>Archive or restore a prompt</td>
-    <td><code>orizu prompts archive &lt;promptIdOrName&gt; --project ops-eval/support-qa</code><br><code>orizu prompts restore &lt;promptIdOrName&gt; --project ops-eval/support-qa</code></td>
+    <td>Archive or restore an instruction set (human/local CLI only)</td>
+    <td><code>orizu instructions archive &lt;slug-or-exact-name&gt; --project ops-eval/support-qa</code><br><code>orizu instructions restore &lt;slug-or-exact-name&gt; --project ops-eval/support-qa</code></td>
   </tr>
   <tr>
-    <td>Push a prompt with a report</td>
-    <td><code>orizu prompts push ./prompts/support --project ops-eval/support-qa --report-file ./prompt-report.md</code></td>
+    <td>Push an instruction-set manifest (human/local CLI only)</td>
+    <td><code>orizu instructions push ./orizu.instruction-set.json --project ops-eval/support-qa --set &lt;slug-or-exact-name&gt;</code></td>
   </tr>
   <tr>
     <td>Upload a report for an existing prompt version</td>

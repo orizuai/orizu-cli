@@ -5,12 +5,12 @@ Use this reference when writing the markdown report attached to an Orizu optimiz
 Attach the final markdown with:
 
 ```bash
-orizu optimizations finish <run-id> --best-candidate <candidate-id> --report-file ./reports/<run-id>.md
+orizu optimizations finish <run-id> --best-candidate <candidate-id> --result-prompt-version <prompt-version-id> --report-file ./reports/<run-id>.md
 orizu optimizations fail <run-id> --reason "<reason>" --report-file ./reports/<run-id>.md
 orizu optimizations cancel <run-id> --reason "<reason>" --report-file ./reports/<run-id>.md
 ```
 
-For budget-exhausted runs, `run-gepa` pauses the optimization before auto-promotion. Write the report from the paused run, then manually finish with `--best-candidate`, `--result-prompt-version` if promoted, and `--report-file` once the decision is made.
+For budget-exhausted runs, `run-gepa` pauses the optimization before auto-promotion. Coding agents may write the report and finish the paused run with `--best-candidate`, `--result-prompt-version` if the candidate version already exists, and `--report-file`. Finishing records the outcome but does not move a serving pointer. Only the pointer-moving `optimizations promote --label production` form is human-only; prepare that command for a human curator to run.
 
 ## Source Artifacts
 
@@ -30,7 +30,7 @@ Read them in this order:
 
 1. `result.json` for seed score, best score, best candidate id/text, promotion id, and budget state.
 2. `evaluations.jsonl` for fixed rows, regressions, persistent failures, per-row feedback, latency, cost, and cache state.
-3. `reflections.jsonl` for what the reflection model saw and why each child prompt was proposed.
+3. `reflections.jsonl` for what the reflection model saw and why each child candidate was proposed.
 4. `events.jsonl` for iteration order, candidate lineage, Pareto updates, budget events, pauses, failures, and promotions.
 
 If local logs are unavailable, export the server-side archive:
@@ -52,17 +52,22 @@ Include:
 - The headline scorer name, metric key, split, scorer version, and dataset split.
 - For judge alignment, prefer Cohen's kappa as the headline metric when labels are imbalanced. Kappa has an interpretable zero point: 0 is chance agreement, negative is worse than chance, and positive means real discrimination.
 - Always include the confusion matrix alongside kappa. On small validation sets, the matrix movement often matters more than the single estimate.
-- Promoted prompt version id, promotion label, and Orizu dashboard link when available.
+- Promoted instruction-set profile version, model config, set slug, and Orizu dashboard link when available.
 - Small-n uncertainty note when `n < 30`. For example, at `n = 15`, a rough kappa standard error can be about +/- 0.25, so call out directional signals rather than overclaiming precision.
 
 ### 2. What The Optimizer Changed
 
 Summarize the seed body -> best body diff in bullets rather than pasting a full raw diff. For each notable change, mark it as:
 - Targeted fix: addresses a specific failure cluster found in train/validation feedback.
-- General restructure: reorganizes the prompt, output contract, or reasoning order.
+- General restructure: reorganizes the selected component, output contract, or reasoning order.
 - Over-correction risk: may improve one cluster while hurting another.
 
-When the reflection model added the same rules you were about to hand-write, do not hand-edit the seed just to feel useful. If GEPA can see and fix the failure from train examples, the next move is usually more budget, better feedback, or better data, not manual prompt patching. Hand-edit only when the optimizer cannot see the failure mode, such as zero train examples for that category.
+When the reflection model added the same rules you were about to write, do not directly edit the seed component just to feel useful. If GEPA can see and fix the failure from train examples, the next move is usually more budget, better feedback, or better data, not an unmeasured component patch. When the optimizer cannot see the failure mode, such as zero train examples for that category, update the selected component in the complete instruction-set manifest, then hand that manifest and the exact push command to a human curator:
+
+```bash
+# Human/local CLI only: a human curator with a user token runs this mutation.
+orizu instructions push <manifest> --project <team/project> --set <slug-or-exact-name> --json
+```
 
 ### 3. Per-Row Outcome Decomposition
 
@@ -72,7 +77,7 @@ Decompose validation or held-out outcomes:
 - Persistent failures: wrong before and after. Classify each as one of:
   - Data gap: failure mode underrepresented or absent in train.
   - Contested gold: label or rationale appears questionable and needs human re-review.
-  - Beyond prompt scope: the failure needs tools, state, retrieval, or reasoning outside this prompt.
+  - Beyond instruction scope: the failure needs tools, state, retrieval, or reasoning outside this instruction set.
   - Calibration overshoot: instructions pushed too far in one direction.
 
 For judge optimization, include flag/ok recall and precision alongside the confusion matrix. A jump in rare-class recall can be more important than a modest kappa movement.
@@ -82,7 +87,7 @@ For judge optimization, include flag/ok recall and precision alongside the confu
 Report:
 - Pareto frontier size. A frontier of 1 or 2 means limited parent diversity.
 - Acceptance rate by iteration. Many rejections suggest reflection is exploring but not finding hills; many acceptances suggest it is climbing a real signal.
-- Budget state. If budget was exhausted, the run paused before auto-promotion; manually decide whether to promote/finish. If max iterations was reached with budget remaining, the run likely converged under the configured search.
+- Budget state. If budget was exhausted, the run paused before auto-promotion; the coding agent may finish the run. The human-only action is moving the production pointer with `optimizations promote --label production`. If max iterations was reached with budget remaining, the run likely converged under the configured search.
 - `scoreOverTime` / validation trajectory. Still climbing at the end suggests raising budget or iterations. Plateaued curves point toward scorer, feedback, or data work upstream.
 - Reflection model, inference model, scorer model, provider settings, minibatch size, resolved thread count, budget preset/limit, candidate selection strategy, seed, and cache settings.
 
@@ -103,7 +108,7 @@ Common recommendations:
 ### 6. What Not To Do
 
 List unsupported moves so the next agent does not burn cycles. Examples:
-- Do not hand-edit the prompt when the best candidate already learned the intended failure rules.
+- Do not directly edit the selected component when the best candidate already learned the intended failure rules.
 - Do not raise budget when score over time plateaued and persistent failures are data/gold issues.
 - Do not switch metrics because one small validation result looks noisy; first measure variance across repeated runs or larger samples.
 - Do not optimize against a scorer whose feedback is too generic for reflection to learn from.
@@ -113,7 +118,7 @@ List unsupported moves so the next agent does not burn cycles. Examples:
 End with:
 - Run id and dashboard link.
 - Local log path or export artifact path.
-- Prompt/scorer/runner/optimizer version ids.
+- Instruction-set profile, scorer, runner, and optimizer version ids.
 - Dataset version id, split set id, train/validation split names, row counts, and random seed.
 - Commands used to start/export/finish the run, with secrets omitted.
 - Links to relevant skill sections, especially `optimization-with-gepa.md`, `prompt-control-plane.md`, `building-judges.md`, and this report guide.
@@ -132,7 +137,7 @@ Set an explicit expectation before the run: for example, "if best kappa does not
 
 Default budget presets are DSPy-style metric-call budgets. `light`, `medium`, and `heavy` map to DSPy's `auto="light"`, `auto="medium"`, and `auto="heavy"` scales; `auto` is treated as the balanced `medium` preset and is the default when no budget control is provided. The final metric-call limit scales with validation-set size, rather than using fixed tiny constants. `--budget`, `--max-metric-calls`, `--max-full-evals`, `--max-iterations`, and `--max-candidate-proposals` are mutually exclusive CLI budget controls; choose only one. The proposal cap is available only on the official engine.
 
-Metric-call and full-eval budgets are checked only between iterations. Once an iteration starts, `run-gepa` completes the parent minibatch, child minibatch, and full validation eval for an accepted child even if that overshoots the nominal budget. If a run ends as `budget_exhausted`, it pauses and does not auto-promote. If auto-promotion matters, choose a single budget control large enough to cover the intended search.
+Metric-call and full-eval budgets are checked only between iterations. Once an iteration starts, `run-gepa` completes the parent minibatch, child minibatch, and full validation eval for an accepted child even if that overshoots the nominal budget. If a run ends as `budget_exhausted`, it pauses and does not auto-promote. Auto-promotion is human-only; coding agents must not size or configure a run to trigger it, and instead hand validated candidates to a human curator for an explicit decision.
 
 ### Reflection Signal Quality
 

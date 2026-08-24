@@ -495,13 +495,14 @@ orizu apps export --app <appId> --version 2
 
 Exports the stored `.tsx` source for the app's current version by default. Use `--version <n>` to inspect an older implementation. When `--out` is omitted, the CLI writes `<app-name>.v<version>.tsx` in the current directory.
 
-## Prompts
+## Legacy prompt reads
 
 ```bash
 orizu prompts list --project my-team/quality-eval [--status active|archived|all]
 ```
 
-The table includes `ID`, `NAME`, `ROLE`, `STATUS`, `TOKENS`, `LINES`, `CHARS`,
+Use this read-only compatibility command to locate legacy material and its
+owning instruction set. The table includes `ID`, `NAME`, `ROLE`, `STATUS`, `TOKENS`, `LINES`, `CHARS`,
 and `WORDS`. Measurements describe the latest sealed prompt version. `—` means
 the canonical body could not be measured; zero is shown as `0`. Token values
 carry a `~` prefix because one fixed, model-agnostic `gpt-tokenizer` encoding is
@@ -771,9 +772,11 @@ orizu datasets archive <dataset-id> --project my-team/quality-eval
 orizu tasks archive <task-id> --project my-team/quality-eval
 orizu scorers archive <scorer-id> --project my-team/quality-eval
 orizu optimizations archive <run-id> --project my-team/quality-eval
+orizu instructions archive <slug-or-exact-name> --project my-team/quality-eval
 
 # Use the same command families with restore.
 orizu apps restore <app-id> --project my-team/quality-eval
+orizu instructions restore <slug-or-exact-name> --project my-team/quality-eval
 
 # Assignment ids are task ids because the artifact is one recipient's grouped
 # queue. Omit --assignee to target the signed-in recipient.
@@ -788,8 +791,9 @@ orizu assignments archive <task-id> \
 ```
 
 All archive/restore commands support `--json` and return the canonical,
-idempotent server result. Prompts retain their name-or-id commands:
-`orizu prompts archive|restore <prompt-id-or-name>`.
+idempotent server result. Instruction sets use their stable slug or exact name;
+standalone prompt lifecycle mutations deliberately refuse and print the
+corresponding `orizu instructions` replacement.
 
 ### Create task
 
@@ -936,9 +940,12 @@ Notes:
 - JSON exports return `{ metadata, responses }`
 - JSONL exports emit one canonical response record per line using the same response shape as JSON
 
-## Prompt Control Plane
+## Instruction and Evaluation Control Plane
 
-Prompt-control-plane commands use version ids for datasets, split sets, prompts, runners, scorers, optimizers, and score runs.
+Instruction and evaluation control-plane commands use version ids for datasets,
+split sets, instruction components or judge artifacts, runners, scorers,
+optimizers, and score runs. Compatibility selectors may still spell a stored
+component or judge version as a prompt version id.
 
 ### Scorers
 

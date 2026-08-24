@@ -1,6 +1,6 @@
 # Building Judges And Scorers
 
-How to turn human-labeled annotations into automated evaluators. Use this reference for authoring and validating the evaluator logic; use `prompt-control-plane.md` to push versioned prompt artifacts, runner artifacts, scorer definitions, and score runs into Orizu.
+How to turn human-labeled annotations into automated evaluators. Use this reference for authoring and validating the evaluator logic; use `prompt-control-plane.md` to push versioned judge artifacts, runner artifacts, scorer definitions, and score runs into Orizu.
 
 ## Inputs
 
@@ -138,7 +138,7 @@ Run the validated judge over future outputs to score them. Wire it into:
 - CI/CD on a curated test set (block merges that drop pass rate)
 - Online monitoring on sampled traffic (alert on regressions)
 - Optimization loop as a metric (`optimization-with-gepa.md`)
-- Orizu scorers and score runs (`prompt-control-plane.md`) so prompt detail, changelog, scorer detail, and optimization surfaces show comparable performance.
+- Orizu scorers and score runs (`prompt-control-plane.md`) so instruction-set detail, changelog, scorer detail, and optimization surfaces show comparable performance.
 
 ## Set scorers for judge-vs-gold agreement
 

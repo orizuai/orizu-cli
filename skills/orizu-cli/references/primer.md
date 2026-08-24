@@ -10,7 +10,23 @@ Upload → Annotate → Judge → Optimize
    └────────── new traces ──────────┘
 ```
 
-The CLI covers the full operational loop. Human annotation still happens through apps/tasks, while judge/scorer logic and optimization execution run locally and report back through the prompt control plane. Each step depends on the output of the previous; don't skip ahead.
+The CLI covers the full operational loop. Start instruction artifacts with `orizu instructions`: one instruction set per agent or LLM experience, one profile per model config, and components owned by that profile. Human annotation still happens through apps/tasks, while judge/scorer logic and optimization execution run locally and report back through the instruction control plane. Each step depends on the output of the previous; don't skip ahead.
+
+An instruction-set manifest carries its `name`, optional `description`, fixed, ordered `shape`, and component values. The set's slug is its stable CLI reference even when its display name changes. Profiles have their own component values; components are never shared between profiles or sets. The set-wide default serves model configs without a production profile version.
+
+Start by inspecting or creating the set, then push and sync through the same surface:
+
+```bash
+orizu instructions list --project <team>/<project>
+orizu instructions show <slug-or-exact-name> --project <team>/<project>
+# Human/local CLI only: a human runs create/push; hosted agents may run profiles new and sync.
+orizu instructions create ./orizu.instruction-set.json --project <team>/<project> --model-config <identity>
+orizu instructions push ./orizu.instruction-set.json --project <team>/<project> --set <slug-or-exact-name>
+orizu instructions profiles new <slug-or-exact-name> --project <team>/<project> --model-config <identity>
+orizu instructions sync <slug-or-exact-name> --out ./instructions --project <team>/<project>
+```
+
+Do not create or mutate standalone prompts. If a legacy identifier leads to a prompt read view, use its owner information to find the instruction set and continue with `orizu instructions`.
 
 ---
 
@@ -30,7 +46,7 @@ The most common mistake teams make is jumping straight to evals before they unde
 **Decision: should you even write a formal eval for this failure?**
 - If you haven't observed it, no — do error analysis first.
 - If the fix is one-shot and obvious, no — just fix it.
-- If fixing it requires repeated iteration (prompt tweaks, retries, structural changes), yes — that's where evals shine.
+- If fixing it requires repeated iteration (component edits, retries, structural changes), yes — that's where evals shine.
 
 ---
 
@@ -154,13 +170,13 @@ There are three **types** of automated evals:
 
 ### In Orizu
 
-This work is still authored by the agent in code, but Orizu now stores the versioned evaluator artifacts and score results:
+This work is still authored by the agent in code, but Orizu stores the versioned instruction, evaluator, and score artifacts:
 
 1. Export labeled data: `orizu tasks export --task <id> --format jsonl --out labels.jsonl`
 2. For each failure mode, choose code assertion or LLM-judge.
 3. Build the judge.
 4. Validate against the labels (train/dev/test split, TPR/TNR).
-5. Push the judge prompt and runner when it is an LLM judge, register a scorer, then submit score runs for prompt versions or optimization candidates.
+5. Keep the subject application's instruction material in its instruction set. For an LLM judge, push the judge artifact and runner, register a scorer, then submit score runs for the set's profile versions or optimization candidates.
 
 Control-plane commands: `prompt-control-plane.md`. Detailed authoring walkthrough — code assertion patterns, LLM-judge prompt scaffold, train/dev/test split, TPR/TNR computation, saturation checks: `building-judges.md`.
 
@@ -181,7 +197,7 @@ Done locally, reported to Orizu:
 1. Package the candidate execution as a runner, or use the customer's existing local app wrapper.
 2. Register validated scorers.
 3. Run the bundled Orizu GEPA-style text optimizer, or a custom optimizer against the scorer set.
-4. Stream optimization events to Orizu, promote accepted candidates, and submit comparable scores.
+4. Stream optimization events to Orizu, promote accepted candidates into the target instruction-set profile, and submit comparable scores.
 5. Diff before/after on the eval suite. Ship if it holds; new traces feed back to step 1.
 
 Control-plane commands: `prompt-control-plane.md`. Detailed walkthrough — GEPA mechanics, optional DSPy context for customers already using it, and before/after comparison: `optimization-with-gepa.md`.
