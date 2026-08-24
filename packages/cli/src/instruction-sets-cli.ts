@@ -43,13 +43,30 @@ const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
 export interface SyncComponent { body?: string; repoPath?: string; contentSha?: string; commitSha?: string }
 export interface SyncMaterial { profileVersionId: string; versionNumber: number; modelConfigIdentity: string; resolvedFrom: string; components: Record<string, SyncComponent> }
 export interface SyncProfile { modelConfigIdentity: string; resolvedFrom: string; production: SyncMaterial | null }
-export interface SyncSet { name: string; slug?: string; description?: string | null; shape: string[]; default: SyncMaterial; profiles: SyncProfile[]; filteredTo?: string[] }
+export interface SyncSet {
+  projectId?: string
+  instructionSetId?: string
+  name: string
+  slug?: string
+  description?: string | null
+  shape: string[]
+  default: SyncMaterial
+  profiles: SyncProfile[]
+  filteredTo?: string[]
+}
 function safeSegment(value: string) { if (!SAFE_SEGMENT.test(value) || value === '.' || value === '..' || value.startsWith('.')) throw new Error('instruction_set_path_unsafe') }
+function isSafeSegment(value: string) {
+  try { safeSegment(value); return true } catch { return false }
+}
 function slug(identity: string) { return identity.replaceAll('/', '__').replace(/[^A-Za-z0-9._-]/gu, '_') }
 function stable(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n` }
 function sha256(value: string): string { return createHash('sha256').update(value, 'utf8').digest('hex') }
 
-export interface SyncFileOps { writeFileSync: typeof writeFileSync; renameSync?: typeof renameSync }
+export interface SyncFileOps {
+  writeFileSync: typeof writeFileSync
+  renameSync?: typeof renameSync
+  rmSync?: typeof rmSync
+}
 
 function writeMaterial(root: string, material: SyncMaterial, shape: string[], manifestRoot: string, fileOps: SyncFileOps = { writeFileSync }) {
   const files: Record<string, string> = {}
@@ -77,16 +94,76 @@ function removeOwnScratch(paths: Array<string | null>) {
   for (const path of paths) if (path && existsSync(path)) rmSync(path, { recursive: true, force: true })
 }
 
-function existingDestinationIsSynced(destination: string, name: string) {
+function existingDestinationIsSynced(
+  destination: string,
+  set: Pick<SyncSet, 'projectId' | 'instructionSetId' | 'name' | 'slug'>
+) {
+  if (
+    set.slug &&
+    set.projectId === undefined &&
+    set.instructionSetId === undefined
+  ) {
+    return existingDestinationIsLegacySynced(destination, set.name, set.slug)
+  }
   try {
     if (!statSync(destination).isDirectory()) return false
-    const manifest = JSON.parse(readFileSync(join(destination, 'manifest.json'), 'utf8')) as { manifestVersion?: number; name?: string }
-    return manifest.manifestVersion === 1 && manifest.name === name
+    const manifest = JSON.parse(readFileSync(join(destination, 'manifest.json'), 'utf8')) as {
+      manifestVersion?: number
+      projectId?: string
+      instructionSetId?: string
+      name?: string
+      slug?: string
+    }
+    return manifest.manifestVersion === 1 && (set.slug
+      ? manifest.slug === set.slug &&
+        manifest.projectId === set.projectId &&
+        manifest.instructionSetId === set.instructionSetId
+      : manifest.name === set.name)
   } catch { return false }
 }
 
+function existingDestinationIsLegacySynced(
+  destination: string,
+  name: string,
+  slug?: string
+) {
+  try {
+    if (!statSync(destination).isDirectory()) return false
+    const manifest = JSON.parse(readFileSync(join(destination, 'manifest.json'), 'utf8')) as {
+      manifestVersion?: number
+      name?: string
+      slug?: string
+    }
+    return manifest.manifestVersion === 1 &&
+      manifest.name === name &&
+      manifest.slug === slug
+  } catch { return false }
+}
+
+function removePublishedBackups(
+  paths: string[],
+  remove: typeof rmSync
+) {
+  let firstError: unknown = null
+  for (const path of paths) {
+    if (!existsSync(path)) continue
+    try {
+      remove(path, { recursive: true, force: true })
+    } catch (error) {
+      firstError ??= error
+    }
+  }
+  if (firstError) throw new Error('instruction_set_sync_cleanup_failed')
+}
+
 export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { writeFileSync }) {
-  safeSegment(set.name)
+  const directoryName = set.slug || set.name
+  safeSegment(directoryName)
+  const hasProjectId = set.projectId !== undefined
+  const hasInstructionSetId = set.instructionSetId !== undefined
+  if (set.slug && hasProjectId !== hasInstructionSetId) {
+    throw new Error('instruction_set_sync_identity_missing')
+  }
   for (const key of set.shape) safeSegment(key)
   const profileSlugs = new Set<string>()
   for (const profile of set.profiles) {
@@ -96,11 +173,28 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
     profileSlugs.add(value)
   }
   mkdirSync(out, { recursive: true })
-  const destination = join(out, set.name)
-  if (existsSync(destination) && !existingDestinationIsSynced(destination, set.name)) throw new Error('instruction_set_sync_destination_not_synced')
-  const temp = join(out, `.${set.name}.${randomUUID()}.tmp`)
+  const destination = join(out, directoryName)
+  const legacyDestination = set.slug && set.name !== set.slug && isSafeSegment(set.name)
+    ? join(out, set.name)
+    : null
+  if (existsSync(destination)) {
+    if (set.slug && existingDestinationIsLegacySynced(destination, set.name)) {
+      throw new Error('instruction_set_sync_legacy_identity_required')
+    }
+    if (!existingDestinationIsSynced(destination, set)) {
+      throw new Error('instruction_set_sync_destination_not_synced')
+    }
+  }
+  if (legacyDestination && existsSync(legacyDestination)) {
+    if (existingDestinationIsLegacySynced(legacyDestination, set.name)) {
+      throw new Error('instruction_set_sync_legacy_identity_required')
+    }
+    throw new Error('instruction_set_sync_destination_not_synced')
+  }
+  const priorDestinations = [destination]
+  const temp = join(out, `.${directoryName}.${randomUUID()}.tmp`)
   const move = fileOps.renameSync || renameSync
-  let backup: string | null = null
+  const backups: Array<{ original: string; backup: string }> = []
   mkdirSync(temp)
   try {
     const defaultMaterial = writeMaterial(temp, set.default, set.shape, 'default', fileOps)
@@ -114,18 +208,40 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
         ? Object.entries(profile.production.files).map(([key, path]) => ({ key, modelConfig: profile.modelConfigIdentity, path, syncedContentSha256: profile.production!.syncedContentSha256[key] }))
         : []),
     ]
-    const manifest = { manifestVersion: 1, name: set.name, ...(Object.hasOwn(set, 'description') ? { description: set.description ?? null } : {}), shape: set.shape, components, default: defaultMaterial, profiles, ...(set.filteredTo ? { filteredTo: [...set.filteredTo].sort() } : {}) }
+    const manifest = {
+      manifestVersion: 1,
+      ...(set.projectId ? { projectId: set.projectId } : {}),
+      ...(set.instructionSetId ? { instructionSetId: set.instructionSetId } : {}),
+      name: set.name,
+      ...(set.slug ? { slug: set.slug } : {}),
+      ...(Object.hasOwn(set, 'description') ? { description: set.description ?? null } : {}),
+      shape: set.shape,
+      components,
+      default: defaultMaterial,
+      profiles,
+      ...(set.filteredTo ? { filteredTo: [...set.filteredTo].sort() } : {}),
+    }
     fileOps.writeFileSync(join(temp, 'manifest.json'), stable(manifest))
-    backup = join(out, `.${set.name}.${randomUUID()}.bak`)
-    if (existsSync(destination)) move(destination, backup)
-    try { move(temp, destination) } catch (error) { if (existsSync(backup)) move(backup, destination); throw error }
-    removeOwnScratch([backup])
+    for (const prior of priorDestinations) {
+      if (!existsSync(prior)) continue
+      const backup = join(out, `.${directoryName}.${randomUUID()}.bak`)
+      move(prior, backup)
+      backups.push({ original: prior, backup })
+    }
+    move(temp, destination)
   } catch (error) {
     removeOwnScratch([temp])
-    if (backup && existsSync(backup) && !existsSync(destination)) move(backup, destination)
-    removeOwnScratch([backup])
+    for (const { original, backup } of [...backups].reverse()) {
+      if (existsSync(backup) && !existsSync(original)) move(backup, original)
+    }
+    removeOwnScratch(backups.map(entry => entry.backup))
     throw error
   }
+  removePublishedBackups(
+    backups.map(entry => entry.backup),
+    fileOps.rmSync || rmSync
+  )
+  return destination
 }
 
 export async function instructionSetsCommand(args: string[], io: InstructionSetsCommandIo): Promise<number> {
@@ -270,8 +386,8 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     if (!set || (set.slug !== reference && set.name !== reference) || (modelConfig && (!Array.isArray(set.filteredTo) || set.filteredTo.length !== 1 || set.filteredTo[0] !== modelConfig))) {
       throw new Error('instruction_set_sync_response_mismatch')
     }
-    syncToDisk(output, set)
-    if (io.json) io.print(JSON.stringify(payload)); else io.print(`Synced ${set.name} to ${join(output, set.name)}`)
+    const destination = syncToDisk(output, set)
+    if (io.json) io.print(JSON.stringify(payload)); else io.print(`Synced ${set.name} to ${destination}`)
     return 0
   }
   if (subcommand === 'show' && (!reference || reference.startsWith('--'))) throw new Error('Instruction set name is required')

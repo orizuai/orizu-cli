@@ -18,10 +18,38 @@ def _inside(root: Path, candidate: Path) -> bool:
         return False
 
 
-def load_instruction_set(directory: str, name: str, model_config_identity: str) -> dict[str, str]:
-    root = (Path(directory) / name).resolve()
-    if not root.is_dir():
+def _resolve_set_root(directory: str, reference: str) -> Path:
+    directory_root = Path(directory).resolve()
+    if not directory_root.is_dir():
         raise InstructionSetLoaderError("instruction_set_not_synced")
+    direct = (directory_root / reference).resolve()
+    if _inside(directory_root, direct) and direct.is_dir():
+        try:
+            direct_manifest = json.loads((direct / "manifest.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            # Preserve the exact-path loader's specific missing/invalid manifest error.
+            return direct
+        if direct_manifest.get("name") == reference or direct_manifest.get("slug") == reference:
+            return direct
+    matches: list[Path] = []
+    for child in directory_root.iterdir():
+        candidate = child.resolve()
+        if child.name.startswith(".") or not child.is_dir() or not _inside(directory_root, candidate):
+            continue
+        try:
+            manifest = json.loads((candidate / "manifest.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if manifest.get("name") == reference or manifest.get("slug") == reference:
+            matches.append(candidate)
+    if len(matches) != 1:
+        code = "instruction_set_reference_ambiguous" if len(matches) > 1 else "instruction_set_not_synced"
+        raise InstructionSetLoaderError(code)
+    return matches[0]
+
+
+def load_instruction_set(directory: str, name: str, model_config_identity: str) -> dict[str, str]:
+    root = _resolve_set_root(directory, name)
     manifest_path = root / "manifest.json"
     if not manifest_path.is_file():
         raise InstructionSetLoaderError("instruction_set_manifest_missing")

@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 
 export class InstructionSetLoaderError extends Error {
@@ -6,14 +6,64 @@ export class InstructionSetLoaderError extends Error {
 }
 
 interface Material { files: Record<string, string>; pinnedComponents?: Record<string, unknown> }
-interface Manifest { manifestVersion: number; name: string; shape: string[]; default: Material; profiles: Array<{ modelConfigIdentity: string; production: Material | null }>; filteredTo?: string[] }
+interface Manifest { manifestVersion: number; projectId?: string; instructionSetId?: string; name: string; slug?: string; shape: string[]; default: Material; profiles: Array<{ modelConfigIdentity: string; production: Material | null }>; filteredTo?: string[] }
 
 function inside(root: string, candidate: string) { return candidate === root || candidate.startsWith(`${root}${sep}`) }
 
+function manifestMatchesReference(candidate: string, reference: string): boolean {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(resolve(candidate, 'manifest.json'), 'utf8')
+    ) as Pick<Manifest, 'name' | 'slug'>
+    return manifest.name === reference || manifest.slug === reference
+  } catch {
+    return false
+  }
+}
+
+function resolveSetRoot(directory: string, reference: string): string {
+  let directoryRoot: string
+  try { directoryRoot = realpathSync(directory) } catch { throw new InstructionSetLoaderError('instruction_set_not_synced') }
+  const direct = resolve(directoryRoot, reference)
+  try {
+    if (inside(directoryRoot, direct) && existsSync(direct) && statSync(direct).isDirectory()) {
+      const realDirect = realpathSync(direct)
+      if (inside(directoryRoot, realDirect)) {
+        try {
+          const manifest = JSON.parse(
+            readFileSync(resolve(realDirect, 'manifest.json'), 'utf8')
+          ) as Pick<Manifest, 'name' | 'slug'>
+          if (manifest.name === reference || manifest.slug === reference) {
+            return realDirect
+          }
+        } catch {
+          // Preserve the exact-path loader's specific missing/invalid manifest error.
+          return realDirect
+        }
+      }
+    }
+  } catch {
+    // A stale or unreadable direct-path candidate must not shadow a valid set.
+  }
+  const matches = readdirSync(directoryRoot, { withFileTypes: true }).flatMap(entry => {
+    try {
+      if (entry.name.startsWith('.') || !entry.isDirectory()) return []
+      const candidate = realpathSync(resolve(directoryRoot, entry.name))
+      return inside(directoryRoot, candidate) && manifestMatchesReference(candidate, reference)
+        ? [candidate]
+        : []
+    } catch {
+      return []
+    }
+  })
+  if (matches.length !== 1) throw new InstructionSetLoaderError(
+    matches.length > 1 ? 'instruction_set_reference_ambiguous' : 'instruction_set_not_synced'
+  )
+  return matches[0]!
+}
+
 export function loadInstructionSet(directory: string, name: string, modelConfigIdentity: string): Record<string, string> {
-  const unresolvedRoot = resolve(directory, name)
-  if (!existsSync(unresolvedRoot) || !statSync(unresolvedRoot).isDirectory()) throw new InstructionSetLoaderError('instruction_set_not_synced')
-  const setRoot = realpathSync(unresolvedRoot)
+  const setRoot = resolveSetRoot(directory, name)
   const manifestPath = resolve(setRoot, 'manifest.json')
   if (!existsSync(manifestPath)) throw new InstructionSetLoaderError('instruction_set_manifest_missing')
   let manifest: Manifest

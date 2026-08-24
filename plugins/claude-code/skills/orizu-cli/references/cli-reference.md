@@ -143,10 +143,18 @@ with the set-wide component map plus its overrides, while `push` updates named
 profiles already present on the set. `push` refuses a manifest whose shape
 differs from the stored set.
 
-`sync` writes `<out>/<set>/manifest.json`, `default/<key>.md`, and
+`sync` writes `<out>/<stable-set-slug>/manifest.json`, `default/<key>.md`, and
 `profiles/<identity-slug>/<key>.md` for offline execution. TypeScript runners
-use `loadInstructionSet(dir, name, modelConfigIdentity)` from `orizu`; Python
-runners use `orizu_gepa_connector.instruction_set_loader.load_instruction_set`.
+use `loadInstructionSet(dir, setReference, modelConfigIdentity)` from `orizu`;
+Python runners use
+`orizu_gepa_connector.instruction_set_loader.load_instruction_set`. Prefer the
+stable slug as `setReference`; both loaders also resolve the manifest's exact
+name for compatibility with directories synced before slugs shipped. The
+manifest's immutable `projectId` and `instructionSetId` prevent a shared
+`--out` root from replacing another project's same-slug set.
+Identity-less pre-slug trees cannot prove project ownership and are preserved;
+sync returns `instruction_set_sync_legacy_identity_required` until the operator
+moves the old tree aside or selects a clean output root.
 Both select that model config's production component map or the default without a
 network call. Git-pinned components have no local bytes: loading one raises
 `instruction_set_component_unavailable` until the runner supplies those bytes.

@@ -1,4 +1,5 @@
 import { existsSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 
 import { isOrizuSourceCheckout } from '../scripts/orizu-source-checkout.mjs'
@@ -34,14 +35,31 @@ export function bundledOrizuGepaConnectorPythonPath(): string | null {
 }
 
 export function bundledOfficialGepaPythonPath(): string | null {
-  const sourceArchive = fileURLToPath(new URL('../gepa-python-source.zip', import.meta.url))
   const vendor = fileURLToPath(new URL('../vendor/gepa-python/src', import.meta.url))
-  // The checked-in pinned wheel is directly importable from PYTHONPATH in a
-  // source checkout. Published packages intentionally omit that archive and
-  // must resolve only the verified tree materialized by prepack.
-  const candidates = prefersLiveSource() ? [sourceArchive, vendor] : [vendor]
+  if (prefersLiveSource()) {
+    const requiredVendorFiles = [
+      fileURLToPath(new URL('../vendor/gepa-python/manifest.json', import.meta.url)),
+      fileURLToPath(new URL('../vendor/gepa-python/src/gepa/__init__.py', import.meta.url)),
+      fileURLToPath(new URL('../vendor/gepa-python/src/gepa/adapters/optimize_anything_adapter/optimize_anything_adapter.py', import.meta.url)),
+    ]
+    if (!requiredVendorFiles.every(existsSync)) {
+      const vendoringScript = fileURLToPath(new URL('../scripts/vendor-gepa-python.mjs', import.meta.url))
+      try {
+        execFileSync(process.execPath, [vendoringScript], { stdio: 'pipe' })
+      } catch (error) {
+        const details = error instanceof Error ? error.message : String(error)
+        throw new Error(`Unable to materialize bundled official GEPA: ${details}`)
+      }
+      if (!requiredVendorFiles.every(existsSync)) {
+        throw new Error('Unable to materialize bundled official GEPA: extracted tree is incomplete')
+      }
+    }
+  }
 
-  return resolveGepaPythonPath(candidates)
+  // zipimport cannot resolve GEPA's namespace-package adapters on every
+  // supported Python minor. Both source and published CLIs execute only the
+  // verified tree materialized from the pinned wheel.
+  return resolveGepaPythonPath([vendor])
 }
 
 export function getGepaPythonPathEntries(existingPythonPath: string | undefined): string[] {

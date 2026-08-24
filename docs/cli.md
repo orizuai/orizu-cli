@@ -495,6 +495,39 @@ orizu apps export --app <appId> --version 2
 
 Exports the stored `.tsx` source for the app's current version by default. Use `--version <n>` to inspect an older implementation. When `--out` is omitted, the CLI writes `<app-name>.v<version>.tsx` in the current directory.
 
+## Instructions
+
+Use the customer-facing `orizu instructions …` namespace for instruction-set
+workflows. The legacy `orizu instruction-sets …` spelling remains a
+compatibility alias, but new workflows should not teach it.
+
+```bash
+orizu instructions list --project my-team/quality-eval --status active
+orizu instructions show planner --project my-team/quality-eval
+orizu instructions sync planner --out ./instructions --project my-team/quality-eval
+orizu instructions profiles new planner --project my-team/quality-eval --model-config anthropic/claude-haiku
+# Human/local CLI only: a human runs create and push.
+orizu instructions push ./orizu.instruction-set.json --project my-team/quality-eval --set planner --json
+```
+
+`sync` writes `<out>/<stable-set-slug>/manifest.json` with immutable `projectId`
+and `instructionSetId` ownership fields. Pass that stable slug to the
+TypeScript or Python offline loader; exact manifest names remain accepted for
+compatibility with earlier sync layouts. The unversioned instruction-set
+description round-trips through the sync manifest.
+
+The push manifest is a separate file and must carry the sync manifest's name,
+description, and ordered shape plus a complete set-wide component entry for
+every key. `--model-config` selects a profile on `profiles new` and `sync`;
+`push` targets the existing set with `--set` and reads profile overrides from
+each component's `modelConfig` field.
+
+A pre-slug manifest has no immutable project/set identity, so a modern sync
+cannot safely prove it owns that directory in a shared `--out` root. The CLI
+refuses it with `instruction_set_sync_legacy_identity_required`; move the old
+tree aside or choose a clean output root, verify the intended project, and sync
+again. It never auto-deletes the identity-less tree.
+
 ## Legacy prompt reads
 
 ```bash
