@@ -701,18 +701,13 @@ orizu --local scores submit ./candidate-scores.jsonl \
   --json
 ```
 
-Bind scorers through the legacy component-compatibility surface:
+Bind scorers to the instruction component that owns the evaluated text.
+Scorer binding is ordinary curator work, not one of the human-only catalog
+mutations, so hosted agents may set the headline scorer:
 
 ```bash
-orizu --local prompts scorers set-headline <prompt-id> \
-  --project <team>/<project> \
-  --scorer-version <scorer-version-id> \
-  --dataset-version <dataset-version-id> \
-  --split-set <split-set-id> \
-  --split validation \
-  --json
-
-orizu --local prompts scorers add <prompt-id> \
+orizu --local instructions scorers set-headline <set> \
+  --key <component-key> \
   --project <team>/<project> \
   --scorer-version <scorer-version-id> \
   --dataset-version <dataset-version-id> \
@@ -720,6 +715,26 @@ orizu --local prompts scorers add <prompt-id> \
   --split validation \
   --json
 ```
+
+For the same reason, hosted agents may add tracked scorers to the
+set-and-component address:
+
+```bash
+orizu --local instructions scorers add <set> \
+  --key <component-key> \
+  --project <team>/<project> \
+  --scorer-version <scorer-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> \
+  --split validation \
+  --json
+```
+
+The legacy `prompts scorers set-headline` and `prompts scorers add` spellings
+refuse before making a request. Their measured replacements are:
+
+- `Use: orizu instructions scorers set-headline <set> --key <component-key> --scorer-version <id> --project <team/project>`
+- `Use: orizu instructions scorers add <set> --key <component-key> --scorer-version <id> --project <team/project>`
 
 ### Runs
 

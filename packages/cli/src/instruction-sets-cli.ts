@@ -259,6 +259,44 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     writeManifest = loadInstructionSetManifest(reference)
   }
   const project = await io.resolveProjectSlug(argValue(args, '--project'))
+  if (subcommand === 'scorers') {
+    const action = reference
+    const set = positionals[2]
+    const componentKey = argValue(args, '--key')
+    const scorerVersionId = argValue(args, '--scorer-version')
+    if (
+      (action !== 'set-headline' && action !== 'add') ||
+      !set ||
+      !componentKey ||
+      !scorerVersionId
+    ) {
+      throw new Error(
+        'Usage: orizu instructions scorers set-headline|add <set> --key <component-key> --scorer-version <id> --project <team/project> [--dataset-version <id> --split-set <id> --split <name>] [--json]'
+      )
+    }
+    const payload = await responsePayload(await authedFetch(
+      `/api/cli/instruction-sets/${encodeURIComponent(set)}/scorers?project=${encodeURIComponent(project)}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          componentKey,
+          scorerVersionId,
+          role: action === 'set-headline' ? 'headline' : 'tracked',
+          datasetVersionId: argValue(args, '--dataset-version') || undefined,
+          splitSetId: argValue(args, '--split-set') || undefined,
+          splitName: argValue(args, '--split') || undefined,
+        }),
+      }
+    ), `Instruction sets scorers ${action}`)
+    if (io.json) io.print(JSON.stringify(payload))
+    else {
+      io.print(
+        `${action === 'set-headline' ? 'Set headline' : 'Added'} scorer ${sanitizeTerminalText(scorerVersionId)} for ${sanitizeTerminalText(set)} / ${sanitizeTerminalText(componentKey)}`
+      )
+    }
+    return 0
+  }
   if (subcommand === 'default') {
     const operation = reference; const set = positionals[2]; const identity = argValue(args, '--model-config'); const version = argValue(args, '--version')
     if ((operation !== 'show' && operation !== 'move') || !set) throw new Error('Usage: orizu instructions default show|move <set> --project <team/project> [--model-config <identity> --version <n>] [--json]')

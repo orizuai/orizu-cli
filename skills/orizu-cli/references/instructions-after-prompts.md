@@ -29,27 +29,34 @@ component key. List and pull include the prompt display name and identifier:
 Owner: Generator (prompt-1) -> planner-agent / system
 ```
 
-Compatibility scorer-binding output has only the internal prompt identifier:
-
-```text
-Owner: prompt-1 -> planner-agent / system
-```
-
 Use the slug after `->` for instruction commands and the final segment for the
-component key. An ownerless judge or draft prompt may have no owner line.
+component key. Address scorer bindings directly with that instruction-set slug
+and component key. An ownerless judge or draft prompt may have no owner line.
 
 ## Understand Deliberate Refusals
 
-Standalone prompt content and production-pointer mutations fail before making
-a request. The CLI prints these exact replacements:
+Standalone prompt content, production-pointer mutations, and prompt-addressed
+scorer bindings fail before making a request. The CLI prints these exact
+replacements:
 
 - `Use: orizu instructions push <manifest> --project <team/project>`
 - `Use: orizu instructions archive <slug-or-exact-name> --project <team/project>`
 - `Use: orizu instructions restore <slug-or-exact-name> --project <team/project>`
 - `Use: orizu instructions profiles promote <set> --project <team/project> --model-config <identity> --version <n>`
+- `Use: orizu instructions scorers set-headline <set> --key <component-key> --scorer-version <id> --project <team/project>`
+- `Use: orizu instructions scorers add <set> --key <component-key> --scorer-version <id> --project <team/project>`
 
-These refusals do not apply to prompt reads, judge artifacts, prompt reports,
-scorer bindings, session-scoped drafts, or non-production prompt labels.
+Older clients and direct API callers can reach two additional server-side
+prompt-write conflicts. Both fail closed with an exact JSON error:
+
+| Write path | Conflict | Measured response | Next action |
+| --- | --- | --- | --- |
+| Sessionless prompt registration from an older client or direct API call | The name has set-owned storage and no ownerless lineage. | 409 — `Use: orizu instructions push; prompt name belongs to an instruction set` | Use the owning set's manifest through `orizu instructions`; the current CLI redirects before HTTP. |
+| Session-scoped prompt draft (`prompts push ... --session ...`) | The name belongs to components in more than one instruction set and has no ownerless lineage. | 409 — `session draft prompt name is ambiguous across instruction sets` | Do not guess by name. Inventory the sets and component keys, then prepare the intended instruction-set manifest. |
+
+These client redirects and server conflicts do not apply to prompt reads, judge
+artifacts, prompt reports, instruction-addressed scorer bindings, unambiguous
+session-scoped drafts, or non-production prompt labels.
 
 ## Agent preparation
 

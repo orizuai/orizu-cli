@@ -1767,53 +1767,6 @@ function refusePromptMutation(replacement: string): never {
   throw new Error(`Use: orizu instructions ${replacement}`)
 }
 
-async function bindPromptScorer(role: 'headline' | 'tracked') {
-  const promptId = getPositionalArg(3)
-  const project = getArg('--project') || await resolveProjectSlug(null)
-  const scorerVersionId = getArg('--scorer-version')
-
-  if (!promptId || !scorerVersionId) {
-    throw new Error(`Usage: orizu prompts scorers ${role === 'headline' ? 'set-headline' : 'add'} <prompt-id> --scorer-version <id> [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]`)
-  }
-
-  const response = await authedFetch(`/api/cli/prompts/scorers?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      promptId,
-      scorerVersionId,
-      role,
-      datasetVersionId: getArg('--dataset-version') || undefined,
-      splitSetId: getArg('--split-set') || undefined,
-      splitName: getArg('--split') || undefined,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to bind prompt scorer: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    promptScorer: Record<string, unknown>
-    owner?: {
-      instructionSetSlug: string
-      componentKey: string
-    }
-  }>(response, 'Prompt scorer bind')
-  if (hasJsonFlag()) {
-    printJson(data)
-    return
-  }
-
-  printLine(`${role === 'headline' ? 'Set headline' : 'Added'} scorer ${sanitizeTerminalText(scorerVersionId)} for ${sanitizeTerminalText(promptId)}`)
-  if (data.owner) {
-    printLine(
-      `Owner: ${sanitizeTerminalText(promptId)} -> ` +
-      `${sanitizeTerminalText(data.owner.instructionSetSlug)} / ${sanitizeTerminalText(data.owner.componentKey)}`
-    )
-  }
-}
-
 function getPositionalArg(index: number): string | null {
   const value = cliArgs[index]
   return value && !value.startsWith('--') ? value : null
@@ -6236,13 +6189,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   if (command === 'prompts' && subcommand === 'scorers' && cliArgs[2] === 'set-headline') {
-    await bindPromptScorer('headline')
-    return
+    refusePromptMutation('scorers set-headline <set> --key <component-key> --scorer-version <id> --project <team/project>')
   }
 
   if (command === 'prompts' && subcommand === 'scorers' && cliArgs[2] === 'add') {
-    await bindPromptScorer('tracked')
-    return
+    refusePromptMutation('scorers add <set> --key <component-key> --scorer-version <id> --project <team/project>')
   }
 
   if (command === 'judges' && subcommand === 'list') {
