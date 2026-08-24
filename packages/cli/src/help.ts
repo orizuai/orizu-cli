@@ -51,39 +51,44 @@ const GROUPS: CliGroupDoc[] = [
 ]
 
 export const COMMAND_DOCS: CliCommandDoc[] = [
-  { path: ['instruction-sets', 'create'], usage: 'orizu instruction-sets create <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]', summary: 'Create an instruction set from a local manifest.', group: 'Instruction sets', options: [{ name: '--runner-version <id>', help: 'Pin the runner version for component prompt versions.' }, { name: '--model-config <identity>', help: 'Select the default model configuration.' }, { name: '--json', help: 'Print one JSON document.' }], examples: ['orizu instruction-sets create ./orizu.instruction-set.json --project core/evals --model-config anthropic/claude-haiku'] },
-  { path: ['instruction-sets', 'push'], usage: 'orizu instruction-sets push <manifest> --project <team/project> [--runner-version <id>] [--json]', summary: 'Push a new instruction-set profile version.', group: 'Instruction sets', options: [{ name: '--runner-version <id>', help: 'Pin the runner version for changed component prompt versions.' }, { name: '--json', help: 'Print one JSON document.' }], examples: ['orizu instruction-sets push ./orizu.instruction-set.json --project core/evals'] },
+  { path: ['instructions', 'create'], aliases: [['instruction-sets', 'create']], usage: 'orizu instructions create <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]', summary: 'Create an instruction set from a local manifest.', group: 'Instruction sets', options: [{ name: '--runner-version <id>', help: 'Pin the runner version for component prompt versions.' }, { name: '--model-config <identity>', help: 'Select the default model configuration.' }, { name: '--json', help: 'Print one JSON document.' }], examples: ['orizu instructions create ./orizu.instruction-set.json --project core/evals --model-config anthropic/claude-haiku'] },
+  { path: ['instructions', 'push'], aliases: [['instruction-sets', 'push']], usage: 'orizu instructions push <manifest> --project <team/project> [--set <slug-or-exact-name>] [--runner-version <id>] [--json]', summary: 'Push a new instruction-set profile version.', group: 'Instruction sets', options: [{ name: '--set <slug-or-exact-name>', help: 'Target the stable set handle when it differs from the manifest name.' }, { name: '--runner-version <id>', help: 'Pin the runner version for changed component prompt versions.' }, { name: '--json', help: 'Print one JSON document.' }], examples: ['orizu instructions push ./orizu.instruction-set.json --project core/evals --set planner'] },
   {
-    path: ['instruction-sets', 'list'],
-    usage: 'orizu instruction-sets list [--project <team/project>] [--status active|archived|all] [--json]',
+    path: ['instructions', 'list'],
+    aliases: [['instruction-sets', 'list']],
+    usage: 'orizu instructions list [--project <team/project>] [--status active|archived|all] [--json]',
     summary: 'List instruction sets in a project.',
     group: 'Instruction sets',
     options: [{ name: '--project <team/project>', help: 'Project slug (defaults to configured context).' }, { name: '--status <active|archived|all>', help: 'Filter archived instruction sets.' }, { name: '--json', help: 'Print JSON.' }],
-    examples: ['orizu instruction-sets list --project core/evals', 'orizu instruction-sets list --status archived --json'],
+    examples: ['orizu instructions list --project core/evals', 'orizu instructions list --status archived --json'],
   },
   {
-    path: ['instruction-sets', 'show'],
-    usage: 'orizu instruction-sets show <set> [--project <team/project>] [--status active|archived|all] [--json]',
+    path: ['instructions', 'show'],
+    aliases: [['instruction-sets', 'show']],
+    usage: 'orizu instructions show <set> [--project <team/project>] [--status active|archived|all] [--json]',
     summary: 'Show an instruction set shape, default, and profile production state.',
     group: 'Instruction sets',
     options: [{ name: '--project <team/project>', help: 'Project slug (defaults to configured context).' }, { name: '--status <active|archived|all>', help: 'Filter archived instruction sets.' }, { name: '--json', help: 'Print JSON.' }],
-    examples: ['orizu instruction-sets show research --project core/evals', 'orizu instruction-sets show research --json'],
+    examples: ['orizu instructions show research --project core/evals', 'orizu instructions show research --json'],
   },
-  { path: ['instruction-sets', 'profiles', 'new'], usage: 'orizu instruction-sets profiles new <set> --project <team/project> --model-config <identity> [--json]', summary: 'Create a model-config profile seeded from the instruction-set default.', group: 'Instruction sets', options: [{ name: '--model-config <identity>', help: 'Model config identity for the new profile.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instruction-sets profiles new planner --project core/evals --model-config anthropic/claude-haiku'] },
-  { path: ['instruction-sets', 'profiles', 'promote'], usage: 'orizu instruction-sets profiles promote <set> --project <team/project> --model-config <identity> --version <n> [--json]', summary: 'Move one profile version to production.', group: 'Instruction sets', options: [{ name: '--model-config <identity>', help: 'Profile model config.', required: true }, { name: '--version <n>', help: 'Profile version to promote.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instruction-sets profiles promote planner --project core/evals --model-config anthropic/claude-haiku --version 2'] },
-  { path: ['instruction-sets', 'profiles', 'rollback'], usage: 'orizu instruction-sets profiles rollback <set> --project <team/project> --model-config <identity> --to <n> [--json]', summary: 'Create a rollback version and move profile production to it.', group: 'Instruction sets', options: [{ name: '--model-config <identity>', help: 'Profile model config.', required: true }, { name: '--to <n>', help: 'Historical profile version to copy.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instruction-sets profiles rollback planner --project core/evals --model-config anthropic/claude-haiku --to 1'] },
-  { path: ['instruction-sets', 'default', 'show'], usage: 'orizu instruction-sets default show <set> --project <team/project> [--json]', summary: 'Show the instruction-set default and its resolution impact.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instruction-sets default show planner --project core/evals'] },
-  { path: ['instruction-sets', 'default', 'move'], usage: 'orizu instruction-sets default move <set> --project <team/project> --model-config <identity> --version <n> [--json]', summary: 'Move the instruction-set default to a profile version.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--model-config <identity>', help: 'Target model config.', required: true }, { name: '--version <n>', help: 'Target profile version.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instruction-sets default move planner --project core/evals --model-config anthropic/claude-haiku --version 2'] },
-  { path: ['instruction-sets', 'shape', 'add'], usage: 'orizu instruction-sets shape add <set> --project <team/project> --key <key> --from <manifest> [--json]', summary: 'Add one component key to every instruction-set profile.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--key <key>', help: 'Component key to add.', required: true }, { name: '--from <manifest>', help: 'Manifest containing the component body.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instruction-sets shape add planner --project core/evals --key skill --from planner.json'] },
-  { path: ['instruction-sets', 'shape', 'remove'], usage: 'orizu instruction-sets shape remove <set> --project <team/project> --key <key> [--json]', summary: 'Remove one component key from every instruction-set profile.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--key <key>', help: 'Component key to remove.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instruction-sets shape remove planner --project core/evals --key skill'] },
+  { path: ['instructions', 'profiles', 'new'], aliases: [['instruction-sets', 'profiles', 'new']], usage: 'orizu instructions profiles new <set> --project <team/project> --model-config <identity> [--json]', summary: 'Create a model-config profile seeded from the instruction-set default.', group: 'Instruction sets', options: [{ name: '--model-config <identity>', help: 'Model config identity for the new profile.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions profiles new planner --project core/evals --model-config anthropic/claude-haiku'] },
+  { path: ['instructions', 'profiles', 'promote'], aliases: [['instruction-sets', 'profiles', 'promote']], usage: 'orizu instructions profiles promote <set> --project <team/project> --model-config <identity> --version <n> [--json]', summary: 'Move one profile version to production.', group: 'Instruction sets', options: [{ name: '--model-config <identity>', help: 'Profile model config.', required: true }, { name: '--version <n>', help: 'Profile version to promote.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions profiles promote planner --project core/evals --model-config anthropic/claude-haiku --version 2'] },
+  { path: ['instructions', 'profiles', 'rollback'], aliases: [['instruction-sets', 'profiles', 'rollback']], usage: 'orizu instructions profiles rollback <set> --project <team/project> --model-config <identity> --to <n> [--json]', summary: 'Create a rollback version and move profile production to it.', group: 'Instruction sets', options: [{ name: '--model-config <identity>', help: 'Profile model config.', required: true }, { name: '--to <n>', help: 'Historical profile version to copy.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions profiles rollback planner --project core/evals --model-config anthropic/claude-haiku --to 1'] },
+  { path: ['instructions', 'default', 'show'], aliases: [['instruction-sets', 'default', 'show']], usage: 'orizu instructions default show <set> --project <team/project> [--json]', summary: 'Show the instruction-set default and its resolution impact.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions default show planner --project core/evals'] },
+  { path: ['instructions', 'default', 'move'], aliases: [['instruction-sets', 'default', 'move']], usage: 'orizu instructions default move <set> --project <team/project> --model-config <identity> --version <n> [--json]', summary: 'Move the instruction-set default to a profile version.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--model-config <identity>', help: 'Target model config.', required: true }, { name: '--version <n>', help: 'Target profile version.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions default move planner --project core/evals --model-config anthropic/claude-haiku --version 2'] },
+  { path: ['instructions', 'shape', 'add'], aliases: [['instruction-sets', 'shape', 'add']], usage: 'orizu instructions shape add <set> --project <team/project> --key <key> --from <manifest> [--json]', summary: 'Add one component key to every instruction-set profile.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--key <key>', help: 'Component key to add.', required: true }, { name: '--from <manifest>', help: 'Manifest containing the component body.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions shape add planner --project core/evals --key skill --from planner.json'] },
+  { path: ['instructions', 'shape', 'remove'], aliases: [['instruction-sets', 'shape', 'remove']], usage: 'orizu instructions shape remove <set> --project <team/project> --key <key> [--json]', summary: 'Remove one component key from every instruction-set profile.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--key <key>', help: 'Component key to remove.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions shape remove planner --project core/evals --key skill'] },
   {
-    path: ['instruction-sets', 'sync'],
-    usage: 'orizu instruction-sets sync <set> --out <dir> [--model-config <identity>] [--project <team/project>] [--json]',
+    path: ['instructions', 'sync'],
+    aliases: [['instruction-sets', 'sync']],
+    usage: 'orizu instructions sync <set> --out <dir> [--model-config <identity>] [--project <team/project>] [--json]',
     summary: 'Write an instruction set for offline runner loading.',
     group: 'Instruction sets',
     options: [{ name: '--out <dir>', help: 'Destination parent directory.', required: true }, { name: '--model-config <identity>', help: 'Sync only one profile plus default.' }, { name: '--project <team/project>', help: 'Project slug.' }, { name: '--json', help: 'Print source transport JSON.' }],
-    examples: ['orizu instruction-sets sync planner --out ./instructions --project core/evals'],
+    examples: ['orizu instructions sync planner --out ./instructions --project core/evals'],
   },
+  { path: ['instructions', 'archive'], aliases: [['instruction-sets', 'archive']], usage: 'orizu instructions archive <slug-or-exact-name> --project <team/project> [--json]', summary: 'Archive an instruction set without changing resolution or sync.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions archive planner --project core/evals'] },
+  { path: ['instructions', 'restore'], aliases: [['instruction-sets', 'restore']], usage: 'orizu instructions restore <slug-or-exact-name> --project <team/project> [--json]', summary: 'Restore an archived instruction set.', group: 'Instruction sets', options: [{ name: '--project <team/project>', help: 'Project slug.', required: true }, { name: '--json', help: 'Print JSON.' }], examples: ['orizu instructions restore planner --project core/evals'] },
   {
     path: ['login'],
     usage: 'orizu login [--no-prompt-if-logged-in]',
@@ -377,27 +382,9 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Prompts and judges',
   },
   {
-    path: ['prompts', 'archive'],
-    usage: 'orizu prompts archive <prompt-id-or-name> --project <team/project> [--json]',
-    summary: 'Mark a prompt artifact as archived.',
-    group: 'Prompts and judges',
-  },
-  {
-    path: ['prompts', 'restore'],
-    usage: 'orizu prompts restore <prompt-id-or-name> --project <team/project> [--json]',
-    summary: 'Restore an archived prompt artifact to active status.',
-    group: 'Prompts and judges',
-  },
-  {
     path: ['prompts', 'pull'],
     usage: 'orizu prompts pull <prompt-id-or-name> --project <team/project> --out <dir> [--label <label> | --version <id>] [--json]',
     summary: 'Pull a prompt artifact version to a local directory.',
-    group: 'Prompts and judges',
-  },
-  {
-    path: ['prompts', 'push'],
-    usage: 'orizu prompts push <dir> [--runner-version <id>] [--project <team/project>] [--parent <version-id>] [--session <session-id>] [--report-file <path>] [--json]',
-    summary: 'Push a local prompt artifact directory as a new version (with --session: a commit-first git draft).',
     group: 'Prompts and judges',
   },
   {
@@ -423,7 +410,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   {
     path: ['prompts', 'labels', 'set'],
     usage: 'orizu prompts labels set <prompt-name> <label> --version <version-id> [--project <team/project>] [--json]',
-    summary: 'Move or set a prompt label to a version.',
+    summary: 'Move or set a non-production prompt label; use instructions profiles promote for production.',
     group: 'Prompts and judges',
   },
   {
@@ -1214,8 +1201,10 @@ export function commandDocsWithPrefix(args: string[]): CliCommandDoc[] {
   }
 
   return COMMAND_DOCS.filter(doc =>
-    args.every((part, index) => doc.path[index] === part) &&
-    doc.path.length > args.length
+    [doc.path, ...(doc.aliases || [])].some(path =>
+      args.every((part, index) => path[index] === part) &&
+      path.length > args.length
+    )
   )
 }
 

@@ -42,7 +42,7 @@ const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
 export interface SyncComponent { body?: string; repoPath?: string; contentSha?: string; commitSha?: string }
 export interface SyncMaterial { profileVersionId: string; versionNumber: number; modelConfigIdentity: string; resolvedFrom: string; components: Record<string, SyncComponent> }
 export interface SyncProfile { modelConfigIdentity: string; resolvedFrom: string; production: SyncMaterial | null }
-export interface SyncSet { name: string; shape: string[]; default: SyncMaterial; profiles: SyncProfile[]; filteredTo?: string[] }
+export interface SyncSet { name: string; slug?: string; shape: string[]; default: SyncMaterial; profiles: SyncProfile[]; filteredTo?: string[] }
 function safeSegment(value: string) { if (!SAFE_SEGMENT.test(value) || value === '.' || value === '..' || value.startsWith('.')) throw new Error('instruction_set_path_unsafe') }
 function slug(identity: string) { return identity.replaceAll('/', '__').replace(/[^A-Za-z0-9._-]/gu, '_') }
 function stable(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n` }
@@ -128,7 +128,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   const project = await io.resolveProjectSlug(argValue(args, '--project'))
   if (subcommand === 'default') {
     const operation = reference; const set = positionals[2]; const identity = argValue(args, '--model-config'); const version = argValue(args, '--version')
-    if ((operation !== 'show' && operation !== 'move') || !set) throw new Error('Usage: instruction-sets default show|move <set> --project <team/project> [--model-config <identity> --version <n>] [--json]')
+    if ((operation !== 'show' && operation !== 'move') || !set) throw new Error('Usage: orizu instructions default show|move <set> --project <team/project> [--model-config <identity> --version <n>] [--json]')
     if (operation === 'move' && (!identity || !version || !/^[0-9]+$/u.test(version) || Number(version) < 1)) throw new Error('--version must be a positive integer')
     const path = `/api/cli/instruction-sets/${encodeURIComponent(set)}/default?project=${encodeURIComponent(project)}`
     if (operation === 'show') {
@@ -147,7 +147,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   }
   if (subcommand === 'shape') {
     const operation = reference; const set = positionals[2]; const key = argValue(args, '--key'); const from = argValue(args, '--from')
-    if ((operation !== 'add' && operation !== 'remove') || !set || !key || (operation === 'add' && !from)) throw new Error('Usage: instruction-sets shape add|remove <set> --project <team/project> --key <key> [--from <manifest>] [--json]')
+    if ((operation !== 'add' && operation !== 'remove') || !set || !key || (operation === 'add' && !from)) throw new Error('Usage: orizu instructions shape add|remove <set> --project <team/project> --key <key> [--from <manifest>] [--json]')
     let component: { body: string } | undefined
     if (operation === 'add') {
       let manifest: unknown
@@ -170,7 +170,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
           const command = item.pointer === 'production' ? 'profiles promote' : 'default move'
           const operatorAction = item.pointer === 'production' ? 'promote' : 'default move'
           if (typeof item.stalePointerVersionNumber === 'number' && typeof item.branchedFromVersionNumber === 'number' && item.branchedFromVersionNumber !== item.stalePointerVersionNumber) io.print(`${operatorAction} would move ${item.pointer} from v${item.stalePointerVersionNumber}'s text to v${item.headVersionNumber} = v${item.branchedFromVersionNumber}'s text + ${key}`)
-          io.print(`Follow up: instruction-sets ${command} ${set} --project ${project} --model-config ${item.modelConfigIdentity} --version ${item.headVersionNumber}`)
+          io.print(`Follow up: instructions ${command} ${set} --project ${project} --model-config ${item.modelConfigIdentity} --version ${item.headVersionNumber}`)
         }
       }
     }
@@ -178,7 +178,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   }
   if (subcommand === 'profiles') {
     const operation = reference; const set = positionals[2]; const identity = argValue(args, '--model-config')
-    if ((operation !== 'new' && operation !== 'promote' && operation !== 'rollback') || !set || !identity) throw new Error('Usage: instruction-sets profiles new|promote|rollback <set> --project <team/project> --model-config <identity> [--version <n>|--to <n>] [--json]')
+    if ((operation !== 'new' && operation !== 'promote' && operation !== 'rollback') || !set || !identity) throw new Error('Usage: orizu instructions profiles new|promote|rollback <set> --project <team/project> --model-config <identity> [--version <n>|--to <n>] [--json]')
     const encodedSet = encodeURIComponent(set); const encodedIdentity = encodeURIComponent(identity)
     const version = argValue(args, '--version'); const to = argValue(args, '--to')
     if ((operation === 'promote' && (!version || !/^[0-9]+$/u.test(version) || Number(version) < 1)) || (operation === 'rollback' && (!to || !/^[0-9]+$/u.test(to) || Number(to) < 1))) throw new Error(operation === 'promote' ? '--version must be a positive integer' : '--to must be a positive integer')
@@ -195,9 +195,12 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     return 0
   }
   if (subcommand === 'create' || subcommand === 'push') {
-    if (!reference || reference.startsWith('--')) throw new Error('Usage: instruction-sets create|push <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]')
+    if (!reference || reference.startsWith('--')) throw new Error(subcommand === 'create'
+      ? 'Usage: orizu instructions create <manifest> --project <team/project> [--runner-version <id>] [--model-config <identity>] [--json]'
+      : 'Usage: orizu instructions push <manifest> --project <team/project> [--set <slug-or-exact-name>] [--runner-version <id>] [--json]')
     const manifest = loadInstructionSetManifest(reference); const modelConfig = argValue(args, '--model-config'); const runnerVersion = argValue(args, '--runner-version')
-    const path = subcommand === 'create' ? '/api/cli/instruction-sets' : `/api/cli/instruction-sets/${encodeURIComponent(manifest.name)}/versions`
+    const setReference = argValue(args, '--set') || manifest.name
+    const path = subcommand === 'create' ? '/api/cli/instruction-sets' : `/api/cli/instruction-sets/${encodeURIComponent(setReference)}/versions`
     const body = subcommand === 'create'
       ? { ...manifest, ...(modelConfig ? { modelConfigIdentity: modelConfig } : {}), ...(runnerVersion ? { runnerVersionId: runnerVersion } : {}) }
       : { shape: manifest.shape, components: manifest.components, ...(runnerVersion ? { runnerVersionId: runnerVersion } : {}) }
@@ -225,16 +228,32 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     }
     return 0
   }
+  if (subcommand === 'archive' || subcommand === 'restore') {
+    if (!reference || reference.startsWith('--')) throw new Error(`Usage: orizu instructions ${subcommand} <slug-or-exact-name> --project <team/project> [--json]`)
+    const archived = subcommand === 'archive'
+    const payload = await responsePayload(await authedFetch(`/api/cli/instruction-sets/${encodeURIComponent(reference)}?project=${encodeURIComponent(project)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ archived }),
+    }), `Instructions ${subcommand}`)
+    if (io.json) io.print(JSON.stringify(payload))
+    else {
+      const set = payload.instructionSet as { name?: string; slug?: string } | undefined
+      const identity = set?.slug && set.slug !== set.name ? `${set.name || reference} (${set.slug})` : set?.name || set?.slug || reference
+      io.print(`${archived ? 'Archived' : 'Restored'} instruction set ${identity}`)
+    }
+    return 0
+  }
   const status = argValue(args, '--status') || 'active'
-  if (subcommand !== 'list' && subcommand !== 'show' && subcommand !== 'sync') throw new Error('Usage: instruction-sets list|show|sync')
+  if (subcommand !== 'list' && subcommand !== 'show' && subcommand !== 'sync') throw new Error('Usage: orizu instructions list|show|sync|archive|restore')
   if (subcommand === 'sync') {
     const output = argValue(args, '--out')
-    if (!reference || !output) throw new Error('Usage: instruction-sets sync <set> --out <dir> --project <team/project> [--model-config <identity>] [--json]')
+    if (!reference || !output) throw new Error('Usage: orizu instructions sync <set> --out <dir> --project <team/project> [--model-config <identity>] [--json]')
     const modelConfig = argValue(args, '--model-config')
     const path = `/api/cli/instruction-sets/${encodeURIComponent(reference)}/sync?project=${encodeURIComponent(project)}${modelConfig ? `&modelConfig=${encodeURIComponent(modelConfig)}` : ''}`
     const payload = await responsePayload(await authedFetch(path, { method: 'GET' }), 'Instruction sets sync')
     const set = payload.instructionSet as SyncSet
-    if (!set || set.name !== reference || (modelConfig && (!Array.isArray(set.filteredTo) || set.filteredTo.length !== 1 || set.filteredTo[0] !== modelConfig))) {
+    if (!set || (set.slug !== reference && set.name !== reference) || (modelConfig && (!Array.isArray(set.filteredTo) || set.filteredTo.length !== 1 || set.filteredTo[0] !== modelConfig))) {
       throw new Error('instruction_set_sync_response_mismatch')
     }
     syncToDisk(output, set)
@@ -256,8 +275,8 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   if (subcommand === 'list') {
     const sets = Array.isArray(payload.instructionSets) ? payload.instructionSets : []
     for (const item of sets) {
-      const set = item as { name?: string; shape?: string[]; status?: string }
-      io.print(`${set.name || 'unnamed'}${set.status === 'archived' ? ' [archived]' : ''}${set.shape ? ` (${set.shape.join(', ')})` : ''}`)
+      const set = item as { name?: string; slug?: string; shape?: string[]; status?: string }
+      io.print(`${set.name || 'unnamed'}${set.slug ? ` [${set.slug}]` : ''}${set.status === 'archived' ? ' [archived]' : ''}${set.shape ? ` (${set.shape.join(', ')})` : ''}`)
     }
     return 0
   }

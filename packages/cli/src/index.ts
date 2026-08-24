@@ -94,6 +94,7 @@ import { runnerInputInstructionSet, runnerInputPrompt, runnerInstructionSetSyncS
 import { pushPromptDraft } from './prompt-draft-push.js'
 import { readMarkdownReportInput } from './markdown-report-input.js'
 import { promptPushErrorMessage, promptReportCommand } from './prompt-report-cli.js'
+import { setPromptLabel } from './prompt-label-cli.js'
 import { printPromptSummaryTable } from './prompt-summary-table.js'
 import type {
   CliLengthMeasurementUnavailableReason,
@@ -203,6 +204,10 @@ interface PromptSummary {
   lengthStatsUnavailableReason?: CliLengthMeasurementUnavailableReason
   lengthStatsVersionId?: string
   lengthStatsVersionNumber?: number
+  owner?: {
+    instructionSetSlug: string
+    componentKey: string
+  } | null
 }
 
 interface TaskReportPayload {
@@ -1643,6 +1648,10 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
       metricKey: string
       higherIsBetter: boolean
     }>
+    owner?: {
+      instructionSetSlug: string
+      componentKey: string
+    } | null
   }>(response, `${kind} pull`)
 
   const targetDir = expandHomePath(outDir)
@@ -1729,6 +1738,7 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
       scorer_version_id: data.scorerVersionId || undefined,
       scorer_version_ids: scorerVersions.map(item => item.id),
       path: targetDir,
+      owner: data.owner || undefined,
     })
     return
   }
@@ -1744,73 +1754,17 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
       `Warning: prompt version ${sanitizeTerminalText(data.version.id)} does not map to an executable scorer version.`
     )
   }
+  if (kind === 'prompt' && data.owner) {
+    printLine(
+      `Owner: ${sanitizeTerminalText(data.prompt.name)} (${sanitizeTerminalText(data.prompt.id)}) -> ` +
+      `${sanitizeTerminalText(data.owner.instructionSetSlug)} / ${sanitizeTerminalText(data.owner.componentKey)}`
+    )
+  }
 }
 
-async function setPromptLabel() {
-  const promptName = getPositionalArg(3)
-  const label = getPositionalArg(4)
-  const project = getArg('--project') || await resolveProjectSlug(null)
-  const promptVersionId = getArg('--version')
-
-  if (!promptName || !label || !promptVersionId) {
-    throw new Error('Usage: orizu prompts labels set <prompt-name> <label> --version <prompt-version-id> [--project <team/project>] [--json]')
-  }
-
-  const response = await authedFetch(`/api/cli/prompts/labels?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      promptName,
-      label,
-      promptVersionId,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to set prompt label: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Prompt label set')
-  if (hasJsonFlag()) {
-    printJson(data)
-    return
-  }
-
-  printLine(`Moved ${sanitizeTerminalText(label)} to ${sanitizeTerminalText(promptVersionId)}`)
-}
-
-async function setPromptArchivedState(archived: boolean) {
-  const promptRef = getPositionalArg(2)
-  const project = getArg('--project') || await resolveProjectSlug(null)
-  const command = archived ? 'archive' : 'restore'
-
-  if (!promptRef) {
-    throw new Error(`Usage: orizu prompts ${command} <prompt-id-or-name> --project <team/project> [--json]`)
-  }
-
-  const response = await authedFetch(`/api/cli/prompts/${encodeURIComponent(promptRef)}?project=${encodeURIComponent(project)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ archived }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to ${command} prompt: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    prompt: {
-      id: string
-      name: string
-      status: string
-    }
-  }>(response, `Prompt ${command}`)
-  if (hasJsonFlag()) {
-    printJson(data)
-    return
-  }
-
-  printLine(`${archived ? 'Archived' : 'Restored'} prompt ${sanitizeTerminalText(data.prompt.name)} (${sanitizeTerminalText(data.prompt.id)})`)
+function refusePromptMutation(replacement: string): never {
+  process.exitCode = 1
+  throw new Error(`Use: orizu instructions ${replacement}`)
 }
 
 async function bindPromptScorer(role: 'headline' | 'tracked') {
@@ -1839,13 +1793,25 @@ async function bindPromptScorer(role: 'headline' | 'tracked') {
     throw new Error(`Failed to bind prompt scorer: ${await response.text()}`)
   }
 
-  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Prompt scorer bind')
+  const data = await parseJsonResponse<{
+    promptScorer: Record<string, unknown>
+    owner?: {
+      instructionSetSlug: string
+      componentKey: string
+    }
+  }>(response, 'Prompt scorer bind')
   if (hasJsonFlag()) {
     printJson(data)
     return
   }
 
   printLine(`${role === 'headline' ? 'Set headline' : 'Added'} scorer ${sanitizeTerminalText(scorerVersionId)} for ${sanitizeTerminalText(promptId)}`)
+  if (data.owner) {
+    printLine(
+      `Owner: ${sanitizeTerminalText(promptId)} -> ` +
+      `${sanitizeTerminalText(data.owner.instructionSetSlug)} / ${sanitizeTerminalText(data.owner.componentKey)}`
+    )
+  }
 }
 
 function getPositionalArg(index: number): string | null {
@@ -6229,8 +6195,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   if (command === 'prompts' && subcommand === 'push') {
-    await pushPromptArtifact('prompt')
-    return
+    if (getArg('--session')) {
+      await pushPromptArtifact('prompt')
+      return
+    }
+    refusePromptMutation('push <manifest> --project <team/project>')
   }
 
   if (
@@ -6244,17 +6213,25 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   if (command === 'prompts' && subcommand === 'archive') {
-    await setPromptArchivedState(true)
-    return
+    refusePromptMutation('archive <slug-or-exact-name> --project <team/project>')
   }
 
   if (command === 'prompts' && subcommand === 'restore') {
-    await setPromptArchivedState(false)
-    return
+    refusePromptMutation('restore <slug-or-exact-name> --project <team/project>')
   }
 
   if (command === 'prompts' && subcommand === 'labels' && cliArgs[2] === 'set') {
-    await setPromptLabel()
+    if (getPositionalArg(4) === 'production') {
+      refusePromptMutation('profiles promote <set> --project <team/project> --model-config <identity> --version <n>')
+    }
+    await setPromptLabel({
+      getArg,
+      getPositionalArg,
+      json: hasJsonFlag(),
+      printJson,
+      printLine,
+      resolveProjectSlug,
+    })
     return
   }
 
@@ -6549,7 +6526,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
     process.exitCode = await (command === 'connectors' ? connectorsCommand : command === 'manifests' ? manifestsCommand : modelConfigsCommand)(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
     return
   }
-  if (command === 'instruction-sets') { process.exitCode = await instructionSetsCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return }
+  if (command === 'instructions' || command === 'instruction-sets') { process.exitCode = await instructionSetsCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return }
   if (command === 'team' && (subcommand === 'kill-agents' || subcommand === 'release-agents')) {
     process.exitCode = await killSwitchCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, printErr: printError })
     return

@@ -10,6 +10,10 @@ interface PromptSummaryRow {
   role: string
   status?: string
   lengthStats?: CliLengthStats | null
+  owner?: {
+    instructionSetSlug: string
+    componentKey: string
+  } | null
 }
 
 export function printPromptSummaryTable(
@@ -53,5 +57,13 @@ export function printPromptSummaryTable(
   printLine(widths.map(width => '-'.repeat(width)).join('  '))
   rows.forEach(row => {
     printLine(keys.map((key, index) => row[key].padEnd(widths[index])).join('  '))
+  })
+  items.forEach(item => {
+    if (item.owner) {
+      printLine(
+        `Owner: ${sanitizeTerminalText(item.name)} (${sanitizeTerminalText(item.id)}) -> ` +
+        `${sanitizeTerminalText(item.owner.instructionSetSlug)} / ${sanitizeTerminalText(item.owner.componentKey)}`
+      )
+    }
   })
 }
