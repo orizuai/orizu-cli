@@ -71,6 +71,7 @@ import { ARTIFACT_MAX_BYTES, runnerOptimizerCommand } from './artifact-pull.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { acceptScoreRunCommand } from './scores-accept-cli.js'
+import { cleanupAll, throwWithCleanup } from './cleanup.js'
 import { listOptimizationRunsCommand } from './optimizations-list-cli.js'
 import { promoteOptimizationCommand } from './optimizations-promote-cli.js'
 import { scorersCommand } from './scorers-cli.js'
@@ -100,7 +101,13 @@ import type {
   CliLengthMeasurementUnavailableReason,
   CliLengthStats,
 } from './prompt-length-wire.js'
-import { assertSnapshotManifestConfined, verifyGepaRunnerDirsFromArgs, verifyRunnerDirRegistered } from './runner-dir-verify.js'
+import {
+  assertSnapshotManifestConfined,
+  extractFlagValue,
+  type GepaVerifiedArgs,
+  verifyGepaRunnerDirsFromArgs,
+  verifyRunnerDirRegistered,
+} from './runner-dir-verify.js'
 import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
 import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
@@ -2450,6 +2457,43 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
 
 // ALI-1073 list moved to optimizations-list-cli.ts (line ratchet, ALI-976);
 // ALI-1175 labels its best scores as agent-reported evidence there.
+const GEPA_RUNNER_MATERIALIZATION_PAIRS = [
+  { versionFlag: '--runner-version-id', dirFlag: '--candidate-runner-dir' },
+  { versionFlag: '--scorer-runner-version-id', dirFlag: '--scorer-runner-dir' },
+] as const
+
+async function materializeMissingGepaRunnerDirs(args: string[]): Promise<{
+  args: string[]
+  cleanup: () => void
+}> {
+  const rewritten = [...args]
+  const cleanups: Array<() => void> = []
+  const cleanup = () => cleanupAll(
+    cleanups,
+    'Failed to clean materialized runner directories'
+  )
+
+  try {
+    for (const pair of GEPA_RUNNER_MATERIALIZATION_PAIRS) {
+      const runnerVersionId = extractFlagValue(rewritten, pair.versionFlag)
+      const runnerDir = extractFlagValue(rewritten, pair.dirFlag)
+      if (!runnerVersionId || runnerDir) continue
+
+      const materialized = await materializeRunnerVersion(runnerVersionId)
+      cleanups.push(materialized.cleanup)
+      rewritten.push(pair.dirFlag, materialized.runnerDir)
+    }
+  } catch (error) {
+    throwWithCleanup(
+      error,
+      cleanups,
+      'Runner materialization failed and cleanup also failed'
+    )
+  }
+
+  return { args: rewritten, cleanup }
+}
+
 async function runGepaOptimization() {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const baseUrl = getBaseUrl()
@@ -2462,11 +2506,12 @@ async function runGepaOptimization() {
   // itself (both argparse flag forms), fail-closed on half-populated pairs,
   // and REWRITES the dir flags to verified snapshots (the exact hashed bytes)
   // so a post-hash mutation of the original dirs cannot change what runs.
-  const verified = await verifyGepaRunnerDirsFromArgs(forwardedArgs)
-  forwardedArgs = verified.args
-  let result
+  const materialized = await materializeMissingGepaRunnerDirs(forwardedArgs)
+  let verified: GepaVerifiedArgs | undefined
   let selectedEngine = 'official'
   try {
+    verified = await verifyGepaRunnerDirsFromArgs(materialized.args)
+    forwardedArgs = verified.args
     // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
     // credentials.json so hosted sandboxes can run optimizations. Read at spawn
     // time — AFTER the verification awaits above, so a hosted token-file
@@ -2492,20 +2537,29 @@ async function runGepaOptimization() {
     if (instructionSetProfileVersionId) dispatch.environment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID = instructionSetProfileVersionId
     selectedEngine = dispatch.engine
     const launch = prepareSkilledProposerLaunch(python, dispatch.engine, dispatch.environment)
-    result = await spawnSkilledProposerChild(
+    const result = await spawnSkilledProposerChild(
       launch.python, ['-m', dispatch.module, ...dispatch.args], dispatch.engine, launch.environment,
     )
-  } finally {
-    verified.cleanup()
+    if (result.error) {
+      throw new Error(`${selectedEngine} GEPA engine failed: ${result.error.message}`, { cause: result.error })
+    }
+    if (result.status !== 0) {
+      throw new Error(`${selectedEngine} GEPA engine failed with exit code ${result.status}`)
+    }
+  } catch (error) {
+    throwWithCleanup(
+      error,
+      [
+        ...(verified ? [verified.cleanup] : []),
+        materialized.cleanup,
+      ],
+      'GEPA launch failed and runner cleanup also failed'
+    )
   }
-  if (result.error) {
-    throw new Error(`${selectedEngine} GEPA engine failed: ${result.error.message}`, { cause: result.error })
-  }
-
-  if (result.status !== 0) {
-    throw new Error(`${selectedEngine} GEPA engine failed with exit code ${result.status}`)
-  }
-
+  cleanupAll(
+    [verified.cleanup, materialized.cleanup],
+    'Failed to clean GEPA runner directories'
+  )
   if (hasJsonFlag()) {
     printJson({ status: 'completed', exitCode: 0 })
   }
@@ -5784,26 +5838,33 @@ export async function materializeRunnerVersion(runnerVersionId: string): Promise
   const tempDir = mkdtempSync(join(tmpdir(), 'orizu-runner-version-'))
   const zipPath = join(tempDir, 'runner.zip')
   const runnerDir = join(tempDir, 'runner')
-  const zipBytes = new Uint8Array(await response.arrayBuffer())
-  if (zipBytes.byteLength > ARTIFACT_MAX_BYTES) {
-    rmSync(tempDir, { recursive: true, force: true })
-    throw new Error(`Runner artifact exceeds ${ARTIFACT_MAX_BYTES} bytes`)
-  }
-  writeFileSync(zipPath, zipBytes)
+  const cleanup = () => rmSync(tempDir, { recursive: true, force: true })
 
-  const result = spawnSync('unzip', ['-q', zipPath, '-d', runnerDir], {
-    encoding: 'utf8',
-  })
-  if (result.error) {
-    rmSync(tempDir, { recursive: true, force: true })
-    throw result.error
-  }
-  if (result.status !== 0) {
-    rmSync(tempDir, { recursive: true, force: true })
-    throw new Error(`unzip failed: ${sanitizeTerminalText(result.stderr || result.stdout || '')}`)
-  }
+  try {
+    const zipBytes = new Uint8Array(await response.arrayBuffer())
+    if (zipBytes.byteLength > ARTIFACT_MAX_BYTES) {
+      throw new Error(`Runner artifact exceeds ${ARTIFACT_MAX_BYTES} bytes`)
+    }
+    writeFileSync(zipPath, zipBytes)
 
-  return { runnerDir, cleanup: () => rmSync(tempDir, { recursive: true, force: true }) }
+    const result = spawnSync('unzip', ['-q', zipPath, '-d', runnerDir], {
+      encoding: 'utf8',
+    })
+    if (result.error) {
+      throw result.error
+    }
+    if (result.status !== 0) {
+      throw new Error(`unzip failed: ${sanitizeTerminalText(result.stderr || result.stdout || '')}`)
+    }
+
+    return { runnerDir, cleanup }
+  } catch (error) {
+    throwWithCleanup(
+      error,
+      [cleanup],
+      `Runner ${runnerVersionId} materialization failed and cleanup also failed`
+    )
+  }
 }
 
 async function runnersExec() {

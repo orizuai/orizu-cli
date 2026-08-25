@@ -406,13 +406,17 @@ def run_from_environment() -> dict[str, Any]:
 
     ALI-1502 supplies these variables after verifying runner bytes. Scorer
     contract resolution and seed validation intentionally happen before
-    ``start_run`` so either refusal leaves no stranded running record.
+    ``start_run`` so either refusal leaves no stranded running record. Hosted
+    attach identity is resolved before even those runner-backed preflights.
     """
     env = _required_environment()
     train_split = os.environ.get("ORIZU_TRAIN_SPLIT", "train")
     validation_split = os.environ.get("ORIZU_VALIDATION_SPLIT", "validation")
     config = build_config_from_environment()
     client = OrizuClient.from_env()
+    hosted_run_id = os.environ.get("ORIZU_HOSTED_OPTIMIZATION_RUN_ID", "").strip() or None
+    if hosted_run_id is not None:
+        client.require_hosted_optimization_run(run_id=hosted_run_id, project=env["ORIZU_PROJECT"])
     profile_version_id = os.environ.get("ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID")
     prompt_context, trainset = client.fetch_exec_context(
         prompt_version_id=os.environ.get("ORIZU_PROMPT_VERSION_ID"), runner_version_id=env["ORIZU_RUNNER_VERSION_ID"],
@@ -492,7 +496,7 @@ def run_from_environment() -> dict[str, Any]:
     is_multi_component_instruction_set = bool(
         profile_version_id and isinstance(shape, list) and len(shape) > 1
     )
-    run_id = client.start_run(
+    run_id = hosted_run_id or client.start_run(
         project=env["ORIZU_PROJECT"], optimizer_version_id=env["ORIZU_OPTIMIZER_VERSION_ID"],
         # A set of one is the legacy prompt subject.  Only a genuine component
         # map is attributed to the profile version instead of a prompt version.

@@ -238,6 +238,74 @@ class RuntimeReworkContracts(unittest.TestCase):
         # null; the dashboard treats a non-null value as a real promotion.
         self.assertIsNone(client.update_run.call_args.kwargs["result_prompt_version_id"])
 
+    def test_hosted_optimization_attaches_without_starting_a_second_run(self):
+        """Kills ignoring the hosted id or threading a fresh id after preflight."""
+        from orizu_gepa.optimizer import DatasetRow, PromptContext
+        import orizu_gepa_connector.runtime as runtime
+
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer",
+            "ORIZU_PROMPT_VERSION_ID": "prompt", "ORIZU_DATASET_VERSION_ID": "dataset",
+            "ORIZU_SPLIT_SET_ID": "split", "ORIZU_SCORER_VERSION_ID": "scorer",
+            "ORIZU_RUNNER_VERSION_ID": "runner", "ORIZU_CANDIDATE_RUNNER_DIR": "candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "scorer-dir",
+            "ORIZU_VERIFIED_RUNNER_DIRS": '["candidate", "scorer-dir"]',
+            "ORIZU_REFLECTION_MAX_TOKENS": "1024",
+            "ORIZU_HOSTED_OPTIMIZATION_RUN_ID": "attached-run",
+        }
+        context = PromptContext(body="seed", body_kind="text", provider_settings={},
+                                prompt_version_id="prompt", runner_version_id="runner")
+        client = MagicMock()
+        client.fetch_exec_context.side_effect = [
+            (context, [DatasetRow(id="train", row={})]),
+            (context, [DatasetRow(id="validation", row={})]),
+        ]
+        client.fetch_scorer_exec_context.return_value = (context, [])
+        adapter = MagicMock(); adapter.num_threads_plan.to_payload.return_value = {}
+        result = MagicMock(best_idx=0, val_aggregate_scores=[1.0], total_metric_calls=1,
+                           candidates=[{"prompt": "seed"}])
+        sink = MagicMock(failed=False)
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "resolve_scorer_input_contract", return_value=("flat_row", "model_output")), \
+             patch.object(runtime, "validate_seed_before_run"), \
+             patch.object(runtime, "RunnerEvaluationAdapter", side_effect=[adapter, adapter]), \
+             patch.object(runtime, "create_local_logger_from_environment", return_value=None), \
+             patch.object(runtime, "MandatoryEventSink", return_value=sink) as sink_type, \
+             patch.object(runtime, "run_official_gepa", return_value=result):
+            summary = runtime.run_from_environment()
+
+        client.require_hosted_optimization_run.assert_called_once_with(
+            run_id="attached-run", project="team/project")
+        client.start_run.assert_not_called()
+        sink_type.assert_called_once_with(client, "attached-run", None)
+        self.assertEqual(summary["optimization_run_id"], "attached-run")
+
+    def test_hosted_optimization_lookup_refuses_before_runner_preflight(self):
+        """Kills moving missing/foreign validation after runner execution."""
+        import orizu_gepa_connector.runtime as runtime
+
+        env = {
+            "ORIZU_PROJECT": "team/project", "ORIZU_OPTIMIZER_VERSION_ID": "optimizer",
+            "ORIZU_PROMPT_VERSION_ID": "prompt", "ORIZU_DATASET_VERSION_ID": "dataset",
+            "ORIZU_SPLIT_SET_ID": "split", "ORIZU_SCORER_VERSION_ID": "scorer",
+            "ORIZU_RUNNER_VERSION_ID": "runner", "ORIZU_CANDIDATE_RUNNER_DIR": "candidate",
+            "ORIZU_SCORER_RUNNER_DIR": "scorer-dir", "ORIZU_REFLECTION_MAX_TOKENS": "1024",
+            "ORIZU_HOSTED_OPTIMIZATION_RUN_ID": "missing-run",
+        }
+        client = MagicMock()
+        client.require_hosted_optimization_run.side_effect = RuntimeError(
+            "hosted_optimization_run_not_found")
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "RunnerEvaluationAdapter") as adapter_type:
+            with self.assertRaisesRegex(RuntimeError, "hosted_optimization_run_not_found"):
+                runtime.run_from_environment()
+
+        client.fetch_exec_context.assert_not_called()
+        client.start_run.assert_not_called()
+        adapter_type.assert_not_called()
+
     def test_runtime_writes_direction_correct_result_after_promotion(self):
         """Kills result artifacts written before score inversion or promotion completes."""
         from types import SimpleNamespace

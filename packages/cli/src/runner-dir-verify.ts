@@ -9,6 +9,7 @@ import {
   shouldExcludeArtifactPath,
 } from './artifact-archive.js'
 import { authedFetch } from './http.js'
+import { cleanupAll, throwWithCleanup } from './cleanup.js'
 
 /**
  * ALI-1159 (ADR-007): ad-hoc `--runner-dir` bytes may only execute when they
@@ -159,7 +160,7 @@ export async function verifyRunnerDirRegistered(input: VerifyRunnerDirInput): Pr
 
   if (registeredSha.toLowerCase() !== localSha.toLowerCase()) {
     throw new Error(
-      `Local runner bytes at ${dir} are not registered runner version ${input.runnerVersionId} ` +
+      `runner_version_bytes_mismatch: Local runner bytes at ${dir} are not registered runner version ${input.runnerVersionId} ` +
       `(content sha ${localSha} != ${registeredSha}). Runs may only execute registered runner bytes ` +
       '(ADR-007): register the directory first with `orizu runners push` ' +
       '(use --session <session-id> inside a workspace session) and re-run against the new version, ' +
@@ -979,9 +980,10 @@ export async function verifyGepaRunnerDirsFromArgs(
   let rewritten = [...args]
   const verifiedDirs: string[] = []
   const cleanups: Array<() => void> = []
-  const cleanup = () => {
-    for (const dispose of cleanups) dispose()
-  }
+  const cleanup = () => cleanupAll(
+    cleanups,
+    'Failed to clean verified runner snapshots'
+  )
 
   try {
     for (const pair of GEPA_RUNNER_FLAG_PAIRS) {
@@ -1021,8 +1023,11 @@ export async function verifyGepaRunnerDirsFromArgs(
       rewritten = rewriteFlagValue(rewritten, pair.dirFlag, verified.snapshotDir)
     }
   } catch (error) {
-    cleanup()
-    throw error
+    throwWithCleanup(
+      error,
+      cleanups,
+      'Runner verification failed and snapshot cleanup also failed'
+    )
   }
 
   return { args: rewritten, verifiedDirs, cleanup }

@@ -168,6 +168,19 @@ class OrizuClient:
         })
         return data["optimization_run_id"]
 
+    def require_hosted_optimization_run(self, *, run_id: str, project: str) -> str:
+        """Resolve the existing project-scoped run before any runner executes."""
+        query = urllib.parse.urlencode({"project": project})
+        encoded_run_id = urllib.parse.quote(run_id, safe="")
+        data = self._request(
+            "GET",
+            f"/api/cli/optimization-runs/{encoded_run_id}?{query}",
+        )
+        run = data.get("optimizationRun") if isinstance(data, dict) else None
+        if not isinstance(run, dict) or run.get("id") != run_id:
+            raise RuntimeError("hosted_optimization_run_not_found")
+        return run_id
+
     def fetch_exec_context(
         self,
         *,
