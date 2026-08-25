@@ -1,229 +1,115 @@
 ---
 name: orizu-cli
-description: Use when the user mentions Orizu or wants to measurably improve an LLM application, model, or agent; collect human feedback on model outputs; convert feedback into or build evals; optimize instructions (including one-off changes they will validate with evals); work with Orizu datasets, tasks, apps, instruction sets, model-config profiles, components, judges, scorers, runners, score runs, optimization runs, GEPA, or hill-climbing; migrate a prompts-era setup; or build continually learning agents. Start instruction artifacts at `orizu instructions`. Orizu builds evals first, then improves applications against them; its CLI covers feedback collection, eval creation, versioned instructions and evaluator artifacts, local runner execution, score submission, and instruction optimization. Do NOT use for instruction advice when the user explicitly does not want to set up evals.
+description: Use when the user mentions Orizu; wants measurable improvement for a specific LLM application or agent; collects human feedback on model outputs or turns failures into evals; validates judges; optimizes instruction sets; migrates an existing GEPA setup; or establishes continuous improvement. Step aside and handle directly generic instruction-writing theory or one-off edits the user explicitly will not validate with evals.
 ---
 
 # Orizu
 
-Orizu improves LLM applications by building evals first, then optimizing against them. The end-to-end loop has four steps: **Upload → Annotate → Judge → Optimize**. Start instruction work with `orizu instructions`: it is the single surface for instruction sets, model-config profiles, their components, and the set-wide default. The CLI also covers human-eval collection, judges, scorers, runners, local runner execution, score submission, packaged GEPA-style text optimization, and live optimization logging. Do not create or mutate standalone prompts; use read-only prompt compatibility only to find the instruction set that owns legacy material.
+Orizu improves LLM applications by building evals first, then optimizing against them. Use `orizu instructions` as the primary path for customer instruction sets. Follow the journey in order; each step depends on the previous step's exit criterion. Read `references/primer.md` for the methodology and `references/cli-reference.md` for the current command surface instead of relying on remembered commands.
 
-For end-to-end methodology and rationale, read `references/primer.md`. The reference docs below cover specific stages in depth.
+The artifacts enter the journey where they are needed: a **dataset** holds versioned rows; an **app** and **task** collect labels; a **judge** evaluates outputs, a **runner** executes it, and a **scorer** defines its metric contract; an **instruction set** is the customer-facing identity whose model-config **profiles** own ordered **components**; an **optimization run** searches profile candidates against validated scorers.
 
-## When to step aside
+## Critical: scorer-runner input contract
 
-Skip this skill when:
-- The user wants a one-off instruction edit they explicitly won't validate with evals.
-- The user has already said they don't want to set up evals.
-- The request is generic instruction-writing theory unrelated to a specific app.
+`orizu optimizations run-gepa` sends the scorer runner a GEPA-shaped row (`{source_row, candidate_id, candidate_output, …}`), not the flat-row shape used by `runners exec --scorer-version`. A judge runner built for flat rows will silently score every candidate 0 unless `flat_row` is selected by `--scorer-input-contract` or the runner manifest and, when needed, the candidate field is selected by flag or manifest. Use the official adapter rather than changing registered runner bytes. The default seed preflight raises `SeedValidationRefused` for a uniformly degenerate seed; `--allow-degenerate-seed` bypasses that refusal. Read `references/prompt-control-plane.md` under “Scorer-Runner Input Contracts” before running optimization.
 
-# Orizu CLI basics
+# Journey
 
-## Prerequisites
+## 1. Set up
 
-- Node.js 20+ installed.
-- Install the CLI: `npm i -g orizu`.
-- Run `orizu setup` to sign in, initialize the workbench, and install the global Codex/Claude Code skill symlinks.
-- Or install this skill directly from the CLI package with `orizu install-skill --agent codex --yes` (or `--agent claude`; advanced target IDs remain available via `--target`).
-- Or read the bundled skill in place without installing: `orizu skills path --json` returns `root`, `skillMd`, `source`, `cliVersion`, and `skillHash`.
-- Before doing Orizu work, verify the runtime with `orizu --version` and `orizu capabilities --json`. If the CLI is missing or stale, pause and ask the user to update it.
-- After CLI upgrades, check installed copies with `orizu skills status` and refresh them with `orizu skills update`.
-- Rediscover the command surface any time with `orizu --help`, `orizu <group> --help`, or `orizu capabilities --json`.
-- Every command supports `--json` (prefix `orizu --json <cmd>` or trailing flag) and emits a single JSON document; prefer it over parsing human-formatted text. Long-running commands emit the JSON summary as the final stdout line.
-- Login callback requires `127.0.0.1:43123`.
-- Credentials are stored at `~/.config/orizu/credentials.json`.
-- Current `orizu login` creates a user-owned personal access token for the CLI and stores it as a v3 API-key credential. The raw token is not recoverable after creation.
+- For local use, install Node.js 20+, run `npm i -g orizu`, then run `orizu setup` so browser login, the workbench, and skill links are initialized. The callback defaults to `127.0.0.1:43123`; after a collision, set `ORIZU_AUTH_PORT` to an available port from 1024–65535.
+- Verify auth and runtime with `orizu whoami --json` and `orizu capabilities --json`. Verify skill installation and sync separately with `orizu skills status --json`; use `orizu skills update` if stale. Hosted sessions start here: skip installation and login because the CLI is pre-authenticated, then continue to team/project resolution; see Where things live for authority boundaries.
+- Resolve or create the team and project with the user's naming choices. Projects live inside teams.
+- Browser login creates a user-owned personal access token. The server/UI cannot redisplay the raw token after issuance, but the local v3 credential retains it for CLI auth. The token inherits current access and loses access when the user's role or membership changes.
 
-## Login
+**Exit:** The team and project exist; the skill is verified in sync by `orizu skills status` locally, or shipped and present in a hosted session; and both `orizu whoami` and `orizu capabilities` succeed.
 
-- Verify auth: `orizu whoami --json` (returns `{user, server}`; non-zero exit means sign in is needed).
-- Start the login flow: `orizu login` (opens a browser tab).
-- Approving login in the browser creates a personal access token for that Orizu user. The token inherits the user's current team/project access and loses access if the user's role or membership changes.
-- Clear local credentials and revoke the current CLI token: `orizu logout`.
-- Revoke other CLI tokens from the Personal Tokens page in Orizu.
-- Auth failure loop: `orizu login` → `orizu whoami` → rerun the original command.
-- Hosted sandboxes are pre-authenticated via `ORIZU_TOKEN_FILE` (no `orizu login` needed); an explicit `ORIZU_TOKEN` env var overrides both the token file and stored credentials when set.
+## 2. Assess & plan
 
-## Teams and projects
+- Survey the codebase before moving data: locate each LLM surface, its instruction set or candidate seed, the observed failures, existing evals, and plausible data sources such as production logs, observability providers, user-behavior signals, or golden datasets.
+- Turn the survey into an evals-first improvement plan through a guided conversation. Make the data-source decision, failure modes, human decisions, judge work, optimization target, and validation path explicit; persist the plan in project context and ask the user to ratify it.
 
-Projects live inside teams. Resolve or create both before any workflow command.
+**Exit:** A human-ratified improvement plan is persisted as project context.
 
-- `orizu teams list` — list teams the user belongs to.
-- `orizu teams create --name "<team name>"` — create a team.
-- `orizu projects list [--team <teamSlug>]` — list projects (optionally scoped to a team).
-- `orizu projects create --name "<project name>" --team <teamSlug>` — create a project.
+## 3. Build the dataset
 
-For team membership, app, dataset, and task command surfaces, see `references/cli-reference.md`.
+- Follow the plan's source decision. Import existing golden data where it exists; otherwise combine representative production traces, a random sample, and structured synthetic cases when real traces are scarce. Human ratification and spot-checking remain part of the source decision.
+- Cover every named scenario class, design the validation split, and size mini-batches so optimization can learn each class. Create an immutable dataset version to snapshot current rows.
+- Locking applies to the dataset, not the version, and rejects row mutations on that dataset. To add later data, clone to an unlocked dataset and create a new version there.
 
-## Instruction artifacts: start here
+**Exit:** A versioned dataset covers every scenario class named by the plan and is ready for labeling, or already contains ratified golden ground truth.
 
-An instruction set is one customer-facing identity for an agent's instructions. Its manifest carries a `name`, optional `description`, fixed, ordered `shape`, and component values. Each model config has its own profile, and each profile owns its own component values; components are never shared between profiles or sets. The set's stable slug is its CLI reference even if the display name changes. Its default serves model configs that do not have a production profile version.
+## 4. Annotate when human labels are ground truth
 
-Use one command surface throughout:
+- If imported golden data supplies the ground truth, record that decision and skip or shrink annotation. Otherwise, guide an eval-strategy conversation around observed failure modes: prefer one binary question per failure mode over bundled or Likert judgments.
+- Author a task-specific labeler app using `references/building-apps.md`. Preview it with representative rows, inspect the rendered workflow, revise it, and ask the human for pointed feedback before labeling.
+- Task creation is draft-first. Have the human test and approve the returned task URL, then publish with assignees or an assignment file. After labeling, export the labels and publish the task report.
 
-```bash
-orizu instructions list --project <team>/<project>
-orizu instructions show <slug-or-exact-name> --project <team>/<project>
-# Human/local CLI only: a human runs create/push; hosted agents may run profiles new and sync.
-orizu instructions create ./orizu.instruction-set.json --project <team>/<project> --model-config <identity>
-orizu instructions push ./orizu.instruction-set.json --project <team>/<project> --set <slug-or-exact-name>
-orizu instructions profiles new <slug-or-exact-name> --project <team>/<project> --model-config <identity>
-orizu instructions sync <slug-or-exact-name> --out ./instructions --project <team>/<project>
-```
+**Exit:** Golden ground truth is recorded as the reason annotation was skipped, or labels are exported and the approved task report is published.
 
-For a prompts-era setup, read `references/instructions-after-prompts.md` before making changes. Legacy prompt read commands identify the owning instruction set and component key; continue from that set through `orizu instructions`.
+## 5. Judge
 
-# Evals best practices
+- Build automated evaluators from the ground truth: use code assertions for deterministic rules and LLM judges only for nuanced criteria. A 100% pass rate is a saturation warning, not proof that the evaluator is useful.
+- Validate against held-out human labels. Track TPR and TNR per failure mode, and use Cohen's kappa alongside raw agreement when establishing the judge trust bar with the user for the decision it powers.
+- Store the versioned judge and runner, then register the row or set scorer that defines how its output is displayed, compared, and used. GEPA reflection needs a row-mode scorer because it consumes per-row feedback.
+- Read `references/building-judges.md` for authoring and alignment mechanics and `references/prompt-control-plane.md` for artifact contracts and score submission.
 
-Walk through the four steps in order — each depends on the output of the previous. Methodology and rationale: `references/primer.md`.
+**Exit:** Every gating judge clears its agreed judge trust bar, and its scorers are registered.
 
-## 1. Upload — gather diverse traces
+## 6. Optimize
 
-Principles:
-- Mix production traces with a **random sample**. Thumbs-down feedback alone is biased toward extreme failures and misses subtle ones.
-- Aim for **~100+ diverse traces**. Stop adding when you stop discovering new failure modes (theoretical saturation).
-- Synthetic data is fine when real traces are scarce — vary structured inputs (feature × persona × scenario), seed from real logs, and filter for difficulty. Don't ask "generate 50 test cases" cold.
+- Optimize only against validated judges. Package candidate execution as a runner, run the optimizer against registered scorers, and compare candidates on the same held-out eval suite with per-failure-mode results.
+- Use `orizu instructions` for the instruction set. Each run targets one model-config profile and treats its complete component map as the candidate; promotion never moves one component independently.
+- Inspect the local run logs when available, otherwise export the run. Write and attach a markdown report using `references/optimization-reports.md`; the report should explain candidate tradeoffs and regressions clearly enough for the human to make the promotion decision.
 
-CLI:
-```bash
-orizu datasets upload --project <teamSlug>/<projectSlug> --file <traces.jsonl> --name "<batch>"
-orizu datasets append --dataset <datasetId> --file <more.jsonl>
-orizu datasets lock --dataset <datasetId> --reason "Freeze for labeling"
-```
+Bundled `run-gepa` behavior that is not safely inferred from command discovery:
 
-Deeper: `references/primer.md` (Step 1, Step 0 error analysis); `references/cli-reference.md` (datasets surface).
+- Budget controls are mutually exclusive. If none is provided, `run-gepa` uses `--budget auto`, the balanced medium preset.
+- The skilled proposer prepares or reuses its managed Python environment. Its aggregate proposal token/call budgets are independent of metric-call and per-response reflection limits; it is incompatible with a reflection prompt template.
+- The reflective LM's final text becomes the selected component's next value, so it must return only the complete updated component value.
+- Keep provider-native reasoning controls separate from component text. Anthropic reflection requires an explicit reflection max-token limit; OpenAI may omit one unless the user requests a cap.
+- Legacy GEPA logs an exhausted retryable reflection failure, charges proposal and iteration budgets, and continues. The official engine increments proposal usage only after successful `on_proposal_end`; skilled-proposer failures re-raise and stop.
+- A perfect selected mini-batch skips reflection and child creation by default (`--skip-perfect-parent-reflection`); use `--no-skip-perfect-parent-reflection` to override it. Automatic row-evaluation concurrency is bounded by workload and host limits.
+- Complete local logs include row inputs, outputs, scores, feedback, and reflection material; server events redact row snapshots and reflection prompts by default.
 
-## 2. Annotate — binary labels per failure mode
+Read `references/optimization-with-gepa.md` for the full execution workflow. DSPy is relevant only when the customer already uses it or requests an external DSPy GEPA implementation.
 
-Principles:
-- **Binary, not Likert.** Pass/fail forces a ship/no-ship decision; 3/5 doesn't.
-- **One question per failure mode.** Don't bundle correctness, tone, and helpfulness.
-- **Annotate failures you've actually observed.** Hypothetical-failure labels are low-value.
-- **Custom UI per task** — generic annotation interfaces collapse signal. The labeler should feel like an app annotators want to use, not a form they tolerate.
+**Exit:** The human has made a promotion decision from the optimization report; if shipping, the new profile version is live.
 
-CLI:
-```bash
-orizu apps create --project <teamSlug>/<projectSlug> --name "<labeler>" --dataset <datasetId> \
-  --file <App.tsx> --input-schema <input.json> --output-schema <output.json>
+## 7. Improve continuously
 
-orizu tasks create --project <teamSlug>/<projectSlug> --dataset <datasetId> --app <appId> \
-  --title "<round>" --labels-per-item 2
+- Feed improved-system traces into a new dataset version and repeat from dataset building. Each report should recommend the next scenario classes or failure modes to investigate.
+- Propose a cadence for fresh-trace collection, evaluation, and optimization; set it up only after the user agrees, then complete the first cycle.
 
-# Open the returned task URL and test the draft manually before assigning.
-orizu tasks publish --task <taskId> --assignees <userId1,userId2>
-# Or publish exact row assignments:
-orizu tasks publish --task <taskId> --assignment-file ./assignments.jsonl
-
-orizu tasks status --task <taskId>
-orizu tasks report set --task <taskId> --report-file ./task-report.md
-orizu tasks export --task <taskId> --format jsonl --out ./labels.jsonl
-```
-
-Authoring the labeler: **`references/building-apps.md`** covers the component contract, design principles, common patterns (trace exploration, side-by-side, text annotation, etc.), the offline smoke test at `scripts/test-app.mjs` (runs on plain `node`), and `orizu apps preview`. When you generate or modify an app, run the preview command with a representative sample row, inspect the screenshot, and revise the app until the rendered workflow appears to match the user's intended review task before `orizu apps create`.
-
-Deeper: `references/primer.md` (Step 2); `references/cli-reference.md` (apps + tasks surface).
-
-## 3. Judge — turn labels into automated evaluators
-
-Use `orizu instructions` for the application instruction material being evaluated. Judges remain versioned evaluator artifacts with runner zips, scorer definitions, and submitted score results; read **`references/prompt-control-plane.md`** before using those compatible evaluator commands. When the user mentions legacy prompt feedback or comments, inspect the read-only threads with `orizu comments list --prompt <prompt-id-or-name> --project <team>/<project>`, find the owning instruction set, and revise that set through its manifest.
-
-Judge construction details are still useful when authoring the evaluator itself.
-
-A judge is the evaluator artifact. A scorer is the metric contract that names what score is being produced and how it should be displayed, compared, and used in optimizations. For UI-visible instruction performance, register a scorer and submit score runs; do not rely only on raw `runs submit`.
-
-Set scorers are aggregate metric contracts. Use `orizu scorers exec` for builtin set metrics such as Cohen's kappa, accuracy, precision, recall, and F1; it consumes subject results or dependency row-scorer results, computes one aggregate, stores row evidence, and submits a canonical score run by default. If you already computed an aggregate locally, use `orizu scores submit --aggregate` with explicit `scoreValue`, `diagnostics`, `feedbackSummary`, and optional `rowEvidence`. `runners exec --scorer-version` remains a low-level row-runner compatibility command. Use a row-mode scorer, not a set scorer, for GEPA reflection because reflection needs per-row feedback.
-
-Principles:
-- **Code assertions first.** If a failure is a rule (keyword present, tool called, format valid), write a code check. Fast, free, deterministic.
-- **LLM-as-a-judge for nuanced criteria only.** Always validate against your human labels.
-- **TPR > 90% and TNR > 90%** before trusting a judge. Track each separately — accuracy is misleading on imbalanced data.
-- **A 100% pass rate is a smell.** Your evals are saturated; add harder cases.
-
-Authoring workflow:
-1. Export labels: `orizu tasks export --task <id> --format jsonl --out labels.jsonl`.
-2. For each failure mode, choose code assertion or LLM-judge.
-3. Build the judge.
-4. Validate: split labels train/dev/test (20/40/40), measure TPR + TNR on test, target both > 90%.
-5. Run the validated judge over future outputs.
-
-Detailed walkthrough — code assertion patterns, LLM-judge prompt scaffold, train/dev/test split, TPR/TNR computation, saturation: **`references/building-judges.md`**.
-
-## 4. Optimize — hill-climb against validated judges
-
-Use the instruction control plane when the user wants an optimizer run to appear in Orizu, stream live events, or promote accepted candidates into the target instruction-set profile. For text-candidate GEPA-style optimization, prefer the bundled `orizu optimizations run-gepa` flow. Read **`references/prompt-control-plane.md`** before wiring those endpoints.
-
-GEPA details below are still useful for local optimizer implementation. DSPy is only relevant when the customer already uses DSPy or asks for an external DSPy GEPA implementation.
-
-Principles:
-- Only optimize against judges you've validated. Otherwise you Goodhart your way to a worse system.
-- Compare before/after on the **same held-out eval suite**. Don't trust vibes.
-- Read **per-failure-mode metrics**, not just combined — averages hide regressions.
-- Improved-system traces feed back into step 1; the loop continues.
-
-Local execution workflow:
-1. Package the candidate execution as an Orizu runner.
-2. Register validated row/set scorers.
-3. Run the bundled GEPA-style optimizer or a custom optimizer against the scorer set.
-4. Inspect `logs/<optimization_run_id>` for full local optimization traces, especially `evaluations.jsonl`, `reflections.jsonl`, `events.jsonl`, and `result.json`.
-5. If the local log is unavailable or the run happened remotely, use `orizu optimizations export <run-id> --out <run-id>.optimization.json`.
-6. Write a markdown optimization report from the logs/export and attach it with `--report-file <path>` when finishing, failing, or cancelling the run.
-7. Diff before/after on a held-out set; ship if it holds.
-
-Bundled `run-gepa` reflection behavior:
-- **Scorer contract:** `run-gepa` sends the scorer runner a GEPA-shaped row (`{source_row, candidate_id, candidate_output, …}`), NOT the flat-row shape used by `runners exec --scorer-version`. A judge runner built for flat-row score runs will silently score every candidate 0 unless you pass `--scorer-input-contract flat_row` (add `--scorer-candidate-field <row-field>`, e.g. `draft`, when the judge reads the candidate output from a named row field). Do not hand-write an adapter runner — the flag applies the official adapter without changing the registered runner bytes, so it composes with `--scorer-runner-dir` content-sha verification. `run-gepa` validates the contract on the seed at launch and refuses a uniformly-worst-scoring seed with a diagnosis; `--allow-degenerate-seed` overrides only when the seed genuinely deserves the worst score everywhere. Both contracts: `references/prompt-control-plane.md` ("Scorer-Runner Input Contracts").
-- Budget controls are mutually exclusive. Use at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, `--max-iterations <n>`, or `--max-candidate-proposals <n>`. The proposal cap is official-engine-only. If none is provided, `run-gepa` uses `--budget auto`, the balanced medium preset.
-- **Skilled proposer:** opt in with `--candidate-proposer skilled-proposer` on the official engine; the selected run prepares or reuses its managed Python environment automatically. Optionally add `--candidate-proposer-config @path` for explicit skills and guidance. The selection is incompatible with `--reflection-prompt-template`, even without a config. Bound aggregate proposal work with `--proposal-max-tokens` and `--proposal-max-calls`, independently of `--max-metric-calls`. Do not confuse that aggregate token budget with per-response `--reflection-max-tokens` or the config's proposed-instruction `maxTokens`. Read `references/prompt-control-plane.md` ("Skilled proposer") for the schema, validation, and managed-environment recovery; readiness is proven when optimizer execution begins without an `ALI_1505_*` environment diagnostic.
-- The reflective LM's final text becomes the selected component's next value. It should return only the complete updated component value, not analysis, labels, XML tags, or markdown fences.
-- Keep provider-native reasoning controls separate from the component text with `--reflection-provider-settings <json|@file>`.
-- Reflection max-token limits are explicit config, not implicit defaults. Use `--reflection-max-tokens <n>` when a provider requires an output cap; this maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`.
-- Anthropic native Messages reflection requires `max_tokens`, so `run-gepa` with an `anthropic/...` reflection model must receive `--reflection-max-tokens <n>` and should fail fast if it is omitted. OpenAI reflection may omit `max_output_tokens` unless the user explicitly wants a cap.
-- Reflection HTTP calls retry transient provider failures by default (`--reflection-retry-attempts 3`, `--reflection-http-timeout-seconds 180`). Retryable failures include timeouts, connection reset/abort, HTTP 429, and common server/capacity statuses. If reflection still fails after retries, `run-gepa` logs `reflection_failed`, counts the proposal against budget, and continues to the next iteration.
-- By default, `run-gepa` skips reflection and child creation when every row in the selected parent mini-batch is already perfect (`1.0` for higher-is-better scorers, `0.0` for lower-is-better scorers). This saves reflection tokens because the child cannot beat a saturated mini-batch. Use `--no-skip-perfect-parent-reflection` to force reflection anyway, or `--skip-perfect-parent-reflection` to make the default explicit in scripted runs.
-- By default, `run-gepa` sets `--num-threads auto` for row evaluations. Auto uses mini-batch size, validation-set size, 2x CPU count, memory estimate, file-descriptor limit, and a 64-thread default ceiling to avoid launching too many runner subprocesses at once while still scaling large runs. Set `ORIZU_GEPA_AUTO_THREADS_MAX` or use `--num-threads <n>` only when the runner/provider capacity is known.
-- `run-gepa` writes complete local logs by default under `logs/<optimization_run_id>`; override with `--log-dir <dir>` or disable with `--no-local-log`.
-- Server optimization events redact row snapshots and reflection prompts by default; the local log keeps full row inputs, outputs, scores, feedback, reflection prompts, and reflection responses for later agent analysis.
-- OpenAI example: `--reflection-model openai/gpt-5 --reflection-provider-settings '{"reasoning":{"effort":"medium","summary":"auto"}}'`.
-- Anthropic example: `--reflection-model anthropic/claude-opus-4-7 --reflection-max-tokens 4096 --reflection-provider-settings '{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}'`.
-
-Detailed walkthrough — GEPA mechanics, Orizu-tracked optimization, optional DSPy context for customers already using it, and before/after comparison: **`references/optimization-with-gepa.md`**. Report-writing structure and interpretation guidance: **`references/optimization-reports.md`**.
+**Exit:** A cadence is agreed and its first cycle is complete, with new data feeding the next dataset version.
 
 # Reference index
 
-- `references/primer.md` — methodology end-to-end (read first when in doubt about *why*).
-- `references/cli-reference.md` — full CLI command surface.
-- `references/prompt-control-plane.md` — instruction sets, judges, scorers, runners, score submission, optimizer event logging, bundled GEPA, and promotion endpoints.
-- `references/instructions-after-prompts.md` — finding the instruction set that owns prompts-era material and consolidating legacy one-component sets.
-- `references/building-apps.md` — labeler app contract, design principles, common patterns, offline smoke test.
-- `references/building-judges.md` — judge/scorer authoring + TPR/TNR validation.
-- `references/optimization-with-gepa.md` — GEPA optimization loop, with DSPy only as external context.
-- `references/migrate-existing-gepa-setup.md` — migrating a customer's existing official-GEPA script into Orizu, ending in `orizu scorers verify-parity` before any optimization.
-- `references/optimization-reports.md` — report template, GEPA diagnostics, kappa/confusion-matrix guidance, and next-step recommendations.
-- `scripts/test-app.mjs` — smoke test for `App.tsx` + schemas before `orizu apps create` (runs on plain `node`).
+- `references/primer.md` — end-to-end evals-first methodology.
+- `references/cli-reference.md` — current CLI command surface.
+- `references/building-apps.md` — labeler contract, design, patterns, preview, and smoke test.
+- `references/building-judges.md` — judge/scorer authoring and alignment validation.
+- `references/prompt-control-plane.md` — artifact contracts, score submission, optimizer behavior, and promotion endpoints.
+- `references/optimization-with-gepa.md` — GEPA workflow and optional DSPy context.
+- `references/migrate-existing-gepa-setup.md` — migration ending in scorer parity before optimization.
+- `references/optimization-reports.md` — report structure and interpretation guidance.
+- `references/instructions-after-prompts.md` — prompts-era compatibility, including the remaining session-scoped read surface; read before changing legacy material.
+- `scripts/test-app.mjs` — plain-Node app contract smoke test.
 
-# Execution rules
+# Execution facts
 
-- Prefer explicit flags in non-TTY contexts; reserve interactive fallback for TTY.
-- Canonical selectors: `--team`, `--project`, `--app`, `--task`, `--dataset`, `--assignees`, `--assignment-file`.
-- `tasks create` creates drafts by default. Test the returned task URL manually, then use `tasks publish --task <taskId> --assignees <userId1,userId2>` or `tasks publish --task <taskId> --assignment-file <path>` after approval.
-- `tasks assign --assignees` and `tasks publish --assignees` take user IDs, not emails. `--assignment-file` accepts emails or user IDs in JSONL rows shaped as `{ "rowId": "...", "assignee": "..." }` or `{ "rowId": "...", "assignees": ["..."] }`.
-- `datasets edit-rows` requires a non-empty string `id` on each row in `--file`.
-- `datasets delete-rows` uses `--row-ids` as the canonical selector.
-- `datasets delete` requires interactive terminal confirmation; there is no non-interactive confirmation option.
-- Locked datasets reject append/edit/delete row mutations.
-- `--output-schema` JSON Schema validation surface is restricted to `type`, `required`, `properties`, `items`, `enum`.
-- Export defaults: `--format jsonl`, output `<taskId>.<format>`.
-- Task reports can be uploaded only after the task is `paused` or `completed`; rerun `tasks report set` or `tasks report upload` to replace the markdown report.
-- Instruction and evaluation control-plane commands should use ids for dataset versions, split sets, component versions where compatibility commands require them, scorer versions, runner versions, optimizer versions, and optimization runs.
-- Optimization exports default to `<run-id>.optimization.json`; prefer the existing `logs/<run-id>` directory from `run-gepa` when it is available because it contains the full local trace without needing server rehydration.
-- When ending an optimization run, attach a markdown report with `--report-file` when possible. Use `references/optimization-reports.md` for what to include.
-- Use `orizu comments list --prompt <prompt-id-or-name> --project <team>/<project> [--label <label> | --version <id>] [--json]` to list prompt-level discussion threads with open/resolved status, selected text/line context, and replies.
-- Use `orizu comments diff --run <optimization-run-id> [--from <candidate-id> --to <candidate-id>] [--detail hunk|diff|full] [--json]` or `orizu comments diff --prompt <prompt-id> [--from <version> --to <version>] [--detail hunk|diff|full] [--json]` to export comments grouped by candidate/version pair with anchored diff context. Exactly one target is required; pair selectors must be supplied together, and prompt selectors are integer version numbers.
+- `--json` may appear before or after a command. Non-streaming commands emit one JSON document, with long-running summaries on the final stdout line; streaming `orizu run tail --json` instead emits JSONL, one event object per line.
+- Task creation is draft-first; publish only after the returned task URL has been tested and approved. Both `--assignees` and assignment-file rows accept user IDs or member emails.
+- Dataset locks reject append, edit, and delete-row mutations, but whole-dataset deletion does not check the lock. `datasets edit-rows --file` requires every row to carry a non-empty string `id`.
 
 # Where things live
 
 - **Orizu is the source of truth for run metadata and pointers**: instruction-set defaults, profile production pointers, scorer/runner pointers, version lineage, score runs, optimization runs, and report history all live in Orizu — query them with `orizu ...` commands (for example, `orizu instructions list`, `orizu instructions show`, and `orizu runs ...`), never by reading repo files.
 - **The repo is the working set (files only)**: source, configs, `App.tsx`, schemas, and local traces under `logs/<run-id>`. It is the scratch space you edit and commit; it does NOT hold the canonical pointer/run state — that is in Orizu.
 - **Hosted sessions ship a pre-authenticated CLI**: inside a hosted agent sandbox the `orizu` CLI is already authenticated via `ORIZU_TOKEN_FILE` (with `ORIZU_BASE_URL` pointing at the API). You do NOT run `orizu login` — just call `orizu ...`. The bearer carries **team-curator authority while your session is active**, except for the explicit human-only carveouts below (ADR-008 and the ALI-1558 instruction-write restriction). It can read and sync instruction sets and can perform ordinary curator work across the team. (The full per-role access matrix lives in the Orizu repo at `docs/authorization-matrix.md`.)
-- **Hosted `--session` applies to git-canonical artifacts, not instruction sets**: instruction sets and profiles are control-plane canonical (ADR-023), and their CLI mutations do not accept `--session`. A hosted agent may inspect them, sync them, and prepare a complete manifest, but a human curator using the local CLI with a user token must run the six catalog mutations listed below and all pointer moves. Judges, scorers, runners, and optimizers remain git-canonical for teams with a workbench repository; their hosted writes must carry `--session <session-id>`, and their bytes must live as commits on the session branch. The remaining session-scoped legacy prompt compatibility is not a standalone instruction workflow. Before calling any artifact committed, run `git ls-files <path>` and inspect the commit; an Orizu version id alone does not prove the bytes exist in a branch.
+- **Hosted `--session` applies to git-canonical artifacts, not instruction sets**: instruction sets and profiles are control-plane canonical (ADR-023), and their CLI mutations do not accept `--session`.
+  The agent-allowed catalog boundary is explicit: hosted agents may run
+  `orizu instructions profiles new` and `orizu instructions sync`. They may also inspect instruction sets and prepare a complete manifest, but a human curator using the local CLI with a user token must run the six catalog mutations listed below and all pointer moves. Judges, scorers, runners, and optimizers remain git-canonical for teams with a workbench repository; their hosted writes must carry `--session <session-id>`, and their bytes must live as commits on the session branch. Before calling any artifact committed, run `git ls-files <path>` and inspect the commit; an Orizu version id alone does not prove the bytes exist in a branch.
 - **Human-only actions will 403**: a hosted agent must hand the following commands
   to a human curator using the local CLI with a user token. Human/local CLI only:
   `orizu instructions create`, `orizu instructions push`,
