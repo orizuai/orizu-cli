@@ -1,4 +1,6 @@
-import { spawnSync } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -18,6 +20,62 @@ interface SkilledProposerVenvReport {
 export interface SkilledProposerLaunch {
   python: string
   environment: NodeJS.ProcessEnv
+}
+
+function materializeConfigPayload(engine: GepaEngine, environment: NodeJS.ProcessEnv): (() => void) | undefined {
+  const payload = environment.ORIZU_SKILLED_PROPOSER_CONFIG
+  if (engine !== 'official' || environment.ORIZU_CANDIDATE_PROPOSER !== 'skilled-proposer' || payload === undefined) return undefined
+  const root = mkdtempSync(join(tmpdir(), 'orizu-skilled-proposer-payload-'))
+  try {
+    const path = join(root, 'config.json')
+    writeFileSync(path, payload, { encoding: 'utf8', mode: 0o600 })
+    environment.ORIZU_SKILLED_PROPOSER_CONFIG = `@${path}`
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true })
+    throw error
+  }
+  return () => rmSync(root, { recursive: true, force: true })
+}
+
+export async function spawnSkilledProposerChild(
+  command: string, args: string[], engine: GepaEngine, environment: NodeJS.ProcessEnv,
+) {
+  const childEnvironment = { ...environment }
+  const shouldMaterialize = engine === 'official'
+    && childEnvironment.ORIZU_CANDIDATE_PROPOSER === 'skilled-proposer'
+    && childEnvironment.ORIZU_SKILLED_PROPOSER_CONFIG !== undefined
+  if (!shouldMaterialize) return spawnSync(command, args, { stdio: 'inherit', env: childEnvironment })
+
+  let child: ReturnType<typeof spawn> | undefined
+  let cleanup = () => {}
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const
+  const handlers = signals.map(signal => ({
+    signal,
+    handle: () => {
+      try { cleanup() }
+      finally {
+        try { child?.kill(signal) }
+        finally {
+          for (const entry of handlers) process.off(entry.signal, entry.handle)
+          process.kill(process.pid, signal)
+        }
+      }
+    },
+  }))
+  for (const entry of handlers) process.once(entry.signal, entry.handle)
+  try {
+    cleanup = materializeConfigPayload(engine, childEnvironment) ?? cleanup
+    await new Promise<void>(resolve => setImmediate(resolve))
+    return await new Promise<{ status: number | null, error?: Error }>(resolve => {
+      let error: Error | undefined
+      child = spawn(command, args, { stdio: 'inherit', env: childEnvironment })
+      child.once('error', cause => { error = cause })
+      child.once('close', status => resolve(error ? { status, error } : { status }))
+    })
+  } finally {
+    for (const entry of handlers) process.off(entry.signal, entry.handle)
+    cleanup()
+  }
 }
 
 function ensureSelectedSkilledProposerVenv(

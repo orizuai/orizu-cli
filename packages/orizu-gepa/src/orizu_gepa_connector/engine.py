@@ -219,6 +219,32 @@ def run_official_gepa(
     owned_stop_callbacks = list(stop_callbacks)
     if proposal_budget is not None:
         owned_stop_callbacks.append(ProposalBudgetStopper(proposal_budget))
+    proposer_failures: list[Exception] = []
+    gepa_candidate_proposer = custom_candidate_proposer
+    if custom_candidate_proposer is not None:
+        delegate = custom_candidate_proposer
+
+        def capture_proposer_failure(
+            candidate: dict[str, str], reflective_dataset: Any, components_to_update: list[str],
+        ) -> dict[str, str]:
+            if proposer_failures:
+                raise proposer_failures[0]
+            try:
+                return delegate(candidate, reflective_dataset, components_to_update)
+            except Exception as error:
+                if not proposer_failures:
+                    proposer_failures.append(error)
+                raise
+
+        gepa_candidate_proposer = capture_proposer_failure
+        def raise_proposer_failure(_state: Any) -> bool:
+            if proposer_failures:
+                raise proposer_failures[0]
+            return False
+
+        # Failure must win over every normal stopper in CompositeStopper(any),
+        # otherwise a simultaneous budget stop emits terminal success first.
+        owned_stop_callbacks.insert(0, raise_proposer_failure)
 
     reflection_minibatch_size = config.minibatch_size
     if custom_candidate_proposer is not None and max_metric_calls is not None:
@@ -252,11 +278,18 @@ def run_official_gepa(
         # The connector implements GEPA's component-aware strategy protocol;
         # passing it as a bare callable would discard the selected component.
         kwargs["reflection_strategy"] = reflection_lm
-    if custom_candidate_proposer is not None:
-        kwargs["custom_candidate_proposer"] = custom_candidate_proposer
+    if gepa_candidate_proposer is not None:
+        kwargs["custom_candidate_proposer"] = gepa_candidate_proposer
     kwargs["trainset"] = _with_row_identities(trainset)
     kwargs["valset"] = _with_row_identities(valset)
-    result = optimize(**kwargs)
+    try:
+        result = optimize(**kwargs)
+    except Exception:
+        if proposer_failures:
+            raise proposer_failures[0]
+        raise
+    if proposer_failures:
+        raise proposer_failures[0]
     if custom_candidate_proposer is not None and preflight_evaluation is not None:
         # GEPA's state correctly counts its seed evaluation, but this run
         # served that evaluation from the already-accounted launch preflight.

@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from 'fs'
 
+import { normalizedSkilledProposerConfig } from './skilled-proposer-config.js'
+
 export type GepaEngine = 'official' | 'legacy'
 
 export interface GepaEngineDispatch {
@@ -179,6 +181,7 @@ const CONTROLLED_ENVIRONMENT_NAMES = new Set([
   // translation prevents an inherited environment from selecting a proposer
   // on an otherwise byte-for-byte normal official-GEPA launch.
   'ORIZU_CANDIDATE_PROPOSER',
+  'ORIZU_SKILLED_PROPOSER_CONFIG',
   'ORIZU_COMPONENT_SELECTOR',
 ])
 
@@ -208,6 +211,7 @@ function translateOfficialOptions(args: string[], project: string, environment: 
   connectorEnvironment.ORIZU_PROJECT = project
 
   let metadata: string | undefined
+  let candidateProposerConfig: string | undefined
   let hasInstructionSet = false
   let hasCandidateVersion = false
   const budgetFlags: string[] = []
@@ -237,6 +241,12 @@ function translateOfficialOptions(args: string[], project: string, environment: 
         throw new Error('--candidate-proposer must be skilled-proposer')
       }
       connectorEnvironment.ORIZU_CANDIDATE_PROPOSER = parsed.value
+      index = parsed.nextIndex
+      continue
+    }
+    if (flag === '--candidate-proposer-config') {
+      const parsed = optionValueOrThrow(args, index, flag)
+      candidateProposerConfig = parsed.value
       index = parsed.nextIndex
       continue
     }
@@ -297,6 +307,16 @@ function translateOfficialOptions(args: string[], project: string, environment: 
       && connectorEnvironment.ORIZU_CANDIDATE_PROPOSER !== 'skilled-proposer') {
     throw new Error('--proposal-max-calls and --proposal-max-tokens require --candidate-proposer skilled-proposer')
   }
+  if (candidateProposerConfig !== undefined) {
+    if (connectorEnvironment.ORIZU_CANDIDATE_PROPOSER !== 'skilled-proposer') {
+      throw new Error('--candidate-proposer-config requires --candidate-proposer skilled-proposer')
+    }
+    connectorEnvironment.ORIZU_SKILLED_PROPOSER_CONFIG = normalizedSkilledProposerConfig(candidateProposerConfig)
+  }
+  if (connectorEnvironment.ORIZU_CANDIDATE_PROPOSER === 'skilled-proposer'
+      && connectorEnvironment.ORIZU_REFLECTION_PROMPT_TEMPLATE !== undefined) {
+    throw new Error('--reflection-prompt-template is incompatible with --candidate-proposer skilled-proposer')
+  }
 
   const reflectionModel = connectorEnvironment.ORIZU_REFLECTION_MODEL ?? 'anthropic/claude-opus-4-7'
   if (!reflectionModel.startsWith('openai/') && connectorEnvironment.ORIZU_REFLECTION_MAX_TOKENS === undefined) {
@@ -321,7 +341,7 @@ function validatedMetadata(raw: string | undefined): string {
 export function dispatchGepaEngine(args: string[], project: string, environment: NodeJS.ProcessEnv): GepaEngineDispatch {
   const selected = removeEngine(args)
   if (selected.engine === 'legacy') {
-    for (const flag of ['--instruction-set', '--model-config', '--component-selector', '--max-candidate-proposals', '--candidate-proposer', '--proposal-max-calls', '--proposal-max-tokens']) {
+    for (const flag of ['--instruction-set', '--model-config', '--component-selector', '--max-candidate-proposals', '--candidate-proposer', '--candidate-proposer-config', '--proposal-max-calls', '--proposal-max-tokens']) {
       if (selected.args.some(argument => argument === flag || argument.startsWith(`${flag}=`))) {
         throw new Error(`${flag} is supported by the official GEPA engine only`)
       }
