@@ -156,7 +156,7 @@ Authoring the labeler app — contract, design principles, and common patterns: 
 - **Code assertions first.** If a failure is a rule (keyword present, tool called, format valid), write a code check. Fast, free, deterministic.
 - **LLM-as-a-judge for nuanced criteria only.** Powerful but slow and expensive — reserve for failures code can't catch.
 - **Validate every judge against human labels.** A judge that doesn't agree with humans is a misaligned metric.
-- Track **TPR (True Positive Rate)** and **TNR (True Negative Rate)** separately, not accuracy. Accuracy is misleading on imbalanced data. Target both > 90%.
+- Track **TPR (True Positive Rate)** and **TNR (True Negative Rate)** separately, not accuracy. Accuracy is misleading on imbalanced data. Each judge must clear its agreed judge trust bar (see `building-judges.md`).
 - **A 100% pass rate is a smell** — your evals are saturated. Add harder cases.
 - **Three common eval mistakes:**
   1. Skipping the data — using off-the-shelf metrics ("Helpfulness," "Faithfulness") that don't measure your specific failures.
@@ -178,7 +178,7 @@ This work is still authored by the agent in code, but Orizu stores the versioned
 4. Validate against the labels (train/dev/test split, TPR/TNR).
 5. Keep the subject application's instruction material in its instruction set. For an LLM judge, push the judge artifact and runner, register a scorer, then submit score runs for the set's profile versions or optimization candidates.
 
-Control-plane commands: `prompt-control-plane.md`. Detailed authoring walkthrough — code assertion patterns, LLM-judge prompt scaffold, train/dev/test split, TPR/TNR computation, saturation checks: `building-judges.md`.
+Control-plane commands: `prompt-control-plane.md`. Detailed alignment-first walkthrough — deterministic versus LLM judge choice, binary output contract, trust-bar agreement, held-out evidence, and judge optimization: `building-judges.md`.
 
 ---
 
@@ -247,7 +247,7 @@ Production Traffic
       ↓                                         │
   Build Judge (code-first, LLM-as-judge if needed)
       ↓                                         │
-  Validate Judge (TPR > 90%, TNR > 90%)         │
+  Validate Judge (agreed trust bar)             │
       ↓                                         │
   Optimize (GEPA-style search against scorers) │
       ↓                                         │

@@ -51,13 +51,13 @@ The artifacts enter the journey where they are needed: a **dataset** holds versi
 - Build automated evaluators from the ground truth: use code assertions for deterministic rules and LLM judges only for nuanced criteria. A 100% pass rate is a saturation warning, not proof that the evaluator is useful.
 - Validate against held-out human labels. Track TPR and TNR per failure mode, and use Cohen's kappa alongside raw agreement when establishing the judge trust bar with the user for the decision it powers.
 - Store the versioned judge and runner, then register the row or set scorer that defines how its output is displayed, compared, and used. GEPA reflection needs a row-mode scorer because it consumes per-row feedback.
-- Read `references/building-judges.md` for authoring and alignment mechanics and `references/prompt-control-plane.md` for artifact contracts and score submission.
+- Read `references/building-judges.md` for trust-bar agreement, submitted alignment evidence, and judge optimization; its agreed bars govern over older fixed defaults. Read `references/prompt-control-plane.md` for artifact contracts.
 
-**Exit:** Every gating judge clears its agreed judge trust bar, and its scorers are registered.
+**Exit:** Every gating judge clears its agreed judge trust bar; its scorers are registered; `runners exec` evidence, `scores submit`, and a measured `scorers exec` run are submitted; and the agent hands `orizu scores accept <score-run-id>` to a human curator, whose acceptance is required before gating decisions.
 
 ## 6. Optimize
 
-- Optimize only against validated judges. Package candidate execution as a runner, run the optimizer against registered scorers, and compare candidates on the same held-out eval suite with per-failure-mode results.
+- Optimize only against validated judges. Package candidate execution as a runner and run the optimizer against registered scorers. After selection, run one final comparison of the selected candidate against the seed on the final held-out partition, with per-failure-mode results.
 - Use `orizu instructions` for the instruction set. Each run targets one model-config profile and treats its complete component map as the candidate; promotion never moves one component independently.
 - Inspect the local run logs when available, otherwise export the run. Write and attach a markdown report using `references/optimization-reports.md`; the report should explain candidate tradeoffs and regressions clearly enough for the human to make the promotion decision.
 

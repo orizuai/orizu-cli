@@ -7,7 +7,7 @@ Select the profile explicitly with `--instruction-set <slug-or-exact-name> --mod
 ## Inputs
 
 You should arrive here with:
-- One or more **validated judges** (TPR > 90%, TNR > 90% on a held-out test set).
+- One or more **validated judges** that clear their agreed judge trust bar (see `building-judges.md`).
 - A **dataset** of inputs to optimize against — usually the same exported labels, plus any harder cases you've added since.
 - An **instruction set** whose selected profile contains the starting component values for the LLM application you want to improve.
 
@@ -311,7 +311,7 @@ Each pass through the loop reveals the next layer.
 
 Before declaring an optimization run successful:
 
-- [ ] Each metric is backed by a validated judge (TPR/TNR > 90%)
+- [ ] Each metric is backed by a validated judge that clears its agreed judge trust bar (see `building-judges.md`)
 - [ ] Train / val / held-out splits, and the held-out set is genuinely untouched during optimization
 - [ ] Per-metric numbers reviewed (not just combined)
 - [ ] Same LM/temperature in eval as in production
