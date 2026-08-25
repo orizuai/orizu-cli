@@ -26,10 +26,9 @@ The artifacts enter the journey where they are needed: a **dataset** holds versi
 
 ## 2. Assess & plan
 
-- Survey the codebase before moving data: locate each LLM surface, its instruction set or candidate seed, the observed failures, existing evals, and plausible data sources such as production logs, observability providers, user-behavior signals, or golden datasets.
-- Turn the survey into an evals-first improvement plan through a guided conversation. Make the data-source decision, failure modes, human decisions, judge work, optimization target, and validation path explicit; persist the plan in project context and ask the user to ratify it.
+- Read `references/assess-and-plan.md` and follow its survey, decision, conversation, and persistence workflow before moving any data.
 
-**Exit:** A human-ratified improvement plan is persisted as project context.
+**Exit:** A human-ratified `improvement-plan.md` is committed at the plain-repo root or at `projects/<directorySlug>/improvement-plan.md` in a workbench; there, it and its `memory.md` pointer are committed together.
 
 ## 3. Build the dataset
 
@@ -86,6 +85,7 @@ Read `references/optimization-with-gepa.md` for the full execution workflow. DSP
 # Reference index
 
 - `references/primer.md` — end-to-end evals-first methodology.
+- `references/assess-and-plan.md` — codebase survey, user-owned decisions, plan conversation, and durable J2 artifact.
 - `references/cli-reference.md` — current CLI command surface.
 - `references/building-apps.md` — labeler contract, design, patterns, preview, and smoke test.
 - `references/building-judges.md` — judge/scorer authoring and alignment validation.
