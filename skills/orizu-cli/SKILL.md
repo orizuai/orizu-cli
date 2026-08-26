@@ -32,17 +32,13 @@ The artifacts enter the journey where they are needed: a **dataset** holds versi
 
 ## 3. Build the dataset
 
-- Follow the plan's source decision. Import existing golden data where it exists; otherwise combine representative production traces, a random sample, and structured synthetic cases when real traces are scarce. Human ratification and spot-checking remain part of the source decision.
-- Cover every named scenario class, design the validation split, and size mini-batches so optimization can learn each class. Create an immutable dataset version to snapshot current rows.
-- Locking applies to the dataset, not the version, and rejects row mutations on that dataset. To add later data, clone to an unlocked dataset and create a new version there.
+- Follow `references/dataset-design.md` for the ratified source choice, scenario-class coverage, three-way split and mini-batch design, the reserved final held-out comparison split, versioning, and the pre-annotation mutation guard.
 
-**Exit:** A versioned dataset covers every scenario class named by the plan and is ready for labeling, or already contains ratified golden ground truth.
+**Exit:** The primary dataset's immutable version and split set cover every scenario class; golden ground truth shortcuts J4 only, while any annotation dataset is versioned, locked, and ready for labeling.
 
 ## 4. Annotate when human labels are ground truth
 
-- If imported golden data supplies the ground truth, record that decision and skip or shrink annotation. Otherwise, guide an eval-strategy conversation around observed failure modes: prefer one binary question per failure mode over bundled or Likert judgments.
-- Author a task-specific labeler app using `references/building-apps.md`. Preview it with representative rows, inspect the rendered workflow, revise it, and ask the human for pointed feedback before labeling.
-- Task creation is draft-first. Have the human test and approve the returned task URL, then publish with assignees or an assignment file. After labeling, export the labels and publish the task report.
+- Follow `references/eval-strategy.md` for the annotation decision, guided eval strategy, labeler-validation gate, task-version pin, and completeness check.
 
 **Exit:** Golden ground truth is recorded as the reason annotation was skipped, or labels are exported and the approved task report is published.
 
@@ -87,6 +83,8 @@ Read `references/optimization-with-gepa.md` for the full execution workflow. DSP
 - `references/primer.md` — end-to-end evals-first methodology.
 - `references/assess-and-plan.md` — codebase survey, user-owned decisions, plan conversation, and durable J2 artifact.
 - `references/cli-reference.md` — current CLI command surface.
+- `references/dataset-design.md` — golden-data import, scenario-class coverage, splits, and versioning.
+- `references/eval-strategy.md` — annotation decision, eval strategy, and labeler validation before task publish.
 - `references/building-apps.md` — labeler contract, design, patterns, preview, and smoke test.
 - `references/building-judges.md` — judge/scorer authoring and alignment validation.
 - `references/prompt-control-plane.md` — artifact contracts, score submission, optimizer behavior, and promotion endpoints.

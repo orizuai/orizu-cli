@@ -31,32 +31,44 @@ one now: every step below pairs on it.
 orizu setup --team <team-slug>
 ```
 
-One dataset holds every row; the split set decides train vs validation. Dump
-rows verbatim from their script, and mirror their lists exactly — a resampled
-split makes every later number incomparable with the numbers they have.
-
-Build the dataset from the **id-deduplicated union**: a row reused in both
-`TRAINSET` and `VALSET` would otherwise be written twice, and the upload route
-rejects duplicate canonical row ids (`app/api/datasets/route.ts:206-211`,
-"csvData must contain unique canonical row ids"). The partition lists keep the
-original ids independently, so a shared row can still appear in both.
+One dataset holds every row; require four disjoint, nonempty partitions:
+`TRAINSET`, `VALSET`, `PARITYSET`, and `FINAL_HELD_OUT`. Mirror existing
+train/validation membership exactly. Here, `parity` is a migration-only
+auxiliary partition, not an application partition; the canonical J3
+application doctrine remains train, validation, and final-held-out. Source and
+approve representative `PARITYSET` rows before reserving final-held-out, then
+reserve `FINAL_HELD_OUT` only from the remaining rows. Apply J3's coverage
+discipline:
+every named scenario class must have nonzero train, validation, and
+final-held-out counts. Stop when that coverage, ordering, or four-way
+disjointness cannot be proven; a resampled or overlapping split makes later
+comparisons invalid.
 
 ```python
 import json
-seen, rows = set(), []
-for row in TRAINSET + VALSET:
-    if row["id"] in seen:
-        continue
-    seen.add(row["id"])
-    rows.append(row)
+partitions = {
+    "train": TRAINSET,
+    "validation": VALSET,
+    "parity": PARITYSET,
+    "final-held-out": FINAL_HELD_OUT,
+}
+if any(not partition for partition in partitions.values()):
+    raise ValueError("train, validation, parity, and final-held-out must be nonempty")
+partition_ids = {
+    name: [row["id"] for row in partition]
+    for name, partition in partitions.items()
+}
+all_ids = [row_id for ids in partition_ids.values() for row_id in ids]
+if len(all_ids) != len(set(all_ids)):
+    raise ValueError("train, validation, parity, and final-held-out must be disjoint")
+rows = [row for partition in partitions.values() for row in partition]
 with open("dataset.jsonl", "w") as handle:
     for row in rows:
         handle.write(json.dumps(row) + "\n")
 with open("split.json", "w") as handle:
     json.dump({"name": "default", "strategy": "predefined", "seed": 42, "partitions": [
-        {"name": "train", "row_ids": [row["id"] for row in TRAINSET]},
-        {"name": "validation", "row_ids": [row["id"] for row in VALSET]},
-        {"name": "test", "row_ids": []},
+        {"name": name, "row_ids": row_ids}
+        for name, row_ids in partition_ids.items()
     ]}, handle)
 ```
 
@@ -66,12 +78,11 @@ with open("split.json", "w") as handle:
 orizu --local datasets upload --file ./dataset.jsonl \
   --project <team>/<project> --name "GEPA migration rows" --json
 
-orizu --local datasets versions create <dataset-id-or-name> \
-  --project <team>/<project> --label v1 --json      # -> dataset_version_id
-
-orizu --local datasets splits create <dataset-version-id> \
+orizu --local datasets splits create <upload-returned-dataset-version-id> \
   --from-file ./split.json --json                   # -> split_set_id
 ```
+
+Upload creates the initial `v1` snapshot. Capture its returned `dataset_version_id` and use that ID directly for split creation; reserve `datasets versions create` for later snapshots with a different label.
 
 `--from-file` preserves their partitions; the ratio flags
 (`--train/--validation/--test`) resample and must not be used here.
@@ -214,10 +225,12 @@ contract that gives its numeric result a name, mode, and direction.
 
 ## 5. Freeze the original setup's outputs
 
-A scorer scores *(row, output)*, so parity needs one candidate output per row.
-Use the customer's existing script to run its original `task_lm` once with
-the unchanged seed component map, and record the exact output passed to
-`metric(row, output)`. Write one file per partition. Each JSONL row is:
+A scorer scores *(row, output)*, so parity needs one candidate output per row
+in its development corpus. Use the customer's existing script to run its
+original `task_lm` once with the unchanged seed component map on train,
+validation, and the mandatory `parity` partition, and record the exact output
+passed to `metric(row, output)`. Write `outputs-train.jsonl`,
+`outputs-validation.jsonl`, and `outputs-parity.jsonl`. Each JSONL row is:
 
 ```json
 {"row_id":"<the row's stable id>","model_output":"<the exact output>"}
@@ -226,11 +239,11 @@ the unchanged seed component map, and record the exact output passed to
 Do not produce this evidence by running the migrated scorer or by starting an
 optimization. The output is a fixed subject shared by the original metric and
 the migrated scorer, so a mismatch isolates the scorer migration rather than
-mixing in candidate-runner or provider drift. After scorer parity is proven,
-characterize the candidate runner separately against these same rows before
-starting GEPA.
+mixing in candidate-runner or provider drift. Keep final-held-out outside this
+evidence. After scorer parity is proven, characterize the candidate runner
+separately against the same parity rows before starting GEPA.
 
-Each partition's output file must cover exactly the rows being checked: a
+Each parity output file must cover exactly the rows being checked: a
 missing or extra `row_id`, a duplicate, or a non-string `model_output` is
 refused before anything runs.
 
@@ -242,6 +255,14 @@ orizu --local scorers verify-parity \
   --dataset-version <dataset-version-id> \
   --split-set <split-set-id> --split validation \
   --outputs ./outputs-validation.jsonl \
+  --original metric:metric \
+  --json
+
+orizu --local scorers verify-parity \
+  --scorer-version <scorer-version-id> \
+  --dataset-version <dataset-version-id> \
+  --split-set <split-set-id> --split parity \
+  --outputs ./outputs-parity.jsonl \
   --original metric:metric \
   --json
 ```
@@ -282,13 +303,17 @@ rows, unverified runner dir, original metric not importable).
 Do not continue on exit 1 or 2. A scorer that disagrees with their metric
 optimizes the wrong thing, and every number afterwards is wrong.
 
-**Prove parity on BOTH partitions before declaring the scorer migrated.**
-`run-gepa` scores `train` and `validation`, and training rows drive GEPA's
-proposals: a scorer that agrees on validation but diverges on a training row
-that exercises a different schema branch changes the experiment's result while
-passing this gate. Repeat steps 5 and 6 with `--split train` (its own
-`outputs-train.jsonl` from the same frozen seed evaluation) and require exit 0
-on both.
+**Prove parity on train, validation, and parity before declaring the scorer
+migrated.** `run-gepa` scores train and validation, and training rows drive
+GEPA's proposals: a scorer that agrees on validation but diverges on a
+different schema branch changes the experiment's result while passing this
+gate. Repeat the command with `--split train` and `outputs-train.jsonl`; the
+explicit `parity` command above covers the independently selected corpus.
+Require exit 0 on all three parity runs.
+
+Keep final-held-out untouched until J6. It is exercised exactly once, at the
+final seed-vs-selected comparison, by the already-parity-proven scorer and
+supplies no scorer-development feedback.
 
 A `parity: true` report means every row of that partition was compared and
 agreed. A limited run reports `parity: false` with
