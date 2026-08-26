@@ -5,69 +5,90 @@ description: Use when the user mentions Orizu; wants measurable improvement for 
 
 # Orizu
 
-Orizu improves LLM applications by building evals first, then optimizing against them. Use `orizu instructions` as the primary path for customer instruction sets. Follow the journey in order; each step depends on the previous step's exit criterion. Read `references/primer.md` for the methodology and `references/cli-reference.md` for the current command surface instead of relying on remembered commands.
+Orizu improves LLM applications with an evals-first workflow, then optimizes against the resulting evidence. Use `orizu instructions` as the primary path for customer instruction sets. Follow the applicable J0–J6 path in order and satisfy each applicable exit criterion; J4 is conditional on missing approved ground truth. Read `references/primer.md` for the methodology and `references/cli-reference.md` for the current command surface instead of relying on remembered commands.
 
-The artifacts enter the journey where they are needed: a **dataset** holds versioned rows; an **app** and **task** collect labels; a **judge** evaluates outputs, a **runner** executes it, and a **scorer** defines its metric contract; an **instruction set** is the customer-facing identity whose model-config **profiles** own ordered **components**; an **optimization run** searches profile candidates against validated scorers.
+The journey uses **datasets** for versioned rows, **apps** and **tasks** for labels, **judges**, **runners**, and **scorers** for automated evaluation, **instruction sets** for customer instruction work, and **optimization runs** for searching profile candidates.
 
 ## Critical: scorer-runner input contract
 
 A judge runner built for flat rows will silently score every candidate 0 unless `flat_row` is selected by `--scorer-input-contract` or the runner manifest and, when needed, the candidate field is selected by flag or manifest.
 
+# Vocabulary
+
+- **Evals-first** — understand observed failures, build and validate evaluations, then optimize the LLM application against that evidence.
+- **Journey step** — one ordered stage in the workflow: J0 — Discover & evaluate, J1 — Install & set up, J2 — Assess & plan, J3 — Build the dataset, J4 — Ground truth via annotation (conditional), J5 — Build & validate judges, or J6 — Optimize & promote.
+- **Exit criterion** — the checkable evidence required before leaving one journey step for the next.
+- **Human-only** — an action the agent prepares with exact evidence and an authorized human executes.
+- **Local surface** — a CLI action executed under the user's token; the authority map, not the surface, determines whether an agent or human executes it.
+- **Hosted session** — a platform-managed coding-agent session authenticated with session credentials and bound to its signed team and project scope.
+- **Instruction set** — the customer-facing identity for one agent or LLM experience, with a fixed ordered component shape and model-config profiles that own component values.
+- **Judge trust bar** — the user-agreed metric thresholds a judge must clear for a named downstream decision and failure mode.
+- **Decision class** — the judge's downstream use: gatekeeper, optimization signal, or triage / monitoring.
+- **Scenario class** — a named, meaningful family of cases from the ratified improvement plan whose coverage and results are tracked separately.
+- **Final-held-out** — the application partition reserved for J6's single seed-versus-selected-candidate comparison.
+
 # Journey
 
-## 1. Set up
+## J0 — Discover & evaluate
+
+- Before installation, explain what Orizu does, inspect only the context the user has supplied, and give an honest fit assessment for the user's LLM application.
+- Recommend adoption when repeated iteration would benefit from measurable evaluations. Step aside for generic instruction-writing theory or a one-off edit the user explicitly will not validate with evals.
+
+**Exit criterion:** The human has the fit assessment and makes the adoption decision.
+
+## J1 — Install & set up
 
 - For local use, install Node.js 20+, run `npm i -g orizu`, then run `orizu setup` so browser login, the workbench, and skill links are initialized. The callback defaults to `127.0.0.1:43123`; after a collision, set `ORIZU_AUTH_PORT` to an available port from 1024–65535.
 - Verify auth and runtime with `orizu whoami --json` and `orizu capabilities --json`. Verify skill installation and sync separately with `orizu skills status --json`; use `orizu skills update` if stale. Follow the Authority map for surface-specific setup.
 - Establish the team and project with the user's naming choices as directed by the Authority map. Projects live inside teams.
 - Browser login creates a user-owned personal access token. The server/UI cannot redisplay the raw token after issuance, but the local v3 credential retains it for CLI auth. The token inherits current access and loses access when the user's role or membership changes.
 
-**Exit:** The team and project exist; the skill is verified in sync by `orizu skills status` locally, or shipped and present in a hosted session; and both `orizu whoami` and `orizu capabilities` succeed.
+**Exit criterion:** The team and project exist; the skill is verified in sync by `orizu skills status` locally, or shipped and present in a hosted session; and both `orizu whoami` and `orizu capabilities` succeed.
 
-## 2. Assess & plan
+## J2 — Assess & plan
 
 - Read `references/assess-and-plan.md` and follow its survey, decision, conversation, and persistence workflow before moving any data.
 
-**Exit:** A human-ratified `improvement-plan.md` is committed at the plain-repo root or at `projects/<directorySlug>/improvement-plan.md` in a workbench; there, it and its `memory.md` pointer are committed together.
+**Exit criterion:** A human-ratified `improvement-plan.md` is committed at the plain-repo root or at `projects/<directorySlug>/improvement-plan.md` in a workbench; there, it and its `memory.md` pointer are committed together.
 
-## 3. Build the dataset
+## J3 — Build the dataset
 
-- Follow `references/dataset-design.md` for the ratified source choice, scenario-class coverage, three-way split and mini-batch design, the reserved final held-out comparison split, versioning, and the pre-annotation mutation guard.
+- Follow `references/dataset-design.md` for the ratified source choice, scenario-class coverage, three-way split and mini-batch design, the reserved final-held-out comparison split, versioning, and the pre-annotation mutation guard.
 
-**Exit:** The primary dataset's immutable version and split set cover every scenario class; golden ground truth shortcuts J4 only, while any annotation dataset is versioned, locked, and ready for labeling.
+**Exit criterion:** The primary dataset's immutable version and split set cover every scenario class; golden ground truth shortcuts J4 only, while any annotation dataset is versioned, locked, and ready for labeling.
 
-## 4. Annotate when human labels are ground truth
+## J4 — Ground truth via annotation (conditional)
 
 - Follow `references/eval-strategy.md` for the annotation decision, guided eval strategy, labeler-validation gate, task-version pin, and completeness check.
 
-**Exit:** Golden ground truth is recorded as the reason annotation was skipped, or labels are exported and the approved task report is published.
+**Exit criterion:** Golden ground truth is recorded as the reason annotation was skipped, or labels are exported and the approved task report is published.
 
-## 5. Judge
+## J5 — Build & validate judges
 
 - Build automated evaluators from the ground truth: use code assertions for deterministic rules and LLM judges only for nuanced criteria. A 100% pass rate is a saturation warning, not proof that the evaluator is useful.
-- Validate against held-out human labels. Track TPR and TNR per failure mode, and use Cohen's kappa alongside raw agreement when establishing the judge trust bar with the user for the decision it powers.
+- Validate against judge-test human labels. Track TPR and TNR per failure mode, and use Cohen's kappa alongside raw agreement when establishing the judge trust bar with the user for the decision it powers.
 - Store the versioned judge and runner, then register the row or set scorer that defines how its output is displayed, compared, and used. GEPA reflection needs a row-mode scorer because it consumes per-row feedback.
-- Read `references/building-judges.md` for trust-bar agreement, submitted alignment evidence, and judge optimization; its agreed bars govern over older fixed defaults. Read `references/prompt-control-plane.md` for artifact contracts.
+- Read `references/building-judges.md` for judge trust bar agreement, submitted alignment evidence, and judge optimization; its agreed judge trust bars govern over older fixed defaults. Read `references/prompt-control-plane.md` for artifact contracts.
 
-**Exit:** Every gating judge clears its agreed judge trust bar; its scorers are registered; `runners exec` evidence, `scores submit`, and a measured `scorers exec` run are submitted; and the agent hands `orizu scores accept <score-run-id>` to a human curator, whose acceptance is required before gating decisions.
+**Exit criterion:** Every gating judge clears its agreed judge trust bar; its scorers are registered; `runners exec` evidence, `scores submit`, and a measured `scorers exec` run are submitted; and the agent hands `orizu scores accept <score-run-id>` to a human curator, whose acceptance is required before gating decisions.
 
-## 6. Optimize
+## J6 — Optimize & promote
 
-- Optimize only against validated judges. Package candidate execution as a runner and run the optimizer against registered scorers. After selection, run one final comparison of the selected candidate against the seed on the final held-out partition, with per-failure-mode results.
+- Optimize only against validated judges. Package candidate execution as a runner and run the optimizer against registered scorers. After selection, run one final comparison of the selected candidate against the seed on the final-held-out partition, with per-failure-mode results.
 - Use `orizu instructions` for the instruction set. Each run targets one model-config profile and treats its complete component map as the candidate; promotion never moves one component independently.
 - Inspect the local run logs when available, otherwise export the run. Write and attach a markdown report using `references/optimization-reports.md`; the report should explain candidate tradeoffs and regressions clearly enough for the human to make the promotion decision.
 
 Bundled `run-gepa` flag behavior and execution semantics live in `references/optimization-with-gepa.md`.
 Read that reference before configuring a run; keep this journey focused on workflow and exit criteria.
 
-**Exit:** The human has made a promotion decision from the optimization report; if shipping, the new profile version is live.
+**Exit criterion:** The human has made a promotion decision from the optimization report; if shipping, the new profile version is live.
 
-## 7. Improve continuously
+# Improve continuously
 
 - Feed improved-system traces into a new dataset version and repeat from dataset building. Each report should recommend the next scenario classes or failure modes to investigate.
 - Propose a cadence for fresh-trace collection, evaluation, and optimization; set it up only after the user agrees, then complete the first cycle.
 
-**Exit:** A cadence is agreed and its first cycle is complete, with new data feeding the next dataset version.
+The loop is established when a cadence is agreed and its first cycle is complete, with new data feeding the next J3 dataset version.
 
 # Reference index
 
@@ -102,7 +123,7 @@ This is the single source of truth for who runs each action. Replace placeholder
 | Local agent under the user's token | Workflow | Survey the customer codebase, resolve state, prepare the plan, files, manifests, diffs, and evidence, then ask the human to ratify the workflow design. | The human moments are plan ratification and execution of all production/default pointer moves. |
 | Local agent under the user's token | Catalog mutations and pointer preparation | After plan ratification, pull instruction material from the customer codebase and run `orizu instructions create <manifest> --project <team/project>`, `orizu instructions push <manifest> --project <team/project> --set <slug-or-exact-name>`, shape add/remove, archive/restore itself under the user's token. For pointer changes, gather only read-only resolution and binding evidence, prepare the exact commands, then hand them off. | Per the Micro-round 3 custody ruling, a human admin or curator using a user token executes every runner default-label move, optimizer-label move, scorer production-label move, profile promote/rollback, default move, and labeled optimization promotion on every surface. |
 | Hosted session | Start and scope | Use the pre-authenticated CLI from `ORIZU_TOKEN_FILE` and `ORIZU_BASE_URL`; resolve only the session's signed team with `orizu teams list`, then list or create projects only within it. Run `orizu projects create --name "<project name>" --team <signed-team>` when needed. | Team creation is platform-enforced human-only. Hand off: `orizu teams create --name "<team name>"`, then ask the human to start a new hosted session scoped to that team; the current session cannot switch teams. |
-| Hosted session | Team-wide curator work | While the signed session is active and its kill switch is clear, perform setup plus ordinary curator reads and writes within the signed team. Run `orizu instructions profiles new <set> --project <team/project> --model-config <identity>` and `orizu instructions sync <set> --out <dir> --project <team/project>`. For git-canonical judges, scorers, runners, and optimizers, write with `--session <session-id>`, keep bytes as commits on the session branch, then verify with `git ls-files <path>` and inspect the commit. | The agent executes this work; an Orizu version id alone is not proof of committed bytes. Signed-project exceptions are in the next row. |
+| Hosted session | Team-wide curator work | While the hosted session is active and its kill switch is clear, perform setup plus ordinary curator reads and writes within the signed team. Run `orizu instructions profiles new <set> --project <team/project> --model-config <identity>` and `orizu instructions sync <set> --out <dir> --project <team/project>`. For git-canonical judges, scorers, runners, and optimizers, write with `--session <session-id>`, keep bytes as commits on the session branch, then verify with `git ls-files <path>` and inspect the commit. | The agent executes this work; an Orizu version id alone is not proof of committed bytes. Signed-project exceptions are in the next row. |
 | Hosted session | Signed-project work | Run optimization mutations only for the JWT's project, keep git-canonical draft writes on that session and project, and read diff comments only for that project. | Sibling-project optimization mutations, draft writes, and diff-comment reads are out of scope even where ordinary curator access is team-wide. |
 | Hosted session | Materialize an instruction set | When the survey finds only a candidate seed, turn it into the complete manifest. | ADR-008 requires a human curator using a local CLI user token. Create/push are hosted CLI route-enforced; direct RPC remains agent-writable and is a fix-forward gap. Hand off `orizu instructions create <manifest> --project <team/project>` for a fresh set, or `orizu instructions push <manifest> --project <team/project> --set <slug-or-exact-name>` for an existing set. Their measured 403 is `Sessionless registration is not available to the hosted agent: this artifact class is git-canonical (ADR-007) and its bytes must be committed to the session branch. Re-run with --session <session-id>.` None of these six catalog mutation commands accepts `--session`. |
 | Hosted session | Profiles and component shape | Prepare any shape-change manifest. | A human admin or curator with `can_manage_project` runs `orizu instructions shape add <set> --project <team/project> --key <key> --from <manifest>` or `orizu instructions shape remove <set> --project <team/project> --key <key>`. Route and database enforcement return `Agents cannot change instruction-set shapes`. |

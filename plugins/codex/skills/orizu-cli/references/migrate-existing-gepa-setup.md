@@ -360,7 +360,7 @@ reflected on each round.
 `references/optimization-with-gepa.md` for reflection-model and budget flags.
 Pass `--scorer-candidate-field <field>` here too if you passed it to
 `verify-parity`: the payload the runner sees must be the one parity was proven
-under. Afterwards, consider only candidates that passed held-out validation.
+under. Select one candidate on validation evidence, then reserve one final-held-out seed-versus-selected-candidate comparison for the promotion decision.
 Write and attach the optimization report, then obtain the human decision. Following the [Authority map](../SKILL.md#authority-map), in the simpler one-shot path a human curator runs `orizu --local optimizations promote <run-id> --candidate <candidate-id> --label production --project <team>/<project> --json` after acceptance. In the equivalent two-stage path for separate materialization, the coding agent materializes once with the unlabeled command below.
 
 ```bash

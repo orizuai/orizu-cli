@@ -1,6 +1,6 @@
 # Dataset design
 
-Use this reference for J3 (journey step 3, Build the dataset) after the improvement plan is ratified and before annotation or judge work. Treat the plan's approved source choice and named scenario classes as input constraints rather than reopening them while moving data.
+Use this reference for **J3 — Build the dataset** after the improvement plan is ratified and before annotation or judge work. Treat the plan's approved source choice and named scenario classes as input constraints rather than reopening them while moving data.
 
 ## Carry the approved source choice into the dataset
 
@@ -14,9 +14,9 @@ Create a coverage table from the ratified plan before sampling. Give every scena
 
 Before upload, fail the coverage check if any scenario class from the plan has zero rows. Report both the natural distribution and any deliberate over-sampling so later results are interpreted per scenario class rather than as an unexplained aggregate.
 
-## Design train, validation, final held-out, and the mini-batch together
+## Design train, validation, final-held-out, and the mini-batch together
 
-Build one predefined split with exactly three application partitions for the primary dataset at dataset-build time: train, validation, and final-held-out. Auxiliary partitions, such as a migration-only parity corpus, may coexist in specialized workflows without changing this three-partition application doctrine. Validation is the valset that ranks candidates during optimization. **Final held-out (optimization)** is reserved for exactly one application comparison: J6's final seed-vs-selected-candidate comparison. It is never used for candidate ranking, selection, reflection, or judge development.
+Build one predefined split with exactly three application partitions for the primary dataset at dataset-build time: train, validation, and final-held-out. Auxiliary partitions, such as a migration-only parity corpus, may coexist in specialized workflows without changing this three-partition application doctrine. Validation is the valset that ranks candidates during optimization. Apply the Vocabulary contract to final-held-out: exclude its rows from candidate ranking, selection, reflection, and judge development.
 
 **Judge-development data (J5)** comes from the labeled export, and `references/building-judges.md` owns its split mechanics; exclude final-held-out rows from all judge-development material (judge-dev and judge-test/alignment) because judge selection on final-held-out labels biases the final comparison through the judge itself.
 
@@ -45,7 +45,7 @@ The canonical split-file schema and version/split command contract live in `refe
 }
 ```
 
-For the final seed-vs-selected held-out procedure and its supported-surface stop conditions, follow step 5 under “How To Build The Report” in `references/optimization-reports.md`.
+For the Final-held-out seed-vs-selected procedure and its supported-surface stop conditions, follow step 5 under “How To Build The Report” in `references/optimization-reports.md`.
 
 ## Upload, version, and create the split set
 
@@ -88,7 +88,7 @@ orizu datasets splits create <new-dataset-version-id> --from-file ./split-v2.jso
 
 Never rewrite a prior version to make later labels or corrections appear historical.
 
-## Exit check
+## Exit criterion
 
 J3 exits only when the evidence records all of the following:
 

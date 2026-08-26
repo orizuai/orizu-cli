@@ -2,15 +2,24 @@
 
 > **Core idea:** You can't improve what you can't measure — but measuring the wrong thing is worse than not measuring at all. This doc walks from raw failure logs to a continuously-running evaluation loop, and shows how Orizu operationalizes each step.
 
-The loop has four steps:
+The operational loop starts at **J3 — Build the dataset** and branches on the
+approved ground-truth source:
 
 ```
-Upload → Annotate → Judge → Optimize
-   ▲                                │
-   └────────── new traces ──────────┘
+approved golden ground truth covers the scenario classes: J3 → J5
+missing ground truth needs human labels:                    J3 → J4 → J5
+                                                                 │
+                                                                 ▼
+                                                   J6 → new traces → J3
 ```
 
-The CLI covers the full operational loop. Start instruction artifacts with `orizu instructions`: one instruction set per agent or LLM experience, one profile per model config, and components owned by that profile. Human annotation still happens through apps/tasks, while judge/scorer logic and optimization execution run locally and report back through the instruction control plane. Each step depends on the output of the previous; don't skip ahead.
+In the diagram, **J4 — Ground truth via annotation (conditional)** is taken only
+for missing labels, **J5 — Build & validate judges** consumes the approved
+ground truth, and **J6 — Optimize & promote** feeds new traces into the next J3
+dataset version. Approved golden ground truth therefore goes directly from J3
+to J5 instead of passing through annotation.
+
+The CLI covers the full operational loop. Start instruction sets with `orizu instructions`: one instruction set per agent or LLM experience, one profile per model config, and components owned by that profile. Human annotation still happens through apps/tasks when J4 is needed, while judge/scorer logic and optimization execution run locally and report back through the instruction control plane. Follow the applicable branch and require its prior journey step's exit criterion before continuing.
 
 An instruction-set manifest carries its `name`, optional `description`, fixed, ordered `shape`, and component values. The set's slug is its stable CLI reference even when its display name changes. Profiles have their own component values; components are never shared between profiles or sets. The set-wide default serves model configs without a production profile version.
 
@@ -30,7 +39,7 @@ Do not create or mutate standalone prompts. If a legacy identifier leads to a pr
 
 ---
 
-## Step 0: Error Analysis (do this before writing any eval)
+## Error analysis (before writing any eval)
 
 The most common mistake teams make is jumping straight to evals before they understand what's actually failing. Error analysis is the prerequisite.
 
@@ -50,7 +59,7 @@ The most common mistake teams make is jumping straight to evals before they unde
 
 ---
 
-## Step 1: Upload — gather diverse traces
+## J3 detail: Upload — gather diverse traces
 
 ### Why
 
@@ -96,7 +105,7 @@ Full surface: `cli-reference.md`.
 
 ---
 
-## Step 2: Annotate — binary labels per failure mode
+## Conditional J4 detail: Annotate — binary labels per failure mode
 
 ### Why
 
@@ -149,7 +158,7 @@ Authoring the labeler app — contract, design principles, and common patterns: 
 
 ---
 
-## Step 3: Judge — turn labels into automated evaluators
+## J5 detail: Judge — turn labels into automated evaluators
 
 ### Why
 
@@ -178,11 +187,11 @@ This work is still authored by the agent in code, but Orizu stores the versioned
 4. Validate against the labels (train/dev/test split, TPR/TNR).
 5. Keep the subject application's instruction material in its instruction set. For an LLM judge, push the judge artifact and runner, register a scorer, then submit score runs for the set's profile versions or optimization candidates.
 
-Control-plane commands: `prompt-control-plane.md`. Detailed alignment-first walkthrough — deterministic versus LLM judge choice, binary output contract, trust-bar agreement, held-out evidence, and judge optimization: `building-judges.md`.
+Control-plane commands: `prompt-control-plane.md`. Detailed alignment-first walkthrough — deterministic versus LLM judge choice, binary output contract, judge trust bar agreement, judge-test evidence, and judge optimization: `building-judges.md`.
 
 ---
 
-## Step 4: Optimize — hill-climb against validated judges
+## J6 detail: Optimize — hill-climb against validated judges
 
 ### Why
 
@@ -198,7 +207,7 @@ Done locally, reported to Orizu:
 2. Register validated scorers.
 3. Run the bundled Orizu GEPA-style text optimizer, or a custom optimizer against the scorer set.
 4. Stream optimization events to Orizu, promote accepted candidates into the target instruction-set profile, and submit comparable scores.
-5. Diff before/after on the eval suite. Ship if it holds; new traces feed back to step 1.
+5. Diff before/after on the eval suite. Ship if it holds; new traces feed back to J3.
 
 Control-plane commands: `prompt-control-plane.md`. Detailed walkthrough — GEPA mechanics, optional DSPy context for customers already using it, and before/after comparison: `optimization-with-gepa.md`.
 

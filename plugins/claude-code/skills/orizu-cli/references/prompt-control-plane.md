@@ -32,8 +32,8 @@ Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. 
 
 ## Instruction sets
 
-An instruction set has a fixed, ordered shape of named components (key → text).
-It has one profile per model config. Existing prompts appear as one-component
+Work within the fixed, ordered component shape and model-config profiles defined
+for instruction sets in Vocabulary. Existing prompts appear as one-component
 sets. Inspect or write them with the customer-facing `orizu instructions`
 namespace. Follow the [Authority map](../SKILL.md#authority-map) for mutation
 custody before copying a command:
@@ -386,27 +386,19 @@ eval "$(orizu --local env --project <team>/<project>)"
 ### Dataset Versions And Splits
 
 ```bash
-orizu --local datasets versions create <dataset-id-or-name> \
+orizu --local datasets upload \
+  --file ./dataset.jsonl \
   --project <team>/<project> \
-  --label v1 \
+  --name "<dataset-name>" \
+  --readme-file ./dataset-readme.md \
   --json
 ```
 
-Returns `dataset_version_id`.
+Upload creates the initial immutable `v1` snapshot. Capture its returned
+`dataset_version_id`; do not immediately create a colliding `v1` version.
 
-Create ratio-based splits:
-
-```bash
-orizu --local datasets splits create <dataset-version-id> \
-  --name default \
-  --seed 42 \
-  --train 0.6 \
-  --validation 0.4 \
-  --test 0 \
-  --json
-```
-
-Create predefined, Hugging Face-style splits:
+Review and commit a predefined split file with explicit train, validation, and
+reserved final-held-out membership:
 
 ```json
 {
@@ -416,13 +408,13 @@ Create predefined, Hugging Face-style splits:
   "partitions": [
     { "name": "train", "row_ids": ["row-1", "row-2"] },
     { "name": "validation", "row_ids": ["row-3"] },
-    { "name": "test", "row_ids": [] }
+    { "name": "final-held-out", "row_ids": ["row-4"] }
   ]
 }
 ```
 
 ```bash
-orizu --local datasets splits create <dataset-version-id> \
+orizu --local datasets splits create <upload-returned-dataset-version-id> \
   --from-file ./split.json \
   --json
 ```
@@ -534,7 +526,7 @@ text or source line, each top-level comment body, and replies. Use `--json` when
 an agent or script needs structured `summary` and `comments` data. Check
 unresolved comments before drafting or pushing the next instruction version.
 
-After the promotion decision, move an instruction profile's production pointer
+After the promotion decision, move a profile's production pointer
 through the Authority map:
 
 ```bash
@@ -902,20 +894,46 @@ identifier. If neither source names a best candidate, the field is `null`.
 
 Lifecycle controls:
 
+Agent-run pause and resume controls:
+
 ```bash
 orizu --local optimizations pause <optimization-run-id> --reason "inspect candidate"
 orizu --local optimizations resume <optimization-run-id>
-orizu --local optimizations finish <optimization-run-id> \
-  --best-score 0.82 \
-  --best-candidate candidate-7 \
-  --result-prompt-version <prompt-version-id> \
-  --report-file ./reports/<optimization-run-id>.md
+```
+
+**Multi-component instruction-set run.** The agent materializes the candidate
+without a label, then finishes without putting the returned profile version ID
+in the prompt-only result field:
+
+```bash
+orizu --local optimizations promote <optimization-run-id> --candidate <candidate-id>
+orizu --local optimizations finish <optimization-run-id> --best-candidate <candidate-id> --report-file ./reports/<optimization-run-id>.md
+```
+
+**Plain-prompt run.** A human curator runs the promotion as `orizu --local optimizations promote <optimization-run-id> --candidate <candidate-id> --label production`; this is the one allowed live promotion.
+
+After the human returns `promptVersionId`, the agent records it on finish:
+
+```bash
+orizu --local optimizations finish <optimization-run-id> --best-candidate <candidate-id> --result-prompt-version <prompt-version-id> --report-file ./reports/<optimization-run-id>.md
+```
+
+**Set-of-one instruction-set run.** The agent must never call `optimizations promote`; follow `optimization-reports.md`'s provenance
+stop/doctrine and finish without a result:
+
+```bash
+orizu --local optimizations finish <optimization-run-id> --best-candidate <candidate-id> --report-file ./reports/<optimization-run-id>.md
+```
+
+Agent-run failure and cancellation controls:
+
+```bash
 orizu --local optimizations fail <optimization-run-id> --reason "provider outage" --report-file ./reports/<optimization-run-id>.md
 orizu --local optimizations cancel <optimization-run-id> --reason "user stopped" --report "## Cancelled\n\nStopped after manual inspection."
 ```
 
 `pause` and `cancel` store `metadata.reason`. `fail` stores `metadata.failure_reason`.
-`finish` marks the run `succeeded` and attaches its report; it does not authorize promotion. Finish the report first, then obtain the human decision before materialization or a serving-pointer move.
+`finish` marks the run `succeeded` and attaches its report; it does not authorize promotion. The three subject branches above are normative; see `optimization-reports.md` for seed-selected and no-valid-candidate branches. Finish the report first, then obtain the human decision before materialization or a serving-pointer move.
 Use `--report-file <path>` or `--report <markdown|@file>` on `finish`, `fail`, or `cancel` to attach the markdown report shown in the optimization detail Report tab. Prefer generating this from the local GEPA logs (`result.json`, `evaluations.jsonl`, `reflections.jsonl`, and `events.jsonl`) after the run ends. Report structure and interpretation rules: `optimization-reports.md`.
 
 ## Optimization Event Logging
@@ -1016,11 +1034,15 @@ Response:
 
 ## End-to-End Flow
 
+Use a JSON array for `dataset.json` in this piped form. JSONL uploads use the
+chunked uploader, which writes progress lines to stdout before its final JSON
+document even with `--json`, so piping that stdout directly to `jq` is invalid.
+
 ```bash
 eval "$(orizu --local env --project hip/judge-optimization)"
 
-DATASET_VERSION_ID="$(orizu --local datasets versions create hip-note-judge-labels --project hip/judge-optimization --label v1 --json | jq -r .dataset_version_id)"
-SPLIT_SET_ID="$(orizu --local datasets splits create "$DATASET_VERSION_ID" --name default --seed 42 --train 0.6 --validation 0.4 --test 0 --json | jq -r .split_set_id)"
+DATASET_VERSION_ID="$(orizu --local datasets upload --file ./dataset.json --project hip/judge-optimization --name hip-note-judge-labels --readme-file ./dataset-readme.md --json | jq -r .dataset_version_id)"
+SPLIT_SET_ID="$(orizu --local datasets splits create "$DATASET_VERSION_ID" --from-file ./split.json --json | jq -r .split_set_id)"
 
 RUNNER_VERSION_ID="$(orizu --local runners push ./runner --project hip/judge-optimization --name hip-note-judge-runner --json | jq -r .runner_version_id)"
 JUDGE_VERSION_ID="$(orizu --local judges push ./judge --project hip/judge-optimization --runner-version "$RUNNER_VERSION_ID" --json | jq -r .prompt_version_id)"

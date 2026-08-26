@@ -1,6 +1,6 @@
 # Eval strategy and labeler validation
 
-Use this reference only after J3 (journey step 3, Build the dataset) has versioned the PRIMARY dataset and created its three-way split set. If approved golden data already supplies all required ground truth, record the source, approval, and scenario-class coverage, then skip annotation. If only unresolved rows need labels, clone or filter those rows into a separate dataset because automatic assignments cover every current dataset row and explicit assignment files require uniform whole-dataset coverage.
+Use this reference only after **J3 — Build the dataset** has versioned the PRIMARY dataset and created its three-way split set. If approved golden data already supplies all required ground truth, record the source, approval, and scenario-class coverage, then skip annotation. If only unresolved rows need labels, clone or filter those rows into a separate dataset because automatic assignments cover every current dataset row and explicit assignment files require uniform whole-dataset coverage.
 
 Final-held-out rows need no human labels; exclude their row IDs from annotation tasks and from the unresolved-rows clone/filter.
 
@@ -14,7 +14,7 @@ Start from the ratified improvement plan and J3 coverage table; do not ask the h
 2. **Good and bad by scenario class.** For every scenario class, show representative rows and draft one binary question per observed failure mode. Ask what visible evidence makes each answer pass, fail, or unlabelable. Do not bundle independent judgments or replace them with a Likert question.
 3. **Eval-set composition.** Confirm which versioned rows need human labels, the intended counts per scenario class, and any rare cases that must be present even when production frequency is low. Keep J3 validation for candidate ranking and keep its final-held-out partition under the separate partition doctrine in `references/dataset-design.md`.
 4. **Ground truth.** Ask who is qualified to label each question, what context they need, how ambiguity or disagreement will be adjudicated, and whether user behavior or another approved golden-data field already answers it. Import approved golden data instead of relabeling it.
-5. **Downstream validation.** Explain that these labels will later validate automated judges. Ask which decision each judge will power and record it for J5 (journey step 5, Judge), where the human sets the numerical judge trust bar from measured agreement, TPR, and TNR rather than accepting a default here.
+5. **Downstream validation.** Explain that these labels will later validate automated judges. Ask which decision class each judge will power and record it for **J5 — Build & validate judges**, where the human sets the numerical judge trust bar from measured agreement, TPR, and TNR rather than accepting a default here.
 
 Persist the ratified eval strategy in project context. It must name the experience and unit, dataset version and split set, scenario classes and row counts, binary questions with pass/fail/unlabelable rules, ground-truth source, labeler qualifications, disagreement path, golden-data decision, and the future decision attached to each judge trust bar. Do not author the labeler until the human ratifies this record.
 
@@ -59,6 +59,6 @@ orizu tasks complete --task <task-id>
 orizu tasks report set --task <task-id> --report-file ./task-report.md --json
 ```
 
-## Exit check
+## Exit criterion
 
 The annotation path exits only when the ratified eval strategy, labeler feedback, app approval, complete assignment-status evidence, response-complete exported labels, and published task report are recorded together. The golden-data path exits with the PRIMARY versioned dataset ID and approved per-failure-mode field mapping recorded. The mixed path additionally records the canonical-row-`id`-keyed union of golden mappings and per-rater annotated exports. In every path, report ground-truth and disagreement counts per scenario class so J5 receives auditable evidence rather than only an aggregate.

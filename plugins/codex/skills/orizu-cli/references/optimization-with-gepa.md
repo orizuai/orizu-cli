@@ -2,7 +2,7 @@
 
 How to optimize an instruction-set profile against validated judges and scorers. Prepare the complete instruction-set manifest, follow the [Authority map](../SKILL.md#authority-map) for its mutation, and then run the bundled `orizu optimizations run-gepa` flow. Use this reference for GEPA mechanics, custom optimizer implementations, and optional DSPy context for customers already using DSPy.
 
-Select the profile explicitly with `--instruction-set <slug-or-exact-name> --model-config <identity>`. Those two selectors replace the legacy `--candidate-version-id` path and cannot be combined with it. The connector resolves that model config's production profile, or the set default when the profile has no production version, and optimizes its complete component map. `--component-selector round-robin` is the default and updates one component per round; `--component-selector all` updates every component per round. The runner receives a multi-component candidate as a component map, while a one-component set keeps the existing single-body runner contract. Git-pinned components and malformed component maps are refused before a run starts. Automatic promotion is refused for multi-component sets; write the report, obtain the human promotion decision, and follow the Authority map. Manifest create/push is the pre-run seed path, not a second accepted-candidate materialization; after a run, use the human one-shot or equivalent idempotent two-stage path in step 8.
+Select the profile explicitly with `--instruction-set <slug-or-exact-name> --model-config <identity>`. Those two selectors replace the legacy `--candidate-version-id` path and cannot be combined with it. The connector resolves that model config's production profile, or the set default when the profile has no production version, and optimizes its complete component map. `--component-selector round-robin` is the default and updates one component per round; `--component-selector all` updates every component per round. The runner receives a multi-component candidate as a component map, while a one-component set keeps the existing single-body runner contract. Git-pinned components and malformed component maps are refused before a run starts. Automatic promotion is refused for multi-component sets; write the report, obtain the human promotion decision, and follow the Authority map. Manifest create/push is the pre-run seed path, not a second accepted-candidate materialization; after a run, use the human one-shot or equivalent idempotent two-stage path in step 9.
 
 ## Inputs
 
@@ -53,10 +53,11 @@ Use the control plane described in `prompt-control-plane.md` when you want runs,
 2. Push the candidate runner and, for an LLM evaluator, the judge rubric with `orizu judges push`.
 3. Register a row scorer for reflection. GEPA reflection requires row-level feedback.
 4. Snapshot a dataset version. Create one split set with train, validation, and a reserved final-held-out partition; pass only the train and validation partition names to `run-gepa`. Never pass the final-held-out partition as `--train-split` or `--val-split`; the CLI accepts arbitrary partition names and does not enforce this boundary.
-5. Use `orizu optimizations run-gepa` with the set slug and model-config identity. It uses official GEPA by default; `--engine legacy` is a frozen safety hatch while migration parity is proven. Use `orizu optimizations start` plus event logging for a custom optimizer. Candidates are ranked on the partition passed as `--val-split`; use that partition for validation, not final-held-out data.
-6. Use set scorers for selection/tracked reporting when the meaningful metric is batch-level; execute builtin set scorers with `orizu scorers exec` or submit precomputed aggregates with `orizu scores submit --aggregate`.
-7. Write and attach the optimization report by following “How To Build The Report” step 5 in `references/optimization-reports.md`: “Determine whether the current execution surfaces can reproduce the selected system before claiming a held-out comparison.” Its “Flat-row scorer contract,” “Default GEPA scorer contract,” and “Instruction-set execution limits” subsections own the executable boundaries and current gaps.
-8. After the human accepts the report, follow the [Authority map](../SKILL.md#authority-map). Simpler one-shot path: a human curator runs `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`, materializing and labeling once. In the two-stage path for multi-component or deliberately unlabeled materialization, an agent may materialize with `orizu optimizations promote <run-id> --candidate <id> --project <team/project>`. A human curator re-runs that same promotion as `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`. The idempotent finalizer reuses the existing materialized profile version, moves production to it, and creates no duplicate profile version or candidate-promoted event.
+5. Push the optimizer implementation with `orizu optimizers push ./optimizer --project <team/project> --name <optimizer-name> --json` and retain its returned optimizer version ID.
+6. Use `orizu optimizations run-gepa --optimizer-version-id <optimizer-version-id>` with the set slug and model-config identity. It uses official GEPA by default; `--engine legacy` is a frozen safety hatch while migration parity is proven. Use `orizu optimizations start` plus event logging for a custom optimizer. Candidates are ranked on the partition passed as `--val-split`; use that partition for validation, not Final-held-out.
+7. Use set scorers for selection/tracked reporting when the meaningful metric is batch-level; execute builtin set scorers with `orizu scorers exec` or submit precomputed aggregates with `orizu scores submit --aggregate`.
+8. Write and attach the optimization report by following “How To Build The Report” step 5 in `references/optimization-reports.md`: “Determine whether the current execution surfaces can reproduce the selected system before claiming a Final-held-out comparison.” Its “Flat-row scorer contract,” “Default GEPA scorer contract,” and “Instruction-set execution limits” subsections own the executable boundaries and current gaps.
+9. After the human accepts the report, follow the [Authority map](../SKILL.md#authority-map). Simpler one-shot path: a human curator runs `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`, materializing and labeling once. In the two-stage path for multi-component or deliberately unlabeled materialization, an agent may materialize with `orizu optimizations promote <run-id> --candidate <id> --project <team/project>`. A human curator re-runs that same promotion as `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`. The idempotent finalizer reuses the existing materialized profile version, moves production to it, and creates no duplicate profile version or candidate-promoted event.
 
 The bundled Orizu GEPA-style optimizer supports configurable budget, minibatch size (default 3), candidate selection strategy, reflection model/template, reflection provider settings, evaluation caching, and optional auto-promotion. Use the report-first path: run without auto-promotion, write the report, obtain the human promotion decision, then route the manual promotion command through the Authority map. Only pass `--log-row-snapshots` when raw data in event logs is intentional.
 
@@ -228,7 +229,7 @@ orizu optimizations export <optimization-run-id> --out ./optimization.json
 
 Export returns one JSON object with raw events plus derived seed-vs-best, Pareto frontier, candidates, score-over-time, iterations, minibatch rows, validation rows, scorer context, prompt versions, and dataset split information. It fetches all optimization events and rehydrates row inputs from dataset artifacts when possible. Server events redact row snapshots and reflection prompts by default, but bundled `run-gepa` includes reflection responses in the event stream.
 
-After the run ends, write a markdown report before the context is lost. Use the authoritative ordered sections in `optimization-reports.md`: Promotion Decision; Run And Evidence; Candidate Comparison (Validation Data); Optimizer Health; Scenario Classes; What Changed In The Selected Version; Held-Out Result: Seed vs Selected Candidate; Recommendation And Named Next Moves; Reproducibility; and Report Completeness Checklist.
+After the run ends, write a markdown report before the context is lost. Use the authoritative ordered sections in `optimization-reports.md`: Promotion Decision; Run And Evidence; Candidate Comparison (Validation Data); Optimizer Health; Scenario Classes; What Changed In The Selected Version; Final-held-out Result: Seed vs Selected Candidate; Recommendation And Named Next Moves; Reproducibility; and Report Completeness Checklist.
 
 DSPy GEPA example for customers already on DSPy:
 
@@ -263,7 +264,7 @@ GEPA will:
 
 Orizu's bundled optimizer is intentionally narrower than DSPy GEPA today: text candidates only, local runner/scorer directories, and Orizu event logging built in.
 
-## Step 5: Compare before / after on a held-out set
+## Step 5: Compare before / after on Final-held-out
 
 This is the step teams skip and regret.
 
@@ -284,7 +285,7 @@ def evaluate(program, examples) -> dict:
 
 
 # Hold out a fresh set the optimizer never saw.
-held_out = load_examples("./held-out.jsonl")
+held_out = load_examples("./final-held-out.jsonl")
 
 before = evaluate(SupportAgent(), held_out)
 after = evaluate(optimized_program, held_out)
@@ -297,7 +298,7 @@ print(f"After:  {after}")
 
 ## Step 6: Ship and feed the loop
 
-If the optimized profile holds up on held-out:
+If the optimized profile holds up on Final-held-out:
 - Promote the validated profile version to production; never promote one component by itself.
 - Sample new production traces over the next week.
 - Upload them as a new dataset (`primer.md` Step 1).
@@ -310,7 +311,7 @@ Each pass through the loop reveals the next layer.
 ## Common pitfalls
 
 - **Optimizing against an unvalidated judge.** You'll improve the metric and degrade the system. Always validate first.
-- **No held-out comparison.** "It's better, look at the metric" without a held-out set is meaningless — GEPA will overfit if you let it.
+- **No Final-held-out comparison.** "It's better, look at the metric" without Final-held-out is meaningless — GEPA will overfit if you let it.
 - **Hiding regressions in the average.** Track per-failure-mode metrics, not just combined.
 - **Over-budgeting GEPA.** Heavy budgets give diminishing returns and burn LM spend. Start with `auto="light"`, scale up only if needed.
 - **Ignoring temperature.** Run optimization with the same LM config (model, temperature) you use in production. Optimizing against gpt-4o at temp=0 doesn't transfer to gpt-4o-mini at temp=0.7.
@@ -321,7 +322,7 @@ Each pass through the loop reveals the next layer.
 Before declaring an optimization run successful:
 
 - [ ] Each metric is backed by a validated judge that clears its agreed judge trust bar (see `building-judges.md`)
-- [ ] Train / val / held-out splits, and the held-out set is genuinely untouched during optimization
+- [ ] Train and validation partitions plus Final-held-out, which stays genuinely untouched during optimization
 - [ ] Per-metric numbers reviewed (not just combined)
 - [ ] Same LM/temperature in eval as in production
 - [ ] Optimization report written from logs/export and attached with `--report-file` when the run is finished, failed, or cancelled

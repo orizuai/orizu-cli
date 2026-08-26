@@ -6,14 +6,14 @@ This journey turns evidence from the customer's codebase into an evals-first imp
 
 Survey code, configuration, documentation, and the names and wiring of integrations. Inventory candidate customer data, but do not open or read, export, sample, transform, or upload it. Do not call a provider, run a production query, copy traces, or create an Orizu dataset during this journey. Inspect secret names and configuration shape only; never read credential values.
 
-Only after the user ratifies the plan and the ratified plan is committed at its canonical path, together with the required workbench memory pointer, may the dataset journey access the approved sources. If the user asks to move data while decisions remain open, show the missing decisions and ask for ratification first.
+Only after the user ratifies the plan and the ratified plan is committed at its canonical path, together with the required workbench memory pointer, may J3 — Build the dataset access the approved sources. If the user asks to move data while decisions remain open, show the missing decisions and ask for ratification first.
 
 ## 2. Survey the codebase
 
 Locate every LLM surface, not only obvious instruction files. Search for model SDK and API calls, agent entry points, RAG or retrieval pipelines, tool definitions, structured-output parsers, instruction and template files, Model Config identity and settings, and fallbacks. For each surface, record:
 
 - the user-visible job, owner, entry point, and execution flow;
-- its instruction set or candidate seed, using the orizu instructions namespace when it is already registered;
+- its instruction set or candidate seed, using the instructions CLI command surface when it is already registered;
 - Model Config identity and settings, tools, retrieval dependencies, output contracts, and safety boundaries;
 - observed failure reports and other evidence, clearly separated from hypotheses;
 - existing evals, tests, judges, golden labels, and deployment or monitoring gates;
@@ -44,7 +44,7 @@ Convert survey gaps into an explicit decision ledger. The human owns these calls
 - whether existing labels are trusted ground truth, whether humans must annotate, and who can make that judgment;
 - the judge type for each failure mode and the judge trust bar appropriate to the decision it will power;
 - the customer-facing instruction set, model-config profile, components, and other code that are in or out of the optimization target;
-- held-out validation, per-scenario regression limits, cost and latency limits, rollback evidence, and who owns the promotion decision.
+- Final-held-out validation, per-scenario regression limits, cost and latency limits, rollback evidence, and who owns the promotion decision.
 
 Mark each item **decided**, **proposed**, or **open**, with its evidence and owner. Never convert a default, convention, inferred preference, or agent recommendation into a user decision.
 
@@ -74,7 +74,7 @@ Write a specific plan that another agent can execute without reconstructing the 
 6. **Ground truth and annotation** — trusted golden labels or human labeling path, decision owner, and how label quality will be checked.
 7. **Judge plan and trust bars** — code assertion or LLM judge per failure mode, validation evidence required, and the user-owned judge trust bar for each downstream decision.
 8. **Instruction set and optimization target** — target profile and complete component map, other code in scope, exclusions, and the held-constant environment.
-9. **Held-out validation and promotion decision** — split strategy, scenario-class measures, regression limits, cost and latency bounds, ship/rollback evidence, and the human promotion owner.
+9. **Final-held-out validation and promotion decision** — split strategy, scenario-class measures, regression limits, cost and latency bounds, ship/rollback evidence, and the human promotion owner.
 10. **Phased work and handoffs** — ordered dataset, annotation, judge, optimization, and report work with human gates before irreversible or production-impacting actions.
 11. **Open decisions** — owner, evidence needed, and why each item blocks ratification or a later phase.
 
@@ -87,12 +87,21 @@ The plan artifact is always named `improvement-plan.md`; its canonical path depe
 - **Orizu workbench:** resolve the selected project's `directorySlug` through the same per-project manifest that locates `projects/<directorySlug>/memory.md`: find the `projects/<directorySlug>/orizu.project.json` whose project identity matches the resolved Orizu `team/project`, then use that containing directory. Write `projects/<directorySlug>/improvement-plan.md`. Add a concise decision summary and relative plan link to the sibling `memory.md`; do not duplicate the whole plan there.
 - **Plain repository:** write `improvement-plan.md` at the repository root and record the resolved Orizu `team/project` inside it.
 
-If the matching `projects/<directorySlug>/orizu.project.json` is absent, do not guess the directory slug or create the stub by hand. With existing authenticated CLI credentials, run `orizu setup --team <teamSlug> --workspace . --fix --non-interactive --verbose` from the workbench root. Authenticated setup fetches every server project for the team, and `--fix` applies safe idempotent workspace repairs that materialize a missing project manifest and sibling `memory.md`; verbose output shows the actions. When it completes, re-resolve `orizu.project.json` and continue only from the directory whose manifest identity matches the resolved Orizu project. If the manifest is still absent or setup reports an authentication or repair error, stop and ask the user to repair the workbench instead of writing the plan to a guessed path. Setup repairs the local checkout only: it does not commit or push. Track the newly materialized project-stub files and commit them together with the plan and memory pointer.
+If the matching `projects/<directorySlug>/orizu.project.json` is absent, or a resolved project directory lacks its sibling `memory.md` or any required primitive directory, do not guess the directory slug or create missing entries by hand.
+With existing authenticated CLI credentials, run `orizu setup --team <teamSlug> --non-interactive --verbose` from the workbench root; the current directory is the default workspace.
+Authenticated setup reconciles each required project path independently: it creates missing files and directories while preserving existing ones.
+Empty project directories are not committed and must be recreated after a fresh clone.
+This per-path seeding does not require `--fix`. Use a separate `orizu setup --team <teamSlug> --fix --non-interactive --verbose` run only when independently diagnosed ADR-004 case or pointer damage also needs repair.
+Verbose output shows the actions.
+When setup completes, re-resolve `orizu.project.json` and continue only from the directory whose manifest identity matches the resolved Orizu project.
+If the manifest is still absent, another required entry remains missing, or setup reports an authentication or repair error, stop and ask the user to repair the workbench instead of writing the plan to a guessed path.
+Setup repairs the local checkout only: it does not commit or push.
+Track newly materialized project-stub files and commit them together with the plan and memory pointer.
 
 The repo is truth for the plan contents. In a workbench, both `projects/<directorySlug>/improvement-plan.md` and its sibling `memory.md` pointer must be tracked and committed together. In a plain repository, the root plan must be tracked and committed. These commits make the ratified plan durable and keep later work in the approved project.
 
-There is no CLI command for uploading an improvement plan or writing arbitrary project context today. Do not invent one, claim the plan is DB-native, or introduce an unsupported manifest or storage format. Richer structured persistence is arriving through the **Assess & plan (Journey 2)** project; until it ships in the installed CLI, use only the Git-backed files above.
+There is no dedicated CLI command for uploading an improvement plan or arbitrary project context. The generic `orizu workspace apply <path>` command can promote a registered repo-owned resource such as project `memory.md`; it does not make the plan a DB-native artifact or introduce a plan-specific storage format. Richer structured persistence is arriving through the **J2 — Assess & plan** project; until it ships in the installed CLI, use only the Git-backed files above.
 
-## Exit check
+## Exit criterion
 
 J2 is complete only when the user has explicitly ratified the complete plan and `improvement-plan.md` records that ratification and the resolved Orizu project. The canonical plan must be tracked and committed; in a workbench, its sibling `memory.md` pointer must be tracked and committed together with it. Otherwise remain in assess-and-plan; do not start dataset work.

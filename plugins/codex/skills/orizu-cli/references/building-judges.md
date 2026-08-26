@@ -23,7 +23,7 @@ arrive with:
 - multiply labeled rows for measuring human–human agreement.
 
 If the labels are Likert scores or an “overall quality” bundle, return to the
-annotation step (`SKILL.md` step 4) and rewrite the rubric as one binary question
+**J4 — Ground truth via annotation (conditional)** and rewrite the rubric as one binary question
 per failure mode before building a judge.
 
 - A **judge** is the evaluator, often an LLM instruction set plus a runner.
@@ -58,7 +58,7 @@ rows or overall agreement. Judge–human kappa should normally land within about
 0.05–0.10 of human–human kappa.
 
 When human–human kappa is itself low (below ~0.6), the rubric or labels are the
-bottleneck. Return to the annotation step (`SKILL.md` step 4): clarify the
+bottleneck. Return to **J4 — Ground truth via annotation (conditional)**: clarify the
 failure-mode definition, add boundary examples, repair the labeler workflow, and
 relabel a shared sample. Recompute the human ceiling before changing judge
 instructions. Judge tuning against disputed labels only automates the dispute.
@@ -69,7 +69,7 @@ The agent presents the observed label balance, human ceiling, confusion costs,
 and the following starting points. These are defaults to reason from, not
 requirements.
 
-| Decision the judge powers | Starting-point bar (agent + user adjust together) |
+| Decision class | Starting-point threshold (agent + user adjust together) |
 | -- | -- |
 | **Gatekeeper** — headline metric; informs ship/promote decisions | kappa ≥ 0.75, TPR ≥ 0.90 and TNR ≥ 0.90, and within 0.10 of human–human kappa |
 | **Optimization signal** — GEPA reflection and candidate selection | kappa ≥ 0.6 (roughly the 70–80% agreement zone on balanced data). Row-level noise averages out across a run — but the winning candidate must be confirmed against a gatekeeper-grade judge before shipping, or we Goodhart on judge noise |
@@ -82,20 +82,20 @@ of that zone.
 
 For each judge and failure mode:
 
-1. Classify the decision as gatekeeper, optimization signal, or triage /
+1. Choose the decision class: gatekeeper, optimization signal, or triage /
    monitoring.
 2. Explain the relevant false-negative and false-positive costs, the human
    ceiling, small-sample uncertainty, and scenario-class gaps.
 3. Ask the user which kappa, TPR, TNR or false-positive-rate bars they accept.
    The agent never selects a bar silently.
-4. Record the agreed bar in the judge-validation output before tuning or final
+4. Record the agreed judge trust bar in the judge-validation output before tuning or final
    validation. Include the judge version, failure mode, decision class,
-   human–human kappa, each agreed metric bar, applicable scenario classes, user,
+   human–human kappa, each agreed judge trust bar metric, applicable scenario classes, user,
    and decision date.
 
 An agreement record can use this shape:
 
-| Judge version | Failure mode | Decision class | Human–human kappa | Agreed judge bar | Scenario classes | Agreed by |
+| Judge version | Failure mode | Decision class | Human–human kappa | Agreed judge trust bar | Scenario classes | Agreed by |
 | -- | -- | -- | -- | -- | -- | -- |
 | `<version>` | `<mode>` | `<class>` | `<value>` | `kappa …; TPR …; TNR/FPR …` | `<covered classes>` | `<user/date>` |
 
@@ -111,8 +111,8 @@ Default to code for genuinely deterministic rules. A mechanically equivalent
 assertion, such as schema validation when schema validity is the entire failure
 definition, does not need prompt tuning or model-selection statistics. Record
 why the assertion is identical to the human-approved rule. If it is gating, it
-still needs an agreed bar and the registered, submitted evidence path from the
-Judge step (`SKILL.md` step 5). A regex, keyword, or other heuristic is not
+still needs an agreed judge trust bar and the registered, submitted evidence path from
+**J5 — Build & validate judges**. A regex, keyword, or other heuristic is not
 tautological merely because it is code; validate it against the human labels
 like any other judge.
 
@@ -201,7 +201,7 @@ auditable row-membership evidence proving final-held-out exclusion.
 
 On development rows, inspect false negatives when TPR is weak and false positives
 when TNR is weak. Fix the failure-mode criteria and boundary examples, then rerun
-development evaluation. Preserve judge-test until the candidate and agreed bar
+development evaluation. Preserve judge-test until the candidate and agreed judge trust bar
 are frozen. If judge-test alignment falls materially below development, treat
 that as overfitting and return to a new development cycle rather than iterating
 on judge-test rows.
@@ -211,7 +211,7 @@ seed-versus-selected comparison in the dataset-design reference (J3) never
 appears in judge train, judge dev, judge test, or any other judge-alignment
 material. A judge selected for agreement on those rows would bias the final
 comparison through the judge itself. Those rows need no human labels. At the
-Optimize step (`SKILL.md` step 6; J6), the accepted judge scores the application
+**J6 — Optimize & promote**, the accepted judge scores the application
 final-held-out rows exactly once for that comparison; this application scoring
 is not judge-alignment measurement or tuning.
 
@@ -246,6 +246,38 @@ used for kappa plus confusion diagnostics. Hosted sessions follow the artifact
 authority and commit rules in `SKILL.md`. Substitute IDs returned by each
 command in subsequent commands:
 
+For a custom deterministic code assertion that must complete the submitted J5
+evidence path, use the executable `prompt_runner` control-plane shape. The
+runner implements the assertion without calling an LLM; the judge artifact is
+its versioned execution contract and output-schema identity. A `runner_only`
+scorer can be registered, but the current CLI cannot execute it through either
+`runners exec --scorer-version` or `scorers exec`, so it cannot satisfy this
+recipe.
+
+Set the row-scorer manifest's `implementation_kind: prompt_runner`, set the
+dependent set-scorer manifest's `implementation_kind: builtin_metric`, and use
+the IDs returned by each command in the next command:
+
+```bash
+orizu runners push ./evals/<project>/judges/<failure-mode>/runner --project <team/project> --name <code-assertion-runner-name> --json
+
+orizu judges push ./evals/<project>/judges/<failure-mode>/judge --project <team/project> --runner-version <code-assertion-runner-version-id> --json
+
+orizu scorers register --project <team/project> --name <code-assertion-row-scorer-name> --manifest ./evals/<project>/judges/<failure-mode>/row-scorer.manifest.json --prompt-version <code-assertion-judge-version-id> --runner-version <code-assertion-runner-version-id> --json
+
+# Set the dependency whose `alias` is `judge` in `kappa-scorer.manifest.json`: its `dependencies[].scorer_version_id` must be `<code-assertion-row-scorer-version-id>` before registering the dependent set scorer.
+orizu scorers register --project <team/project> --name <code-assertion-kappa-scorer-name> --manifest ./evals/<project>/judges/<failure-mode>/kappa-scorer.manifest.json --json
+
+orizu runners exec --scorer-version <code-assertion-row-scorer-version-id> --dataset-version <dataset-version-id> --split-set <judge-split-set-id> --split judge-test --runner-dir ./evals/<project>/judges/<failure-mode>/runner --out ./code-assertion-judge-test-results.jsonl
+
+orizu scores submit ./code-assertion-judge-test-results.jsonl --project <team/project> --scorer-version <code-assertion-row-scorer-version-id> --subject-version <code-assertion-judge-version-id> --dataset-version <dataset-version-id> --split-set <judge-split-set-id> --split judge-test --json
+
+orizu scorers exec --project <team/project> --scorer-version <code-assertion-kappa-scorer-version-id> --subject-version <code-assertion-judge-version-id> --dataset-version <dataset-version-id> --split-set <judge-split-set-id> --split judge-test --dependency-score-run judge=<code-assertion-row-score-run-id> --out ./code-assertion-judge-test-alignment.json --json
+```
+
+For an LLM judge, register the prompt-backed row scorer and its dependent set
+scorer:
+
 ```bash
 orizu runners push ./evals/<project>/judges/<failure-mode>/runner --project <team/project> --name <judge-runner-name> --json
 
@@ -256,10 +288,10 @@ orizu scorers register --project <team/project> --name <row-scorer-name> --manif
 orizu scorers register --project <team/project> --name <kappa-scorer-name> --manifest ./evals/<project>/judges/<failure-mode>/kappa-scorer.manifest.json --json
 ```
 
-For the judge-test split, execute the row scorer, submit its row results, and then
-execute the dependent set scorer. `scorers exec` submits the aggregate score run
-by default, so omit `--no-submit` at the Judge step (step 5) boundary. See
-`prompt-control-plane.md` for the canonical submission behavior:
+For the LLM judge-test split, execute the row scorer, submit its row results,
+and then execute the dependent set scorer. `scorers exec` submits the aggregate
+score run by default, so omit `--no-submit` at the J5 — Build & validate judges
+boundary. See `prompt-control-plane.md` for the canonical submission behavior:
 
 ```bash
 orizu runners exec --scorer-version <row-scorer-version-id> --dataset-version <dataset-version-id> --split-set <judge-split-set-id> --split judge-test --runner-dir ./evals/<project>/judges/<failure-mode>/runner --out ./judge-test-results.jsonl
@@ -273,7 +305,7 @@ Inspect the submitted set score run, not only the local file. The stored evidenc
 must identify the submitted row-score dependency and contain measured row
 evidence from which kappa, TPR, TNR, and the confusion matrix can be checked.
 Store the separately computed scenario-class slices beside it. Record every
-achieved value beside the agreed bar. Both `scores submit` and the submitting
+achieved value beside the agreed judge trust bar. Both `scores submit` and the submitting
 `scorers exec` store `agent_reported` evidence, which is never
 execution-verified. Hand the resulting set `<score-run-id>` to a human curator
 for acceptance:
@@ -283,8 +315,8 @@ for acceptance:
 orizu scores accept <score-run-id> --project <team/project> --json
 ```
 
-The Judge step (step 5) is complete only when every gating judge clears its
-agreed bar, the scorer versions are registered, `runners exec`, `scores submit`,
+J5 — Build & validate judges is complete only when every gating judge clears its
+agreed judge trust bar, the scorer versions are registered, `runners exec`, `scores submit`,
 and the measured `scorers exec` run have all succeeded, and the human curator has
 accepted that score run. Gate decisions only on accepted evidence. A locally
 computed alignment report with no accepted Orizu score run does not clear the
@@ -313,10 +345,10 @@ cycle. `SKILL.md` is authoritative for who runs each mutation; hosted sessions
 prepare the manifest and exact human handoff:
 
 ```bash
-# Human/local CLI only: see the SKILL.md authority map.
+# Local surface (agent-allowed under the user's token): see the SKILL.md authority map.
 orizu instructions create ./evals/<project>/judges/<failure-mode>/orizu.instruction-set.json --project <team/project> --model-config <provider/model> --json
 
-# Human/local CLI only: see the SKILL.md authority map.
+# Local surface (agent-allowed under the user's token): see the SKILL.md authority map.
 orizu instructions push ./evals/<project>/judges/<failure-mode>/orizu.instruction-set.json --project <team/project> --set <judge-instruction-set> --json
 ```
 
@@ -347,9 +379,14 @@ Keep judge-test outside GEPA. The command records the best candidate and
 local logs; it does not push a new judge or instruction set version.
 
 After a human accepts the optimized components, materialize the complete map in
-`orizu.instruction-set.json`. Read `logs/judge-gepa/result.json`, require its
-`best_candidate_text` map to cover the instruction set's complete shape, and
-copy that accepted map into the manifest. There is no separate
+`orizu.instruction-set.json`. Read
+`<printed-local-log-directory>/result.json`; `--log-dir` names a root and the
+logger appends the optimization run ID, so use the directory printed by the
+completed run rather than joining the root directly to the filename. For a
+one-component candidate, `best_candidate_text` is a bare string: copy it to
+that one component. For a multi-component candidate, `best_candidate_text` is
+the complete component map; require it to cover the instruction set's complete
+shape and copy that accepted map into the manifest. There is no separate
 component-to-judge materializer command. The judge runner's own file layout is
 the materializer: write every accepted component value, byte for byte, to the
 exact instruction file that the runner project's manifest maps to that
@@ -382,7 +419,7 @@ orizu runners exec --prompt-version <current-judge-version-id> --runner-version 
 ```
 
 Match those row IDs to the winning candidate's entries in
-`logs/judge-gepa/evaluations.jsonl` and compare each recorded `output` with the
+`<printed-local-log-directory>/evaluations.jsonl` and compare each recorded `output` with the
 parity run's normalized parsed judge decision. Preserve the winning run's model
 settings; an unexplained decision mismatch means the accepted map was not
 reproduced and blocks publication. Orizu has no profile-capable validation
@@ -393,7 +430,7 @@ Only after parity holds, publish fresh instruction and judge versions before
 touching judge-test. Under the user's token, the local sequence is:
 
 ```bash
-# Human/local CLI only: see the SKILL.md authority map.
+# Local surface (agent-allowed under the user's token): see the SKILL.md authority map.
 orizu instructions push ./evals/<project>/judges/<failure-mode>/orizu.instruction-set.json --project <team/project> --set <judge-instruction-set> --json
 
 orizu judges push ./evals/<project>/judges/<failure-mode>/judge --project <team/project> --runner-version <materialized-judge-runner-version-id> --json
@@ -426,7 +463,7 @@ The instruction-set/profile version is not a valid `--subject-version`; both
 submitted judge-test commands above deliberately use `<new-judge-version-id>`.
 Require human acceptance and gatekeeper-grade judge-test validation for any ship
 or promotion decision even when the judge used for reflection met only the
-optimization-signal bar. Hosted sessions commit the accepted component map and
+optimization-signal judge trust bar. Hosted sessions commit the accepted component map and
 follow the handoff boundary in `SKILL.md`.
 
 The default GEPA scorer contract supplies a GEPA-shaped row containing
@@ -438,15 +475,15 @@ A runner manifest can instead declare `scorer_input_contract` and
 refuses a uniformly worst seed by default. Read “Scorer-Runner Input Contracts”
 in `prompt-control-plane.md` before choosing either contract.
 
-## Completion checklist
+## Exit criterion checklist
 
 - [ ] Each failure mode is binary and has adequate positive and negative rows.
 - [ ] Human–human kappa is computed from multiply labeled rows; low agreement
       routes back to rubric and label repair.
 - [ ] Kappa, TPR, TNR, confusion matrix, sample size, class balance, and
       scenario-class results are reported per failure mode.
-- [ ] The agent taught the decision-class tradeoffs, the user chose each judge
-      trust bar, and the agreed bar is recorded in the output.
+- [ ] The agent taught the decision-class tradeoffs, the user chose each
+      judge trust bar, and the agreed value is recorded in the output.
 - [ ] Development rows were used for iteration and judge-test was used only
       after the candidate was frozen.
 - [ ] The application final-held-out partition was excluded from all judge

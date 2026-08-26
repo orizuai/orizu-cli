@@ -33,7 +33,7 @@ Behavior:
 - `orizu logout` revokes the current PAT remotely when possible and then clears local credentials.
 - PATs can also be revoked from the Personal Tokens page in Orizu.
 - PAT authorization follows the owning user's current team/project roles, so demotion or removal takes effect without rotating the token.
-- Hosted sandboxes are pre-authenticated via `ORIZU_TOKEN_FILE` (no `orizu login` needed); an explicit `ORIZU_TOKEN` env var overrides both the token file and stored credentials when set.
+- A hosted session is pre-authenticated via `ORIZU_TOKEN_FILE` (no `orizu login` needed); an explicit `ORIZU_TOKEN` env var overrides both the token file and stored credentials when set.
 
 ### Agent Setup
 
@@ -399,7 +399,7 @@ Unrecoverable context is retained with a named degradation reason rather than
 dropping a comment. Optimization export includes the same data at
 `diffComments` using hunk detail. It also includes
 `diffCommentsSuppressedReason`: normally `null`, or `agent_project_scope` when
-a hosted agent exports a run outside its assigned project. In that case
+a hosted session exports a run outside its assigned project. In that case
 `diffComments` is empty, and the marker reveals nothing about whether comments
 exist.
 
@@ -480,8 +480,8 @@ Use these shortcuts only in TTY environments where prompts can run.
 
 - `tasks create` creates a draft by default, does not require `--assignees`, and pins the app's current version when the task is created.
 - `tasks create --publish --assignees <...>` intentionally creates and ships immediately.
-- `tasks create|publish|assign --assignment-file <path>` is mutually exclusive with `--assignees` and accepts emails or user IDs in the JSONL manifest.
-- `tasks assign --assignees` and `tasks publish --assignees` expect user IDs, not emails.
+- `--assignees` and assignment-file rows accept member emails or user IDs. Email selectors resolve to canonical member IDs within the task's project team; ambiguous or unknown emails are rejected.
+- `tasks create|publish|assign --assignment-file <path>` is mutually exclusive with `--assignees`.
 - Assignment queue reads are assignee-self-only; use task status/export as the operator summary path.
 - Assignment completion payloads are validated against the pinned app-version `output_json_schema`.
 - `datasets delete-rows` requires `--row-ids`.
@@ -490,7 +490,7 @@ Use these shortcuts only in TTY environments where prompts can run.
 - `--row-ids` is the canonical row selection for delete operations.
 - Locked datasets reject append/edit/delete row mutations.
 - Row deletes are rejected when targeted rows are assignment-referenced.
-- Login currently requires callback availability on `127.0.0.1:43123`.
+- Login callback binding defaults to `127.0.0.1:43123`. If that port is unavailable, set `ORIZU_AUTH_PORT` to an available port from 1024–65535.
 - New CLI logins use personal access tokens rather than short-lived Supabase session credentials.
 - In non-interactive contexts, pass explicit selection flags.
 
