@@ -68,12 +68,21 @@ Budget behavior:
 Reflection output contract:
 - The official engine uses the decoded reflective LM response string as the next value of the selected component without trimming; the legacy engine uses `response.strip()`, removing leading and trailing whitespace. With `round-robin`, other component values are read-only context; with `all`, each component is reflected independently and the results form one complete candidate profile.
 - The default reflection template asks for only the complete updated component value. Do not ask the model to wrap the value in markdown fences or tags; instruction components often contain those characters.
-- Put provider-native reasoning controls in `--reflection-provider-settings <json|@file>`, not in an instruction component. For OpenAI reasoning models, use a shape such as `{"reasoning":{"effort":"medium","summary":"auto"}}`. For Anthropic Claude models with thinking controls, use a shape such as `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`.
+- Put provider-native reasoning controls in `--reflection-provider-settings <json|@file>`, not in an instruction component. For OpenAI reasoning models, use a shape such as `{"reasoning":{"effort":"medium","summary":"auto"}}`. For Anthropic Claude models with thinking controls, use a shape such as `{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}`.
 - Treat scorer feedback as directional signal: with `higher_is_better: true`, describe lower scores as failures or opportunities, not as a numeric loss; omit fields labeled `informational; not scored` from feedback sent to reflection.
 - Reflection max-token limits are explicit. `--reflection-max-tokens <n>` maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI may omit it when no cap is desired.
 - Reflection HTTP calls retry transient failures by default (`--reflection-retry-attempts 3`, `--reflection-http-timeout-seconds 180`). Legacy GEPA logs an exhausted retryable reflection failure, charges proposal and iteration budgets, and continues. The official engine increments proposal usage only after successful `on_proposal_end`; skilled-proposer failures re-raise and stop.
 
 Full command syntax and event contracts: `prompt-control-plane.md`.
+
+For staff-enabled hosted optimization, a human/PAT caller adds `--hosted` and
+uses a named `--budget auto|light|medium|heavy`. Hosted launch does not require
+the local candidate/scorer runner directories or a local log directory, and it
+never sends provider credentials or runner bytes from the customer's machine.
+Numeric budget controls are refused because they cannot be compared honestly
+to the named team ceiling. For response-loss recovery, reuse an explicit
+`--launch-intent-id <uuid>`; a changed project or job specification requires a
+new intent. A hosted agent prepares the command and hands it to a human.
 
 ## Migrating from the legacy engine (release cli-v0.5.20+)
 

@@ -141,10 +141,20 @@ command manifest.
 `orizu optimizations run-gepa` uses the vendored official GEPA connector by
 default. Pass `--engine legacy` only to use the frozen compatibility loop while
 investigating a migration issue. The selected engine is recorded in run metadata;
-the command preserves the runner-byte verification boundary for both engines.
-Choose one budget control: a named `--budget` preset, `--max-metric-calls`,
-`--max-full-evals`, `--max-iterations`, or `--max-candidate-proposals`.
+the local command preserves the runner-byte verification boundary for both engines.
+Choose one local budget control: a named `--budget` preset,
+`--max-metric-calls`, `--max-full-evals`, `--max-iterations`, or
+`--max-candidate-proposals`.
 `--max-candidate-proposals` is available only with the default official engine.
+
+`--hosted` is the human/PAT launch path for a staff-enabled team. It sends one
+version-ID job specification to Orizu and prints the queued monitor URL; it
+does not require `--candidate-runner-dir`, `--scorer-runner-dir`, or
+`--log-dir`, and no local runner bytes or provider credentials are sent. A
+hosted launch accepts only a named `--budget auto|light|medium|heavy` preset so
+the server can compare it to the team's spend ceiling; numeric budget controls
+fail closed. Pass `--launch-intent-id <uuid>` when a caller needs to retry after
+response loss without creating a second run.
 
 ### JSON output everywhere
 

@@ -94,7 +94,7 @@ import {
 import { teamConnectorsCommand } from './team-connectors-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
-import { hostedCommand } from './hosted-session-cli.js'
+import { dispatchHostedCommands } from './hosted-commands.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredentialInvocation } from './git-credential.js'
 import { instructionSetsCommand, syncToDisk } from './instruction-sets-cli.js'; export { loadInstructionSet } from './instruction-set-loader.js'
@@ -6346,6 +6346,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
+  if (await dispatchHostedCommands(cliArgs, { environment: process.env, getArg, json: hasJsonFlag(), printJson, printLine, printErr: printError, resolveProjectSlug, setExitCode: code => { process.exitCode = code } })) return
   if (command === 'optimizations' && subcommand === 'start') {
     await startOptimizationRun()
     return
@@ -6534,7 +6535,6 @@ export async function main(rawArgs = process.argv.slice(2)) {
   if (command === 'datasets' && subcommand === 'lock') { await lockDataset(); return }
   if (command === 'datasets' && subcommand === 'clone') { await cloneDataset(); return }
   if (command === 'tasks' && subcommand === 'export') { await downloadAnnotations(); return }
-  if (command === 'internal' || (command === 'session' && subcommand === 'start' && hasArg('--hosted'))) { process.exitCode = await hostedCommand(cliArgs, { json: hasJsonFlag(), print: printLine, printErr: printError }); return }
   if (command === 'session' || command === 'run') {
     process.exitCode = await workbenchCommand(cliArgs, { json: hasJsonFlag(), print: printLine })
     return

@@ -817,6 +817,11 @@ Useful GEPA flags:
 - `--scorer-input-contract gepa|flat_row` selects the scorer-runner input shape. Use `flat_row` to reuse a judge runner written for `runners exec --scorer-version` without a hand-written adapter; add `--scorer-candidate-field <row-field>` when that judge reads the candidate output from a specific row field (e.g. `draft`). Passing a candidate field under the `gepa` contract is refused at launch, not silently ignored. See "Scorer-Runner Input Contracts" above.
 - `--allow-degenerate-seed` opts out of the launch-time refusal when the seed scores the worst possible value on every validation row. Leave it off by default — a uniformly-worst seed is almost always a scorer contract mismatch.
 - Budget controls are mutually exclusive: choose at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, `--max-iterations <n>`, or `--max-candidate-proposals <n>`. With none provided, `run-gepa` defaults to `--budget auto`, the balanced medium preset. `--max-candidate-proposals` is available only with `--engine official`.
+- Hosted optimization (`--hosted`) is launched only by a human/PAT caller on
+  an enabled team. It accepts a named `--budget` preset only, does not require
+  candidate/scorer runner directories or local logs, and sends no local runner
+  bytes or provider credentials. Reuse `--launch-intent-id <uuid>` after a lost
+  response; use a new intent when the project or job specification changes.
 - `--minibatch-size <n>` defaults to 3.
 - `--num-threads auto|N` defaults to `auto`; auto caps row-evaluation concurrency from mini-batch size, validation-set size, 2x CPU count, memory estimate, file-descriptor limit, and a 64-thread default ceiling. Set `ORIZU_GEPA_AUTO_THREADS_MAX` or use `--num-threads <n>` only when the runner/provider capacity is known.
 - `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`. With `epsilon_greedy`, `--epsilon <n>` controls the random-selection probability (default `0.1`, clamped to `0`–`1`).
@@ -824,7 +829,7 @@ Useful GEPA flags:
 - `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
 - `--reflection-max-tokens <n>` is explicit provider config, not a global default. It maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI can omit it unless the user wants a cap.
 - `--reflection-retry-attempts` and `--reflection-http-timeout-seconds` tune transient reflection-provider retries. Exhausted retryable failures log `reflection_failed`, count against candidate-proposal budget, and continue with the next iteration.
-- `--reflection-provider-settings <json|@file>` passes provider-native reflection settings separately from the component text. Anthropic example: `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`. OpenAI example: `{"reasoning":{"effort":"medium","summary":"auto"}}`.
+- `--reflection-provider-settings <json|@file>` passes provider-native reflection settings separately from the component text. Anthropic example: `{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}`. OpenAI example: `{"reasoning":{"effort":"medium","summary":"auto"}}`.
 - `--disable-evaluation-cache` turns off candidate/row/scorer cache reuse.
 - `--auto-promote --promotion-label <label>` can move a label to the best candidate at the end. Omit both flags: run without auto-promotion, write the report, obtain the human promotion decision, then route the manual promotion command through the Authority map.
 - `--log-row-snapshots` includes raw row and reflection text in events; leave off by default.
