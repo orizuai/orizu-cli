@@ -1,25 +1,30 @@
 import { spawn, spawnSync } from 'child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
 
 import type { GepaEngine } from './gepa-engine-dispatch.js'
-import { bundledOfficialGepaPythonPath } from './gepa-python-paths.js'
+import { bundledOfficialGepaPythonPath, getGepaPythonPathEntries } from './gepa-python-paths.js'
 import { sanitizeTerminalText } from './json-response.js'
+import { SKILLED_PROPOSER_BAKE_REPORT_FIELDS } from './skilled-proposer-bake-report.js'
 
 interface SkilledProposerVenvReport {
   venv: string
+  publishKey: string
   sslCertFile: string | null
   pythonPathEntries: string[]
-  warnings?: Array<{ code: string, message: string }>
+  warnings: Array<{ code: string, message: string }>
+  waitedForPublishLock: boolean
   error?: string
   message?: string
+  publishedVenv?: boolean | null
+  executedPipArgv?: string[] | null
 }
-
 export interface SkilledProposerLaunch {
   python: string
   environment: NodeJS.ProcessEnv
+  report?: SkilledProposerVenvReport
 }
 
 function materializeConfigPayload(engine: GepaEngine, environment: NodeJS.ProcessEnv): (() => void) | undefined {
@@ -81,12 +86,12 @@ export async function spawnSkilledProposerChild(
 function ensureSelectedSkilledProposerVenv(
   python: string,
   vendoredGepaPath: string,
+  cacheRoot = existsSync('/opt/orizu/prebaked.json')
+    ? '/opt/orizu/cache/skilled-proposer'
+    : join(process.cwd(), '.orizu', 'cache', 'skilled-proposer'),
 ): SkilledProposerVenvReport {
   const manager = fileURLToPath(new URL('../scripts/ensure-skilled-proposer-venv.mjs', import.meta.url))
   const lock = fileURLToPath(new URL('../requirements/skilled-proposer.lock', import.meta.url))
-  // This is a regenerable workspace cache. The manager's publish key further
-  // separates interpreters, platforms, and lock revisions inside it.
-  const cacheRoot = join(process.cwd(), '.orizu', 'cache', 'skilled-proposer')
   const result = spawnSync(
     process.execPath,
     [manager, '--python', python, '--cache-root', cacheRoot, '--lock', lock,
@@ -116,6 +121,31 @@ function ensureSelectedSkilledProposerVenv(
   return report
 }
 
+interface BakeCommandIo { print: (value: string) => void; printErr?: (value: string) => void }
+const packageRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..')
+const managerPath = join(packageRoot, 'scripts/ensure-skilled-proposer-venv.mjs')
+const lockPath = join(packageRoot, 'requirements/skilled-proposer.lock')
+const vendoredGepaPath = join(packageRoot, 'vendor/gepa-python/src')
+const packagedPythonPathEntries = ['vendor/orizu-gepa/src', 'vendor/orizu-gepa-python/src', 'vendor/gepa-python/src'].map(path => join(packageRoot, path))
+const bakedCacheRoot = '/opt/orizu/cache/skilled-proposer'
+
+export function skilledProposerBakeCommand(io: BakeCommandIo, verify = false): number {
+  try {
+    const python = process.env.PYTHON || 'python3'
+    if (!verify) { io.print(JSON.stringify(ensureSelectedSkilledProposerVenv(python, vendoredGepaPath, bakedCacheRoot))); return 0 }
+    if (!readdirSync(join(bakedCacheRoot, 'venvs'), { withFileTypes: true }).some(entry => entry.isDirectory() && existsSync(join(bakedCacheRoot, 'venvs', entry.name, '.orizu-skilled-proposer-venv.json')))) throw new Error('ALI_1588_VENV_MARKER_MISSING')
+    const environment = { ...process.env, ORIZU_CANDIDATE_PROPOSER: 'skilled-proposer' }
+    const launch = prepareSkilledProposerLaunch(python, 'official', environment)
+    const report = launch.report!
+    if (report.publishedVenv !== false || report.executedPipArgv !== null) throw new Error('ALI_1588_DEPENDENCY_SETUP_NOT_REUSED')
+    const pythonPathEntries = getGepaPythonPathEntries(undefined)
+    if (JSON.stringify(pythonPathEntries) !== JSON.stringify(packagedPythonPathEntries)) throw new Error('ALI_1588_PYTHON_ROOT_MISSING')
+    const completeReport = { ...report, pythonPathEntries, marker: 'ALI_1588_DEPENDENCY_SETUP_REUSED', python: launch.python, packageRoot, manager: managerPath, lock: lockPath, vendoredGepaPath, launcherVenv: launch.environment.ORIZU_SKILLED_PROPOSER_VENV ?? null, launcherSslCertFile: launch.environment.SSL_CERT_FILE ?? null }
+    io.print(JSON.stringify(Object.fromEntries(SKILLED_PROPOSER_BAKE_REPORT_FIELDS.map(key => [key, completeReport[key]]))))
+    return 0
+  } catch (error) { io.printErr?.(`${error instanceof Error ? error.message : String(error)}\n`); return 1 }
+}
+
 export function prepareSkilledProposerLaunch(
   python: string,
   engine: GepaEngine,
@@ -143,5 +173,6 @@ export function prepareSkilledProposerLaunch(
       ? join(report.venv, 'Scripts', 'python.exe')
       : join(report.venv, 'bin', 'python'),
     environment,
+    report,
   }
 }

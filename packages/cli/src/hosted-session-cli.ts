@@ -57,6 +57,7 @@ import { buildEgressPolicy, DEFAULT_EGRESS_CANARY_HOST } from './egress-policy.j
 import { DEFAULT_HOSTED_MODEL, hostedLoopCommand, type HostedLoopContext } from './hosted-loop.js'
 import { hostedBootCommand } from './hosted-boot.js'
 import { mergeJobCommand } from './merge-job.js'
+import { skilledProposerBakeCommand } from './skilled-proposer-launch.js'
 import { authedFetch } from './http.js'
 import { resolveBaseUrl } from './http.js'
 import { findUnknownOption } from './option-validation.js'
@@ -1568,7 +1569,9 @@ export async function hostedCommand(
     if (positional[1] === 'merge-job') {
       return mergeJobCommand(io)
     }
-    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot | merge-job>')
+    if (positional[1] === 'bake-skilled-proposer-venv') return skilledProposerBakeCommand(io)
+    if (positional[1] === 'verify-skilled-proposer-bake') return skilledProposerBakeCommand(io, true)
+    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot | merge-job | bake-skilled-proposer-venv | verify-skilled-proposer-bake>')
     return 1
   }
 

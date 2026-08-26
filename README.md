@@ -28,24 +28,52 @@ By default, the CLI talks to `https://orizu.ai`.
 ## Updating bundled GEPA
 
 The CLI ships a verified, source-only copy of official GEPA so optimization
-users never need `pip` or a network connection. To upgrade it, make a PR that
-updates the version, release commit, and SHA-256 pin in
-`scripts/vendor-gepa-python.mjs`, then re-runs the refresh command with the
-matching downloaded wheel:
+users never need `pip` or a network connection. From the repository root,
+derive both mandatory pins independently from the downloaded wheel:
 
 ```bash
-node scripts/vendor-gepa-python.mjs --refresh --archive /path/to/gepa-<version>-py3-none-any.whl
+python3 - /path/to/gepa-<version>-py3-none-any.whl <version> <<'PY'
+import hashlib, json, sys, zipfile
+from pathlib import Path
+
+wheel, version = Path(sys.argv[1]), sys.argv[2]
+license_member = f'gepa-{version}.dist-info/licenses/LICENSE'
+files = {}
+with zipfile.ZipFile(wheel) as archive:
+    for member in archive.infolist():
+        if member.is_dir():
+            continue
+        if member.filename.startswith('gepa/'):
+            path = f'src/{member.filename}'
+        elif member.filename == license_member:
+            path = 'LICENSE'
+        else:
+            continue
+        files[path] = hashlib.sha256(archive.read(member)).hexdigest()
+entries = sorted(files.items())
+print('GEPA_WHEEL_SHA256=' + hashlib.sha256(wheel.read_bytes()).hexdigest())
+print('GEPA_TREE_SHA256=' + hashlib.sha256(json.dumps(entries, separators=(',', ':')).encode()).hexdigest())
+PY
 ```
 
-Commit the refreshed `gepa-python-source.zip` and run the CLI packaging test.
-`npm pack` verifies that archive and materializes only the shipped source tree;
-it never downloads GEPA.
+Update `GEPA_VERSION`, `GEPA_RELEASE_COMMIT`, `GEPA_WHEEL_FILENAME`,
+`GEPA_WHEEL_SHA256`, `GEPA_TREE_SHA256`, and the extractor's license member in
+`packages/cli/scripts/vendor-gepa-python.mjs`. Both SHA-256 constants must
+change together before running the matching refresh command:
+
+```bash
+node packages/cli/scripts/vendor-gepa-python.mjs --refresh --archive /path/to/gepa-<version>-py3-none-any.whl
+```
+
+Commit the refreshed `packages/cli/gepa-python-source.zip`, then run
+`bun test test/cli-gepa-packaging.test.ts test/cli/provision-snapshot.test.ts`.
+These gates cover both pins. `npm pack` never downloads GEPA.
 
 For a development checkout, materialize that same verified source before local
 work that imports GEPA:
 
 ```bash
-node scripts/vendor-gepa-python.mjs
+node packages/cli/scripts/vendor-gepa-python.mjs
 ```
 
 ## Install

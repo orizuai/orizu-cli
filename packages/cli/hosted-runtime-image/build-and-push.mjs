@@ -8,23 +8,6 @@
  * or a Vercel token the daemon is configured with). NEITHER is available in CI /
  * the agent environment, so this script is written to be run by a human.
  *
- * WHAT IT DOES
- *   1. validates team-slug / project-slug / tag (from flags or env); the TAG
- *      DEFAULTS to the git provenance string (`git describe --tags --always
- *      --dirty`) so a built runtime is traceable to a git ref/tag;
- *   2. builds the Orizu CLI FROM SOURCE into a single self-contained bundle
- *      (`dist/orizu.js` in this build context) so the runtime CLI ALWAYS matches
- *      this checkout — the just-merged `orizu internal hosted-loop` command is not
- *      in a published CLI tag yet, so a pinned `npm i -g orizu@<v>` can't carry it;
- *   3. builds the Dockerfile for linux/amd64 (it COPYs that bundle) and pushes it
- *      to vcr.vercel.com/<team>/<project>/orizu-hosted-runtime:<tag> with the
- *      zstd/oci output flags Vercel Sandbox requires;
- *   4. prints the resulting image ref + the VCR readiness-check instructions.
- *
- * The registry-facing ref is the full `vcr.vercel.com/...` path; the value you
- * pass to `Sandbox.create({ image })` (and to `ORIZU_HOSTED_IMAGE`) is the SHORT
- * ref `orizu-hosted-runtime:<tag>` — the platform resolves it within your team.
- *
  * Usage:
  *   node build-and-push.mjs --team <slug> --project <slug> [--tag <tag>] [--dry-run]
  *   ORIZU_VCR_TEAM=<slug> ORIZU_VCR_PROJECT=<slug> [ORIZU_HOSTED_IMAGE_TAG=<tag>] \
@@ -40,6 +23,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -49,7 +33,7 @@ import { buildCliBundle, resolveGitVersion } from './build-cli-bundle.mjs'
 // doubles as the validator for every npm-pinned override (opencode / Claude
 // SDK), not just the braintrust one. Importing provision-snapshot.mjs is
 // side-effect free (its main() is guarded by import.meta.main).
-import { BRAINTRUST_NPM_VERSION_RE, BRAINTRUST_PY_VERSION_RE } from './provision-snapshot.mjs'
+import { BRAINTRUST_NPM_VERSION_RE, BRAINTRUST_PY_VERSION_RE, sourceAssetPayload } from './provision-snapshot.mjs'
 
 const IMAGE_NAME = 'orizu-hosted-runtime'
 const REGISTRY_HOST = 'vcr.vercel.com'
@@ -87,16 +71,13 @@ function requireSlug(value, label) {
 
 function main() {
   const here = dirname(fileURLToPath(import.meta.url))
-  const contextDir = resolve(here)
+  const contextDir = resolve(here, '..', '..', '..')
   const args = parseArgs(process.argv.slice(2))
 
   const team = requireSlug(args.values.team ?? process.env.ORIZU_VCR_TEAM, 'team')
   const project = requireSlug(args.values.project ?? process.env.ORIZU_VCR_PROJECT, 'project')
   const dryRun = args.flags.has('dry-run')
 
-  // Provenance: the git-describe string labels the runtime AND (as a build ARG)
-  // is recorded in /opt/orizu/prebaked.json. The image TAG DEFAULTS to it so a
-  // built runtime is traceable to a git ref/tag; an explicit --tag still wins.
   const gitVersion = resolveGitVersion()
   const tag = requireSlug(
     args.values.tag ?? process.env.ORIZU_HOSTED_IMAGE_TAG ?? gitVersion,
@@ -106,8 +87,6 @@ function main() {
   const registryRef = `${REGISTRY_HOST}/${team}/${project}/${IMAGE_NAME}:${tag}`
   const shortRef = `${IMAGE_NAME}:${tag}`
 
-  // The CLI is baked FROM SOURCE; its provenance is the git-describe string, which
-  // the Dockerfile records in the marker as `ORIZU_CLI_GIT_VERSION`.
   const buildArgs = ['--build-arg', `ORIZU_CLI_GIT_VERSION=${gitVersion}`]
   // Optional pin overrides for the npm-pinned externals → forwarded as --build-arg
   // (defaults live in the Dockerfile, the source-of-truth for those pins).
@@ -139,9 +118,8 @@ function main() {
     if (value !== undefined) buildArgs.push('--build-arg', `${name}=${value}`)
   }
 
-  // Bake the CLI from source: build the self-contained bundle into the Docker
-  // build context so the Dockerfile can COPY it. (dist/ is git-ignored.)
-  const bundleOut = resolve(contextDir, 'dist', 'orizu.js')
+  const bundleOut = resolve(here, 'dist', 'orizu.js')
+  const assetsOut = resolve(here, 'dist', 'skilled-proposer-assets.json')
 
   const outputSpec = [
     'type=image',
@@ -158,6 +136,8 @@ function main() {
     'build',
     '--platform',
     'linux/amd64',
+    '--file',
+    resolve(here, 'Dockerfile'),
     ...buildArgs,
     '--output',
     outputSpec,
@@ -179,6 +159,7 @@ function main() {
 
   process.stdout.write('Baking the CLI from source (bun build)…\n')
   buildCliBundle(bundleOut)
+  writeFileSync(assetsOut, sourceAssetPayload())
 
   process.stdout.write('Building + pushing (requires docker buildx + VCR auth)…\n')
   const result = spawnSync('docker', commandArgs, { stdio: 'inherit' })

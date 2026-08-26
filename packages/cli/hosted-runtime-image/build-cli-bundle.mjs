@@ -56,10 +56,10 @@ export function resolveGitVersion(cwd = CLI_ROOT) {
  * the build fails — a broken bundle must never be staged into a runtime. Returns
  * the absolute path written.
  */
-export function buildCliBundle(outFile) {
+export function buildCliBundle(outFile, timeout, executable = 'bun') {
   const out = resolve(outFile)
   const args = ['build', CLI_ENTRY, '--target', 'node', '--packages', 'external', '--outfile', out]
-  const res = spawnSync('bun', args, { cwd: CLI_ROOT, stdio: 'inherit' })
+  const res = spawnSync(executable, args, { cwd: CLI_ROOT, stdio: 'inherit', timeout })
   if (res.error) {
     throw new Error(`failed to spawn bun (is it installed?): ${res.error.message}`)
   }

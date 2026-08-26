@@ -100,15 +100,14 @@ finally:
 const MANAGER_SCHEMA_VERSION = 1
 const MANIFEST_NAME = '.orizu-skilled-proposer-venv.json'
 const LOCK_WAIT_MILLISECONDS = 25
-// This exceeds the longest repair path while holding the lock: existing-cache
-// validation (2m) + venv (2m) + install (10m) + staged validation (2m), plus
-// cleanup/publication/release margin.
-const LOCK_TIMEOUT_MILLISECONDS = 20 * 60 * 1000
-const PYTHON_PROBE_TIMEOUT_MILLISECONDS = 15_000
+export const LOCK_TIMEOUT_MILLISECONDS = 20 * 60 * 1000
+export const PYTHON_PROBE_TIMEOUT_MILLISECONDS = 15_000
+export const LOCK_RELEASE_TIMEOUT_MILLISECONDS = 15_000
 const VENV_CREATE_TIMEOUT_MILLISECONDS = 2 * 60 * 1000
-const VALIDATION_TIMEOUT_MILLISECONDS = 60_000
+export const VALIDATION_TIMEOUT_MILLISECONDS = 60_000
 const PIP_INSTALL_TIMEOUT_MILLISECONDS = 10 * 60 * 1000
 const TEST_BARRIER_TIMEOUT_MILLISECONDS = 60_000
+export const SKILLED_PROPOSER_MANAGER_MAXIMUM_MILLISECONDS = (2 * PYTHON_PROBE_TIMEOUT_MILLISECONDS) + LOCK_RELEASE_TIMEOUT_MILLISECONDS + LOCK_TIMEOUT_MILLISECONDS + VENV_CREATE_TIMEOUT_MILLISECONDS + PIP_INSTALL_TIMEOUT_MILLISECONDS + (6 * VALIDATION_TIMEOUT_MILLISECONDS) + (2 * 60 * 1000)
 const ABANDONED_STAGE_MAX_AGE_MILLISECONDS = 24 * 60 * 60 * 1000
 const SSL_CERT_FILE_UNRESOLVED_WARNING = {
   code: 'ALI_1505_SSL_CERT_FILE_UNRESOLVED',
@@ -203,11 +202,6 @@ function versionAtLeast(actual, required) {
 }
 
 function assertSupportedWheelTarget(identity) {
-  // `platform.libc_ver()` is not merely cache identity on Linux: it is also a
-  // conservative admission check for the locked glibc wheel matrix. A bad
-  // guess can refuse a compatible host (named, before mutation), but cannot
-  // admit an sdist or make pip install an incompatible wheel because the
-  // customer install remains hash-locked and binary-only.
   const machine = String(identity.machine).toLowerCase()
   const isSupportedMac = identity.system === 'Darwin'
     && machine === 'arm64'
@@ -272,7 +266,7 @@ export function characterizePython(python, probeEnv = isolatedPythonProbeEnv()) 
   }
 }
 
-function readAndValidateHashLock(lockPath) {
+export function readAndValidateHashLock(lockPath) {
   let contents
   try {
     contents = readFileSync(lockPath, 'utf8')
@@ -305,7 +299,8 @@ function readAndValidateHashLock(lockPath) {
     )
   }
   for (const requirement of requirements) {
-    const isExactPin = /^[A-Za-z0-9_.-]+(?:\[[^\]]+\])?==[^\s;]+/.test(requirement)
+    const requirementSpecifier = requirement.split(/\s+--hash=/, 1)[0].trim()
+    const isExactPin = /^[A-Za-z0-9_.-]+(?:\[[^\]]+\])?==[^\s,;*]+(?:\s*;\s*.+)?$/.test(requirementSpecifier)
     const hashes = [...requirement.matchAll(/(?:^|\s)--hash=([^\s]+)/g)].map(match => match[1])
     const hashTokens = [...requirement.matchAll(/(?:^|\s)(--hash(?:=[^\s]*)?)(?=\s|$)/g)]
       .map(match => match[1])
@@ -343,7 +338,7 @@ function resolveSslCertFile(pythonIdentity, probeEnv) {
   return null
 }
 
-function buildPublishKey(pythonIdentity, lockContents) {
+export function buildPublishKey(pythonIdentity, lockContents) {
   const lockDigest = createHash('sha256').update(lockContents).digest('hex')
   const identity = {
     managerSchemaVersion: MANAGER_SCHEMA_VERSION,
@@ -355,7 +350,6 @@ function buildPublishKey(pythonIdentity, lockContents) {
     soabi: pythonIdentity.soabi,
     system: pythonIdentity.system,
     machine: pythonIdentity.machine,
-    osVersion: pythonIdentity.osVersion,
     libc: pythonIdentity.libc,
     lockDigest,
   }
@@ -523,21 +517,35 @@ function acquirePublishLock(python, lockFile, env) {
   })
 }
 
-async function releasePublishLock(lock) {
+export async function releasePublishLock(lock) {
   if (!lock?.child) return
+  const deadline = Date.now() + LOCK_RELEASE_TIMEOUT_MILLISECONDS
+  const remaining = () => Math.max(0, deadline - Date.now())
+  const waitForExit = timeout => lock.child.exitCode !== null || lock.child.signalCode !== null ? Promise.resolve(true) : new Promise(resolve => {
+    const onExit = () => { clearTimeout(timer); resolve(true) }
+    const timer = setTimeout(() => { lock.child.off('exit', onExit); resolve(false) }, timeout)
+    lock.child.once('exit', onExit)
+  })
+  const guardianAlive = () => { try { process.kill(lock.guardianPid, 0); return true } catch (error) { if (error?.code === 'ESRCH') return false; throw error } }
+  const waitForGuardianExit = async () => { while (guardianAlive() && remaining() > 0) await wait(Math.min(25, remaining())); return !guardianAlive() }
+  const signalGuardian = signal => {
+    if (lock.guardianPid === lock.child.pid) return
+    try { process.kill(lock.guardianPid, signal) } catch (error) { if (error?.code !== 'ESRCH') throw error }
+  }
+  const phase = LOCK_RELEASE_TIMEOUT_MILLISECONDS / 3
+  const finishGuardian = async () => { if (guardianAlive()) signalGuardian('SIGKILL'); return await waitForGuardianExit() }
   if (lock.child.exitCode !== null || lock.child.signalCode !== null) {
-    try {
-      process.kill(lock.guardianPid, 'SIGTERM')
-    } catch (error) {
-      if (error?.code !== 'ESRCH') throw error
-    }
+    if (!await finishGuardian()) throw new SkilledProposerVenvError('ALI_1505_PUBLISH_LOCK_RELEASE_TIMEOUT', 'publish-lock guardian did not exit after SIGKILL')
     return
   }
-  const exited = new Promise(resolve => lock.child.once('exit', resolve))
   lock.child.stdin.end('release\n')
-  const timeout = setTimeout(() => lock.child.kill(), PYTHON_PROBE_TIMEOUT_MILLISECONDS)
-  await exited
-  clearTimeout(timeout)
+  signalGuardian('SIGTERM')
+  if (await waitForExit(Math.min(phase, remaining()))) { if (await finishGuardian()) return }
+  lock.child.kill('SIGTERM')
+  if (await waitForExit(Math.min(phase, remaining()))) { if (await finishGuardian()) return }
+  signalGuardian('SIGKILL'); lock.child.kill('SIGKILL')
+  const [holderExited, guardianExited] = await Promise.all([waitForExit(remaining()), waitForGuardianExit()])
+  if (!holderExited || !guardianExited) throw new SkilledProposerVenvError('ALI_1505_PUBLISH_LOCK_RELEASE_TIMEOUT', 'publish-lock holder or guardian did not exit after SIGKILL')
 }
 
 async function killPublishLockLeaderAtTestHook(lock) {
@@ -603,7 +611,7 @@ function isolatedChildEnv(sslCertFile) {
   return env
 }
 
-export async function ensureSkilledProposerVenv(options) {
+export async function ensureSkilledProposerVenv(options, dependencies = {}) {
   // This must stay first: unsupported interpreters may not create cache state or
   // invoke a mutating `python -m` command.
   const probeEnv = isolatedPythonProbeEnv()
@@ -643,6 +651,7 @@ export async function ensureSkilledProposerVenv(options) {
   const lockedReport = { ...baseReport, waitedForPublishLock: lock.waitedForPublishLock }
 
   const stage = join(options.cacheRoot, 'venvs', `.${publishKey}-${process.pid}-${randomUUID()}.tmp`)
+  let primaryError, hasPrimaryError = false
   try {
     // Holding the per-key publish lock proves that no live builder for this key
     // can own one of these sibling staging directories.
@@ -726,9 +735,17 @@ export async function ensureSkilledProposerVenv(options) {
       )
     }
     return { ...installingReport, publishedVenv: true }
+  } catch (error) {
+    primaryError = error
+    hasPrimaryError = true
+    throw error
   } finally {
     rmSync(stage, { recursive: true, force: true })
-    await releasePublishLock(lock)
+    try { await (dependencies.releasePublishLock || releasePublishLock)(lock) }
+    catch (cleanupError) {
+      if (hasPrimaryError) throw new AggregateError([primaryError, cleanupError], 'ALI_1505_PRIMARY_AND_PUBLISH_LOCK_RELEASE_FAILED')
+      throw cleanupError
+    }
   }
 }
 

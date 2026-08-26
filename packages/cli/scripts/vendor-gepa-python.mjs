@@ -19,6 +19,10 @@ const archiveArgumentIndex = process.argv.indexOf('--archive')
 const suppliedArchive = archiveArgumentIndex === -1
   ? null
   : process.argv[archiveArgumentIndex + 1]
+const destinationArgumentIndex = process.argv.indexOf('--destination')
+const suppliedDestination = destinationArgumentIndex === -1
+  ? null
+  : process.argv[destinationArgumentIndex + 1]
 const sourceSrc = resolve(sourceRoot, 'src')
 const sourcePyproject = resolve(sourceRoot, 'pyproject.toml')
 const sourceManifest = resolve(sourceRoot, 'manifest.json')
@@ -31,6 +35,7 @@ const GEPA_VERSION = '0.1.4'
 const GEPA_RELEASE_COMMIT = '8b0ce6cd99a234f6b74daf37558a2ac0ce18f975'
 const GEPA_WHEEL_FILENAME = 'gepa-0.1.4-py3-none-any.whl'
 const GEPA_WHEEL_SHA256 = '12b971039599625c156d2231f6d72a29c31a22e9c237689459b5f1a3c353f532'
+const GEPA_TREE_SHA256 = '8cb2ef66ca4212f416d1c4b23421f0de377b4997c1c50fd41ac16ca31015de99'
 const hasSourcePackage = existsSync(sourceSrc)
   && existsSync(sourcePyproject)
   && existsSync(sourceManifest)
@@ -75,19 +80,55 @@ function collectFileHashes(root, prefix = '') {
   return files
 }
 
-function assertOfficialVendoredManifest() {
+function fileInventoryDigest(files) {
+  const entries = Object.entries(files).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex')
+}
+
+function assertOfficialVendoredManifest(root = officialVendorRoot) {
+  const manifestPath = resolve(root, 'manifest.json')
   let manifest
   try {
-    manifest = JSON.parse(readFileSync(officialVendoredManifest, 'utf8'))
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
   } catch (error) {
     throw new Error(`Official GEPA vendored manifest is unreadable: ${error.message}`)
+  }
+
+  if (manifest.schemaVersion !== 'gepa-vendor.v1') {
+    throw new Error('Official GEPA vendored manifest identity mismatch: schemaVersion')
+  }
+  if (!manifest.upstream || typeof manifest.upstream !== 'object' || Array.isArray(manifest.upstream)) {
+    throw new Error('Official GEPA vendored manifest identity mismatch: upstream')
+  }
+  for (const [field, expected] of [
+    ['package', 'gepa'],
+    ['version', GEPA_VERSION],
+    ['repositoryCommit', GEPA_RELEASE_COMMIT],
+  ]) {
+    if (manifest.upstream[field] !== expected) {
+      throw new Error(`Official GEPA vendored manifest identity mismatch: ${field}`)
+    }
+  }
+  if (!manifest.upstream.wheel || typeof manifest.upstream.wheel !== 'object' || Array.isArray(manifest.upstream.wheel)) {
+    throw new Error('Official GEPA vendored manifest identity mismatch: wheel')
+  }
+  for (const [field, expected] of [['filename', GEPA_WHEEL_FILENAME], ['sha256', GEPA_WHEEL_SHA256]]) {
+    if (manifest.upstream.wheel[field] !== expected) {
+      throw new Error(`Official GEPA vendored manifest identity mismatch: wheel.${field}`)
+    }
   }
 
   if (!manifest.files || typeof manifest.files !== 'object' || Array.isArray(manifest.files)) {
     throw new Error('Official GEPA vendored manifest is missing file hashes')
   }
+  if (!Object.hasOwn(manifest.files, 'LICENSE')) {
+    throw new Error('Official GEPA vendored manifest is missing required LICENSE')
+  }
+  if (!Object.hasOwn(manifest.files, 'src/gepa/__init__.py')) {
+    throw new Error('Official GEPA vendored manifest is missing required GEPA package entry')
+  }
 
-  const actualFiles = collectFileHashes(officialVendorRoot)
+  const actualFiles = collectFileHashes(root)
   delete actualFiles['manifest.json']
   const expectedEntries = Object.entries(manifest.files).sort(([left], [right]) => left.localeCompare(right))
   const actualEntries = Object.entries(actualFiles).sort(([left], [right]) => left.localeCompare(right))
@@ -102,9 +143,28 @@ function assertOfficialVendoredManifest() {
       throw new Error(`Official GEPA vendored manifest mismatch at ${expectedPath}`)
     }
   }
+  const treeSha256 = fileInventoryDigest(actualFiles)
+  if (treeSha256 !== GEPA_TREE_SHA256) {
+    throw new Error(`Official GEPA vendored tree digest mismatch: expected ${GEPA_TREE_SHA256}, got ${treeSha256}`)
+  }
+
+  return {
+    marker: 'ALI_1588_GEPA_VENDOR_VERIFIED',
+    schemaVersion: manifest.schemaVersion,
+    wheelSha256: manifest.upstream.wheel.sha256,
+    treeSha256,
+    fileCount: actualEntries.length,
+  }
 }
 
-function extractPinnedGepa(archivePath) {
+function writeValidationReceipt(receipt) {
+  if (!receipt || receipt.marker !== 'ALI_1588_GEPA_VENDOR_VERIFIED') {
+    throw new Error('Official GEPA vendored manifest validation produced no receipt')
+  }
+  process.stdout.write(`${JSON.stringify(receipt)}\n`)
+}
+
+function extractPinnedGepa(archivePath, destinationRoot) {
   const extractor = String.raw`
 from pathlib import Path, PurePosixPath
 import shutil
@@ -132,7 +192,7 @@ with zipfile.ZipFile(archive_path) as archive:
         with archive.open(member) as source, destination.open('wb') as output:
             shutil.copyfileobj(source, output)
 `
-  const result = spawnSync('python3', ['-c', extractor, archivePath, officialVendorRoot], {
+  const result = spawnSync('python3', ['-c', extractor, archivePath, destinationRoot], {
     encoding: 'utf8',
   })
   if (result.status !== 0) {
@@ -141,14 +201,14 @@ with zipfile.ZipFile(archive_path) as archive:
   }
 }
 
-function vendorOfficialGepa(archivePath) {
+function vendorOfficialGepa(archivePath, destinationRoot = officialVendorRoot) {
   assertPinnedGepaArchive(archivePath)
-  rmSync(officialVendorRoot, { recursive: true, force: true })
-  mkdirSync(officialVendorRoot, { recursive: true })
-  extractPinnedGepa(archivePath)
+  rmSync(destinationRoot, { recursive: true, force: true })
+  mkdirSync(destinationRoot, { recursive: true })
+  extractPinnedGepa(archivePath, destinationRoot)
 
-  const files = collectFileHashes(officialVendorRoot)
-  writeFileSync(officialVendoredManifest, `${JSON.stringify({
+  const files = collectFileHashes(destinationRoot)
+  writeFileSync(resolve(destinationRoot, 'manifest.json'), `${JSON.stringify({
     schemaVersion: 'gepa-vendor.v1',
     upstream: {
       package: 'gepa',
@@ -161,10 +221,19 @@ function vendorOfficialGepa(archivePath) {
     },
     files,
   }, null, 2)}\n`)
+  return assertOfficialVendoredManifest(destinationRoot)
 }
 
 if (archiveArgumentIndex !== -1 && (!suppliedArchive || suppliedArchive.startsWith('--'))) {
   throw new Error('Expected a source archive path after --archive')
+}
+if (destinationArgumentIndex !== -1 && (!suppliedDestination || suppliedDestination.startsWith('--'))) {
+  throw new Error('Expected a destination directory after --destination')
+}
+
+if (suppliedArchive && suppliedDestination) {
+  writeValidationReceipt(vendorOfficialGepa(suppliedArchive, suppliedDestination))
+  process.exit(0)
 }
 
 if (shouldRefresh) {
@@ -190,7 +259,7 @@ if (shouldClean) {
 
 if (!hasSourcePackage || !hasConnectorSourcePackage) {
   if (hasVendoredPackage && hasVendoredConnectorPackage && hasOfficialVendoredPackage) {
-    assertOfficialVendoredManifest()
+    writeValidationReceipt(assertOfficialVendoredManifest())
     process.exit(0)
   }
   if (hasVendoredPackage || hasVendoredConnectorPackage || hasOfficialVendoredPackage) {

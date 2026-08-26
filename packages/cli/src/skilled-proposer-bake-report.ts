@@ -1,0 +1,1 @@
+export const SKILLED_PROPOSER_BAKE_REPORT_FIELDS = ['venv', 'publishKey', 'publishedVenv', 'waitedForPublishLock', 'pythonPathEntries', 'executedPipArgv', 'sslCertFile', 'warnings', 'marker', 'python', 'packageRoot', 'manager', 'lock', 'vendoredGepaPath', 'launcherVenv', 'launcherSslCertFile'] as const

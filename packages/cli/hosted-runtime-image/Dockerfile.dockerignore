@@ -1,0 +1,9 @@
+**
+!packages/
+!packages/cli/
+!packages/cli/hosted-runtime-image/
+!packages/cli/hosted-runtime-image/dist/
+!packages/cli/hosted-runtime-image/dist/orizu.js
+!packages/cli/hosted-runtime-image/dist/skilled-proposer-assets.json
+!packages/cli/red-gate-local/
+!packages/cli/red-gate-local/verify_ali_1588_hosted_artifact.ts

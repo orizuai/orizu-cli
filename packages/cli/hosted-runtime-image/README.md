@@ -60,7 +60,7 @@ release/git ref.
 | Base OS (image) | `amazonlinux:2023` | matches Vercel Sandbox's Amazon Linux 2023 / glibc runtime |
 | Base runtime (snapshot) | `node24` sandbox | Vercel default runtime |
 | Node | 24.x (NodeSource) | `NODE_MAJOR` build ARG |
-| Bun | latest stable | `bun.sh/install` |
+| Bun | 1.3.13 x64 baseline | `BUN_VERSION` + `BUN_LINUX_X64_BASELINE_SHA256` build ARGs |
 | git | AL2023 repo | — |
 | **Orizu CLI** | **published `orizu@X.Y.Z`** (CI snapshot bake) or **from source** (`git describe`, escape hatch) | `cli-v*` tag → publish-cli.yml, or this checkout — `bun build src/index.ts` |
 | OpenCode | `opencode-ai@1.14.41` | `OPENCODE_PINNED_VERSION` (`hosted-harness-opencode.ts`) — npm-pinned |
@@ -68,6 +68,11 @@ release/git ref.
 | Python | `python3.11` (+ `pip`); `/usr/local/bin/python3` → `python3.11` | AL2023 repo (system python is 3.9 — too old for braintrust, which needs ≥3.10). The symlink wins by PATH precedence so plain `python3` (what the GEPA runner manifest and the CLI launch) resolves to 3.11 and can import braintrust; dnf's absolute-shebang `/usr/bin/python3` scripts stay on 3.9 |
 | Braintrust (python) | `braintrust[cli]==0.30.0` (PyPI; the `[cli]` extra carries the CLI's deps) | `DEFAULT_BRAINTRUST_PY_VERSION` (`provision-snapshot.mjs`) / `BRAINTRUST_PY_VERSION` ARG — ALI-1048 |
 | Braintrust (npm) | `braintrust@3.23.1` | `DEFAULT_BRAINTRUST_NPM_VERSION` (`provision-snapshot.mjs`) / `BRAINTRUST_NPM_VERSION` ARG — ALI-1048 |
+
+The image deliberately omits a whole-system `dnf -y update`: rebuilds consume
+the selected AL2023 base plus explicitly installed repository packages without
+an extra unbounded upgrade layer. Base-image rebuild cadence carries OS security
+updates; this determinism/security tradeoff is tracked for follow-up review.
 
 Both Braintrust packages ship a `braintrust` bin; the **python** CLI owns the PATH
 name **deterministically** (Highlight's eval harness is python): npm installs
@@ -133,9 +138,10 @@ The underlying command is:
 
 ```bash
 docker buildx build --platform linux/amd64 \
+  --file packages/cli/hosted-runtime-image/Dockerfile \
   --build-arg ORIZU_CLI_GIT_VERSION=<git-describe> \
   --output type=image,name=vcr.vercel.com/<team>/<project>/orizu-hosted-runtime:<tag>,push=true,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true \
-  packages/cli/hosted-runtime-image
+  .
 ```
 
 ## Path B — Vercel snapshot, zero-Docker v0 (`provision-snapshot.mjs`)
@@ -155,15 +161,17 @@ bun packages/cli/hosted-runtime-image/provision-snapshot.mjs --dry-run
 
 # PUBLISHED-PACKAGE mode (what CI runs): bake the released orizu@X.Y.Z from npm.
 bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
-  --cli-version X.Y.Z --expiration 0 [--id-file /tmp/snapshot-id]
+  --cli-version X.Y.Z --duration 195 --expiration 0 [--id-file /tmp/snapshot-id]
 
 # FROM-SOURCE mode (manual escape hatch; label DEFAULTS to git-describe):
 bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
-  --duration 30 --expiration 0
+  --expiration 0
 ```
 
 `--expiration 0` = never expire (omit for the SDK default). `--id-file` also
-writes the snapshot id to a file (CI handoff). Pin overrides:
+writes the snapshot id to a file (CI handoff). Omitting `--duration` selects the
+derived safe minimum (195 minutes published, 207 from source); smaller explicit
+values are rejected. Pin overrides:
 `--opencode-version`, `--claude-sdk-version` (in published mode the Claude SDK
 ships inside the package; the flag only annotates the marker), and
 `--braintrust-py-version` / `--braintrust-npm-version` (ALI-1048; strictly
