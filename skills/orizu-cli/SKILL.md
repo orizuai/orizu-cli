@@ -11,7 +11,7 @@ The artifacts enter the journey where they are needed: a **dataset** holds versi
 
 ## Critical: scorer-runner input contract
 
-`orizu optimizations run-gepa` sends the scorer runner a GEPA-shaped row (`{source_row, candidate_id, candidate_output, …}`), not the flat-row shape used by `runners exec --scorer-version`. A judge runner built for flat rows will silently score every candidate 0 unless `flat_row` is selected by `--scorer-input-contract` or the runner manifest and, when needed, the candidate field is selected by flag or manifest. Use the official adapter rather than changing registered runner bytes. The default seed preflight raises `SeedValidationRefused` for a uniformly degenerate seed; `--allow-degenerate-seed` bypasses that refusal. Read `references/prompt-control-plane.md` under “Scorer-Runner Input Contracts” before running optimization.
+A judge runner built for flat rows will silently score every candidate 0 unless `flat_row` is selected by `--scorer-input-contract` or the runner manifest and, when needed, the candidate field is selected by flag or manifest.
 
 # Journey
 
@@ -57,17 +57,8 @@ The artifacts enter the journey where they are needed: a **dataset** holds versi
 - Use `orizu instructions` for the instruction set. Each run targets one model-config profile and treats its complete component map as the candidate; promotion never moves one component independently.
 - Inspect the local run logs when available, otherwise export the run. Write and attach a markdown report using `references/optimization-reports.md`; the report should explain candidate tradeoffs and regressions clearly enough for the human to make the promotion decision.
 
-Bundled `run-gepa` behavior that is not safely inferred from command discovery:
-
-- Budget controls are mutually exclusive. If none is provided, `run-gepa` uses `--budget auto`, the balanced medium preset.
-- The skilled proposer prepares or reuses its managed Python environment. Its aggregate proposal token/call budgets are independent of metric-call and per-response reflection limits; it is incompatible with a reflection prompt template.
-- The reflective LM's final text becomes the selected component's next value, so it must return only the complete updated component value.
-- Keep provider-native reasoning controls separate from component text. Anthropic reflection requires an explicit reflection max-token limit; OpenAI may omit one unless the user requests a cap.
-- Legacy GEPA logs an exhausted retryable reflection failure, charges proposal and iteration budgets, and continues. The official engine increments proposal usage only after successful `on_proposal_end`; skilled-proposer failures re-raise and stop.
-- A perfect selected mini-batch skips reflection and child creation by default (`--skip-perfect-parent-reflection`); use `--no-skip-perfect-parent-reflection` to override it. Automatic row-evaluation concurrency is bounded by workload and host limits.
-- Complete local logs include row inputs, outputs, scores, feedback, and reflection material; server events redact row snapshots and reflection prompts by default.
-
-Read `references/optimization-with-gepa.md` for the full execution workflow. DSPy is relevant only when the customer already uses it or requests an external DSPy GEPA implementation.
+Bundled `run-gepa` flag behavior and execution semantics live in `references/optimization-with-gepa.md`.
+Read that reference before configuring a run; keep this journey focused on workflow and exit criteria.
 
 **Exit:** The human has made a promotion decision from the optimization report; if shipping, the new profile version is live.
 
