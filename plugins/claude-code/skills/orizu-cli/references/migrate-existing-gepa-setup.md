@@ -5,17 +5,16 @@ For a customer already running official GEPA from a plain script — inline
 `metric(row, output)`. The dict becomes one instruction-set profile: its keys
 become the set's fixed shape, and its values become that profile's components.
 Use `orizu instructions` as the only creation and update path for those
-customer-owned instructions. A coding agent prepares the complete manifest;
-a human curator runs its mutations from the local CLI with a user token.
+customer-owned instructions. Prepare the complete manifest, then follow the
+[Authority map](../SKILL.md#authority-map) for its mutations.
 
 The ordering rule: **nothing is optimized until parity is proven.** The last
 step before `run-gepa` is always `orizu scorers verify-parity`, which runs the
 migrated scorer runner under the exact payload `run-gepa` sends it and the
 customer's original metric over the same rows, and exits 0 only if they agree.
 
-Commands are shown with `--local`; drop it against a hosted server except for
-instruction-set mutations and pointer moves marked human-only, which a hosted
-agent prepares but never executes.
+Commands are shown with `--local`; drop it against a hosted server and follow
+the Authority map for surface-specific execution and hand-offs.
 
 ## 0. Read their script
 
@@ -97,17 +96,16 @@ profile and are never shared across profiles or sets.
 
 ```bash
 orizu --local runners push ./candidate-runner \
-  --project <team>/<project> --name gepa-candidate-runner --label default --json
+  --project <team>/<project> --name gepa-candidate-runner --json
 
-# Human/local CLI only: a human curator with a user token runs this mutation.
 orizu --local instructions create ./orizu.instruction-set.json \
   --project <team>/<project> \
   --runner-version <candidate-runner-version-id> \
   --model-config <provider/model> --json
 ```
 
-The manifest carries the instruction set's `name`, human-readable
-`description`, fixed `shape`, and component values. Put each original dict
+The agent-created runner version is unlabeled. No standalone runner-label command exists. Following the [Authority map](../SKILL.md#authority-map), if a human accepts its exact ID as default, the human curator runs `orizu --local runners pull gepa-candidate-runner --project <team>/<project> --version <candidate-runner-version-id> --out ./candidate-runner-default-handoff`, leaves that fresh exact-version directory unchanged, then runs `orizu --local runners push ./candidate-runner-default-handoff --project <team>/<project> --name gepa-candidate-runner --label default --json`. The manifest
+carries the set's `name`, human-readable `description`, fixed `shape`, and component values. Put each original dict
 value in a file without changing its bytes. This one-component example maps
 the old `system` key to `system.md`:
 
@@ -186,7 +184,7 @@ def metric(row, model_output):                      # what verify-parity calls
 
 ```bash
 orizu --local runners push ./scorer-runner \
-  --project <team>/<project> --name gepa-scorer-runner --label default --json
+  --project <team>/<project> --name gepa-scorer-runner --json
 
 orizu --local judges push ./judge \
   --project <team>/<project> --runner-version <scorer-runner-version-id> --json
@@ -194,11 +192,10 @@ orizu --local judges push ./judge \
 orizu --local scorers register --project <team>/<project> \
   --name gepa-migrated-metric --manifest ./scorer.manifest.json \
   --prompt-version <judge-version-id> \
-  --runner-version <scorer-runner-version-id> \
-  --label production --json                        # -> scorer_version_id
+  --runner-version <scorer-runner-version-id> --json # -> scorer_version_id
 ```
 
-`scorer.manifest.json` needs all four fields below;
+Both agent-created versions are unlabeled. For accepted versions, a human curator materializes the exact runner with `orizu --local runners pull gepa-scorer-runner --project <team>/<project> --version <scorer-runner-version-id> --out ./scorer-runner-default-handoff`, leaves that fresh directory unchanged, runs `orizu --local runners push ./scorer-runner-default-handoff --project <team>/<project> --name gepa-scorer-runner --label default --json`, then runs `orizu --local scorers labels set gepa-migrated-metric production --version <scorer-version-id> --project <team>/<project> --json`. `scorer.manifest.json` needs all four fields below;
 `app/api/cli/scorers/route.ts` rejects a manifest missing `implementation_kind`
 or `metric_key`, and `mode` must be `row` or `set`:
 
@@ -324,7 +321,7 @@ agreed. A limited run reports `parity: false` with
 
 ```bash
 orizu --local optimizers push ./optimizer \
-  --project <team>/<project> --name gepa-optimizer --label gepa-v1 --json
+  --project <team>/<project> --name gepa-optimizer --json
 
 orizu --local optimizations run-gepa \
   --project <team>/<project> \
@@ -363,26 +360,12 @@ reflected on each round.
 `references/optimization-with-gepa.md` for reflection-model and budget flags.
 Pass `--scorer-candidate-field <field>` here too if you passed it to
 `verify-parity`: the payload the runner sees must be the one parity was proven
-under. Afterwards, promote only a candidate that passed held-out validation.
-Copy the accepted candidate's complete component map back into the manifest's
-files, then prepare the exact commands for one new version of the selected
-profile. Both the push and the profile promotion are human-only: a coding agent
-prepares the validated manifest and exact handoff commands, but a human curator
-runs both from the local CLI with a user token.
+under. Afterwards, consider only candidates that passed held-out validation.
+Write and attach the optimization report, then obtain the human decision. Following the [Authority map](../SKILL.md#authority-map), in the simpler one-shot path a human curator runs `orizu --local optimizations promote <run-id> --candidate <candidate-id> --label production --project <team>/<project> --json` after acceptance. In the equivalent two-stage path for separate materialization, the coding agent materializes once with the unlabeled command below.
 
 ```bash
-# Human/local CLI only: a human curator with a user token runs this mutation.
-orizu --local instructions push ./orizu.instruction-set.json \
-  --project <team>/<project> --set <instruction-set-slug> \
-  --runner-version <candidate-runner-version-id> --json
-
-# Human/local CLI only: the human curator moves the production pointer.
-orizu --local instructions profiles promote <instruction-set-slug> \
-  --project <team>/<project> --model-config <provider/model> \
-  --version <new-profile-version-number> --json
+orizu --local optimizations promote <run-id> --candidate <candidate-id> \
+  --project <team>/<project> --json
 ```
 
-The push creates a complete profile version. After the human promotion, only
-that profile's production pointer has moved; a component is never promoted by
-itself. With parity proven, its score is comparable to the seed score their own
-script reports.
+A human curator re-runs the same promotion as `orizu --local optimizations promote <run-id> --candidate <candidate-id> --label production --project <team>/<project> --json`. The idempotent finalizer finds the existing profile version by run and candidate provenance, moves production to it, and creates no duplicate profile version or candidate-promoted event.

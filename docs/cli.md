@@ -506,7 +506,7 @@ orizu instructions list --project my-team/quality-eval --status active
 orizu instructions show planner --project my-team/quality-eval
 orizu instructions sync planner --out ./instructions --project my-team/quality-eval
 orizu instructions profiles new planner --project my-team/quality-eval --model-config anthropic/claude-haiku
-# Human/local CLI only: a human runs create and push.
+# After prior plan ratification, a local agent under the user's token runs create/push; hosted sessions hand them to a human.
 orizu instructions push ./orizu.instruction-set.json --project my-team/quality-eval --set planner --json
 ```
 

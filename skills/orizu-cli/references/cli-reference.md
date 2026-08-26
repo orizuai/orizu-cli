@@ -67,7 +67,8 @@ orizu teams members role --team my-team --email person@example.com --role admin
 
 Allowed roles:
 - `admin`
-- `member`
+- `curator`
+- `judge`
 
 ### Projects
 
@@ -79,24 +80,21 @@ orizu projects create --name "Quality Eval" --team my-team
 
 ### Instruction sets
 
+Follow the [Authority map](../SKILL.md#authority-map) for the executor on the current surface.
+
 ```bash
 orizu instructions list --project my-team/quality-eval [--status active|archived|all] [--json]
 orizu instructions show <set> --project my-team/quality-eval [--status active|archived|all] [--json]
-# Human/local CLI only: a human runs create/push; hosted agents may run profiles new and sync.
 orizu instructions create ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--model-config <identity>] [--json]
 orizu instructions push ./orizu.instruction-set.json --project my-team/quality-eval [--set <slug-or-exact-name>] [--runner-version <id>] [--json]
 orizu instructions sync <set> --out ./instructions --project my-team/quality-eval [--model-config <identity>] [--json]
 orizu instructions profiles new <set> --project my-team/quality-eval --model-config <identity> [--json]
-# Human/local CLI only: profile production-pointer moves.
 orizu instructions profiles promote <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
 orizu instructions profiles rollback <set> --project my-team/quality-eval --model-config <identity> --to <n> [--json]
 orizu instructions default show <set> --project my-team/quality-eval [--json]
-# Human/local CLI only: the set-wide default-pointer move.
 orizu instructions default move <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
-# Human/local CLI only: shape mutations.
 orizu instructions shape add <set> --project my-team/quality-eval --key <key> --from <manifest> [--json]
 orizu instructions shape remove <set> --project my-team/quality-eval --key <key> [--json]
-# Human/local CLI only: visibility mutations.
 orizu instructions archive <slug-or-exact-name> --project my-team/quality-eval [--json]
 orizu instructions restore <slug-or-exact-name> --project my-team/quality-eval [--json]
 ```
@@ -107,26 +105,24 @@ should not teach it. A set can be addressed by its stable slug or exact name;
 the slug does not change when the display name changes. `list` returns each
 instruction set and its ordered shape. `show` returns the default and every
 model-config profile's production state. Use `--status archived` or `--status
-all` to include archived sets. A human curator runs create, push, shape,
-archive, and restore mutations from the local CLI with a user token. Archive
-and restore change visibility only:
+all` to include archived sets. The [Authority map](../SKILL.md#authority-map) selects the
+executor for each surface. Archive and restore change visibility only:
 archived sets continue to resolve and sync. `create` and `push` read a local
 manifest; JSON output is one document per line. `push --set` updates the named
 or slug-addressed set independently of the manifest's display name.
 
 `profiles new` copies the default component map into a model-config profile without
-changing its production resolution; hosted agents may create this seed because
-it does not move production. `profiles promote` moves that profile to a
+changing its production resolution. `profiles promote` moves that profile to a
 version, and `profiles rollback` creates a new version copied from `--to`,
 including that target version's settings version, before moving production.
-These label-moving commands are human-only. For a single-component set that
-wraps a prompt, only default-profile promote and rollback also move the wrapped
+`SKILL.md` supplies the promotion-decision and execution hand-off. For a
+single-component set that wraps a prompt, only default-profile promote and rollback also move the wrapped
 prompt's production label in the same transaction and print `default profile →
 prompt label`. This coupling is one-way: moving the prompt label directly does
 not repoint the profile.
 
 `default show` reports the default and the model configs that currently resolve
-to it. `default move` is human-only and first reads that impact before moving
+to it. `default move` first reads that impact before moving
 the pointer to a sealed, commit-anchored profile version. `shape add` and
 `shape remove` create a new complete version for every profile; they never move
 the default or a production label. The set does not resolve for affected model

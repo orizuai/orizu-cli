@@ -76,45 +76,40 @@ text, then prepare a manifest such as:
 }
 ```
 
-Commit or otherwise hand the complete manifest and its component files to the
-human curator. Do not run an instruction-set mutation from the hosted session.
+Commit the complete manifest and its component files, then follow the
+[Authority map](../SKILL.md#authority-map) for each mutation.
 
-## Human-run consolidation
+## Consolidation
 
-Consolidation changes ownership and visibility, so a human curator must run it
-from the local CLI with a user token. Create the consolidated set and inspect
-its complete profiles before changing any pointer:
+Consolidation changes ownership and visibility. Create the consolidated set
+through the surface selected by the [Authority map](../SKILL.md#authority-map) and inspect its complete
+profiles before changing any pointer:
 
 ```bash
-# Human/local CLI only: a human curator with a user token runs this mutation.
 orizu instructions create ./orizu.instruction-set.json --project <team/project> --model-config <identity> --json
 orizu instructions show <slug-or-exact-name> --project <team/project> --status all --json
 ```
 
-After verifying the new set, the human archives each redundant one-component
+After verifying the new set, archive each redundant one-component
 set. Archive changes visibility only; the archived set still resolves and
-syncs until the human pointer move is complete, so it remains a recovery
+syncs until the pointer move is complete, so it remains a recovery
 source.
 
 ```bash
-# Human/local CLI only: a human curator with a user token runs this mutation.
 orizu instructions archive <slug-or-exact-name> --project <team/project> --json
 ```
 
-The human must explicitly move the consolidated set's default or promote a
-named model-config profile. Coding agents stop after preparing the manifest and
-handoff details rather than running these commands:
+After the explicit promotion decision, move the consolidated set's default or
+promote a named model-config profile through the Authority map:
 
 ```bash
-# Human/local CLI only: the human curator moves these pointers.
 orizu instructions default move <set> --project <team/project> --model-config <identity> --version <n> --json
 orizu instructions profiles promote <set> --project <team/project> --model-config <identity> --version <n> --json
 ```
 
-The human confirms the resolved default and every production profile after the
-move. If a redundant set must become visible again, the human restores it:
+Confirm the resolved default and every production profile after the move. If a
+redundant set must become visible again, restore it through the Authority map:
 
 ```bash
-# Human/local CLI only: a human curator with a user token runs this mutation.
 orizu instructions restore <slug-or-exact-name> --project <team/project> --json
 ```

@@ -1,6 +1,6 @@
 # Instruction Control Plane
 
-Use this reference for the Phase 0 instruction, judge, scorer, runner, score, run, and optimization event control plane. These commands are for coding agents that need to push local artifacts into Orizu, run them locally, submit scores, and stream optimization progress back to the platform, except for instruction-set mutations and pointer moves explicitly marked for a human using the local CLI.
+Use this reference for the Phase 0 instruction, judge, scorer, runner, score, run, and optimization event control plane. Follow the [Authority map](../SKILL.md#authority-map) before executing its command sequences.
 
 ## Contents
 
@@ -16,14 +16,14 @@ Use this reference for the Phase 0 instruction, judge, scorer, runner, score, ru
 1. Verify auth: `orizu --local whoami`.
 2. Export API context for scripts: `eval "$(orizu --local env --project <team>/<project>)"`.
 3. Create immutable dataset versions before creating splits.
-4. Push runners before preparing instruction-set handoffs, judges, or prompt-runner scorers; instruction components pin runner versions. A human curator runs the instruction-set mutation after the runner version exists.
+4. Push runners before instruction-set mutations, judges, or prompt-runner scorers; instruction components pin runner versions. Follow the Authority map after the runner version exists.
 5. Register scorers after their backing judge prompt/runner exists, then bind headline/tracked scorers to instruction components when the UI should show those metrics.
 6. Use `runners exec` to prove the runner contract locally before submitting runs or score runs.
 7. For common text-candidate optimization, prefer `orizu optimizations run-gepa`; it starts the run and logs events for you.
 8. After `run-gepa`, inspect `logs/<optimization_run_id>` first; it is the complete local trace for coding-agent analysis.
 9. Use `orizu optimizations export <run-id> --out <run-id>.optimization.json` when the local log is missing or the run happened elsewhere.
-10. Create a profile version from an accepted candidate with `orizu optimizations promote <run-id> --candidate <id>`; output reports its profile version and each component as changed or carried. Give that version to a human to inspect and move the production pointer.
-11. Write and attach a markdown report for finished, failed, or cancelled runs; use `optimization-reports.md` for structure and diagnostic guidance.
+10. Write and attach a markdown report for finished, failed, or cancelled runs; use `optimization-reports.md` for structure and diagnostic guidance.
+11. Follow the [Authority map](../SKILL.md#authority-map). Simpler one-shot path: after the human accepts the report, a human curator runs `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`, materializing and labeling once. Equivalent two-stage path: an agent runs `orizu optimizations promote <run-id> --candidate <id> --project <team/project>` after acceptance. A human curator re-runs the same promotion as `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`. The idempotent finalizer finds the exact existing materialized version by run and candidate provenance, moves production, and creates no duplicate profile version or candidate-promoted event.
 12. For custom optimizers, start an optimization run before local execution, then stream events into that run.
 13. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
 14. Promote only accepted candidates; rejected candidates stay in optimization events.
@@ -35,25 +35,21 @@ Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. 
 An instruction set has a fixed, ordered shape of named components (key → text).
 It has one profile per model config. Existing prompts appear as one-component
 sets. Inspect or write them with the customer-facing `orizu instructions`
-namespace:
+namespace. Follow the [Authority map](../SKILL.md#authority-map) for mutation
+custody before copying a command:
 
 ```bash
 orizu instructions list --project core/evals --status active --json
 orizu instructions show planner --project core/evals --status active --json
-# Human/local CLI only: a human runs create/push; hosted agents may run profiles new.
 orizu instructions create ./orizu.instruction-set.json --project core/evals --model-config anthropic/claude-haiku
 orizu instructions push ./orizu.instruction-set.json --project core/evals --set planner
 orizu instructions profiles new planner --project core/evals --model-config anthropic/claude-haiku
-# Human/local CLI only: profile production-pointer moves.
 orizu instructions profiles promote planner --project core/evals --model-config anthropic/claude-haiku --version 2
 orizu instructions profiles rollback planner --project core/evals --model-config anthropic/claude-haiku --to 1
 orizu instructions default show planner --project core/evals
-# Human/local CLI only: the set-wide default-pointer move.
 orizu instructions default move planner --project core/evals --model-config anthropic/claude-haiku --version 2
-# Human/local CLI only: shape mutations.
 orizu instructions shape add planner --project core/evals --key safety --from ./orizu.instruction-set.json
 orizu instructions shape remove planner --project core/evals --key safety
-# Human/local CLI only: visibility mutations.
 orizu instructions archive planner --project core/evals --json
 orizu instructions restore planner --project core/evals --json
 ```
@@ -75,7 +71,7 @@ production pointers in place. The instruction set does not resolve for affected
 model configs until those pointers move to their new shape-change versions; use
 the follow-up commands printed by the text CLI.
 
-Before a human moves a default, `default show` lists the model configs whose
+Before moving a default, `default show` lists the model configs whose
 resolution would change. A move targets a version by model-config identity and
 version number, and the database rejects an unsealed or non-commit-anchored
 component map. Shape changes create a new `shape_change` version for every profile;
@@ -99,12 +95,12 @@ Identity-less pre-slug trees are never auto-migrated: sync preserves them and
 returns `instruction_set_sync_legacy_identity_required`, requiring a verified
 clean output root or an explicit operator move.
 
-Use `profiles new` to seed an additional model-config profile from the default;
-hosted agents may do this because it does not move production. Use `profiles
+Use `profiles new` to seed an additional model-config profile from the default.
+Use `profiles
 promote` to move only that profile's production label; use `profiles rollback
 --to <n>` to create a new rollback version from the target version's component
-map **and settings version** before moving it. Promotion and rollback are
-human-only because they move production labels.
+map **and settings version** before moving it. Follow the Authority map for
+promotion execution.
 
 For a single-component instruction set that wraps an existing prompt, only a
 promotion or rollback of the set's default profile also moves that prompt's
@@ -439,11 +435,12 @@ Returns `split_set_id`.
 orizu --local runners push ./runner \
   --project <team>/<project> \
   --name hip-note-judge-runner \
-  --label default \
   --json
 ```
 
 Returns `runner_version_id`.
+
+The agent push is unlabeled. No standalone runner-label command exists, so never label by repeating a mutable working directory. If the human accepts the exact version as default, the human curator materializes it with `orizu --local runners pull hip-note-judge-runner --project <team>/<project> --version <reviewed-runner-version-id> --out ./runner-default-handoff`, does not alter that fresh directory, then runs `orizu --local runners push ./runner-default-handoff --project <team>/<project> --name hip-note-judge-runner --label default --json`. Pull verifies the content-addressed archive, and deterministic push excludes the pull sidecar, so this resolves the reviewed version before moving the pointer.
 
 Execute against a dataset split:
 
@@ -462,11 +459,10 @@ Omit `--runner-dir` to download and materialize the pinned runner version from O
 
 ### Instructions And Judges
 
-Prepare the complete instruction-set manifest and hand it to a human curator;
-the judge remains an agent-writable git-canonical artifact.
+Prepare the complete instruction-set manifest and follow the Authority map for
+the push; the judge remains a git-canonical artifact.
 
 ```bash
-# Human/local CLI only: a human curator with a user token runs this mutation.
 orizu --local instructions push ./orizu.instruction-set.json \
   --project <team>/<project> \
   --set <slug-or-exact-name> \
@@ -513,11 +509,10 @@ first 500 sorted summaries are enriched per request, and canonical-body
 resolution has a 15-second server budget. A summary skipped by either bound
 carries null stats and `measurement_cap_exceeded`.
 
-Archive or restore an instruction set by stable slug or exact name. A coding
-agent prepares the exact set reference and hands the mutation to a human:
+Archive or restore an instruction set by stable slug or exact name, using the
+executor selected by the Authority map:
 
 ```bash
-# Human/local CLI only: a human curator with a user token runs these mutations.
 orizu --local instructions archive <slug-or-exact-name> --project <team>/<project>
 orizu --local instructions restore <slug-or-exact-name> --project <team>/<project>
 ```
@@ -539,10 +534,10 @@ text or source line, each top-level comment body, and replies. Use `--json` when
 an agent or script needs structured `summary` and `comments` data. Check
 unresolved comments before drafting or pushing the next instruction version.
 
-Move an instruction profile's production pointer (human-only):
+After the promotion decision, move an instruction profile's production pointer
+through the Authority map:
 
 ```bash
-# Human/local CLI only: the human curator moves the production pointer.
 orizu --local instructions profiles promote hip-note-judge \
   --project <team>/<project> \
   --model-config <identity> \
@@ -561,7 +556,6 @@ orizu --local scorers register \
   --manifest ./scorer.manifest.json \
   --prompt-version <judge-prompt-version-id> \
   --runner-version <judge-runner-version-id> \
-  --label production \
   --json
 ```
 
@@ -572,11 +566,9 @@ Inspect scorers:
 ```bash
 orizu --local scorers list --project <team>/<project>
 orizu --local scorers detail <scorer-id-or-name> --project <team>/<project> --json
-orizu --local scorers labels set hip-note-judge-score production \
-  --project <team>/<project> \
-  --version <scorer-version-id> \
-  --json
 ```
+
+Production scorer labels are pointer moves. The agent prepares the scorer name, version id, and evidence. After human acceptance, follow the [Authority map](../SKILL.md#authority-map): a human curator runs `orizu --local scorers labels set hip-note-judge-score production --version <scorer-version-id> --project <team>/<project> --json`.
 
 Use scorer versions directly with the runner contract:
 
@@ -701,9 +693,8 @@ orizu --local scores submit ./candidate-scores.jsonl \
   --json
 ```
 
-Bind scorers to the instruction component that owns the evaluated text.
-Scorer binding is ordinary curator work, not one of the human-only catalog
-mutations, so hosted agents may set the headline scorer:
+Bind the headline scorer to the instruction component that owns the evaluated
+text:
 
 ```bash
 orizu --local instructions scorers set-headline <set> \
@@ -716,8 +707,7 @@ orizu --local instructions scorers set-headline <set> \
   --json
 ```
 
-For the same reason, hosted agents may add tracked scorers to the
-set-and-component address:
+Add tracked scorers to the same set-and-component address:
 
 ```bash
 orizu --local instructions scorers add <set> \
@@ -770,11 +760,10 @@ orizu --local runs submit ./generator-results.jsonl \
 orizu --local optimizers push ./optimizer \
   --project <team>/<project> \
   --name hip-gepa-optimizer \
-  --label gepa-v1 \
   --json
 ```
 
-Returns `optimizer_version_id`.
+Returns `optimizer_version_id`; the agent-created version is unlabeled. If a human curator accepts that exact version as `gepa-v1`, the human pulls it with `orizu --local optimizers pull hip-gepa-optimizer --project <team>/<project> --version <optimizer-version-id> --out ./optimizer-label-handoff`, leaves that fresh directory unchanged, then runs `orizu --local optimizers push ./optimizer-label-handoff --project <team>/<project> --name hip-gepa-optimizer --label gepa-v1 --json`.
 
 Start a local optimization run before the optimizer process begins:
 
@@ -845,7 +834,7 @@ Useful GEPA flags:
 - `--reflection-retry-attempts` and `--reflection-http-timeout-seconds` tune transient reflection-provider retries. Exhausted retryable failures log `reflection_failed`, count against candidate-proposal budget, and continue with the next iteration.
 - `--reflection-provider-settings <json|@file>` passes provider-native reflection settings separately from the component text. Anthropic example: `{"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`. OpenAI example: `{"reasoning":{"effort":"medium","summary":"auto"}}`.
 - `--disable-evaluation-cache` turns off candidate/row/scorer cache reuse.
-- `--auto-promote --promotion-label <label>` can move a label to the best candidate at the end. Coding agents must not pass either flag; hand the accepted profile version to a human for any production-pointer move.
+- `--auto-promote --promotion-label <label>` can move a label to the best candidate at the end. Omit both flags: run without auto-promotion, write the report, obtain the human promotion decision, then route the manual promotion command through the Authority map.
 - `--log-row-snapshots` includes raw row and reflection text in events; leave off by default.
 - `--log-dir <dir>` controls the local log root; default is `logs`.
 - `--no-local-log` disables local trace files. Use this only when the environment must not persist raw rows or reflection context.
@@ -926,7 +915,7 @@ orizu --local optimizations cancel <optimization-run-id> --reason "user stopped"
 ```
 
 `pause` and `cancel` store `metadata.reason`. `fail` stores `metadata.failure_reason`.
-`finish` marks the run `succeeded`; use it after accepted candidates have been promoted and the final prompt version is known.
+`finish` marks the run `succeeded` and attaches its report; it does not authorize promotion. Finish the report first, then obtain the human decision before materialization or a serving-pointer move.
 Use `--report-file <path>` or `--report <markdown|@file>` on `finish`, `fail`, or `cancel` to attach the markdown report shown in the optimization detail Report tab. Prefer generating this from the local GEPA logs (`result.json`, `evaluations.jsonl`, `reflections.jsonl`, and `events.jsonl`) after the run ends. Report structure and interpretation rules: `optimization-reports.md`.
 
 ## Optimization Event Logging
@@ -1013,8 +1002,7 @@ curl -sS -X POST "$ORIZU_API_URL/api/cli/optimization-runs/$ORIZU_RUN_ID/promote
     "temperature": 0,
     "max_tokens": 4096
   },
-  "runnerVersionId": "runner-version-uuid",
-  "label": "production"
+  "runnerVersionId": "runner-version-uuid"
 }
 ```
 
@@ -1034,10 +1022,16 @@ eval "$(orizu --local env --project hip/judge-optimization)"
 DATASET_VERSION_ID="$(orizu --local datasets versions create hip-note-judge-labels --project hip/judge-optimization --label v1 --json | jq -r .dataset_version_id)"
 SPLIT_SET_ID="$(orizu --local datasets splits create "$DATASET_VERSION_ID" --name default --seed 42 --train 0.6 --validation 0.4 --test 0 --json | jq -r .split_set_id)"
 
-RUNNER_VERSION_ID="$(orizu --local runners push ./runner --project hip/judge-optimization --name hip-note-judge-runner --label default --json | jq -r .runner_version_id)"
+RUNNER_VERSION_ID="$(orizu --local runners push ./runner --project hip/judge-optimization --name hip-note-judge-runner --json | jq -r .runner_version_id)"
 JUDGE_VERSION_ID="$(orizu --local judges push ./judge --project hip/judge-optimization --runner-version "$RUNNER_VERSION_ID" --json | jq -r .prompt_version_id)"
-SCORER_VERSION_ID="$(orizu --local scorers register --project hip/judge-optimization --name hip-note-judge-score --manifest ./scorer.manifest.json --prompt-version "$JUDGE_VERSION_ID" --runner-version "$RUNNER_VERSION_ID" --label production --json | jq -r .scorer_version_id)"
-OPTIMIZER_VERSION_ID="$(orizu --local optimizers push ./optimizer --project hip/judge-optimization --name hip-gepa-optimizer --label gepa-v1 --json | jq -r .optimizer_version_id)"
+SCORER_VERSION_ID="$(orizu --local scorers register --project hip/judge-optimization --name hip-note-judge-score --manifest ./scorer.manifest.json --prompt-version "$JUDGE_VERSION_ID" --runner-version "$RUNNER_VERSION_ID" --json | jq -r .scorer_version_id)"
+```
+
+Human curator hand-off through the [Authority map](../SKILL.md#authority-map) (do not run as the agent): no standalone runner-label command exists, so the human first runs `orizu --local runners pull hip-note-judge-runner --project hip/judge-optimization --version "$RUNNER_VERSION_ID" --out ./runner-default-handoff`, leaves that fresh exact-version directory unchanged, then runs `orizu --local runners push ./runner-default-handoff --project hip/judge-optimization --name hip-note-judge-runner --label default --json`. The human curator then runs `orizu --local scorers labels set hip-note-judge-score production --version "$SCORER_VERSION_ID" --project hip/judge-optimization --json`.
+The agent continues with an unlabeled optimizer version:
+
+```bash
+OPTIMIZER_VERSION_ID="$(orizu --local optimizers push ./optimizer --project hip/judge-optimization --name hip-gepa-optimizer --json | jq -r .optimizer_version_id)"
 OPTIMIZATION_RUN_ID="$(orizu --local optimizations start --project hip/judge-optimization --optimizer-version "$OPTIMIZER_VERSION_ID" --prompt-version "$JUDGE_VERSION_ID" --selection-scorer "$SCORER_VERSION_ID" --reflection-scorer "$SCORER_VERSION_ID" --dataset-version "$DATASET_VERSION_ID" --split-set "$SPLIT_SET_ID" --json | jq -r .optimization_run_id)"
 export ORIZU_RUN_ID="$OPTIMIZATION_RUN_ID"
 
@@ -1066,11 +1060,11 @@ orizu --local scores submit ./judge-results.jsonl \
   --split-set "$SPLIT_SET_ID" \
   --split validation
 
-# After the local optimizer has logged events and promoted its accepted candidate:
+# After the local optimizer has logged events: finish and attach the report, obtain human acceptance, then hand the one-shot promotion to a human curator.
 orizu --local optimizations finish "$OPTIMIZATION_RUN_ID" \
   --best-score 0.82 \
   --best-candidate candidate-7 \
-  --result-prompt-version "$JUDGE_VERSION_ID"
+  --report-file "./reports/$OPTIMIZATION_RUN_ID.md"
 ```
 
 ## Notes And Limits

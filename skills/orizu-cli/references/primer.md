@@ -14,12 +14,12 @@ The CLI covers the full operational loop. Start instruction artifacts with `oriz
 
 An instruction-set manifest carries its `name`, optional `description`, fixed, ordered `shape`, and component values. The set's slug is its stable CLI reference even when its display name changes. Profiles have their own component values; components are never shared between profiles or sets. The set-wide default serves model configs without a production profile version.
 
-Start by inspecting or creating the set, then push and sync through the same surface:
+Start by inspecting the set, then follow the [Authority map](../SKILL.md#authority-map)
+for mutation custody before syncing through the same surface:
 
 ```bash
 orizu instructions list --project <team>/<project>
 orizu instructions show <slug-or-exact-name> --project <team>/<project>
-# Human/local CLI only: a human runs create/push; hosted agents may run profiles new and sync.
 orizu instructions create ./orizu.instruction-set.json --project <team>/<project> --model-config <identity>
 orizu instructions push ./orizu.instruction-set.json --project <team>/<project> --set <slug-or-exact-name>
 orizu instructions profiles new <slug-or-exact-name> --project <team>/<project> --model-config <identity>

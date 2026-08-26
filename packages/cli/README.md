@@ -137,9 +137,9 @@ Agents are first-class users of this CLI: **every command supports `--json`**
 (as a prefix, `orizu --json teams list`, or a trailing flag) and emits a single
 machine-readable JSON document instead of formatted text. Discover the full
 command surface, including global options, with `orizu capabilities --json`.
-Hosted agents may read and sync instruction sets and prepare complete manifests,
-but a human curator using the local CLI with a user token must run instruction
-create, push, shape, archive, restore, and production/default pointer mutations.
+Hosted agents may read and sync instruction sets and prepare complete manifests. A local coding agent using the user's token runs instruction create, push, shape,
+archive, and restore itself after plan ratification. It gathers only read-only pointer-resolution and binding evidence; a human curator executes every production/default pointer command on every surface.
+In a hosted session, a human curator using the local CLI must run both categories.
 
 ## Authentication
 
@@ -224,11 +224,11 @@ orizu logout
     <td><code>orizu prompts list --project ops-eval/support-qa [--status active|archived|all]</code></td>
   </tr>
   <tr>
-    <td>Archive or restore an instruction set (human/local CLI only)</td>
+    <td>Archive or restore an instruction set (local agent or human; hosted human only)</td>
     <td><code>orizu instructions archive &lt;slug-or-exact-name&gt; --project ops-eval/support-qa</code><br><code>orizu instructions restore &lt;slug-or-exact-name&gt; --project ops-eval/support-qa</code></td>
   </tr>
   <tr>
-    <td>Push an instruction-set manifest (human/local CLI only)</td>
+    <td>Push an instruction-set manifest (local agent or human; hosted human only)</td>
     <td><code>orizu instructions push ./orizu.instruction-set.json --project ops-eval/support-qa --set &lt;slug-or-exact-name&gt;</code></td>
   </tr>
   <tr>
