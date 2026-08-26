@@ -139,6 +139,7 @@ class OrizuClient:
         train_split: str,
         validation_split: str,
         model_config_settings_version_id: str | None = None,
+        runner_version_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
         query = urllib.parse.urlencode({"project": project})
@@ -165,6 +166,7 @@ class OrizuClient:
             "validationSplitName": validation_split,
             "metadata": metadata or {},
             **({"modelConfigSettingsVersionId": model_config_settings_version_id} if model_config_settings_version_id else {}),
+            **({"runnerVersionId": runner_version_id} if runner_version_id else {}),
         })
         return data["optimization_run_id"]
 

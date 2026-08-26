@@ -238,7 +238,7 @@ class DurableRecordingClient:
 
 class OfficialGepaEngineRedContracts(unittest.TestCase):
     def test_runtime_launches_the_shape_ordered_tuple_through_the_real_engine_boundary(self):
-        """Mutants killed: ignore the profile/tuple/settings snapshot, budget one component, or drop GEPA's selector."""
+        """Mutants killed: ignore profile/tuple/settings/runner declaration, budget one component, or drop GEPA's selector."""
         instruction_set = {
             "name": "planner", "shape": ["tools", "system"],
             "profile_version_id": "15350000-0000-4000-8000-000000000002",
@@ -293,6 +293,7 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         self.assertEqual(run_engine.call_args.kwargs["seed_candidate"], {"tools": "Tools bytes\n", "system": "System bytes\n"})
         self.assertEqual(list(run_engine.call_args.kwargs["seed_candidate"]), ["tools", "system"])
         self.assertEqual(client.start_run.call_args.kwargs["model_config_settings_version_id"], instruction_set["model_config_settings_version_id"])
+        self.assertEqual(client.start_run.call_args.kwargs["runner_version_id"], "runner-version-1")
         self.assertIsNone(client.start_run.call_args.kwargs["prompt_version_id"])
         self.assertEqual(
             client.start_run.call_args.kwargs["instruction_set_profile_version_id"],
@@ -673,8 +674,8 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "instruction_set_candidate_promotion_unsupported"):
             validate_launch_contract({"system": "seed", "tools": "seed"}, auto_promote=True)
 
-    def test_run_creation_records_the_resolved_model_config_settings_version(self):
-        """Mutant killed: discard the settings-version snapshot after exec-context resolution."""
+    def test_run_creation_sends_the_resolved_runner_declaration(self):
+        """Mutants killed: discard the settings or runner declaration after exec-context resolution."""
         from orizu_gepa.client import OrizuClient
 
         client = OrizuClient(api_url="http://example.test", token="test")
@@ -684,8 +685,10 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
                 scorer_version_id="scorer-version-1", dataset_version_id="dataset-version-1", split_set_id="split-set-1",
                 train_split="train", validation_split="validation",
                 model_config_settings_version_id="15360000-0000-4000-8000-000000000001",
+                runner_version_id="execution-runner-version-2",
             )
         self.assertEqual(request.call_args.args[2]["modelConfigSettingsVersionId"], "15360000-0000-4000-8000-000000000001")
+        self.assertEqual(request.call_args.args[2]["runnerVersionId"], "execution-runner-version-2")
 
     def test_multi_component_launch_is_accepted_before_a_run_exists(self):
         """Mutant killed: retain the one-component refusal before start_run can execute."""

@@ -510,6 +510,7 @@ def run_from_environment() -> dict[str, Any]:
         dataset_version_id=env["ORIZU_DATASET_VERSION_ID"], split_set_id=env["ORIZU_SPLIT_SET_ID"],
         train_split=train_split, validation_split=validation_split, metadata=metadata,
         model_config_settings_version_id=instruction_set.get("model_config_settings_version_id") if isinstance(instruction_set, dict) else None,
+        runner_version_id=prompt_context.runner_version_id,
     )
     print(json.dumps({"optimization_run_id": run_id}), flush=True)
     # The frozen sink treats ``None`` as no local artifact writer.  Keep that

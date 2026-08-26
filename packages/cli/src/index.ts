@@ -6369,7 +6369,8 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
   if (command === 'optimizations' && subcommand === 'promote') {
     await promoteOptimizationCommand(cliArgs.slice(2), {
-      json: hasJsonFlag(), print: printLine, resolveProjectSlug, fetcher: authedFetch,
+      json: hasJsonFlag(), origin: parsed.flags, print: printLine, printErr: printError,
+      resolveProjectSlug, fetcher: authedFetch,
     })
     return
   }

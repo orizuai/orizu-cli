@@ -300,6 +300,7 @@ def main() -> None:
         split_set_id=args.split_set_id,
         train_split=args.train_split,
         validation_split=args.val_split,
+        runner_version_id=prompt_context.runner_version_id,
         metadata=run_metadata,
     )
     print(f"[orizu-gepa] started optimization run {run_id}", flush=True)

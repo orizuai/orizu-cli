@@ -96,7 +96,7 @@ class OptimizerTests(unittest.TestCase):
         ]
 
     def test_real_client_attributes_an_explicit_component_map_to_its_profile_not_prompts(self):
-        """Mutant killed: write component prompt ids and misattribute whole-map scores."""
+        """Mutants killed: misattribute component ids or drop the declared runner from the real request."""
         received: list[dict[str, object]] = []
 
         class Handler(BaseHTTPRequestHandler):
@@ -119,6 +119,7 @@ class OptimizerTests(unittest.TestCase):
                 project="team/project", optimizer_version_id="optimizer", prompt_version_id=None,
                 instruction_set_profile_version_id="profile-version", scorer_version_id="scorer",
                 dataset_version_id="dataset", split_set_id="split-set", train_split="train", validation_split="validation",
+                runner_version_id="resolved-prompt-runner-version",
             ), "run-1")
         finally:
             server.shutdown()
@@ -126,7 +127,8 @@ class OptimizerTests(unittest.TestCase):
         self.assertEqual(received, [{
             "optimizerVersionId": "optimizer", "promptVersionIds": [], "instructionSetProfileVersionId": "profile-version",
             "scorers": [{"scorerVersionId": "scorer", "role": "selection"}, {"scorerVersionId": "scorer", "role": "reflection"}],
-            "datasetVersionId": "dataset", "splitSetId": "split-set", "trainSplitName": "train", "validationSplitName": "validation", "metadata": {},
+            "datasetVersionId": "dataset", "splitSetId": "split-set", "trainSplitName": "train", "validationSplitName": "validation",
+            "runnerVersionId": "resolved-prompt-runner-version", "metadata": {},
         }])
 
     def test_logs_required_gepa_lifecycle_and_promotes_best_child(self):
