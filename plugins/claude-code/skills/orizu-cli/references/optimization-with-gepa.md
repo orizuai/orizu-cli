@@ -219,7 +219,7 @@ orizu optimizations export <optimization-run-id> --out ./optimization.json
 
 Export returns one JSON object with raw events plus derived seed-vs-best, Pareto frontier, candidates, score-over-time, iterations, minibatch rows, validation rows, scorer context, prompt versions, and dataset split information. It fetches all optimization events and rehydrates row inputs from dataset artifacts when possible. Server events redact row snapshots and reflection prompts by default, but bundled `run-gepa` includes reflection responses in the event stream.
 
-After the run ends, write a markdown report before the context is lost. Use `optimization-reports.md` for the report structure: headline score and confusion matrix, what changed, per-row fixed/regressed/persistent failures, optimizer health, recommendations, and what not to do next.
+After the run ends, write a markdown report before the context is lost. Use the authoritative ordered sections in `optimization-reports.md`: Promotion Decision; Run And Evidence; Candidate Comparison (Validation Data); Optimizer Health; Scenario Classes; What Changed In The Selected Version; Held-Out Result: Seed vs Selected Candidate; Recommendation And Named Next Moves; Reproducibility; and Report Completeness Checklist.
 
 DSPy GEPA example for customers already on DSPy:
 
