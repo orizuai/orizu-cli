@@ -36,7 +36,14 @@ import { parseGlobalFlags } from './global-flags.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
 import { runLocalAppPreview } from './preview-runtime.js'
 import { readAssignmentManifestJsonlFile } from './task-assignment-manifest.js'
-import { assertSecureTokenTransport, authedFetch, getBaseUrl, resolveLoginBaseUrl, setGlobalFlags } from './http.js'
+import {
+  assertSecureTokenTransport,
+  authedFetch,
+  credentialRequestRedirectPolicy,
+  getBaseUrl,
+  resolveLoginBaseUrl,
+  setGlobalFlags,
+} from './http.js'
 import {
   computeSkillContentHash,
   getSkillInstallPath,
@@ -1294,6 +1301,7 @@ async function logout() {
       body: 'refreshToken' in credentials
         ? JSON.stringify({ refreshToken: credentials.refreshToken })
         : undefined,
+      ...credentialRequestRedirectPolicy(),
     })
 
     if (!response.ok) {

@@ -93,6 +93,10 @@ function isExpired(expiresAt: number): boolean {
   return expiresAt <= nowUnix + 30
 }
 
+export function credentialRequestRedirectPolicy(): Pick<RequestInit, 'redirect'> {
+  return process.env.ORIZU_CLI_AUTH_REDIRECT === 'error' ? { redirect: 'error' } : {}
+}
+
 async function refreshCredentials(baseUrl: string, credentials: ServerCredentials): Promise<ServerCredentials> {
   if (!isSessionCredentials(credentials)) {
     throw new Error('API key credentials do not refresh. Run `orizu login` again if access fails.')
@@ -103,6 +107,7 @@ async function refreshCredentials(baseUrl: string, credentials: ServerCredential
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken: credentials.refreshToken }),
+    ...credentialRequestRedirectPolicy(),
   })
 
   if (!response.ok) {
@@ -141,6 +146,7 @@ export async function authedFetch(path: string, init: RequestInit = {}) {
         ...(init.headers || {}),
         Authorization: `Bearer ${envBearer}`,
       },
+      ...credentialRequestRedirectPolicy(),
     })
   }
 
@@ -160,6 +166,7 @@ export async function authedFetch(path: string, init: RequestInit = {}) {
       ...(init.headers || {}),
       Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
     },
+    ...credentialRequestRedirectPolicy(),
   })
 
   if (response.status === 401 && isSessionCredentials(activeCredentials)) {
@@ -170,6 +177,7 @@ export async function authedFetch(path: string, init: RequestInit = {}) {
         ...(init.headers || {}),
         Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
       },
+      ...credentialRequestRedirectPolicy(),
     })
   }
 
