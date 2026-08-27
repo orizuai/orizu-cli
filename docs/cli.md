@@ -562,13 +562,15 @@ carries null stats and `measurement_cap_exceeded`.
 
 ## Report comments
 
-Report comments use one command family across prompt version reports, optimization run reports, and task reports.
+Report comments use one command family across prompt version reports, optimization run reports, task reports, and dataset current READMEs.
 
 ```bash
 orizu comments list --prompt <promptIdOrName> --project my-team/quality-eval [--label production | --version <promptVersionId>]
 orizu comments list --run <optimizationRunId>
 orizu comments list --task <taskId>
+orizu comments list --dataset <datasetIdOrName> --project my-team/quality-eval
 orizu comments add --run <optimizationRunId> --body @comment.md --anchor "Score summary" --lines 4:6
+orizu comments add --dataset <datasetIdOrName> --project my-team/quality-eval --body @comment.md --anchor "README quote" --lines 4:6
 orizu comments reply <commentId> --body "Fixed in the next pass"
 orizu comments resolve <commentId>
 orizu comments unresolve <commentId>

@@ -239,12 +239,12 @@ orizu logout
     <td colspan="2"><strong>Report comments</strong></td>
   </tr>
   <tr>
-    <td>List report comments</td>
-    <td><code>orizu comments list --prompt &lt;promptIdOrName&gt; --project ops-eval/support-qa</code><br><code>orizu comments list --run &lt;runId&gt;</code><br><code>orizu comments list --task &lt;taskId&gt;</code></td>
+    <td>List report or README comments</td>
+    <td><code>orizu comments list --prompt &lt;promptIdOrName&gt; --project ops-eval/support-qa</code><br><code>orizu comments list --run &lt;runId&gt;</code><br><code>orizu comments list --task &lt;taskId&gt;</code><br><code>orizu comments list --dataset &lt;datasetIdOrName&gt; --project ops-eval/support-qa</code></td>
   </tr>
   <tr>
     <td>Add or update comments</td>
-    <td><code>orizu comments add --run &lt;runId&gt; --body @comment.md --anchor "Summary" --lines 4:6</code><br><code>orizu comments reply &lt;commentId&gt; --body "Fixed"</code><br><code>orizu comments resolve &lt;commentId&gt;</code></td>
+    <td><code>orizu comments add --run &lt;runId&gt; --body @comment.md --anchor "Summary" --lines 4:6</code><br><code>orizu comments add --dataset &lt;datasetIdOrName&gt; --project ops-eval/support-qa --body "Clarify this README" --anchor "Summary" --lines 4:6</code><br><code>orizu comments reply &lt;commentId&gt; --body "Fixed"</code><br><code>orizu comments resolve &lt;commentId&gt;</code></td>
   </tr>
   <tr>
     <td colspan="2"><strong>Diff comments</strong></td>

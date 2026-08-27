@@ -52,7 +52,7 @@ interface ReportCommentMutationPayload {
 
 interface ReportCommentsPayload {
   subject?: {
-    type: 'prompt_version' | 'optimization_run_report' | 'task_report'
+    type: 'prompt_version' | 'optimization_run_report' | 'task_report' | 'dataset_readme_version'
     id: string
     projectId: string
   }
@@ -82,6 +82,14 @@ interface ReportCommentsPayload {
     id: string
     title?: string | null
   }
+  dataset?: {
+    id: string
+    name: string
+  }
+  readmeVersion?: {
+    id: string
+    versionNumber?: number
+  }
   summary: {
     threadCount: number
     openThreadCount: number
@@ -106,11 +114,11 @@ export interface ReportCommentsCliContext {
 }
 
 const COMMENTS_TARGET_USAGE =
-  'Use exactly one of --prompt <id-or-name>, --run <run-id>, or --task <task-id>'
+  'Use exactly one of --prompt <id-or-name>, --run <run-id>, --task <task-id>, or --dataset <id-or-name>'
 
 function reportCommentsUsage(action: string): string {
   const target =
-    '(--prompt <id-or-name> --project <team/project> [--label <label> | --version <id>] | --run <run-id> | --task <task-id>)'
+    '(--prompt <id-or-name> --project <team/project> [--label <label> | --version <id>] | --run <run-id> | --task <task-id> | --dataset <id-or-name> --project <team/project>)'
   if (action === 'list') {
     return `Usage: orizu comments list ${target} [--json]`
   }
@@ -235,6 +243,15 @@ function printReportCommentSubject(
     return
   }
 
+  if (data.dataset && data.readmeVersion) {
+    const versionLabel = data.readmeVersion.versionNumber
+      ? `v${data.readmeVersion.versionNumber}`
+      : data.readmeVersion.id
+    ctx.printLine(`Dataset: ${ctx.sanitizeTerminalText(data.dataset.name)} (${ctx.sanitizeTerminalText(data.dataset.id)})`)
+    ctx.printLine(`README version: ${ctx.sanitizeTerminalText(versionLabel)} (${ctx.sanitizeTerminalText(data.readmeVersion.id)})`)
+    return
+  }
+
   if (data.subject) {
     ctx.printLine(`Subject: ${ctx.sanitizeTerminalText(data.subject.type)} ${ctx.sanitizeTerminalText(data.subject.id)}`)
   }
@@ -251,7 +268,8 @@ function printReportComments(
   )
 
   if (data.comments.length === 0) {
-    ctx.printLine('\nNo comments found for this report.')
+    const emptySubject = data.subject?.type === 'dataset_readme_version' ? 'README' : 'report'
+    ctx.printLine(`\nNo comments found for this ${emptySubject}.`)
     return
   }
 
@@ -295,15 +313,18 @@ async function reportCommentsTargetParams(
   const promptRef = ctx.getArg('--prompt')
   const runId = ctx.getArg('--run') || ctx.getArg('--run-id')
   const taskId = ctx.getArg('--task')
+  const datasetRef = ctx.getArg('--dataset')
 
   ctx.rejectDashPrefixedOptionValue('--prompt', promptRef)
   ctx.rejectDashPrefixedOptionValue('--run', runId)
   ctx.rejectDashPrefixedOptionValue('--task', taskId)
+  ctx.rejectDashPrefixedOptionValue('--dataset', datasetRef)
 
   const present = [
     promptRef ? 'prompt' : null,
     runId ? 'run' : null,
     taskId ? 'task' : null,
+    datasetRef ? 'dataset' : null,
   ].filter(Boolean)
 
   if (present.length !== 1) {
@@ -333,7 +354,15 @@ async function reportCommentsTargetParams(
     return params
   }
 
-  params.set('task', taskId as string)
+  if (taskId) {
+    params.set('task', taskId)
+    return params
+  }
+
+  const project = ctx.getArg('--project') || await ctx.resolveProjectSlug(null)
+  ctx.rejectDashPrefixedOptionValue('--project', project)
+  params.set('dataset', datasetRef as string)
+  params.set('project', project)
   return params
 }
 
