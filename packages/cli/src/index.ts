@@ -2641,6 +2641,7 @@ function printJson(value: Record<string, unknown>) {
 function createReportCommentsCliContext(): ReportCommentsCliContext {
   return {
     getArg,
+    getRawArgs: () => cliArgs,
     getPositionalArg,
     rejectDashPrefixedOptionValue,
     resolveProjectSlug,

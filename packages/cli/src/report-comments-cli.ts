@@ -101,6 +101,7 @@ interface ReportCommentsPayload {
 
 export interface ReportCommentsCliContext {
   getArg: (name: string) => string | null
+  getRawArgs: () => readonly string[]
   getPositionalArg: (index: number) => string | null
   rejectDashPrefixedOptionValue: (name: string, value: string | null) => void
   resolveProjectSlug: (preferredProject: string | null) => Promise<string>
@@ -115,6 +116,8 @@ export interface ReportCommentsCliContext {
 
 const COMMENTS_TARGET_USAGE =
   'Use exactly one of --prompt <id-or-name>, --run <run-id>, --task <task-id>, or --dataset <id-or-name>'
+
+const POSTGRES_INT4_MAX = 2147483647
 
 function reportCommentsUsage(action: string): string {
   const target =
@@ -306,6 +309,35 @@ function printReportComments(
   }
 }
 
+function isDatasetReadmeVersionRefShape(value: string): boolean {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)) {
+    return true
+  }
+  if (!/^(?:0|[1-9]\d*)$/u.test(value)) return false
+  const versionNumber = Number(value)
+  return Number.isSafeInteger(versionNumber) && versionNumber >= 1 && versionNumber <= POSTGRES_INT4_MAX
+}
+
+function reportCommentsOptionValues(args: readonly string[], name: string): Array<string | null> {
+  // Repo-wide CLI helpers intentionally remain split-token only. This narrow
+  // parser exists solely for the hidden README history flag so inline
+  // --readme-version=<ref> cannot be silently dropped as "current".
+  const values: Array<string | null> = []
+  const inlinePrefix = `${name}=`
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === name) {
+      values.push(index + 1 < args.length ? args[index + 1] : null)
+      index += 1
+      continue
+    }
+    if (arg.startsWith(inlinePrefix)) {
+      values.push(arg.slice(inlinePrefix.length))
+    }
+  }
+  return values
+}
+
 async function reportCommentsTargetParams(
   ctx: ReportCommentsCliContext,
   action: string
@@ -319,6 +351,9 @@ async function reportCommentsTargetParams(
   ctx.rejectDashPrefixedOptionValue('--run', runId)
   ctx.rejectDashPrefixedOptionValue('--task', taskId)
   ctx.rejectDashPrefixedOptionValue('--dataset', datasetRef)
+  const readmeVersionValues = reportCommentsOptionValues(ctx.getRawArgs(), '--readme-version')
+  const readmeVersion = readmeVersionValues[0] ?? null
+  const hasReadmeVersion = readmeVersionValues.length > 0
 
   const present = [
     promptRef ? 'prompt' : null,
@@ -329,6 +364,19 @@ async function reportCommentsTargetParams(
 
   if (present.length !== 1) {
     throw new Error(`${reportCommentsUsage(action)}\n${COMMENTS_TARGET_USAGE}`)
+  }
+  if (hasReadmeVersion && !datasetRef) {
+    throw new Error('--readme-version can only be used with --dataset')
+  }
+  if (readmeVersionValues.length > 1) {
+    throw new Error('Use --readme-version at most once')
+  }
+  if (hasReadmeVersion && !readmeVersion?.trim()) {
+    throw new Error('--readme-version requires a value')
+  }
+  ctx.rejectDashPrefixedOptionValue('--readme-version', readmeVersion)
+  if (readmeVersion?.trim() && !isDatasetReadmeVersionRefShape(readmeVersion.trim())) {
+    throw new Error('Invalid value for --readme-version: Invalid request shape or values')
   }
 
   const params = new URLSearchParams()
@@ -363,6 +411,7 @@ async function reportCommentsTargetParams(
   ctx.rejectDashPrefixedOptionValue('--project', project)
   params.set('dataset', datasetRef as string)
   params.set('project', project)
+  if (readmeVersion) params.set('readmeVersion', readmeVersion.trim())
   return params
 }
 
