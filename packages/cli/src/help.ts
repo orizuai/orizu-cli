@@ -125,13 +125,14 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['login'],
-    usage: 'orizu login [--no-prompt-if-logged-in]',
+    usage: 'orizu login [--headless] [--no-prompt-if-logged-in]',
     summary: 'Open the browser login flow and store CLI credentials for the selected server.',
     group: 'Auth',
     options: [
+      { name: '--headless', help: 'Print an approval URL and poll instead of opening a browser. Selected automatically for SSH and display-less Linux sessions.' },
       { name: '--no-prompt-if-logged-in', help: 'Return immediately when credentials already exist.' },
     ],
-    examples: ['orizu login', 'orizu --local login'],
+    examples: ['orizu login', 'orizu login --headless', 'orizu --local login'],
   },
   {
     path: ['logout'],

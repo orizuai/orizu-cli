@@ -152,6 +152,12 @@ orizu login
 This will open a browser tab for you to login with. You must either have an account on the [Orizu platform](https://orizu.ai) or it will help you create one.
 Approving the login creates a personal access token for the CLI and stores it in your local Orizu credentials file. You can revoke CLI tokens from the Personal Tokens page in Orizu.
 
+In an SSH or display-less Linux session, the CLI automatically prints an approval URL and polls for completion instead of opening a local browser. Force this mode when needed with:
+
+```bash
+orizu login --headless
+```
+
 **Check the signed-in user**
 
 ```bash

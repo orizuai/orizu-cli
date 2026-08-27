@@ -87,6 +87,18 @@ What happens:
 4. The CLI stores a v3 API-key credential at:
    - `~/.config/orizu/credentials.json`
 
+On an SSH host or Linux host without `DISPLAY`/`WAYLAND_DISPLAY`, login automatically
+uses a headless flow: the CLI prints the browser approval URL and polls until approval
+completes. Force this behavior when automatic detection is not appropriate with:
+
+```bash
+orizu login --headless
+```
+
+The browser shows an Orizu-hosted completion page; return to the original terminal and
+wait for its login confirmation. The raw personal access token and PKCE verifier are
+never shown or copied between machines.
+
 The raw personal access token cannot be shown again after creation. It authenticates
 as the owning user and inherits that user's current team/project access. Role
 changes, team removal, token expiry, or token revocation take effect on later CLI
@@ -113,21 +125,17 @@ Personal Tokens page in Orizu.
 
 CLI auth endpoints apply fixed-window abuse controls per route and actor. Normal
 `orizu login`, legacy token refresh, and `orizu logout` flows are below these limits.
-Repeated requests from the same IP/client, or with the same token-like auth
-material, return HTTP `429` with:
+Repeated requests from the same trusted client, or with the same token-like auth
+material, return HTTP `429` with `{ "error": "Too many requests" }` and a
+`Retry-After` header.
 
-```json
-{
-  "error": "Too many requests",
-  "code": "RATE_LIMITED",
-  "retryAfterSeconds": 60
-}
-```
-
-The response also includes a `Retry-After` header. Current production behavior
-uses in-process memory, so limits are deterministic per running server instance.
-Multi-instance deployments should move the same policies to shared storage
-before relying on them as a global edge-wide limit.
+Rate-limit buckets are stored in PostgreSQL and shared across serverless instances.
+Client buckets use `CLI_AUTH_RATE_LIMIT_TRUSTED_CLIENT_HEADER` when configured;
+Vercel deployments default to its proxy-overwritten `x-vercel-forwarded-for`.
+Other deployments should configure an equivalent trusted header. Without one,
+request-specific actor buckets remain active without a product-wide client cap. During a rolling deploy
+where the new rate-limit RPC is not present yet, auth routes temporarily retain the
+previous per-process limiter for compatibility.
 
 ## Command Reference
 
@@ -1112,5 +1120,5 @@ The commands above will prompt for team/project/task selection where needed.
 - Assignment queue reads default to the signed-in recipient. Curator-equivalent
   operators may supply `--assignee <user-id>` for a managed recipient.
 - Assignment completion payloads are validated against the task's pinned app-version `output_json_schema`.
-- Login flow currently expects localhost callback availability on `127.0.0.1` using `ORIZU_AUTH_PORT` or the default port `43123`.
+- Graphical login uses a localhost callback on `127.0.0.1` with `ORIZU_AUTH_PORT` or port `43123`; headless login uses browser approval plus secure polling and does not bind that callback port.
 - CLI package publishing/distribution is separate from this usage doc (examples assume local build or installed binary).
