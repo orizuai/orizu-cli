@@ -44,6 +44,7 @@ function materializeConfigPayload(engine: GepaEngine, environment: NodeJS.Proces
 
 export async function spawnSkilledProposerChild(
   command: string, args: string[], engine: GepaEngine, environment: NodeJS.ProcessEnv,
+  onSpawn?: () => Promise<void>,
 ) {
   const childEnvironment = { ...environment }
   const shouldMaterialize = engine === 'official'
@@ -71,12 +72,21 @@ export async function spawnSkilledProposerChild(
   try {
     cleanup = materializeConfigPayload(engine, childEnvironment) ?? cleanup
     await new Promise<void>(resolve => setImmediate(resolve))
-    return await new Promise<{ status: number | null, error?: Error }>(resolve => {
-      let error: Error | undefined
-      child = spawn(command, args, { stdio: 'inherit', env: childEnvironment })
-      child.once('error', cause => { error = cause })
-      child.once('close', status => resolve(error ? { status, error } : { status }))
+    const spawnedChild = spawn(command, args, { stdio: 'inherit', env: childEnvironment })
+    child = spawnedChild
+    const spawned = new Promise<void>((resolve, reject) => {
+      spawnedChild.once('spawn', resolve)
+      spawnedChild.once('error', reject)
     })
+    const closed = new Promise<{ status: number | null, error?: Error }>(resolve => {
+      let error: Error | undefined
+      spawnedChild.once('error', cause => { error = cause })
+      spawnedChild.once('close', status => resolve(error ? { status, error } : { status }))
+    })
+    await spawned
+    try { await onSpawn?.() }
+    catch (error) { spawnedChild.kill('SIGTERM'); await closed; throw error }
+    return await closed
   } finally {
     for (const entry of handlers) process.off(entry.signal, entry.handle)
     cleanup()

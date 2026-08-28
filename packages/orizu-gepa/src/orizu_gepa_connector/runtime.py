@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+
 # Deliberately import—not copy—the frozen M1 transport, local artifacts, and
 # runner contract. The connector owns only the official-GEPA adaptation.
 from orizu_gepa.client import OrizuClient, OrizuEventSink
 from orizu_gepa.local_log import LocalOptimizationLogger
-from orizu_gepa.optimizer import TextGepaConfig, TextGepaResult
+from orizu_gepa.optimizer import PromotionResult, TextGepaConfig, TextGepaResult
 from orizu_gepa.runner import resolve_scorer_input_contract
 
 from .adapter import RunnerEvaluationAdapter, ScorerContractError
@@ -87,11 +88,12 @@ class MandatoryEventSink:
         if self.coordinator_controls_status:
             self._failed_status_reason = None
             return
+        failure_metadata = {"failure_reason": self._failed_status_reason}
         try:
             self.client.update_run(
                 self.run_id,
                 status="failed",
-                metadata={"failure_reason": self._failed_status_reason},
+                metadata=failure_metadata,
             )
         except Exception:
             # Keep the reason for the one later retry at the terminal boundary.
@@ -106,7 +108,7 @@ class MandatoryEventSink:
         """Production sink used by the merge translator, never a test callback."""
         self.emit("run_note", note["payload"])
 
-    def promote_candidate(self, **kwargs: Any) -> str:
+    def promote_candidate(self, **kwargs: Any) -> PromotionResult:
         """Delegate promotion to the frozen client; its route owns sequence 2n."""
         return self.client.promote_candidate(self.run_id, **kwargs)
 
@@ -368,9 +370,14 @@ def _is_budget_exhausted(*, config: TextGepaConfig, budget: Any,
     """Match legacy terminal semantics, not merely a zero remaining display.
 
     ``--max-iterations`` is an intentional completion boundary in the frozen
-    loop. Every metric/candidate budget that reaches zero while more work was
-    otherwise possible is a pause, which must never auto-promote.
+    loop. A hosted attach also completes at its server-admitted named preset;
+    hosted has no numeric budget or resume surface. Explicit metric/candidate
+    limits remain resumable pauses and must never auto-promote.
     """
+    if (os.environ.get("ORIZU_HOSTED_OPTIMIZATION_RUN_ID")
+            and all(getattr(config, field) is None for field in (
+                "max_metric_calls", "max_iterations", "max_full_evals", "max_candidate_proposals"))):
+        return False
     if config.max_iterations is not None:
         return False
     if budget.budget_kind == "max_metric_calls":
@@ -639,6 +646,7 @@ def run_from_environment() -> dict[str, Any]:
         seed_score = (float(result.val_aggregate_scores[0]) if scorer_context.higher_is_better
                       else 1.0 - float(result.val_aggregate_scores[0]))
         promoted_prompt_version_id = None
+        promotion_result = None
         _record_result_budget(
             budget=budget, result=result, callback=callback,
             preflight_metric_calls=preflight_metric_calls,
@@ -674,7 +682,7 @@ def run_from_environment() -> dict[str, Any]:
             if not prompt_id:
                 raise RuntimeError("Cannot auto-promote without prompt_id in prompt context")
             best_candidate = result.candidates[result.best_idx]
-            promoted_prompt_version_id = sink.promote_candidate(
+            promotion_result = sink.promote_candidate(
                 candidate_id=best_id,
                 prompt_id=prompt_id,
                 parent_prompt_version_id=prompt_context.prompt_version_id,
@@ -684,6 +692,7 @@ def run_from_environment() -> dict[str, Any]:
                 runner_version_id=env["ORIZU_RUNNER_VERSION_ID"],
                 label=config.promotion_label,
             )
+            promoted_prompt_version_id = getattr(promotion_result, "result_prompt_version_id", promotion_result)
         if local_logger is not None:
             best_candidate = result.candidates[result.best_idx]
             local_logger.write_result(TextGepaResult(
@@ -705,8 +714,8 @@ def run_from_environment() -> dict[str, Any]:
                     total_tokens_out=int(getattr(reflection_lm, "total_tokens_out", 0)),
                     total_tokens=int(getattr(reflection_lm, "total_tokens", 0)),
                 )
-        if hosted_run_id is None:
-            if budget_exhausted:
+        if budget_exhausted:
+            if hosted_run_id is None:
                 client.update_run(
                     run_id,
                     status="paused",
@@ -718,9 +727,9 @@ def run_from_environment() -> dict[str, Any]:
                         "pause_reason": "budget_exhausted",
                     },
                 )
-            else:
-                client.update_run(run_id, status="succeeded", best_score=best_score, best_candidate_id=best_id,
-                                  result_prompt_version_id=promoted_prompt_version_id)
+        elif hosted_run_id is None:
+            client.update_run(run_id, status="succeeded", best_score=best_score, best_candidate_id=best_id,
+                              result_prompt_version_id=promoted_prompt_version_id)
         summary = _result_summary(
             run_id=run_id, best_id=best_id, best_score=best_score, seed_score=seed_score,
             promoted_prompt_version_id=promoted_prompt_version_id, budget=budget,

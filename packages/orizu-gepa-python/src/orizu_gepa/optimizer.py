@@ -92,6 +92,19 @@ class PromptContext:
 
 
 @dataclass(frozen=True)
+class PromotionResult:
+    kind: str
+    version_id: str
+    prompt_version_id: str | None
+    profile_version_id: str | None
+    components: tuple[dict[str, str], ...] = ()
+
+    @property
+    def result_prompt_version_id(self) -> str | None:
+        return self.prompt_version_id
+
+
+@dataclass(frozen=True)
 class RunnerCallResult:
     model_response: Any = None
     raw_api_response: Any = None
@@ -558,7 +571,7 @@ class EventSink(Protocol):
         provider_settings: dict[str, Any],
         runner_version_id: str,
         label: str | None,
-    ) -> str:
+    ) -> PromotionResult | str:
         ...
 
     def finish_run(
@@ -2082,7 +2095,7 @@ def optimize_loaded_text_candidate(
         if config.auto_promote and best_candidate_id != "seed":
             if not prompt_context.prompt_id:
                 raise RuntimeError("Cannot auto-promote without prompt_id in prompt context")
-            promoted_prompt_version_id = event_sink.promote_candidate(
+            promotion = event_sink.promote_candidate(
                 candidate_id=best_candidate_id,
                 prompt_id=prompt_context.prompt_id,
                 parent_prompt_version_id=prompt_context.prompt_version_id,
@@ -2092,6 +2105,7 @@ def optimize_loaded_text_candidate(
                 runner_version_id=prompt_context.runner_version_id,
                 label=config.promotion_label,
             )
+            promoted_prompt_version_id = getattr(promotion, "result_prompt_version_id", promotion)
 
         event_sink.log_event(
             "run_completed",

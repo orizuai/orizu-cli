@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -12,8 +13,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from gepa.core.adapter import EvaluationBatch
+from orizu_gepa.client import OrizuClient
 from orizu_gepa.local_log import LocalOptimizationLogger
-from orizu_gepa.optimizer import DatasetRow, PromptContext, TextGepaConfig
+from orizu_gepa.optimizer import DatasetRow, PromotionResult, PromptContext, TextGepaConfig
 from orizu_gepa_connector.engine import SeedValidationRefused, run_official_gepa
 from orizu_gepa_connector.runtime import (
     MandatoryEventSink,
@@ -44,6 +46,66 @@ class _FlakyClient:
         self.updated.append((args, kwargs))
         if self.update_calls <= self.update_failures:
             raise RuntimeError("temporary PATCH failure")
+
+
+class _OfficialPromotionClient(OrizuClient):
+    """Real client parser over a recorded control-plane promotion response."""
+
+    def __init__(self, promotion_response, *, profile: bool) -> None:
+        super().__init__("http://127.0.0.1:3000", "agent-token", "team/project")
+        self.promotion_response = promotion_response
+        self.profile = profile
+        self.requests = []
+
+    def _request(self, method, path, body=None):
+        self.requests.append({"method": method, "path": path, "body": body})
+        if method == "GET" and path.startswith("/api/cli/optimization-runs/run-1?"):
+            return {"optimizationRun": {"id": "run-1"}}
+        if method == "GET" and "/api/cli/runners/exec-context?" in path:
+            if "scorerVersion=" in path:
+                return {
+                    "prompt": {
+                        "body": "score it",
+                        "bodyKind": "text",
+                        "providerSettings": {},
+                        "promptId": "scorer-prompt",
+                        "promptVersionId": "scorer-prompt-version",
+                        "runnerVersionId": "scorer-runner-version",
+                    },
+                    "scorer": {
+                        "versionId": "scorer-version",
+                        "metricKey": "accuracy",
+                        "higherIsBetter": True,
+                    },
+                    "rows": [],
+                }
+            split = "validation" if "split=validation" in path else "train"
+            response = {
+                "prompt": {
+                    "body": "seed",
+                    "bodyKind": "text",
+                    "providerSettings": {},
+                    "promptId": "prompt-id",
+                    "promptVersionId": "prompt-version-1",
+                    "runnerVersionId": "runner-version",
+                },
+                "rows": [{"id": f"{split}-1", "row": {"expected": "improved"}}],
+            }
+            if self.profile:
+                response["instructionSet"] = {
+                    "name": "planner",
+                    "modelConfig": {"identity": "anthropic/test"},
+                    "shape": ["system"],
+                    "profileVersionId": "profile-version-1",
+                    "versionNumber": 1,
+                    "promptComponentKey": "system",
+                    "components": {"system": "seed"},
+                    "pinnedComponents": {},
+                }
+            return response
+        if path.endswith("/promote"):
+            return self.promotion_response
+        return {}
 
 
 class RuntimeReworkContracts(unittest.TestCase):
@@ -383,7 +445,9 @@ class RuntimeReworkContracts(unittest.TestCase):
             client.fetch_scorer_exec_context.return_value = (scorer, [])
             client.start_run.return_value = "run"
             adapter = MagicMock(); adapter.num_threads_plan.to_payload.return_value = {}
-            sink = MagicMock(failed=False); sink.promote_candidate.return_value = "promoted-prompt"
+            sink = MagicMock(failed=False); sink.promote_candidate.return_value = PromotionResult(
+                "prompt", "promoted-prompt", "promoted-prompt", None,
+            )
             logger = LocalOptimizationLogger.create(root, "run")
             result = SimpleNamespace(
                 best_idx=1, val_aggregate_scores=[0.8, 0.2], total_metric_calls=4,
@@ -469,6 +533,82 @@ class RuntimeReworkContracts(unittest.TestCase):
             "iterations_remaining": 0,
         })
 
+    def test_official_runtime_consumes_prompt_and_profile_promotions_without_corrupting_json(self):
+        """Kills passing a tagged profile result through legacy prompt-only outputs."""
+        from types import SimpleNamespace
+        import orizu_gepa_connector.runtime as runtime
+
+        cases = (
+            ({"promptVersionId": "prompt-version-2"}, False, "prompt-version-2"),
+            ({
+                "profileVersionId": "profile-version-2",
+                "components": [{"key": "system", "status": "changed"}],
+            }, True, None),
+        )
+
+        for response, is_profile, expected_prompt_version_id in cases:
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as root:
+                env = {
+                    "ORIZU_PROJECT": "team/project",
+                    "ORIZU_OPTIMIZER_VERSION_ID": "optimizer-version",
+                    "ORIZU_PROMPT_VERSION_ID": "prompt-version-1",
+                    "ORIZU_DATASET_VERSION_ID": "dataset-version",
+                    "ORIZU_SPLIT_SET_ID": "split-set",
+                    "ORIZU_SCORER_VERSION_ID": "scorer-version",
+                    "ORIZU_RUNNER_VERSION_ID": "runner-version",
+                    "ORIZU_CANDIDATE_RUNNER_DIR": "candidate-dir",
+                    "ORIZU_SCORER_RUNNER_DIR": "scorer-dir",
+                    "ORIZU_VERIFIED_RUNNER_DIRS": '["candidate-dir", "scorer-dir"]',
+                    "ORIZU_REFLECTION_MAX_TOKENS": "128",
+                    "ORIZU_HOSTED_OPTIMIZATION_RUN_ID": "run-1",
+                    "ORIZU_AUTO_PROMOTE": "1",
+                    "ORIZU_MAX_ITERATIONS": "1",
+                    "ORIZU_ALLOW_DEGENERATE_SEED": "1",
+                    "ORIZU_LOCAL_LOG_DIR": root,
+                    **({
+                        "ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID": "profile-version-1",
+                    } if is_profile else {}),
+                }
+                client = _OfficialPromotionClient(response, profile=is_profile)
+                adapter = MagicMock()
+                adapter.num_threads_plan.to_payload.return_value = {}
+                result = SimpleNamespace(
+                    best_idx=1,
+                    val_aggregate_scores=[0.0, 1.0],
+                    total_metric_calls=1,
+                    candidates=[{"system" if is_profile else "prompt": "seed"}, {
+                        "system" if is_profile else "prompt": "improved"
+                    }],
+                    num_full_val_evals=1,
+                )
+                reflection_lm = SimpleNamespace(
+                    total_cost=0.0,
+                    total_tokens_in=1,
+                    total_tokens_out=1,
+                    total_tokens=2,
+                )
+
+                with patch.dict(os.environ, env, clear=True), \
+                     patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+                     patch.object(runtime, "resolve_scorer_input_contract", return_value=("gepa", None)), \
+                     patch.object(runtime, "validate_seed_before_run", return_value={"preflight_metric_calls": 0}), \
+                     patch.object(runtime, "RunnerEvaluationAdapter", side_effect=[adapter, adapter]), \
+                     patch.object(runtime, "make_gepa_reflection_lm", return_value=reflection_lm), \
+                     patch.object(runtime, "run_official_gepa", return_value=result):
+                    summary = runtime.run_from_environment()
+
+                artifact = json.loads((Path(root) / "run-1" / "result.json").read_text())
+                patch_bodies = [
+                    request["body"] for request in client.requests
+                    if request["method"] == "PATCH"
+                ]
+
+                self.assertEqual(summary["promoted_prompt_version_id"], expected_prompt_version_id)
+                self.assertEqual(artifact["promoted_prompt_version_id"], expected_prompt_version_id)
+                json.dumps(summary)
+                json.dumps(artifact)
+                self.assertEqual(patch_bodies, [])
+
     def test_connector_entrypoint_prints_the_final_summary_once(self):
         """Kills duplicate final JSON records from runtime and the module entry point."""
         import orizu_gepa_connector.cli as connector_cli
@@ -485,6 +625,16 @@ class RuntimeReworkContracts(unittest.TestCase):
         lines = stdout.getvalue().splitlines()
         self.assertEqual(lines[-1], json.dumps(summary))
         self.assertEqual(len([line for line in lines if line.startswith("{")]), 1)
+
+    def test_hosted_named_budget_is_a_terminal_preset_not_a_resumable_pause(self):
+        """Kills classifying every admitted hosted run as paused at its preset ceiling."""
+        import orizu_gepa_connector.runtime as runtime
+
+        config = TextGepaConfig(budget="light")
+        budget = resolved_budget(config, trainset_size=1, valset_size=1)
+        budget.used_metric_calls = budget.limit
+        with patch.dict(os.environ, {"ORIZU_HOSTED_OPTIMIZATION_RUN_ID": "run"}, clear=True):
+            self.assertFalse(runtime._is_budget_exhausted(config=config, budget=budget))
 
     def test_budget_exhaustion_pauses_and_never_auto_promotes(self):
         """Kills a budget stop reported as success, which could promote an unfinished prompt."""

@@ -9,7 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from .optimizer import DatasetRow, PromptContext
+from .optimizer import DatasetRow, PromotionResult, PromptContext
 
 
 def _instruction_set_from_wire(value: Any) -> dict[str, Any] | None:
@@ -73,7 +73,7 @@ def _progress_log_suffix(event_type: str, payload: dict[str, Any] | None) -> str
     return f" {'; '.join(parts)}" if parts else ""
 
 
-@dataclass(frozen=True)
+@dataclass
 class OrizuClient:
     api_url: str
     token: str
@@ -93,10 +93,11 @@ class OrizuClient:
                    boot_secret=os.environ.get("ORIZU_BOOT_SECRET"))
 
     def _refresh_token(self) -> bool:
-        if not self.token_url or not self.boot_secret:
+        if not self.token_url:
             return False
-        request = urllib.request.Request(self.token_url, method="GET",
-            headers={"Authorization": f"Bearer {self.boot_secret}"})
+        headers = ({"Authorization": f"Bearer {self.boot_secret}"}
+                   if self.boot_secret else {})
+        request = urllib.request.Request(self.token_url, method="GET", headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -331,7 +332,7 @@ class OrizuClient:
         provider_settings: dict[str, Any],
         runner_version_id: str,
         label: str | None,
-    ) -> str:
+    ) -> PromotionResult:
         data = self._request("POST", f"/api/cli/optimization-runs/{urllib.parse.quote(run_id)}/promote", {
             "candidateId": candidate_id,
             "promptId": prompt_id,
@@ -342,7 +343,23 @@ class OrizuClient:
             "runnerVersionId": runner_version_id,
             "label": label,
         })
-        return data["promptVersionId"]
+        if not isinstance(data, dict) or (("promptVersionId" in data) == ("profileVersionId" in data)):
+            raise RuntimeError("invalid promotion response")
+        prompt_id, profile_id = data.get("promptVersionId"), data.get("profileVersionId")
+        version_id = prompt_id if "promptVersionId" in data else profile_id
+        if not isinstance(version_id, str) or not version_id.strip():
+            raise RuntimeError("invalid promotion response")
+        if prompt_id is not None:
+            return PromotionResult("prompt", version_id, version_id, None)
+        components = data.get("components")
+        if not isinstance(components, list):
+            raise RuntimeError("invalid promotion response")
+        if any(not isinstance(item, dict) or not isinstance(item.get("key"), str)
+               or not item["key"].strip() or item.get("status") not in {"changed", "carried"}
+               for item in components):
+            raise RuntimeError("invalid promotion component")
+        normalized = tuple({"key": item["key"], "status": item["status"]} for item in components)
+        return PromotionResult("profile", version_id, None, version_id, normalized)
 
     def update_run(
         self,
@@ -442,8 +459,8 @@ class OrizuEventSink:
             flush=True,
         )
 
-    def promote_candidate(self, **kwargs: Any) -> str:
-        prompt_version_id = self.client.promote_candidate(self.run_id, **kwargs)
+    def promote_candidate(self, **kwargs: Any) -> PromotionResult:
+        promotion = self.client.promote_candidate(self.run_id, **kwargs)
         # Promotion writes a system event at max(sequence)+1 in Postgres.
         self.sequence += 1
         if self.local_logger is not None:
@@ -459,10 +476,12 @@ class OrizuEventSink:
                 "child_candidate_id": None,
                 "payload": {
                     **kwargs,
-                    "prompt_version_id": prompt_version_id,
+                    "prompt_version_id": promotion.prompt_version_id,
+                    "profile_version_id": promotion.profile_version_id,
+                    "components": promotion.components,
                 },
             })
-        return prompt_version_id
+        return promotion
 
     def finish_run(self, **kwargs: Any) -> None:
         if self.local_logger is not None:

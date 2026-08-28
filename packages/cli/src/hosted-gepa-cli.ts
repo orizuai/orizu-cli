@@ -48,6 +48,7 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
   const dispatch = dispatchGepaEngine(args, options.project, options.environment)
   if (dispatch.engine !== 'official') throw new Error('Hosted optimization requires the official GEPA engine.')
   const env = dispatch.environment
+  if (env.ORIZU_PROMOTION_LABEL !== undefined) throw new Error('Hosted optimization does not accept a promotion label.')
   const required = [
     ['ORIZU_OPTIMIZER_VERSION_ID', '--optimizer-version-id'], ['ORIZU_RUNNER_VERSION_ID', '--runner-version-id'],
     ['ORIZU_SCORER_VERSION_ID', '--scorer-version-id'], ['ORIZU_SCORER_RUNNER_VERSION_ID', '--scorer-runner-version-id'],
@@ -71,6 +72,7 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
     ['reflectionProviderSettings', 'ORIZU_REFLECTION_PROVIDER_SETTINGS', 'json'], ['objective', 'ORIZU_OBJECTIVE', 'string'],
     ['seed', 'ORIZU_SEED', 'number'], ['disableEvaluationCache', 'ORIZU_DISABLE_EVALUATION_CACHE', 'boolean'],
     ['allowDegenerateSeed', 'ORIZU_ALLOW_DEGENERATE_SEED', 'boolean'],
+    ['autoPromote', 'ORIZU_AUTO_PROMOTE', 'boolean'],
     ['skipPerfectParentReflection', 'ORIZU_SKIP_PERFECT_PARENT_REFLECTION', 'boolean'],
   ]
   for (const [field, name, kind] of fields) {
@@ -91,6 +93,7 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
     trainSplitName: env.ORIZU_TRAIN_SPLIT ?? 'train', validationSplitName: env.ORIZU_VALIDATION_SPLIT ?? 'validation',
     engine: 'official', scorerInputContract: env.ORIZU_SCORER_INPUT_CONTRACT ?? 'gepa',
     scorerCandidateField: env.ORIZU_SCORER_CANDIDATE_FIELD ?? null, budget: env.ORIZU_BUDGET ?? 'auto', ...optional,
+    ...(optional.autoPromote === true ? { promotionLabel: null } : {}),
   }
   const response = await authedFetch(`/api/cli/optimization-runs?project=${encodeURIComponent(options.project)}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),

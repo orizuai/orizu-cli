@@ -76,7 +76,7 @@ import {
 } from './workspace.js'
 import { connectorsCommand } from './connectors-cli.js'
 import { modelConfigsCommand } from './model-configs-cli.js'
-import { ARTIFACT_MAX_BYTES, runnerOptimizerCommand } from './artifact-pull.js'
+import { runnerOptimizerCommand } from './artifact-pull.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { acceptScoreRunCommand } from './scores-accept-cli.js'
@@ -134,6 +134,10 @@ import { resolveGepaInstructionSetProfileVersion } from './instruction-set-gepa-
 import { getGepaPythonCommand } from './gepa-python-command.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
 import { prepareSkilledProposerLaunch, spawnSkilledProposerChild } from './skilled-proposer-launch.js'
+import { materializeRunnerVersion as materializeRegisteredRunnerVersion } from './runner-version-materialization.js'
+
+export const materializeRunnerVersion = (runnerVersionId: string) =>
+  materializeRegisteredRunnerVersion(runnerVersionId, false)
 
 export { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
 
@@ -5747,44 +5751,6 @@ function boundedRunnerOutput(value: string | Buffer | null | undefined): string 
     return buffer.toString('utf8')
   }
   return `${buffer.subarray(0, RUNNER_OUTPUT_MAX_BYTES).toString('utf8')}\n[truncated]`
-}
-
-export async function materializeRunnerVersion(runnerVersionId: string): Promise<{ runnerDir: string; cleanup: () => void }> {
-  const response = await authedFetch(`/api/cli/runner-versions/${encodeURIComponent(runnerVersionId)}/download`)
-  if (!response.ok) {
-    throw new Error(`Failed to download runner version: ${await response.text()}`)
-  }
-
-  const tempDir = mkdtempSync(join(tmpdir(), 'orizu-runner-version-'))
-  const zipPath = join(tempDir, 'runner.zip')
-  const runnerDir = join(tempDir, 'runner')
-  const cleanup = () => rmSync(tempDir, { recursive: true, force: true })
-
-  try {
-    const zipBytes = new Uint8Array(await response.arrayBuffer())
-    if (zipBytes.byteLength > ARTIFACT_MAX_BYTES) {
-      throw new Error(`Runner artifact exceeds ${ARTIFACT_MAX_BYTES} bytes`)
-    }
-    writeFileSync(zipPath, zipBytes)
-
-    const result = spawnSync('unzip', ['-q', zipPath, '-d', runnerDir], {
-      encoding: 'utf8',
-    })
-    if (result.error) {
-      throw result.error
-    }
-    if (result.status !== 0) {
-      throw new Error(`unzip failed: ${sanitizeTerminalText(result.stderr || result.stdout || '')}`)
-    }
-
-    return { runnerDir, cleanup }
-  } catch (error) {
-    throwWithCleanup(
-      error,
-      [cleanup],
-      `Runner ${runnerVersionId} materialization failed and cleanup also failed`
-    )
-  }
 }
 
 async function runnersExec() {
