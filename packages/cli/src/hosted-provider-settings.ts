@@ -29,6 +29,18 @@ function containsCredential(value: unknown, root = true): boolean {
   return Object.entries(value).some(([key, nested]) => isCredentialKey(key) || containsCredential(nested, false))
 }
 
+export const HOSTED_MODEL_PROVIDER_PREFIXES = ['anthropic', 'openai'] as const
+
+export function hostedProviderFromModel(model: string | null | undefined): string | null {
+  const match = model?.match(/^([a-z]+)\/.*$/)
+  const prefix = match?.[1]
+  return prefix && (HOSTED_MODEL_PROVIDER_PREFIXES as readonly string[]).includes(prefix) ? prefix : null
+}
+
+export function unsupportedHostedProviderMessage(provider: string): string {
+  return `Hosted optimization does not support provider "${provider}". Supported providers: ${HOSTED_MODEL_PROVIDER_PREFIXES.join(', ')}.`
+}
+
 function unsupportedHostedSetting(value: unknown, model: string): string | null {
   if (value === undefined) return null
   if (!isRecord(value)) return '<root>'

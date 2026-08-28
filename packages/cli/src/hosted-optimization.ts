@@ -7,6 +7,7 @@ import { delimiter, join } from 'node:path'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
 import { materializeRunnerVersion, cleanupMaterializedRunners } from './runner-version-materialization.js'
 import { prepareSkilledProposerLaunch, spawnSkilledProposerChild } from './skilled-proposer-launch.js'
+import { hostedProviderFromModel } from './hosted-provider-settings.js'
 import { validNormalizedSkilledProposerConfig } from './skilled-proposer-wire.js'
 interface HostedOptimizationIo { printErr?: (value: string) => void }
 interface BootEnvironment { agentTokenUrl: URL; baseUrl: URL; bootSecret: string; coordinatorUrl: URL; runId: string; sessionId: string }
@@ -50,7 +51,8 @@ function validJobSpec(value: unknown, projectRef: unknown): value is Record<stri
   const booleans = ['allowDegenerateSeed', 'disableEvaluationCache', 'autoPromote', 'logRowSnapshots',
     'skipPerfectParentReflection']
   if (booleans.some(field => typeof value[field] !== 'boolean') || value.promotionLabel !== null
-    || !isRecord(value.reflectionProviderSettings)) return false
+    || !isRecord(value.reflectionProviderSettings) || typeof value.reflectionModel !== 'string'
+    || !hostedProviderFromModel(value.reflectionModel)) return false
   const skilled = value.candidateProposer === 'skilled-proposer'
   if ((value.candidateProposer !== null && !skilled)
     || (skilled && (!validNormalizedSkilledProposerConfig(value.candidateProposerConfig)

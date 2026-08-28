@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { dispatchGepaEngine } from './gepa-engine-dispatch.js'
 import { parseHostedGepaNumericValue } from './hosted-gepa-numeric-values.js'
 import { authedFetch } from './http.js'
-import { hostedProviderSettingsError } from './hosted-provider-settings.js'
+import { hostedProviderFromModel, hostedProviderSettingsError, unsupportedHostedProviderMessage } from './hosted-provider-settings.js'
 import { parseJsonResponse } from './json-response.js'
 
 interface HostedGepaOptions {
@@ -56,8 +56,11 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
   ] as const
   for (const [name, flag] of required) if (!env[name]) throw new Error(`${flag} is required for hosted optimization.`)
   const providerSettings = JSON.parse(env.ORIZU_REFLECTION_PROVIDER_SETTINGS ?? '{}') as Record<string, unknown>
+  const reflectionModel = env.ORIZU_REFLECTION_MODEL ?? 'anthropic/'
+  const reflectionProvider = reflectionModel.split('/', 1)[0] || reflectionModel
+  if (!hostedProviderFromModel(reflectionModel)) throw new Error(unsupportedHostedProviderMessage(reflectionProvider))
   const providerSettingsError = hostedProviderSettingsError(providerSettings,
-    env.ORIZU_REFLECTION_MODEL ?? 'anthropic/', env.ORIZU_REFLECTION_TEMPERATURE)
+    reflectionModel, env.ORIZU_REFLECTION_TEMPERATURE)
   if (providerSettingsError) throw new Error(providerSettingsError)
   const optional: Record<string, unknown> = {}
   const fields: Array<[string, string, 'number' | 'json' | 'boolean' | 'string']> = [
