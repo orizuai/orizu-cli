@@ -10,7 +10,11 @@ ARG NODE_MAJOR=24
 RUN dnf -y install git openssh-clients tar gzip xz unzip which shadow-utils ca-certificates \
   && dnf clean all \
   && rm -rf /var/cache/dnf \
-  && git --version && ssh -V
+  && git --version && ssh -V \
+  && command -v mkfifo \
+  && mkfifo /tmp/orizu-child-output-fifo-probe \
+  && test -p /tmp/orizu-child-output-fifo-probe \
+  && rm -f /tmp/orizu-child-output-fifo-probe
 
 RUN curl -fsSL "https://rpm.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
   && dnf -y install nodejs \

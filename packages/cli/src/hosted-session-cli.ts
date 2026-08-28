@@ -58,6 +58,7 @@ import { DEFAULT_HOSTED_MODEL, hostedLoopCommand, type HostedLoopContext } from 
 import { hostedBootCommand } from './hosted-boot.js'
 import { mergeJobCommand } from './merge-job.js'
 import { hostedOptimizationCommand } from './hosted-optimization.js'
+import { writeChildStderr } from './child-output-tee.js'
 import { skilledProposerBakeCommand } from './skilled-proposer-launch.js'
 import { authedFetch } from './http.js'
 import { resolveBaseUrl } from './http.js'
@@ -1571,7 +1572,7 @@ export async function hostedCommand(
       return mergeJobCommand(io)
     }
     if (positional[1] === 'hosted-optimization') {
-      return hostedOptimizationCommand(io)
+      return hostedOptimizationCommand({ ...io, printErr: writeChildStderr })
     }
     if (positional[1] === 'bake-skilled-proposer-venv') return skilledProposerBakeCommand(io)
     if (positional[1] === 'verify-skilled-proposer-bake') return skilledProposerBakeCommand(io, true)

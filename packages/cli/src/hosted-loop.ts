@@ -59,6 +59,7 @@ import {
   type SpawnedOpenCode,
 } from './hosted-harness-opencode.js'
 import { createClaudeAgentHarness } from './hosted-harness-claude.js'
+import { INJECTED_ENV_VARS_ENV } from './hosted-environment.js'
 import {
   drainHarnessToSink,
   resumeRunEventSink,
@@ -249,7 +250,7 @@ const MODEL_KEY_ENV_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']
  * names (e.g. `ANTHROPIC_API_KEY,BRAINTRUST_API_KEY`) so every pulled secret
  * (model key + connector credentials) lands on the run-event redaction list.
  */
-export const INJECTED_ENV_VARS_ENV = 'ORIZU_INJECTED_ENV_VARS'
+export { INJECTED_ENV_VARS_ENV } from './hosted-environment.js'
 
 function redactionListFromEnv(): string[] {
   const secrets: string[] = []

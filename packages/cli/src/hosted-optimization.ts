@@ -1,21 +1,162 @@
 import { randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { runPipedChild } from './child-output-tee.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
+import { INJECTED_ENV_VARS_ENV } from './hosted-environment.js'
 import { materializeRunnerVersion, cleanupMaterializedRunners } from './runner-version-materialization.js'
 import { prepareSkilledProposerLaunch, spawnSkilledProposerChild } from './skilled-proposer-launch.js'
 import { hostedProviderFromModel } from './hosted-provider-settings.js'
 import { validNormalizedSkilledProposerConfig } from './skilled-proposer-wire.js'
-interface HostedOptimizationIo { printErr?: (value: string) => void }
+import { REDACTION_PLACEHOLDER, redactSecrets } from './secret-redaction.js'
+interface HostedOptimizationIo { printErr?: (value: string) => void | Promise<void> }
 interface BootEnvironment { agentTokenUrl: URL; baseUrl: URL; bootSecret: string; coordinatorUrl: URL; runId: string; sessionId: string }
 interface MintResponse extends Record<string, unknown> { token: string; runId: string; projectRef: string; jobSpec: Record<string, unknown> }
+interface TokenBroker { url: string; stop(): void; token(): string; secrets(): string[] }
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
+const DIAGNOSTIC_TAIL_MAX_BYTES = 1024
+const DIAGNOSTIC_RAW_MAX_BYTES = 64 * 1024
+const INJECTED_SECRET_ENV_NAMES = [
+  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+  'BRAINTRUST_API_KEY', 'ALI_1505_ENDPOINT_OVERRIDE_API_KEY', 'ORIZU_TOKEN',
+] as const
+const ENVIRONMENT_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u
+
+interface CapturedDiagnosticSource {
+  state: 'captured'
+}
+
+interface ProcessDiagnosticSource extends CapturedDiagnosticSource {
+  stdout_tail: string
+  stderr_tail: string
+}
+
+interface BootDiagnosticSource extends CapturedDiagnosticSource {
+  tail: string
+}
+
+interface MissingDiagnosticSource {
+  state: 'no_diagnostics_captured'
+}
+
+interface FailureDiagnostics {
+  process: ProcessDiagnosticSource | MissingDiagnosticSource
+  boot: BootDiagnosticSource | MissingDiagnosticSource
+}
+
+function utf8Tail(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, 'utf8')
+  if (bytes.byteLength <= maxBytes) return value
+  let start = bytes.byteLength - maxBytes
+  while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) start += 1
+  return bytes.subarray(start).toString('utf8')
+}
+
+class BoundedTextCapture {
+  private value = ''
+  private pending = ''
+  hasOutput = false
+
+  constructor(private readonly secrets: () => readonly string[]) {}
+
+  append(chunk: string): void {
+    if (!chunk) return
+    this.hasOutput = true
+    const secrets = this.secrets()
+      .filter(secret => secret.length > 0)
+      .sort((left, right) => right.length - left.length)
+    const overlapLength = secrets.reduce(
+      (longest, secret) => Math.max(longest, secret.length - 1),
+      0
+    )
+    const combined = this.pending + chunk
+    const safeLength = Math.max(0, combined.length - overlapLength)
+    const stableParts: string[] = []
+    let cursor = 0
+    let literalStart = 0
+    while (cursor < safeLength) {
+      const matchedSecret = secrets.find(secret => combined.startsWith(secret, cursor))
+      if (!matchedSecret) {
+        cursor += 1
+        continue
+      }
+      stableParts.push(combined.slice(literalStart, cursor), REDACTION_PLACEHOLDER)
+      cursor += matchedSecret.length
+      literalStart = cursor
+    }
+    stableParts.push(combined.slice(literalStart, cursor))
+    this.pending = combined.slice(cursor)
+    this.value = utf8Tail(
+      this.value + redactSecrets(stableParts.join(''), { secrets }),
+      DIAGNOSTIC_RAW_MAX_BYTES
+    )
+  }
+
+  tail(): string {
+    const secrets = this.secrets()
+      .filter(secret => secret.length > 0)
+      .sort((left, right) => right.length - left.length)
+    return utf8Tail(
+      redactSecrets(this.value + this.pending, { secrets }),
+      DIAGNOSTIC_TAIL_MAX_BYTES
+    )
+  }
+}
+
+interface ProcessOutputCapture {
+  stdout: BoundedTextCapture
+  stderr: BoundedTextCapture
+}
+
+function createProcessOutputCapture(secrets: () => readonly string[]): ProcessOutputCapture {
+  return { stdout: new BoundedTextCapture(secrets), stderr: new BoundedTextCapture(secrets) }
+}
+
+function buildFailureDiagnostics(
+  processOutput: ProcessOutputCapture,
+  bootOutput: BoundedTextCapture
+): FailureDiagnostics {
+  const hasProcessOutput = processOutput.stdout.hasOutput || processOutput.stderr.hasOutput
+  return {
+    process: hasProcessOutput
+      ? {
+          state: 'captured',
+          stdout_tail: processOutput.stdout.tail(),
+          stderr_tail: processOutput.stderr.tail(),
+        }
+      : { state: 'no_diagnostics_captured' },
+    boot: bootOutput.hasOutput
+      ? { state: 'captured', tail: bootOutput.tail() }
+      : { state: 'no_diagnostics_captured' },
+  }
+}
+
+function failureDetail(value: unknown): string {
+  if (value instanceof Error) return value.message
+  if (typeof value === 'string') return value
+  if (isRecord(value) && typeof value.error === 'string') return value.error
+  return ''
+}
+
+function injectedSecrets(
+  boot: BootEnvironment,
+  broker?: TokenBroker
+): string[] {
+  const registeredNames = (process.env[INJECTED_ENV_VARS_ENV] ?? '')
+    .split(',')
+    .map(name => name.trim())
+    .filter(name => ENVIRONMENT_VARIABLE_NAME.test(name))
+  return Array.from(new Set([
+    boot.bootSecret,
+    ...[...INJECTED_SECRET_ENV_NAMES, ...registeredNames].map(name => process.env[name]),
+    ...(broker?.secrets() ?? []),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0)))
+}
 function secureUrl(value: string): URL {
   const url = new URL(value)
   const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/u.test(url.hostname)
@@ -138,48 +279,95 @@ function childEnvironment(
   environment.ORIZU_SKIP_PERFECT_PARENT_REFLECTION = spec.skipPerfectParentReflection ? '1' : '0'
   return environment
 }
-async function startTokenBroker(boot: BootEnvironment, initial: MintResponse): Promise<{ url: string; stop: () => void; token: () => string }> {
+async function startTokenBroker(
+  boot: BootEnvironment,
+  initial: MintResponse
+): Promise<TokenBroker> {
   const nonce = randomUUID(), fingerprint = JSON.stringify(initial.jobSpec)
   let activeToken = initial.token
-  const server = createServer((request, response) => {
-    void (async () => {
-      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-      if (request.method !== 'GET' || url.pathname !== `/${nonce}` || url.search) {
-        response.writeHead(404).end(); return
-      }
-      try {
-        const fresh = await mint(boot), parsed = fresh.response.ok ? parseMint(fresh.body, boot) : null
-        if (!parsed || parsed.projectRef !== initial.projectRef || JSON.stringify(parsed.jobSpec) !== fingerprint) throw new Error()
-        activeToken = parsed.token
-        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ token: parsed.token }))
-      } catch {
-        response.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'token refresh failed' }))
-      }
-    })().catch(() => response.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'token refresh failed' })))
+  const tokens = new Set([initial.token])
+  const server = createServer(async (request, response) => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    response.setHeader('content-type', 'application/json')
+    if (request.method !== 'GET' || url.pathname !== `/${nonce}` || url.search) {
+      response.writeHead(404).end()
+      return
+    }
+    try {
+      const fresh = await mint(boot), parsed = fresh.response.ok ? parseMint(fresh.body, boot) : null
+      if (!parsed || parsed.projectRef !== initial.projectRef || JSON.stringify(parsed.jobSpec) !== fingerprint) throw new Error()
+      activeToken = parsed.token
+      tokens.add(parsed.token)
+      response.end(JSON.stringify({ token: parsed.token }))
+    } catch {
+      response.writeHead(502).end(JSON.stringify({ error: 'token refresh failed' }))
+    }
   })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve() })
+    server.listen(0, '127.0.0.1', resolve)
   })
   const address = server.address()
-  if (address === null || typeof address === 'string') throw new Error('token broker failed to bind')
-  return { url: `http://127.0.0.1:${address.port}/${nonce}`, stop: () => { server.close() }, token: () => activeToken }
-}
-async function spawnOfficial(python: string, environment: NodeJS.ProcessEnv, ready: () => Promise<void>): Promise<{ status: number | null; error?: Error; stderr: string }> {
-  if (environment.ORIZU_CANDIDATE_PROPOSER === 'skilled-proposer') {
-    const result = await spawnSkilledProposerChild(python, ['-m', 'orizu_gepa_connector'], 'official', environment, ready)
-    return { ...result, stderr: result.error?.message ?? '' }
+  if (!address || typeof address === 'string') {
+    server.close()
+    throw new Error('token broker did not bind a TCP port')
   }
-  const child = spawn(python, ['-m', 'orizu_gepa_connector'], { env: environment, stdio: ['inherit', 'inherit', 'pipe'] })
-  let stderr = '', error: Error | undefined
-  child.stderr.setEncoding('utf8')
-  child.stderr.on('data', chunk => { stderr += String(chunk); process.stderr.write(chunk) })
-  const spawned = new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
-  const closed = new Promise<number | null>(resolve => { child.once('error', cause => { error = cause }); child.once('close', resolve) })
-  await spawned
-  try { await ready() }
-  catch (cause) { child.kill('SIGTERM'); await closed; throw cause }
-  return { status: await closed, ...(error ? { error } : {}), stderr }
+  return {
+    url: `http://127.0.0.1:${address.port}/${nonce}`,
+    stop: () => { server.close() },
+    token: () => activeToken,
+    secrets: () => [...tokens],
+  }
+}
+async function spawnOfficial(
+  python: string,
+  environment: NodeJS.ProcessEnv,
+  ready: () => Promise<void>,
+  output: ProcessOutputCapture
+): Promise<{ status: number | null; error?: Error }> {
+  if (environment.ORIZU_CANDIDATE_PROPOSER === 'skilled-proposer') {
+    return spawnSkilledProposerChild(
+      python,
+      ['-m', 'orizu_gepa_connector'],
+      'official',
+      environment,
+      ready,
+      {
+        stdout: chunk => output.stdout.append(chunk),
+        stderr: chunk => output.stderr.append(chunk),
+      }
+    )
+  }
+  return runPipedChild(
+    python,
+    ['-m', 'orizu_gepa_connector'],
+    environment,
+    ready,
+    {
+      stdout: chunk => output.stdout.append(chunk),
+      stderr: chunk => output.stderr.append(chunk),
+    }
+  )
+}
+async function ensureFailedRun(
+  boot: BootEnvironment,
+  token: string,
+  engineError: string,
+  diagnostics: FailureDiagnostics
+): Promise<void> {
+  const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+  const response = await fetch(new URL(`/api/cli/optimization-runs/${boot.runId}`, boot.baseUrl), {
+    method: 'PATCH', headers, body: JSON.stringify({ status: 'failed', metadata: {
+      failure_reason: 'hosted_optimization_process_failed', engine_error: engineError,
+      failure_diagnostics: diagnostics,
+    } }),
+  })
+  const body = response.ok ? await response.json() as Record<string, unknown> : {}
+  const run = isRecord(body.optimizationRun) ? body.optimizationRun : {}, metadata = run.metadata
+  if (!isRecord(metadata) || metadata.failure_reason !== 'hosted_optimization_process_failed'
+    || typeof metadata.engine_error !== 'string' || !isRecord(metadata.failure_diagnostics)) {
+    throw new Error('canonical hosted failure was not persisted')
+  }
 }
 function readTerminalResult(path: string): Record<string, unknown> {
   if (!existsSync(path)) throw new Error('hosted optimization result file was not written')
@@ -191,23 +379,31 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
   let boot: BootEnvironment
   try { boot = bootEnvironment() } catch (error) {
     const message = error instanceof Error && error.message ? `: ${error.message}` : ''
-    io.printErr?.(`hosted_optimization_invalid_environment${message}`)
+    await io.printErr?.(`hosted_optimization_invalid_environment${message}`)
     return 1
   }
   delete process.env.ORIZU_BOOT_SECRET
   let reason = 'hosted_optimization_mint_refused'
   const cleanups: Array<() => void> = []
-  let broker: Awaited<ReturnType<typeof startTokenBroker>> | undefined
+  let broker: TokenBroker | undefined
   const resultFile = join(tmpdir(), `orizu-hosted-optimization-result-${boot.runId}-${randomUUID()}.json`)
+  const diagnosticSecrets = () => injectedSecrets(boot, broker)
+  const processOutput = createProcessOutputCapture(diagnosticSecrets)
+  const bootOutput = new BoundedTextCapture(diagnosticSecrets)
+  let failureDiagnostics: FailureDiagnostics | undefined
   try {
     const first = await mint(boot)
     if (first.response.status === 422) reason = 'hosted_optimization_spec_missing'
-    if (!first.response.ok) throw new Error()
+    if (!first.response.ok) {
+      throw new Error(failureDetail(first.body) || `mint status ${first.response.status}`)
+    }
     const minted = parseMint(first.body, boot)
     if (!minted) {
       reason = isRecord(first.body) && first.body.runId !== undefined && first.body.runId !== boot.runId
         ? 'hosted_optimization_mint_refused' : 'hosted_optimization_spec_missing'
-      throw new Error()
+      throw new Error(
+        failureDetail(first.body) || 'mint response did not contain a valid hosted job specification'
+      )
     }
     process.env.ORIZU_BASE_URL = boot.baseUrl.origin
     process.env.ORIZU_TOKEN = minted.token
@@ -218,14 +414,42 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
     const environment = childEnvironment(boot, minted, candidate.runnerDir, scorer.runnerDir, broker.url, resultFile)
     const launch = prepareSkilledProposerLaunch(process.env.PYTHON || 'python3', 'official', environment)
     reason = 'hosted_optimization_process_failed'
-    const result = await spawnOfficial(launch.python, launch.environment, () => postBoot(boot, 'ready', { status: 'ready' }))
-    if (result.error || result.status !== 0) throw new Error()
+    const result = await spawnOfficial(
+      launch.python,
+      launch.environment,
+      () => postBoot(boot, 'ready', { status: 'ready' }),
+      processOutput
+    )
+    if (result.error || result.status !== 0) {
+      const processFailure = result.error?.message || `optimizer exited with status ${result.status}`
+      const secrets = injectedSecrets(boot, broker)
+      failureDiagnostics = buildFailureDiagnostics(processOutput, bootOutput)
+      const engineError = utf8Tail(
+        redactSecrets(processFailure, { secrets }),
+        DIAGNOSTIC_TAIL_MAX_BYTES
+      )
+      await ensureFailedRun(boot, broker.token(), engineError, failureDiagnostics)
+      throw new Error(processFailure)
+    }
     try { await postTerminal(boot, readTerminalResult(resultFile)) }
-    catch { io.printErr?.(reason); return 1 }
+    catch { await io.printErr?.(reason); return 1 }
     return 0
-  } catch {
-    try { await postTerminal(boot, { status: 'failed', failureReason: reason }) } catch { /* retain original phase */ }
-    io.printErr?.(reason)
+  } catch (cause) {
+    if (!failureDiagnostics) {
+      bootOutput.append(failureDetail(cause) || reason)
+      failureDiagnostics = buildFailureDiagnostics(
+        processOutput,
+        bootOutput
+      )
+    }
+    try {
+      await postTerminal(boot, {
+        status: 'failed',
+        failureReason: reason,
+        failureDiagnostics,
+      })
+    } catch { /* retain original phase */ }
+    await io.printErr?.(reason)
     return 1
   } finally {
     broker?.stop()

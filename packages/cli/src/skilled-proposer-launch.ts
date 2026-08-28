@@ -5,6 +5,8 @@ import { join } from 'path'
 import { fileURLToPath } from 'url'
 
 import type { GepaEngine } from './gepa-engine-dispatch.js'
+import { runPipedChild } from './child-output-tee.js'
+import type { PipedChild } from './child-output-tee.js'
 import { bundledOfficialGepaPythonPath, getGepaPythonPathEntries } from './gepa-python-paths.js'
 import { sanitizeTerminalText } from './json-response.js'
 import { SKILLED_PROPOSER_BAKE_REPORT_FIELDS } from './skilled-proposer-bake-report.js'
@@ -27,6 +29,11 @@ export interface SkilledProposerLaunch {
   report?: SkilledProposerVenvReport
 }
 
+export interface SkilledProposerChildOutput {
+  stdout: (chunk: string) => void
+  stderr: (chunk: string) => void
+}
+
 function materializeConfigPayload(engine: GepaEngine, environment: NodeJS.ProcessEnv): (() => void) | undefined {
   const payload = environment.ORIZU_SKILLED_PROPOSER_CONFIG
   if (engine !== 'official' || environment.ORIZU_CANDIDATE_PROPOSER !== 'skilled-proposer' || payload === undefined) return undefined
@@ -45,6 +52,7 @@ function materializeConfigPayload(engine: GepaEngine, environment: NodeJS.Proces
 export async function spawnSkilledProposerChild(
   command: string, args: string[], engine: GepaEngine, environment: NodeJS.ProcessEnv,
   onSpawn?: () => Promise<void>,
+  output?: SkilledProposerChildOutput,
 ) {
   const childEnvironment = { ...environment }
   const shouldMaterialize = engine === 'official'
@@ -52,7 +60,7 @@ export async function spawnSkilledProposerChild(
     && childEnvironment.ORIZU_SKILLED_PROPOSER_CONFIG !== undefined
   if (!shouldMaterialize) return spawnSync(command, args, { stdio: 'inherit', env: childEnvironment })
 
-  let child: ReturnType<typeof spawn> | undefined
+  let child: ReturnType<typeof spawn> | PipedChild | undefined
   let cleanup = () => {}
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const
   const handlers = signals.map(signal => ({
@@ -72,7 +80,20 @@ export async function spawnSkilledProposerChild(
   try {
     cleanup = materializeConfigPayload(engine, childEnvironment) ?? cleanup
     await new Promise<void>(resolve => setImmediate(resolve))
-    const spawnedChild = spawn(command, args, { stdio: 'inherit', env: childEnvironment })
+    if (output) {
+      return await runPipedChild(
+        command,
+        args,
+        childEnvironment,
+        async () => { await onSpawn?.() },
+        output,
+        spawnedChild => { child = spawnedChild }
+      )
+    }
+    const spawnedChild = spawn(command, args, {
+      stdio: 'inherit',
+      env: childEnvironment,
+    })
     child = spawnedChild
     const spawned = new Promise<void>((resolve, reject) => {
       spawnedChild.once('spawn', resolve)
