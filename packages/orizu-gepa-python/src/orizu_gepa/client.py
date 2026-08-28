@@ -78,6 +78,8 @@ class OrizuClient:
     api_url: str
     token: str
     project: str | None = None
+    token_url: str | None = None
+    boot_secret: str | None = None
     sequence: int = 0
 
     @classmethod
@@ -86,13 +88,32 @@ class OrizuClient:
         token = os.environ.get("ORIZU_TOKEN") or ""
         if not api_url or not token:
             raise RuntimeError("ORIZU_API_URL and ORIZU_TOKEN are required. Run: eval \"$(orizu env --project <team>/<project>)\"")
-        return cls(api_url=api_url, token=token, project=os.environ.get("ORIZU_PROJECT"))
+        return cls(api_url=api_url, token=token, project=os.environ.get("ORIZU_PROJECT"),
+                   token_url=os.environ.get("ORIZU_AGENT_TOKEN_URL"),
+                   boot_secret=os.environ.get("ORIZU_BOOT_SECRET"))
+
+    def _refresh_token(self) -> bool:
+        if not self.token_url or not self.boot_secret:
+            return False
+        request = urllib.request.Request(self.token_url, method="GET",
+            headers={"Authorization": f"Bearer {self.boot_secret}"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            token = payload.get("token") if isinstance(payload, dict) else None
+            if not isinstance(token, str) or not token:
+                return False
+            object.__setattr__(self, "token", token)
+            return True
+        except (OSError, ValueError, urllib.error.HTTPError):
+            return False
 
     def _request(
         self,
         method: str,
         path: str,
         body: dict[str, Any] | None = None,
+        _retried: bool = False,
     ) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
         request = urllib.request.Request(
@@ -110,6 +131,8 @@ class OrizuClient:
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
+            if error.code == 401 and not _retried and self._refresh_token():
+                return self._request(method, path, body, _retried=True)
             raise RuntimeError(f"{method} {path} failed: {error.code} {detail}") from error
 
     def _request_bytes(self, path: str) -> bytes:

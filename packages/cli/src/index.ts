@@ -96,7 +96,7 @@ import {
 import { teamConnectorsCommand } from './team-connectors-cli.js'
 import { manifestsCommand } from './manifests-cli.js'
 import { workbenchCommand } from './workbench-cli.js'
-import { dispatchHostedCommands } from './hosted-commands.js'
+import { applyHostedInstructionSetProfileOverride, dispatchHostedCommands } from './hosted-commands.js'
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredentialInvocation } from './git-credential.js'
 import { instructionSetsCommand, syncToDisk } from './instruction-sets-cli.js'; export { loadInstructionSet } from './instruction-set-loader.js'
@@ -2440,7 +2440,7 @@ async function runGepaOptimization() {
     if (!forwardedArgs.includes('--project')) {
       forwardedArgs = ['--project', project, ...forwardedArgs]
     }
-    const dispatch = dispatchGepaEngine(forwardedArgs, project, {
+    const dispatch = applyHostedInstructionSetProfileOverride(dispatchGepaEngine(forwardedArgs, project, {
       ...process.env,
       ORIZU_API_URL: baseUrl,
       ORIZU_TOKEN: token,
@@ -2448,7 +2448,7 @@ async function runGepaOptimization() {
       ORIZU_VERIFIED_RUNNER_DIRS: JSON.stringify(verified.verifiedDirs),
       PYTHONPATH: getGepaPythonPathEntries(process.env.PYTHONPATH).join(delimiter),
       PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
-    })
+    }))
     const instructionSetName = dispatch.environment.ORIZU_INSTRUCTION_SET_NAME
     const modelConfigIdentity = dispatch.environment.ORIZU_MODEL_CONFIG_IDENTITY
     const instructionSetProfileVersionId = instructionSetName && modelConfigIdentity

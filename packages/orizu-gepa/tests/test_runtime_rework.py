@@ -253,6 +253,9 @@ class RuntimeReworkContracts(unittest.TestCase):
             "ORIZU_REFLECTION_MAX_TOKENS": "1024",
             "ORIZU_HOSTED_OPTIMIZATION_RUN_ID": "attached-run",
         }
+        result_root = tempfile.TemporaryDirectory()
+        self.addCleanup(result_root.cleanup)
+        env["ORIZU_HOSTED_RESULT_FILE"] = str(Path(result_root.name) / "result.json")
         context = PromptContext(body="seed", body_kind="text", provider_settings={},
                                 prompt_version_id="prompt", runner_version_id="runner")
         client = MagicMock()
@@ -264,22 +267,74 @@ class RuntimeReworkContracts(unittest.TestCase):
         adapter = MagicMock(); adapter.num_threads_plan.to_payload.return_value = {}
         result = MagicMock(best_idx=0, val_aggregate_scores=[1.0], total_metric_calls=1,
                            candidates=[{"prompt": "seed"}])
-        sink = MagicMock(failed=False)
+        def reject_coordinator_owned_status(_run_id, **event):
+            if event["event_type"] in {"run_completed", "run_failed"}:
+                raise RuntimeError("hosted_optimization_status_is_service_controlled")
+
+        client.log_event.side_effect = reject_coordinator_owned_status
+        client.update_run.side_effect = RuntimeError(
+            "hosted_optimization_status_is_service_controlled")
+
+        def completed_hosted_run(**options):
+            # Mutants killed: forwarding either engine lifecycle callback with
+            # the agent bearer, or PATCHing terminal status after the engine.
+            options["callback"].on_optimization_start({"seed_candidate": {"prompt": "seed"}})
+            options["callback"].on_iteration_start({"iteration": 0})
+            options["callback"].on_optimization_end({"total_metric_calls": 1})
+            options["callback"].sink.emit("run_failed", {})
+            return result
+
         with patch.dict(os.environ, env, clear=True), \
              patch.object(runtime.OrizuClient, "from_env", return_value=client), \
              patch.object(runtime, "resolve_scorer_input_contract", return_value=("flat_row", "model_output")), \
              patch.object(runtime, "validate_seed_before_run"), \
              patch.object(runtime, "RunnerEvaluationAdapter", side_effect=[adapter, adapter]), \
              patch.object(runtime, "create_local_logger_from_environment", return_value=None), \
-             patch.object(runtime, "MandatoryEventSink", return_value=sink) as sink_type, \
-             patch.object(runtime, "run_official_gepa", return_value=result):
+             patch.object(runtime, "run_official_gepa", side_effect=completed_hosted_run):
             summary = runtime.run_from_environment()
 
         client.require_hosted_optimization_run.assert_called_once_with(
             run_id="attached-run", project="team/project")
         client.start_run.assert_not_called()
-        sink_type.assert_called_once_with(client, "attached-run", None)
+        client.update_run.assert_not_called()
+        self.assertEqual(
+            [call.kwargs["event_type"] for call in client.log_event.call_args_list],
+            ["run_started", "iteration_started"],
+        )
         self.assertEqual(summary["optimization_run_id"], "attached-run")
+        self.assertEqual(json.loads(Path(env["ORIZU_HOSTED_RESULT_FILE"]).read_text()), {
+            "status": "succeeded", "bestScore": 1.0, "bestCandidateId": "0",
+            "resultPromptVersionId": None,
+        })
+
+        # Kills restoring the hosted engine-exception PATCH writer.
+        client.fetch_exec_context.side_effect = [
+            (context, [DatasetRow(id="train", row={})]),
+            (context, [DatasetRow(id="validation", row={})]),
+        ]
+        client.update_run.reset_mock()
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(runtime.OrizuClient, "from_env", return_value=client), \
+             patch.object(runtime, "resolve_scorer_input_contract", return_value=("flat_row", "model_output")), \
+             patch.object(runtime, "validate_seed_before_run"), \
+             patch.object(runtime, "RunnerEvaluationAdapter", side_effect=[adapter, adapter]), \
+             patch.object(runtime, "create_local_logger_from_environment", return_value=None), \
+             patch.object(runtime, "run_official_gepa", side_effect=RuntimeError("engine failed")):
+            with self.assertRaisesRegex(RuntimeError, "engine failed"):
+                runtime.run_from_environment()
+        client.update_run.assert_not_called()
+
+        # Kills restoring the sink's failed-status PATCH/retry writer.
+        guarded_client = MagicMock()
+        guarded_sink = runtime.MandatoryEventSink(
+            guarded_client, "attached-run", None, coordinator_controls_status=True)
+        guarded_sink.emit("run_failed", {})
+        guarded_client.log_event.assert_not_called()
+        guarded_client.log_event.side_effect = RuntimeError("event post failed")
+        with patch("orizu_gepa.client.time.sleep"), self.assertRaisesRegex(RuntimeError, "event post failed"):
+            guarded_sink.emit("iteration_started", {})
+        guarded_sink.retry_failed_status()
+        guarded_client.update_run.assert_not_called()
 
     def test_hosted_optimization_lookup_refuses_before_runner_preflight(self):
         """Kills moving missing/foreign validation after runner execution."""

@@ -29,10 +29,14 @@ from .stop_conditions import (
 class MandatoryEventSink:
     """Write locally before POSTing; a failed POST makes the run fail honestly."""
 
-    def __init__(self, client: OrizuClient, run_id: str, local_logger: LocalOptimizationLogger | None):
+    _COORDINATOR_STATUS_EVENTS = frozenset({"run_completed", "run_failed"})
+
+    def __init__(self, client: OrizuClient, run_id: str, local_logger: LocalOptimizationLogger | None,
+                 *, coordinator_controls_status: bool = False):
         self.client = client
         self.run_id = run_id
         self.local_logger = local_logger
+        self.coordinator_controls_status = coordinator_controls_status
         # Connector events occupy odd slots. A promotion/status system event
         # written by the server can take the even slot between any two GEPA
         # callbacks without colliding with the next local event.
@@ -52,6 +56,8 @@ class MandatoryEventSink:
 
     def emit(self, event_type: str, payload: dict[str, Any], *, iteration: int | None = None,
              candidate_id: str | None = None, parent_candidate_id: str | None = None) -> None:
+        if self.coordinator_controls_status and event_type in self._COORDINATOR_STATUS_EVENTS:
+            return
         next_sequence = self.sequence + 2
         self._retry_sink.sequence = next_sequence - 1
         try:
@@ -77,6 +83,9 @@ class MandatoryEventSink:
 
     def _record_failed_status(self) -> None:
         if self._failed_status_reason is None:
+            return
+        if self.coordinator_controls_status:
+            self._failed_status_reason = None
             return
         try:
             self.client.update_run(
@@ -529,7 +538,10 @@ def run_from_environment() -> dict[str, Any]:
             ),
             kind="preflight_warning",
         )
-    sink = MandatoryEventSink(client, run_id, local_logger)
+    sink = MandatoryEventSink(
+        client, run_id, local_logger,
+        coordinator_controls_status=hosted_run_id is not None,
+    )
     def terminal_budget_exhausted(event: dict[str, Any]) -> bool:
         return _terminal_budget_exhausted(
             event,
@@ -693,31 +705,45 @@ def run_from_environment() -> dict[str, Any]:
                     total_tokens_out=int(getattr(reflection_lm, "total_tokens_out", 0)),
                     total_tokens=int(getattr(reflection_lm, "total_tokens", 0)),
                 )
-        if budget_exhausted:
-            client.update_run(
-                run_id,
-                status="paused",
-                best_score=best_score,
-                best_candidate_id=best_id,
-                metadata={
-                    "seed_score": seed_score,
-                    "budget": budget.to_payload(),
-                    "pause_reason": "budget_exhausted",
-                },
-            )
-        else:
-            client.update_run(run_id, status="succeeded", best_score=best_score, best_candidate_id=best_id,
-                              result_prompt_version_id=promoted_prompt_version_id)
+        if hosted_run_id is None:
+            if budget_exhausted:
+                client.update_run(
+                    run_id,
+                    status="paused",
+                    best_score=best_score,
+                    best_candidate_id=best_id,
+                    metadata={
+                        "seed_score": seed_score,
+                        "budget": budget.to_payload(),
+                        "pause_reason": "budget_exhausted",
+                    },
+                )
+            else:
+                client.update_run(run_id, status="succeeded", best_score=best_score, best_candidate_id=best_id,
+                                  result_prompt_version_id=promoted_prompt_version_id)
         summary = _result_summary(
             run_id=run_id, best_id=best_id, best_score=best_score, seed_score=seed_score,
             promoted_prompt_version_id=promoted_prompt_version_id, budget=budget,
             local_logger=local_logger,
         )
+        hosted_result_file = os.environ.get("ORIZU_HOSTED_RESULT_FILE")
+        if hosted_result_file:
+            result_path = Path(hosted_result_file)
+            temporary_result_path = result_path.with_suffix(".next")
+            temporary_result_path.write_text(json.dumps({
+                "status": "paused" if budget_exhausted else "succeeded",
+                **({"failureReason": "hosted_optimization_budget_exhausted"} if budget_exhausted else {}),
+                "bestScore": best_score,
+                "bestCandidateId": best_id,
+                "resultPromptVersionId": promoted_prompt_version_id,
+            }), encoding="utf-8")
+            temporary_result_path.chmod(0o600)
+            temporary_result_path.replace(result_path)
         return summary
     except Exception as error:
         if sink.failed:
             sink.retry_failed_status()
-        else:
+        elif hosted_run_id is None:
             client.update_run(
                 run_id,
                 status="failed",
