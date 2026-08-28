@@ -4,7 +4,16 @@ import { dispatchGepaEngine } from './gepa-engine-dispatch.js'
 import { parseHostedGepaNumericValue } from './hosted-gepa-numeric-values.js'
 import { authedFetch } from './http.js'
 import { hostedProviderFromModel, hostedProviderSettingsError, unsupportedHostedProviderMessage } from './hosted-provider-settings.js'
+import {
+  hostedOptimizationRefusalBody,
+  type HostedOptimizationRefusalCode,
+} from './hosted-optimization-refusals.js'
 import { parseJsonResponse } from './json-response.js'
+import {
+  extractFlagValue,
+  RunnerVerificationError,
+  verifyRunnerDirRegistered,
+} from './runner-dir-verify.js'
 
 interface HostedGepaOptions {
   args: string[]
@@ -13,6 +22,8 @@ interface HostedGepaOptions {
   json: boolean
   printJson: (value: Record<string, unknown>) => void
   printLine: (value: string) => void
+  /** Test seam for cleanup-failure orchestration; production always uses the real verifier. */
+  verifyRunnerDir?: typeof verifyRunnerDirRegistered
 }
 
 function argumentValue(args: string[], name: string): string | null {
@@ -33,6 +44,15 @@ function dispatchArgs(args: string[]): string[] {
 }
 
 export async function runHostedGepaOptimization(options: HostedGepaOptions): Promise<void> {
+  const refuse = (code: HostedOptimizationRefusalCode, detail?: string): true => {
+    const body = hostedOptimizationRefusalBody(code, { detail })
+    if (options.json) {
+      options.printJson(body)
+      process.exitCode = 1
+      return true
+    }
+    throw new Error(`${detail ?? body.error} ${body.remediation}`)
+  }
   const hasLaunchIntent = options.args.some(argument =>
     argument === '--launch-intent-id' || argument.startsWith('--launch-intent-id='))
   const explicitLaunchIntent = argumentValue(options.args, '--launch-intent-id')
@@ -43,12 +63,88 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
   const args = dispatchArgs(options.args)
   if (['--max-iterations', '--max-full-evals', '--max-metric-calls', '--max-candidate-proposals']
     .some(flag => args.some(argument => argument === flag || argument.startsWith(`${flag}=`)))) {
-    throw new Error('Hosted optimization requires a named --budget preset; numeric budget controls are not accepted.')
+    refuse(
+      'hosted_optimization_budget_exceeds_ceiling',
+      'Hosted optimization requires a named --budget preset; numeric budget controls are not accepted.'
+    )
+    return
+  }
+  for (const [dirFlag, versionFlag] of [
+    ['--candidate-runner-dir', '--runner-version-id'],
+    ['--scorer-runner-dir', '--scorer-runner-version-id'],
+  ] as const) {
+    for (const flag of [dirFlag, versionFlag]) {
+      const occurrences = args.filter(argument =>
+        argument === flag || argument.startsWith(`${flag}=`)
+      ).length
+      if (occurrences > 1) {
+        refuse(
+          'hosted_optimization_runner_flags_ambiguous',
+          `Duplicate ${flag}: pass each runner flag exactly once so verified and launched identities cannot diverge.`
+        )
+        return
+      }
+    }
+    const dir = extractFlagValue(args, dirFlag)
+    if (!dir) continue
+    const runnerVersionId = extractFlagValue(args, versionFlag)
+    if (!runnerVersionId) {
+      refuse(dirFlag === '--scorer-runner-dir'
+        ? 'hosted_optimization_scorer_runner_not_registered'
+        : 'hosted_optimization_candidate_runner_not_registered')
+      return
+    }
+    let verified: Awaited<ReturnType<typeof verifyRunnerDirRegistered>>
+    try {
+      verified = await (options.verifyRunnerDir ?? verifyRunnerDirRegistered)({
+        runnerVersionId, dir, flag: dirFlag,
+      })
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Runner verification request failed.'
+      if (!(error instanceof RunnerVerificationError)) {
+        if (detail.startsWith('Session expired.') || detail.startsWith('Not logged in for ')) {
+          refuse('hosted_optimization_runner_verification_auth_failed', detail)
+          return
+        }
+        refuse('hosted_optimization_runner_verification_unavailable', detail)
+        return
+      }
+      const code: HostedOptimizationRefusalCode = error.kind === 'directory_mismatch'
+        ? 'hosted_optimization_runner_dir_mismatch'
+        : error.kind === 'not_registered'
+          ? dirFlag === '--scorer-runner-dir'
+            ? 'hosted_optimization_scorer_runner_not_registered'
+            : 'hosted_optimization_candidate_runner_not_registered'
+          : error.kind === 'manifest_invalid'
+            ? 'hosted_optimization_runner_manifest_invalid'
+            : error.kind === 'authentication'
+              ? 'hosted_optimization_runner_verification_auth_failed'
+              : error.kind === 'authorization'
+                ? 'hosted_optimization_runner_verification_forbidden'
+                : 'hosted_optimization_runner_verification_unavailable'
+      refuse(code, detail)
+      return
+    }
+    try {
+      verified.cleanup()
+    } catch (error) {
+      refuse(
+        'hosted_optimization_runner_verification_cleanup_failed',
+        error instanceof Error ? error.message : 'Runner verification cleanup failed.'
+      )
+      return
+    }
   }
   const dispatch = dispatchGepaEngine(args, options.project, options.environment)
-  if (dispatch.engine !== 'official') throw new Error('Hosted optimization requires the official GEPA engine.')
+  if (dispatch.engine !== 'official') {
+    refuse('hosted_optimization_unsupported_option', 'Hosted optimization requires the official GEPA engine.')
+    return
+  }
   const env = dispatch.environment
-  if (env.ORIZU_PROMOTION_LABEL !== undefined) throw new Error('Hosted optimization does not accept a promotion label.')
+  if (env.ORIZU_PROMOTION_LABEL !== undefined) {
+    refuse('hosted_optimization_unsupported_option', 'Hosted optimization does not accept a promotion label.')
+    return
+  }
   const required = [
     ['ORIZU_OPTIMIZER_VERSION_ID', '--optimizer-version-id'], ['ORIZU_RUNNER_VERSION_ID', '--runner-version-id'],
     ['ORIZU_SCORER_VERSION_ID', '--scorer-version-id'], ['ORIZU_SCORER_RUNNER_VERSION_ID', '--scorer-runner-version-id'],
@@ -58,7 +154,13 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
   const providerSettings = JSON.parse(env.ORIZU_REFLECTION_PROVIDER_SETTINGS ?? '{}') as Record<string, unknown>
   const reflectionModel = env.ORIZU_REFLECTION_MODEL ?? 'anthropic/'
   const reflectionProvider = reflectionModel.split('/', 1)[0] || reflectionModel
-  if (!hostedProviderFromModel(reflectionModel)) throw new Error(unsupportedHostedProviderMessage(reflectionProvider))
+  if (!hostedProviderFromModel(reflectionModel)) {
+    refuse(
+      'hosted_optimization_unsupported_provider',
+      unsupportedHostedProviderMessage(reflectionProvider)
+    )
+    return
+  }
   const providerSettingsError = hostedProviderSettingsError(providerSettings,
     reflectionModel, env.ORIZU_REFLECTION_TEMPERATURE)
   if (providerSettingsError) throw new Error(providerSettingsError)

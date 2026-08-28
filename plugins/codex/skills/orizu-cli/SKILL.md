@@ -81,6 +81,10 @@ A judge runner built for flat rows will silently score every candidate 0 unless 
 Bundled `run-gepa` flag behavior and execution semantics live in `references/optimization-with-gepa.md`.
 Read that reference before configuring a run; keep this journey focused on workflow and exit criteria.
 
+For a hosted GEPA launch, follow the eligibility, refusal, retry, and monitor
+contract in `references/optimization-with-gepa.md`; surface its remediation
+unchanged and treat queued as accepted rather than complete.
+
 **Exit criterion:** The human has made a promotion decision from the optimization report; if shipping, the new profile version is live.
 
 # Improve continuously

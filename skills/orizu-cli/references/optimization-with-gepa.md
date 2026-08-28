@@ -80,9 +80,23 @@ uses a named `--budget auto|light|medium|heavy`. Hosted launch does not require
 the local candidate/scorer runner directories or a local log directory, and it
 never sends provider credentials or runner bytes from the customer's machine.
 Numeric budget controls are refused because they cannot be compared honestly
-to the named team ceiling. For response-loss recovery, reuse an explicit
-`--launch-intent-id <uuid>`; a changed project or job specification requires a
-new intent. A hosted agent prepares the command and hands it to a human.
+to the named team ceiling. Eligibility also requires a staff-enabled team with
+available concurrency, an optimizer version in the launch project whose
+validated `manifest.optimizer_family` is `gepa`, registered candidate and
+scorer runners, and an Anthropic or OpenAI reflection model. Runner directories
+are unnecessary; if supplied, they must byte-match the registered versions,
+contain a confined `manifest.json`, and use each runner identity flag once.
+
+Use `--json` for an agent-readable launch. Eligibility refusals in the hosted
+catalog return the same `{error, code, remediation}` structure and may include
+bounded `detail` with the verifier cause; a concurrency-cap refusal additionally
+returns `runningRunUrls` for the active runs to inspect or cancel. Preserve the
+server remediation verbatim. Acceptance prints a durable monitor URL: queued
+means the coordinator accepted the run, not that optimization completed, so
+watch that URL through running to a terminal state. For response-loss recovery,
+reuse an explicit `--launch-intent-id <uuid>`; a changed project or job
+specification requires a new intent. A hosted agent prepares the command and
+hands it to a human.
 
 ## Migrating from the legacy engine (release cli-v0.5.20+)
 

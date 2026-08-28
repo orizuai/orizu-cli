@@ -161,8 +161,22 @@ does not require `--candidate-runner-dir`, `--scorer-runner-dir`, or
 `--log-dir`, and no local runner bytes or provider credentials are sent. A
 hosted launch accepts only a named `--budget auto|light|medium|heavy` preset so
 the server can compare it to the team's spend ceiling; numeric budget controls
-fail closed. Pass `--launch-intent-id <uuid>` when a caller needs to retry after
-response loss without creating a second run.
+fail closed. Eligibility also requires a staff-enabled team with available
+concurrency, an optimizer version in the launch project whose validated
+`manifest.optimizer_family` is `gepa`, registered candidate/scorer runners,
+and an `anthropic/` or `openai/` reflection model. Supplied runner directories
+must byte-match their registered versions and carry a snapshot-confined
+`manifest.json`; duplicate runner identity flags are refused.
+
+With `--json`, hosted eligibility catalog refusals return stable
+`error`, `code`, and actionable `remediation` fields. Refusals may include a
+bounded `detail` field with the underlying verifier cause. A concurrency-cap refusal
+additionally returns
+`runningRunUrls` for the active runs to inspect or cancel. On acceptance, the
+printed monitor URL is the durable contract for watching Queued → running → a
+terminal state; the initial Queued line does not claim completion. Pass
+`--launch-intent-id <uuid>` when a caller needs to retry after response loss
+without creating a second run.
 
 ### JSON output everywhere
 

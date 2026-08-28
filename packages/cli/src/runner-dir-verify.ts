@@ -25,6 +25,33 @@ import { cleanupAll, throwWithCleanup } from './cleanup.js'
  */
 
 /** Test seam; defaults to the authenticated CLI fetcher. */
+export type RunnerVerificationFailureKind =
+  | 'directory_mismatch'
+  | 'not_registered'
+  | 'manifest_invalid'
+  | 'authentication'
+  | 'authorization'
+  | 'infrastructure'
+
+export class RunnerVerificationError extends Error {
+  constructor(
+    readonly kind: RunnerVerificationFailureKind,
+    message: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options)
+    this.name = 'RunnerVerificationError'
+  }
+}
+
+function verificationError(
+  kind: RunnerVerificationFailureKind,
+  message: string,
+  cause?: unknown
+): RunnerVerificationError {
+  return new RunnerVerificationError(kind, message, cause === undefined ? undefined : { cause })
+}
+
 export interface VerifyRunnerDirInput {
   runnerVersionId: string
   dir: string
@@ -110,9 +137,20 @@ export async function verifyRunnerDirRegistered(input: VerifyRunnerDirInput): Pr
   // (codex round 3: the literal `~/...` was scanned and ENOENT'd).
   const dir = expandHomePath(input.dir)
 
-  const { envFiles, symlinks } = scanRunnerDir(dir)
+  let scan: RunnerDirScan
+  try {
+    scan = scanRunnerDir(dir)
+  } catch (error) {
+    throw verificationError(
+      'directory_mismatch',
+      error instanceof Error ? error.message : `Unable to read runner directory ${dir}.`,
+      error
+    )
+  }
+  const { envFiles, symlinks } = scan
   if (symlinks.length > 0) {
-    throw new Error(
+    throw verificationError(
+      'directory_mismatch',
       `Runner directory ${dir} contains symlinks (${symlinks.join(', ')}) — symlinks are excluded ` +
       'from the registered content hash but execution would follow them, so the run could execute ' +
       'unregistered bytes under a registered runner_version_id (ADR-007). Replace them with real ' +
@@ -120,7 +158,8 @@ export async function verifyRunnerDirRegistered(input: VerifyRunnerDirInput): Pr
     )
   }
   if (envFiles.length > 0) {
-    throw new Error(
+    throw verificationError(
+      'directory_mismatch',
       `Runner directory ${dir} contains env files (${envFiles.join(', ')}) that are excluded ` +
       'from the registered content hash but would be read at runtime — the run would execute ' +
       'unregistered inputs under a registered runner_version_id (ADR-007). Remove them and pass ' +
@@ -131,12 +170,22 @@ export async function verifyRunnerDirRegistered(input: VerifyRunnerDirInput): Pr
   // Read the entry set ONCE: these exact bytes are hashed AND (on success)
   // materialized as the execution snapshot, so verify-vs-execute cannot
   // diverge.
-  const entries = readArtifactEntries(dir)
+  let entries: ReturnType<typeof readArtifactEntries>
+  try {
+    entries = readArtifactEntries(dir)
+  } catch (error) {
+    throw verificationError(
+      'directory_mismatch',
+      error instanceof Error ? error.message : `Unable to read runner directory ${dir}.`,
+      error
+    )
+  }
   const { contentSha256: localSha } = archiveArtifactEntries(entries)
 
   const response = await fetcher(`/api/cli/runner-versions/${encodeURIComponent(input.runnerVersionId)}`)
   if (response.status === 404) {
-    throw new Error(
+    throw verificationError(
+      'not_registered',
       `Runner version ${input.runnerVersionId} is not registered (or is not visible to you), ` +
       `so ${input.flag} bytes cannot be attributed to it. Register the directory first with ` +
       '`orizu runners push` and re-run against the returned version id.'
@@ -146,20 +195,28 @@ export async function verifyRunnerDirRegistered(input: VerifyRunnerDirInput): Pr
     // Bounded echo: an HTML error page or proxy body should not flood the
     // terminal (claude-review on #1447).
     const detail = (await response.text()).slice(0, 300)
-    throw new Error(`Failed to fetch runner version ${input.runnerVersionId} (HTTP ${response.status}): ${detail}`)
+    const message = `Failed to fetch runner version ${input.runnerVersionId} (HTTP ${response.status}): ${detail}`
+    throw verificationError(
+      response.status === 401 ? 'authentication'
+        : response.status >= 400 && response.status < 500 ? 'authorization'
+          : 'infrastructure',
+      message
+    )
   }
 
   const data = await response.json() as { contentSha256?: string | null }
   const registeredSha = typeof data.contentSha256 === 'string' ? data.contentSha256 : null
   if (!registeredSha) {
-    throw new Error(
+    throw verificationError(
+      'infrastructure',
       `Runner version ${input.runnerVersionId} has no recorded content sha, so ${input.flag} bytes ` +
       'cannot be verified against it. Drop the flag to execute the registered bytes.'
     )
   }
 
   if (registeredSha.toLowerCase() !== localSha.toLowerCase()) {
-    throw new Error(
+    throw verificationError(
+      'directory_mismatch',
       `runner_version_bytes_mismatch: Local runner bytes at ${dir} are not registered runner version ${input.runnerVersionId} ` +
       `(content sha ${localSha} != ${registeredSha}). Runs may only execute registered runner bytes ` +
       '(ADR-007): register the directory first with `orizu runners push` ' +
@@ -186,7 +243,15 @@ export async function verifyRunnerDirRegistered(input: VerifyRunnerDirInput): Pr
     // registered hash covers the manifest text, not what an out-of-snapshot
     // path resolves to at spawn time. Validate against the snapshot's own
     // manifest bytes before anything can execute.
-    assertSnapshotManifestConfined(snapshotDir, input.flag)
+    try {
+      assertSnapshotManifestConfined(snapshotDir, input.flag)
+    } catch (error) {
+      throw verificationError(
+        'manifest_invalid',
+        error instanceof Error ? error.message : 'Verified runner manifest is invalid.',
+        error
+      )
+    }
   } catch (error) {
     rmSync(snapshotDir, { recursive: true, force: true })
     throw error
