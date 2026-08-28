@@ -6,7 +6,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any
 
 from .optimizer import DatasetRow, PromotionResult, PromptContext
@@ -81,6 +82,7 @@ class OrizuClient:
     token_url: str | None = None
     boot_secret: str | None = None
     sequence: int = 0
+    _token_refresh_lock: Lock = field(default_factory=Lock, init=False, repr=False, compare=False)
 
     @classmethod
     def from_env(cls) -> "OrizuClient":
@@ -92,21 +94,36 @@ class OrizuClient:
                    token_url=os.environ.get("ORIZU_AGENT_TOKEN_URL"),
                    boot_secret=os.environ.get("ORIZU_BOOT_SECRET"))
 
-    def _refresh_token(self) -> bool:
+    def _refresh_token(self, stale_token: str | None = None) -> bool:
         if not self.token_url:
             return False
-        headers = ({"Authorization": f"Bearer {self.boot_secret}"}
-                   if self.boot_secret else {})
-        request = urllib.request.Request(self.token_url, method="GET", headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            token = payload.get("token") if isinstance(payload, dict) else None
-            if not isinstance(token, str) or not token:
-                return False
-            object.__setattr__(self, "token", token)
-            return True
-        except (OSError, ValueError, urllib.error.HTTPError):
+        with self._token_refresh_lock:
+            if stale_token is not None and self.token != stale_token:
+                return True
+            headers = ({"Authorization": f"Bearer {self.boot_secret}"}
+                       if self.boot_secret else {})
+            request = urllib.request.Request(self.token_url, method="GET", headers=headers)
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                    token = payload.get("token") if isinstance(payload, dict) else None
+                    if not isinstance(token, str) or not token:
+                        return False
+                    object.__setattr__(self, "token", token)
+                    return True
+                except urllib.error.HTTPError as error:
+                    if error.code != 429 or attempt == 1:
+                        return False
+                    retry_after = error.headers.get("Retry-After") if error.headers else None
+                    try:
+                        delay = min(300.0, max(0.0, float(retry_after or "0")))
+                    except ValueError:
+                        delay = 0.0
+                    if delay:
+                        time.sleep(delay)
+                except (OSError, ValueError):
+                    return False
             return False
 
     def _request(
@@ -117,12 +134,13 @@ class OrizuClient:
         _retried: bool = False,
     ) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
+        request_token = self.token
         request = urllib.request.Request(
             f"{self.api_url}{path}",
             data=data,
             method=method,
             headers={
-                "Authorization": f"Bearer {self.token}",
+                "Authorization": f"Bearer {request_token}",
                 "Content-Type": "application/json",
             },
         )
@@ -132,21 +150,24 @@ class OrizuClient:
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
-            if error.code == 401 and not _retried and self._refresh_token():
+            if error.code == 401 and not _retried and self._refresh_token(request_token):
                 return self._request(method, path, body, _retried=True)
             raise RuntimeError(f"{method} {path} failed: {error.code} {detail}") from error
 
-    def _request_bytes(self, path: str) -> bytes:
+    def _request_bytes(self, path: str, _retried: bool = False) -> bytes:
+        request_token = self.token
         request = urllib.request.Request(
             f"{self.api_url}{path}",
             method="GET",
-            headers={"Authorization": f"Bearer {self.token}"},
+            headers={"Authorization": f"Bearer {request_token}"},
         )
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 return response.read()
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
+            if error.code == 401 and not _retried and self._refresh_token(request_token):
+                return self._request_bytes(path, _retried=True)
             raise RuntimeError(f"GET {path} failed: {error.code} {detail}") from error
 
     def start_run(

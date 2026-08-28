@@ -4,7 +4,10 @@ import io
 import json
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import get_type_hints
 from unittest import mock
@@ -26,7 +29,100 @@ class PromotionResponseClient(OrizuClient):
         if path.endswith("/promote"):
             return self.promotion_response
         return {}
+@contextlib.contextmanager
+def serve_http(handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 class ClientPromotionContractTests(unittest.TestCase):
+    def test_byte_download_refreshes_once_after_hosted_token_expiry(self):
+        # Mutant killed: leaving _request_bytes outside the 401 refresh path
+        # makes registered artifact downloads fail after a long run's token expires.
+        observed = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                observed.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/refresh":
+                    payload = b'{"token":"fresh-token"}'
+                    self.send_response(200); self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers(); self.wfile.write(payload); return
+                if self.path == "/bytes" and self.headers.get("Authorization") == "Bearer fresh-token":
+                    payload = b"registered-runner-bytes"
+                    self.send_response(200); self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers(); self.wfile.write(payload); return
+                self.send_response(401); self.end_headers(); self.wfile.write(b"expired")
+            def log_message(self, *_args):
+                return
+        with serve_http(Handler) as url:
+            client = OrizuClient(url, "expired-token", token_url=f"{url}/refresh")
+            self.assertEqual(client._request_bytes("/bytes"), b"registered-runner-bytes")
+        self.assertEqual([path for path, _auth in observed], ["/bytes", "/refresh", "/bytes"])
+
+    def test_concurrent_401s_share_one_hosted_token_refresh(self):
+        # Mutant killed: removing the refresh lock/stale-token recheck sends one
+        # broker mint per worker at simultaneous expiry and can trip its rate limit.
+        expired_requests = threading.Barrier(4)
+        refresh_count = 0
+        refresh_count_lock = threading.Lock()
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                nonlocal refresh_count
+                if self.path == "/refresh":
+                    with refresh_count_lock:
+                        refresh_count += 1
+                    payload = b'{"token":"fresh-token"}'
+                    self.send_response(200); self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers(); self.wfile.write(payload); return
+                if self.headers.get("Authorization") == "Bearer expired-token":
+                    expired_requests.wait(timeout=2)
+                    self.send_response(401); self.end_headers(); self.wfile.write(b"expired"); return
+                payload = b'{"ok":true}'
+                self.send_response(200); self.send_header("Content-Length", str(len(payload)))
+                self.end_headers(); self.wfile.write(payload)
+            def log_message(self, *_args):
+                return
+        with serve_http(Handler) as url:
+            client = OrizuClient(url, "expired-token", token_url=f"{url}/refresh")
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                results = list(pool.map(lambda _index: client._request("GET", "/data"), range(4)))
+        self.assertEqual(results, [{"ok": True}] * 4)
+        self.assertEqual(refresh_count, 1)
+
+    def test_hosted_refresh_retries_one_broker_rate_limit(self):
+        # Mutant killed: swallowing the broker's first 429 turns a recoverable
+        # simultaneous-expiry throttle into an optimizer failure.
+        refresh_count = 0
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                nonlocal refresh_count
+                if self.path == "/refresh":
+                    refresh_count += 1
+                    if refresh_count == 1:
+                        self.send_response(429); self.send_header("Retry-After", "0")
+                        self.end_headers(); return
+                    payload = b'{"token":"fresh-token"}'
+                    self.send_response(200); self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers(); self.wfile.write(payload); return
+                if self.headers.get("Authorization") == "Bearer expired-token":
+                    self.send_response(401); self.end_headers(); self.wfile.write(b"expired"); return
+                payload = b'{"ok":true}'
+                self.send_response(200); self.send_header("Content-Length", str(len(payload)))
+                self.end_headers(); self.wfile.write(payload)
+            def log_message(self, *_args):
+                return
+        with serve_http(Handler) as url:
+            client = OrizuClient(url, "expired-token", token_url=f"{url}/refresh")
+            self.assertEqual(client._request("GET", "/data"), {"ok": True})
+        self.assertEqual(refresh_count, 2)
+
     def test_hosted_token_broker_refreshes_without_reintroducing_boot_secret(self):
         # Mutants killed: requiring ORIZU_BOOT_SECRET in the child process after
         # the agent-free entrypoint has scrubbed it, or sending an empty bearer

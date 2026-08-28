@@ -202,20 +202,37 @@ function validJobSpec(value: unknown, projectRef: unknown): value is Record<stri
       .some(item => item !== null))) return false
   return true
 }
+class CoordinatorCallbackError extends Error {
+  constructor(public readonly status: number, suffix: 'ready' | 'result') {
+    super(`coordinator ${suffix} refused status ${status}`)
+  }
+}
+// Readiness is intentionally one bounded attempt: an ambiguous ready response
+// terminates the child through runPipedChild rather than spending without a
+// coordinator lease. Only the already-computed terminal result gets retries.
 async function postBoot(boot: BootEnvironment, suffix: 'ready' | 'result', body: Record<string, unknown>): Promise<void> {
   const response = await fetch(new URL(`optimizations/${boot.runId}/${suffix}`, boot.coordinatorUrl), {
     method: 'POST', headers: { authorization: `Bearer ${boot.bootSecret}`, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
   })
-  if (!response.ok) throw new Error(`coordinator ${suffix} refused status ${response.status}`)
+  if (!response.ok) throw new CoordinatorCallbackError(response.status, suffix)
 }
 async function postTerminal(boot: BootEnvironment, body: Record<string, unknown>): Promise<void> {
-  for (let attempt = 0; attempt < 2; attempt += 1) { try { await postBoot(boot, 'result', body); return }
-    catch (cause) { if (attempt === 1) throw cause }
+  const attempts = 8
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try { await postBoot(boot, 'result', body); return }
+    catch (cause) {
+      if (cause instanceof CoordinatorCallbackError && cause.status < 500 && cause.status !== 404) throw cause
+      if (attempt === attempts - 1) throw cause
+    }
+    await new Promise(resolve => setTimeout(resolve, Math.min(10_000, 250 * 2 ** attempt)))
   }
 }
 async function mint(boot: BootEnvironment): Promise<{ response: Response; body: unknown }> {
-  const response = await fetch(boot.agentTokenUrl, { headers: { authorization: `Bearer ${boot.bootSecret}` } })
+  const response = await fetch(boot.agentTokenUrl, {
+    headers: { authorization: `Bearer ${boot.bootSecret}` },
+    signal: AbortSignal.timeout(10_000),
+  })
   let body: unknown = null
   try { body = await response.json() } catch { /* classified by the caller */ }
   return { response, body }
@@ -294,7 +311,14 @@ async function startTokenBroker(
       return
     }
     try {
-      const fresh = await mint(boot), parsed = fresh.response.ok ? parseMint(fresh.body, boot) : null
+      const fresh = await mint(boot)
+      if (!fresh.response.ok) {
+        const retryAfter = fresh.response.headers.get('retry-after')
+        response.writeHead(fresh.response.status, retryAfter ? { 'retry-after': retryAfter } : {})
+        response.end(JSON.stringify({ error: 'token refresh failed' }))
+        return
+      }
+      const parsed = parseMint(fresh.body, boot)
       if (!parsed || parsed.projectRef !== initial.projectRef || JSON.stringify(parsed.jobSpec) !== fingerprint) throw new Error()
       activeToken = parsed.token
       tokens.add(parsed.token)
