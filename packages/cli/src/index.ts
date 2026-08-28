@@ -2349,7 +2349,7 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
   const data = await parseJsonResponse<{
     optimizationRun: {
       id: string
-      status: string
+      status?: string
       startedAt?: string | null
       finishedAt?: string | null
       bestScore?: number | null
@@ -2357,6 +2357,7 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
       resultPromptVersionId?: string | null
       metadata?: Record<string, unknown>
     }
+    cancellationStatus?: 'already_terminal'
   }>(response, 'Optimization run update')
 
   if (hasJsonFlag()) {
@@ -2365,7 +2366,13 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
   }
 
   const id = sanitizeTerminalText(data.optimizationRun.id)
-  if (action === 'pause') {
+  if (action === 'cancel' && data.cancellationStatus === 'already_terminal') {
+    const status = data.optimizationRun.status
+    const outcome = status
+      ? ` (${sanitizeTerminalText(status)})`
+      : ''
+    printLine(`Optimization run ${id} is already terminal${outcome}; cancellation was not applied`)
+  } else if (action === 'pause') {
     printLine(`Paused optimization run ${id}`)
   } else if (action === 'resume') {
     printLine(`Resumed optimization run ${id}`)
