@@ -67,6 +67,10 @@ export const HOSTED_OPTIMIZATION_REFUSAL_CONTRACTS = {
     status: 400,
     remediation: 'Use the official Orizu GEPA optimizer and remove options that are only supported for local optimization.',
   },
+  hosted_optimization_job_spec_too_large: {
+    status: 400,
+    remediation: 'Shorten the objective or reflection prompt so the hosted job specification fits the control-plane limit.',
+  },
 } as const
 
 export type HostedOptimizationRefusalCode = keyof typeof HOSTED_OPTIMIZATION_REFUSAL_CONTRACTS
