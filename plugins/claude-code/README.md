@@ -2,7 +2,7 @@
 
 First-class Claude Code distribution of the Orizu agent workflow skill. The
 plugin is a thin native distribution layer over the Orizu CLI runtime: it
-bundles the shared `orizu-cli` skill (namespaced as `orizu:orizu-cli`) and
+bundles the shared `orizu` skill (namespaced as `orizu:orizu`) and
 plugin metadata, and nothing else. Scoring, runners, optimizers, auth, and
 cloud sandbox logic live in the `orizu` npm CLI.
 
@@ -37,7 +37,7 @@ closest available validation command in your Claude Code version).
 
 ## Regenerating bundled content
 
-`skills/orizu-cli/` is generated from the repo's shared `skills/orizu-cli`
+`skills/orizu/` is generated from the repo's shared `skills/orizu`
 source — do not edit it here. To refresh after skill or CLI changes:
 
 ```bash

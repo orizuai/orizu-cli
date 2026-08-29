@@ -86,12 +86,15 @@ Install the CLI globally with your package manager:
 | pnpm | `pnpm add -g orizu` |
 | Bun | `bun add -g orizu` |
 
-Then run the guided setup — it signs you in, initializes the local workspace
-contract, installs global coding-agent skill symlinks, and shows the next
-command for repo-specific Orizu adoption:
+Then run the guided setup — it signs you in, asks you to choose or create a
+team and project, initializes the local workspace contract, installs the shared
+`~/.agents/skills/orizu` skill plus selected native targets, and optionally
+launches Claude, Codex, or Pi:
 
 ```bash
 orizu setup
+# Scripts use explicit choices after `orizu login --headless`:
+orizu setup --team acme --project support-agent --agent codex --non-interactive
 ```
 
 To repair or customize skill installs later, run the companion skill installer
@@ -417,4 +420,4 @@ Use `--json` on supported task and app commands when automation needs structured
 ## More Documentation
 
 - [docs/cli.md](docs/cli.md): complete CLI guide and command reference
-- [skills/orizu-cli/references/cli-reference.md](skills/orizu-cli/references/cli-reference.md): compact command matrix and end-to-end flows
+- [skills/orizu/references/cli-reference.md](skills/orizu/references/cli-reference.md): compact command matrix and end-to-end flows

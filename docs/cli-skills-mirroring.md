@@ -4,7 +4,7 @@ This repo remains the source of truth.
 External users consume:
 - Single mirror repo (for CLI source, skills, plugin packages, marketplace
   catalogs, and release tags)
-- npm package `orizu`, which bundles the `orizu-cli` skill for local install
+- npm package `orizu`, which bundles the `orizu` skill for local install
 - Codex and Claude Code plugin packages under `plugins/`, installable from the
   mirror repo's marketplace catalogs (`.agents/plugins/marketplace.json` for
   Codex, `.claude-plugin/marketplace.json` for Claude Code)
@@ -15,7 +15,7 @@ External users consume:
   - Validates each folder under `skills/` has a valid `SKILL.md` frontmatter.
 - `.github/workflows/validate-plugins.yml`
   - Validates plugin manifests, marketplace catalogs, and that committed
-    plugin skill bundles match `skills/orizu-cli` (`bun run plugins:validate`).
+    plugin skill bundles match `skills/orizu` (`bun run plugins:validate`).
 - `.github/workflows/sync-cli-and-skills.yml`
   - Mirrors `packages/cli`, `packages/orizu-gepa`, `packages/orizu-gepa-python`, `skills`,
     `plugins`, the marketplace catalogs, plugin scripts, and CLI docs to one
@@ -25,7 +25,7 @@ External users consume:
   - Sets `packages/cli/package.json` version from the release tag at publish time.
   - Verifies checked-in CLI build artifacts.
   - Vendors `packages/orizu-gepa` and `packages/orizu-gepa-python` into the CLI package during `npm publish`.
-  - Vendors `skills/orizu-cli` into the CLI package during `npm publish`.
+  - Vendors `skills/orizu` into the CLI package during `npm publish`.
   - Publishes `packages/cli` to npm.
   - Pushes `vX.Y.Z` tag to mirror repo.
 
@@ -44,10 +44,10 @@ For plugin releases (Codex / Claude Code packages), follow
 1. Merge to `main` (auto-sync mirrors runs).
 2. Create tag:
    ```bash
-   git tag cli-v0.0.3
-   git push origin cli-v0.0.3
+   git tag cli-v0.0.4
+   git push origin cli-v0.0.4
    ```
-3. `publish-cli.yml` publishes npm and pushes `v0.0.3` to CLI mirror.
+3. `publish-cli.yml` publishes npm and pushes `v0.0.4` to CLI mirror.
 4. Verify the published CLI surface:
    ```bash
    npx orizu --help

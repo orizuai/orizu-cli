@@ -126,6 +126,8 @@ export interface WorkspaceInitOptions {
 
 export interface WorkspaceInitResult {
   root: string
+  teamSlug: string
+  projectSlugs: string[]
   state: 'created' | 'exists' | 'would-create' | 'validated' | 'invalid' | 'repaired'
   gitignoreUpdated: boolean
   actions: string[]
@@ -558,14 +560,67 @@ function pushGitignore(operations: WorkspaceOperation[], path: string, entries: 
   }
 }
 
-function existingTeamSlug(root: string): string | null {
-  const manifest = readJsonManifest(join(root, 'orizu.team.json'))
-  return typeof manifest?.slug === 'string' ? manifest.slug : null
+export type ExistingWorkspaceTeamManifest =
+  | { state: 'absent' }
+  | { state: 'invalid' }
+  | { state: 'invalid-root' }
+  | { state: 'valid', slug: string }
+
+function existingPathMatches(path: string, predicate: (entry: NonNullable<ReturnType<typeof statSync>>) => boolean): boolean | null {
+  let entry: NonNullable<ReturnType<typeof lstatSync>>
+  try {
+    entry = lstatSync(path)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : false
+  }
+  try {
+    return predicate(entry.isSymbolicLink() ? statSync(path) : entry)
+  } catch {
+    return false
+  }
+}
+
+export function inspectExistingWorkspaceTeam(root: string): ExistingWorkspaceTeamManifest {
+  let rootEntry: NonNullable<ReturnType<typeof lstatSync>>
+  try {
+    rootEntry = lstatSync(root)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
+      ? { state: 'absent' }
+      : { state: 'invalid-root' }
+  }
+  try {
+    if (rootEntry.isSymbolicLink() ? !statSync(root).isDirectory() : !rootEntry.isDirectory()) return { state: 'invalid-root' }
+    readdirSync(root)
+    for (const directory of WORKSPACE_ROOT_DIRS) {
+      if (existingPathMatches(join(root, directory), entry => entry.isDirectory()) === false) return { state: 'invalid-root' }
+    }
+    for (const file of WORKSPACE_ROOT_FILES) {
+      if (existingPathMatches(join(root, file), entry => entry.isFile()) === false) return { state: 'invalid-root' }
+    }
+  } catch {
+    return { state: 'invalid-root' }
+  }
+  const path = join(root, 'orizu.team.json')
+  if (!existsSync(path)) return { state: 'absent' }
+  const manifest = readJsonManifest(path)
+  const slug = typeof manifest?.slug === 'string' ? manifest.slug.trim() : ''
+  return manifest?.schemaVersion === WORKSPACE_SCHEMA_VERSION
+    && manifest.kind === 'team'
+    && slug.length > 0
+    && normalizeSlug(slug, '') === slug
+    ? { state: 'valid', slug }
+    : { state: 'invalid' }
+}
+
+export function existingWorkspaceTeamSlug(root: string): string | null {
+  const result = inspectExistingWorkspaceTeam(root)
+  return result.state === 'valid' ? result.slug : null
 }
 
 function buildSetupPlan(options?: WorkspaceInitOptions, includeFindings = true): WorkspaceSetupPlan {
   const root = resolveWorkspaceRoot(options)
-  const currentTeamSlug = existingTeamSlug(root)
+  const currentTeamSlug = existingWorkspaceTeamSlug(root)
   const requestedTeamSlug = options?.teamSlug ? normalizeSlug(options.teamSlug, 'local-team') : null
   const normalizedCurrentTeamSlug = currentTeamSlug ? normalizeSlug(currentTeamSlug, 'local-team') : null
   if (requestedTeamSlug && normalizedCurrentTeamSlug && requestedTeamSlug !== normalizedCurrentTeamSlug) {
@@ -1087,6 +1142,8 @@ export function initOrizuWorkspace(options?: WorkspaceInitOptions): WorkspaceIni
   if (dryRun) {
     return {
       root: plan.root,
+      teamSlug: plan.teamSlug,
+      projectSlugs: plan.projects.map(project => project.slug),
       state: beforeExists ? 'exists' : 'would-create',
       gitignoreUpdated: false,
       actions: plan.operations.map(op => operationLabel(plan.root, op)),
@@ -1099,6 +1156,8 @@ export function initOrizuWorkspace(options?: WorkspaceInitOptions): WorkspaceIni
     const hasErrors = plan.findings.some(item => item.severity === 'error')
     return {
       root: plan.root,
+      teamSlug: plan.teamSlug,
+      projectSlugs: plan.projects.map(project => project.slug),
       state: hasErrors ? 'invalid' : 'validated',
       gitignoreUpdated: false,
       actions: [],
@@ -1122,6 +1181,8 @@ export function initOrizuWorkspace(options?: WorkspaceInitOptions): WorkspaceIni
   const findings = validateWorkspaceContract({ ...options, workspaceRoot: plan.root })
   return {
     root: plan.root,
+    teamSlug: plan.teamSlug,
+    projectSlugs: plan.projects.map(project => project.slug),
     state: beforeExists ? (applied > 0 ? 'repaired' : 'exists') : 'created',
     gitignoreUpdated,
     actions: plan.operations.map(op => operationLabel(plan.root, op)),

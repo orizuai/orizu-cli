@@ -725,7 +725,7 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   exec('git', ['-C', workspaceDir, 'config', 'user.email', AGENT_GIT_IDENTITY.email])
   log(`cloned ${session.repoBranch}`)
 
-  // 5b — Stage the orizu-cli skill into the cloned repo so the agent discovers the
+  // 5b — Stage the orizu skill into the cloned repo so the agent discovers the
   // Orizu workflows (ALI-1059). SHARED with the operator path via `stageOrizuSkill`
   // (one resolution chain + the harvest-safe .git/info/exclude append). Non-fatal:
   // a staging failure is logged, never aborts the boot. The DO `BootExec` is
@@ -738,9 +738,9 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
         return { exitCode: res.status, stdout: res.stdout, stderr: res.stderr ?? '' }
       },
     })
-    log(`orizu-cli skill staged: ${skillStage.ok ? skillStage.method : 'unresolved'}`)
+    log(`orizu skill staged: ${skillStage.ok ? skillStage.method : 'unresolved'}`)
   } catch (error) {
-    log(`orizu-cli skill staging failed: ${error instanceof Error ? error.message : String(error)}`)
+    log(`orizu skill staging failed: ${error instanceof Error ? error.message : String(error)}`)
   }
 
   // ALI-1060: the agent is now genuinely LIVE — bearer minted, connectors

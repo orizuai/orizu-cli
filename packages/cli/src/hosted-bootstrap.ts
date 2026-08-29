@@ -442,7 +442,7 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
       })
     }
 
-    // 4b — Stage the orizu-cli skill into the workspace so the agent discovers it
+    // 4b — Stage the orizu skill into the workspace so the agent discovers it
     // (ALI-1044). SHARED with the DO path (ALI-1059): the resolution chain + the
     // .git/info/exclude append live in `stageOrizuSkill`; here we only adapt the
     // sandbox exec seam and record the outcome. Non-fatal + recorded, exactly like
@@ -459,7 +459,7 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
       'skill_staged',
       stage.ok,
       stage.ok
-        ? `orizu-cli skill staged (${stage.method})`
+        ? `orizu skill staged (${stage.method})`
         : `skill staging unresolved: ${stage.stdout.trim() || `exit ${stage.exitCode}`}`
     )
     await sink.append('skill_staged', {

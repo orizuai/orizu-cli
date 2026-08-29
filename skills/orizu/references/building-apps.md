@@ -1541,7 +1541,7 @@ Customers can validate a generated file before publishing it via the CLI app pub
 Before `orizu apps create`, run the smoke test that ships with this skill:
 
 ```bash
-node /path/to/orizu-cli-skill/scripts/test-app.mjs \
+node /path/to/orizu-skill/scripts/test-app.mjs \
   ./labeler/App.tsx \
   ./labeler/input.json \
   ./labeler/output.json \

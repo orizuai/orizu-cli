@@ -1,7 +1,7 @@
 /**
- * Shared orizu-cli skill staging (ALI-1044 / ALI-1059).
+ * Shared orizu skill staging (ALI-1044 / ALI-1059).
  *
- * BOTH hosted boot paths must stage the vendored `orizu-cli` skill into the
+ * BOTH hosted boot paths must stage the vendored `orizu` skill into the
  * cloned workspace so the agent discovers the Orizu workflows: the OPERATOR path
  * (hosted-bootstrap.ts) and the DO path (hosted-boot.ts). Before ALI-1059 only the
  * operator path did — the DO path (the default; `--operator` is deprecated) booted
@@ -13,10 +13,10 @@
  * Resolution chain (unchanged from the original operator-path block), preferring:
  *   (1) $ORIZU_SKILL_SOURCE_DIR  — explicit override (also honored by the CLI's
  *       skill-installer; the local-sim rehearsal sets it),
- *   (2) `orizu skills path`      — the packaged vendor/skills/orizu-cli of the
+ *   (2) `orizu skills path`      — the packaged vendor/skills/orizu of the
  *       globally-installed CLI (the production path),
- *   (3) `$(npm root -g)/orizu/vendor/skills/orizu-cli` — belt fallback.
- * Then SYMLINK it under `<workspaceDir>/.claude/skills/orizu-cli`, falling back to
+ *   (3) `$(npm root -g)/orizu/vendor/skills/orizu` — belt fallback.
+ * Then SYMLINK it under `<workspaceDir>/.claude/skills/orizu`, falling back to
  * a copy if the symlink cannot be created. Resolved paths stay in shell vars
  * (never interpolated), so they cannot inject into the command.
  *
@@ -44,7 +44,7 @@ export interface StageOrizuSkillOptions {
   /**
    * Directory the session branch is cloned into (ABSOLUTE on the DO path,
    * sandbox-root RELATIVE on the operator path). The skill is staged under
-   * `<workspaceDir>/.claude/skills/orizu-cli`.
+   * `<workspaceDir>/.claude/skills/orizu`.
    */
   workspaceDir: string
   exec: SkillStageExec
@@ -52,8 +52,8 @@ export interface StageOrizuSkillOptions {
 
 export interface StageOrizuSkillResult {
   ok: boolean
-  method: 'symlink' | 'copy' | null
-  /** `<workspaceDir>/.claude/skills/orizu-cli`. */
+  method: 'symlink' | 'copy' | 'preserved' | null
+  /** `<workspaceDir>/.claude/skills/orizu`. */
   dest: string
   exitCode: number
   stdout: string
@@ -80,18 +80,19 @@ export function renderStageOrizuSkillScript(workspaceDir: string): string {
     // a broken symlink to the customer's main. IDEMPOTENT (ALI-1060 resume/retry):
     // only append when the line is absent, so a re-invocation never duplicates it.
     `if [ -d ${workspaceDir}/.git ] && ! grep -qxF '/.claude/skills/' ${workspaceDir}/.git/info/exclude 2>/dev/null; then printf '%s\\n' '/.claude/skills/' >> ${workspaceDir}/.git/info/exclude; fi`,
+    `dest="${skillsDir}/orizu"`,
+    `if [ -d ${workspaceDir}/.git ] && git -C ${workspaceDir} ls-files -- '.claude/skills/orizu' '.claude/skills/orizu/**' | grep -q .; then if [ -f "$dest/SKILL.md" ]; then echo "PRESERVED_TRACKED $dest"; else echo "PRESERVED_INVALID $dest"; fi; exit 0; fi`,
     `src="${'${ORIZU_SKILL_SOURCE_DIR:-}'}"`,
     `if [ -z "$src" ] || [ ! -d "$src" ]; then src="$(orizu skills path 2>/dev/null || true)"; fi`,
-    `if [ -z "$src" ] || [ ! -d "$src" ]; then r="$(npm root -g 2>/dev/null || true)"; if [ -n "$r" ] && [ -d "$r/orizu/vendor/skills/orizu-cli" ]; then src="$r/orizu/vendor/skills/orizu-cli"; fi; fi`,
+    `if [ -z "$src" ] || [ ! -d "$src" ]; then r="$(npm root -g 2>/dev/null || true)"; if [ -n "$r" ] && [ -d "$r/orizu/vendor/skills/orizu" ]; then src="$r/orizu/vendor/skills/orizu"; fi; fi`,
     `if [ -z "$src" ] || [ ! -d "$src" ]; then echo "NO_SOURCE"; exit 0; fi`,
-    `dest="${skillsDir}/orizu-cli"`,
     `rm -rf "$dest"`,
     `if ln -s "$src" "$dest" 2>/dev/null; then echo "SYMLINK $src"; else cp -R "$src" "$dest" && echo "COPY $src"; fi`,
   ].join('\n')
 }
 
 /**
- * Stage the orizu-cli skill into `<workspaceDir>/.claude/skills/orizu-cli`.
+ * Stage the orizu skill into `<workspaceDir>/.claude/skills/orizu`.
  * Non-throwing (except via the injected exec): resolves to a structured result
  * both callers record their own way. A malformed `workspaceDir` returns a non-ok
  * result rather than throwing, so staging stays non-fatal to the boot.
@@ -103,7 +104,7 @@ export function renderStageOrizuSkillScript(workspaceDir: string): string {
  * `.git/info/exclude` line is appended only when absent.
  */
 export async function stageOrizuSkill(opts: StageOrizuSkillOptions): Promise<StageOrizuSkillResult> {
-  const dest = `${opts.workspaceDir}/.claude/skills/orizu-cli`
+  const dest = `${opts.workspaceDir}/.claude/skills/orizu`
   if (!SAFE_WORKSPACE_DIR.test(opts.workspaceDir)) {
     return {
       ok: false,
@@ -116,11 +117,13 @@ export async function stageOrizuSkill(opts: StageOrizuSkillOptions): Promise<Sta
   }
   const result = await opts.exec(renderStageOrizuSkillScript(opts.workspaceDir))
   const out = result.stdout.trim()
-  const method: 'symlink' | 'copy' | null = out.startsWith('SYMLINK')
+  const method: 'symlink' | 'copy' | 'preserved' | null = out.startsWith('SYMLINK')
     ? 'symlink'
     : out.startsWith('COPY')
       ? 'copy'
-      : null
+      : out.startsWith('PRESERVED_TRACKED')
+        ? 'preserved'
+        : null
   const ok = result.exitCode === 0 && method !== null
   return { ok, method, dest, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr }
 }

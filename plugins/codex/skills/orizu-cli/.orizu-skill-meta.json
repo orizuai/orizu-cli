@@ -1,8 +1,0 @@
-{
-  "name": "orizu-cli",
-  "skillHash": "sha256:53ac76db1db9a6ea4c4bb6fd909d4096f8e07317cd94b9eaead3b31090691eda",
-  "cliVersion": "0.0.3",
-  "pluginVersion": "0.1.0",
-  "source": "plugin-bundle",
-  "sourceRoot": "skills/orizu-cli"
-}

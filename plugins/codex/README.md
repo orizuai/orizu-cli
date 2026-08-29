@@ -2,7 +2,7 @@
 
 First-class Codex distribution of the Orizu agent workflow skill. The plugin is
 a thin native distribution layer over the Orizu CLI runtime: it bundles the
-shared `orizu-cli` skill and presentation metadata, and nothing else. Scoring,
+shared `orizu` skill and presentation metadata, and nothing else. Scoring,
 runners, optimizers, auth, and cloud sandbox logic live in the `orizu` npm CLI.
 
 ## Requirements
@@ -33,7 +33,7 @@ points at this plugin directory. Note the `<plugin>@<marketplace>` form —
 
 ## Regenerating bundled content
 
-`skills/orizu-cli/` is generated from the repo's shared `skills/orizu-cli`
+`skills/orizu/` is generated from the repo's shared `skills/orizu`
 source — do not edit it here. To refresh after skill or CLI changes:
 
 ```bash

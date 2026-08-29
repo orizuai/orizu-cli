@@ -46,7 +46,7 @@ orizu install-skill --target codex-user --yes
 orizu --help
 ```
 
-The npm package includes the `orizu-cli` coding-agent skill. The install command
+The npm package includes the `orizu` coding-agent skill. The install command
 can write the skill to user-level agent paths, project-level Codex/Claude paths,
 or a managed `AGENTS.md` section:
 
@@ -193,9 +193,11 @@ non-zero with a message on stderr. The `capabilities --json` manifest lists
 
 The mental model: the **CLI is the runtime and source of truth** (auth,
 scorers, runners, optimizers, score submission); the **skill is the agent
-workflow layer** that teaches a coding agent to use it. Phase 1 setup installs
-global Codex/Claude Code skill symlinks so the agent guidance tracks the
-globally installed CLI. Plugins remain an optional distribution experiment, not
+workflow layer** that teaches a coding agent to use it. Setup installs the
+shared `~/.agents/skills/orizu` symlink so compatible agents, including Codex
+and Pi, track the globally installed CLI without duplicate native copies.
+Detected agents that require a native target, including Claude Code, can receive
+an additional symlink. Plugins remain an optional distribution experiment, not
 the default onboarding path.
 
 ### Guided setup
@@ -207,29 +209,34 @@ path, skill install status, validation status, and the next step.
 
 ```bash
 orizu setup
-orizu setup --team highlight
-orizu setup --team highlight --agent codex --agent claude --non-interactive --yes
+orizu setup --team highlight --project support-agent
+orizu setup --create-team "Acme" --create-project "Support Agent"
+orizu setup --team highlight --project support-agent --agent codex --agent claude --non-interactive
 orizu setup --workspace ./workbench --validate
 ```
 
-- Interactive runs open login directly, then ask which team/workspace to set up
-  in the current directory. Authenticated setup materializes stubs for every
-  project in the selected team: root `AGENTS.md`, `CLAUDE.md`, `Memory.md`,
+- Interactive runs open login directly, ask which team to use or create, then
+  ask which project the user intends to work in or create. Authenticated setup
+  still materializes stubs for every project in the selected team: root
+  `AGENTS.md`, `CLAUDE.md`, `Memory.md`,
   `orizu.team.json`, project manifests under `projects/`, source repo/session
   folders, primitive directories, and gitignore policy.
-- Non-interactive runs (`--no-input`, CI, or no TTY) are deterministic. After
-  authentication, `orizu setup --team <slug> --non-interactive` sets up the
-  current directory and materializes every project in that team. Use
-  `--workspace <path>` only when setting up or validating another directory.
-  `--non-interactive` is an alias for `--no-input`.
+- Non-interactive runs (`--no-input`, CI, or no TTY) require existing
+  authentication and explicit choose/create pairs: `--team <slug>` or
+  `--create-team <name>`, plus `--project <slug>` or
+  `--create-project <name>`. Run `orizu login --headless` first when needed.
+  Use `--workspace <path>` only when setting up or validating another
+  directory. `--non-interactive` is an alias for `--no-input`.
 - A directory can only be attached to one team. To set up another team, run
   `orizu setup --team <other-slug>` from another directory.
-- Setup offers a third step to install global coding-agent skills. Interactive
-  runs show Codex when `~/.codex` exists and Claude Code when `~/.claude`
-  exists; both are selected by default. `--agent codex --agent claude` is the
-  non-interactive equivalent. Setup symlinks `~/.codex/skills/orizu-cli` and
-  `~/.claude/skills/orizu-cli` to the CLI-managed skill source so upgrades stay
-  in sync. Use `--no-install` to skip this step.
+- Setup offers a third step to install global coding-agent skills. Accepting
+  always installs `~/.agents/skills/orizu`; Codex, Pi, and other compatible
+  agents discover this shared target without duplicate native installs.
+  Detected native-only targets, including Claude Code, are selected by default.
+  Detection uses user-global directories and known Claude, Codex, and Pi
+  binaries. In non-interactive mode repeat `--agent`; no agent flags skips all
+  skill writes. Installs symlink to the CLI-managed source and replace the exact
+  Orizu destination while preserving sibling skills.
 - Validation details are written to ignored `.logs/<hash>.log` files when
   findings exist; the terminal summary shows counts by severity.
 - `.orizu/` remains a gitignored cache/generated directory for exports,
@@ -241,13 +248,12 @@ orizu setup --workspace ./workbench --validate
   safe idempotent repairs, such as missing starter files, directories, and
   gitignore defaults. It also repairs old `Agents.md`/`Claude.md` casing when
   there is no canonical conflict.
-- Setup points to `orizu setup prompt` instead of printing the full coding-agent
-  prompt inline by default. That prompt instructs your coding agent to read the
-  Orizu skill, inspect the repo, and propose teams, projects, datasets,
-  prompts, and scorers before changing anything. Use `orizu setup --handoff` to
-  print it inline, `claude "$(orizu setup prompt)"` to pass it manually, or
-  `--launch claude|codex` to open a detected agent with it from an interactive
-  terminal.
+- Interactive setup ends with a single-select picker for detected Claude,
+  Codex, and Pi binaries; “Don’t launch an agent” is the default. A selected
+  agent receives one positional prompt naming the selected team/project and
+  `https://orizu.ai/llms.txt`, without shell interpolation. Non-interactive
+  setup never launches. `--handoff` and `--launch claude|codex|pi` remain
+  explicit compatibility controls.
 - `--json` emits the setup summary as machine-readable JSON.
 
 ### Skill install
@@ -260,11 +266,11 @@ by name; the CLI maps them to the right install paths:
 orizu install-skill --agent claude --agent codex --yes
 ```
 
-- `--agent <claude|codex>` (repeatable) selects agents. Prefer explicit flags
+- `--agent <claude|codex|pi|devin|droid|grok|windsurf|opencode>` (repeatable) selects agents. Prefer explicit flags
   for compatibility installs. Without flags in a terminal, an interactive
   chooser is still available.
 - `--scope global|project`: `global` (default) installs for you across all
-  projects (`~/.claude/skills`, `~/.codex/skills`); `project` installs into
+  projects (`~/.claude/skills`, `~/.agents/skills`); `project` installs into
   the current repo (`./.claude/skills`, `./.agents/skills`).
 - `--mode auto|link|copy` controls how installs stay in sync with the CLI:
   `auto` (default) symlinks to the CLI-managed skill when the CLI install path
@@ -279,12 +285,16 @@ orizu install-skill --agent claude --agent codex --yes
 
 Advanced target IDs (stable machine flags, repeatable via `--target`):
 
-- `codex-user`: `~/.codex/skills/orizu-cli`
-- `agent-user`: `~/.agents/skills/orizu-cli` (Open Agent Skills compatibility)
-- `agents-project`: `./.agents/skills/orizu-cli`
-- `codex-project`: `./.codex/skills/orizu-cli` (legacy Codex project folder)
-- `claude-user`: `~/.claude/skills/orizu-cli`
-- `claude-project`: `./.claude/skills/orizu-cli`
+- `agent-user`: `~/.agents/skills/orizu` (standard shared user target; Codex and Pi)
+- `codex-user`: `~/.codex/skills/orizu` (legacy explicit target)
+- `agents-project`: `./.agents/skills/orizu`
+- `codex-project`: `./.codex/skills/orizu` (legacy Codex project folder)
+- `claude-user`: `~/.claude/skills/orizu`
+- `claude-project`: `./.claude/skills/orizu`
+- `devin-user`: `~/.devin/skills/orizu`
+- `droid-user`: `~/.factory/skills/orizu`
+- `grok-user`: `~/.grok/skills/orizu`
+- `windsurf-user`: `~/.windsurf/skills/orizu`
 - `agents-md`: managed Orizu CLI section in `./AGENTS.md` for non-workspace
   repos. Initialized Orizu workspaces keep root `AGENTS.md` as concise
   workspace guidance instead.

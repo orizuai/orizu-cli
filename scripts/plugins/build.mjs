@@ -1,4 +1,4 @@
-// Materialize the shared orizu-cli skill into each plugin package.
+// Materialize the shared orizu skill into each plugin package.
 //
 // Output is deterministic: same skill source + CLI version => identical
 // bundles (no timestamps), so committed plugin skill content can be verified
@@ -37,7 +37,7 @@ for (const plugin of PLUGIN_PACKAGES) {
     cliVersion,
     pluginVersion: manifest.version ?? null,
     source: 'plugin-bundle',
-    sourceRoot: 'skills/orizu-cli',
+    sourceRoot: 'skills/orizu',
   }
   writeFileSync(
     join(targetSkillDir, SKILL_META_FILENAME),

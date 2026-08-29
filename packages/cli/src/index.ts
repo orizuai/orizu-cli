@@ -67,9 +67,11 @@ import {
 import { renderBanner } from './banner.js'
 import { formatTaskCreateError } from './task-create-error.js'
 import { renderAgentSetupPrompt } from './setup-prompt.js'
+import { findExecutable, LAUNCHABLE_AGENTS, setupLaunchPrompt, validateSetupAgentArgs, validateSetupFlagValues, validateSetupSelectionArgs } from './setup-onboarding.js'
 import { LoginResponse } from './types.js'
 import {
   getWorkspaceRoot,
+  inspectExistingWorkspaceTeam,
   initOrizuWorkspace,
   type WorkspaceProjectSeed,
   workspaceExists,
@@ -119,7 +121,6 @@ import {
 } from './runner-dir-verify.js'
 import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
-import { type GithubLinkResult, runGithubLink, runInteractiveHostedSetup } from './github-setup.js'
 import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
 import { reportReplacementWarning } from './report-replacement-warning.js'
 import {
@@ -3010,6 +3011,12 @@ function describeSkillTarget(target: SkillInstallTarget): string {
   if (target === 'agent-user') return 'Codex / Open Agent Skills, for you across all projects'
   if (target === 'agents-project') return 'Codex / Open Agent Skills, only for this project'
   if (target === 'codex-project') return 'Codex legacy project folder (.codex/skills)'
+  if (target === 'devin-user') return 'Devin, for you across all projects'
+  if (target === 'droid-user') return 'Droid, for you across all projects'
+  if (target === 'grok-user') return 'Grok Build, for you across all projects'
+  if (target === 'windsurf-user') return 'Windsurf, for you across all projects'
+  if (target === 'opencode-user') return 'OpenCode, for you across all projects'
+  if (target === 'opencode-project') return 'OpenCode, only for this project'
   return 'Project instructions, managed Orizu section in AGENTS.md'
 }
 
@@ -3360,25 +3367,6 @@ function skillsPathCommand() {
   printLine(hasArg('--skill-md') ? source.skillMd : source.root)
 }
 
-const LAUNCHABLE_AGENTS: Record<string, string> = {
-  claude: 'claude',
-  codex: 'codex',
-}
-
-function findExecutable(name: string): string | null {
-  const pathValue = process.env.PATH || ''
-  for (const dir of pathValue.split(delimiter)) {
-    if (!dir) {
-      continue
-    }
-    const candidate = join(dir, name)
-    if (existsSync(candidate)) {
-      return candidate
-    }
-  }
-  return null
-}
-
 function describeSetupAuthState(): { state: 'signed-in' | 'signed-out', baseUrl: string } {
   const baseUrl = getBaseUrl()
   return {
@@ -3392,7 +3380,28 @@ type SetupTeamChoice =
   | { kind: 'team', team: Team }
   | { kind: 'create' }
 
-async function resolveSetupTeam(teamSlugArg: string | null, noInput: boolean, dryRun: boolean): Promise<Team> {
+async function resolveSetupTeam(
+  teamSlugArg: string | null,
+  createTeamName: string | null,
+  noInput: boolean,
+  dryRun: boolean,
+  workspaceTeamSlug: string | null
+): Promise<Team> {
+  if (teamSlugArg && createTeamName) {
+    throw new Error('Use either --team <slug> or --create-team <name>, not both.')
+  }
+  if (createTeamName) {
+    if (dryRun) {
+      throw new Error('--create-team cannot be used with --dry-run because setup cannot preview a server-generated team slug.')
+    }
+    if (workspaceTeamSlug) throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Create the new team from another directory.`)
+    const name = createTeamName.trim()
+    if (!name) throw new Error('--create-team requires a non-empty team name.')
+    const team = await createTeamOnServer(name)
+    printLine(`   Created team ${sanitizeTerminalText(team.slug)}`)
+    return team
+  }
+
   const teams = await fetchTeams()
   const normalizedTeamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null
 
@@ -3405,12 +3414,12 @@ async function resolveSetupTeam(teamSlugArg: string | null, noInput: boolean, dr
   }
 
   if (noInput || dryRun) {
-    throw new Error('Authenticated setup requires --team <slug> when running non-interactively.')
+    throw new Error('Non-interactive setup requires --team <slug> or --create-team <name>.')
   }
 
   const choices: SetupTeamChoice[] = [
     ...teams.map(team => ({ kind: 'team' as const, team })),
-    { kind: 'create' },
+    ...(teams.some(team => team.role === 'agent') ? [] : [{ kind: 'create' as const }]),
   ]
   const choice = await promptKeyboardSelect(
     'Choose the team to set up in this directory',
@@ -3428,33 +3437,89 @@ async function resolveSetupTeam(teamSlugArg: string | null, noInput: boolean, dr
   if (!name) {
     throw new Error('Team name is required to create a team.')
   }
-  return createTeamOnServer(name)
+  if (workspaceTeamSlug) throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Create the new team from another directory.`)
+  const team = await createTeamOnServer(name)
+  printLine(`   Created team ${sanitizeTerminalText(team.slug)}`)
+  return team
 }
 
-async function resolveSetupProjects(team: Team, noInput: boolean, dryRun: boolean): Promise<Project[]> {
+interface SetupProjectSelection {
+  selected: Project
+  projects: Project[]
+}
+
+type SetupProjectChoice =
+  | { kind: 'project', project: Project }
+  | { kind: 'create' }
+async function resolveSetupProjects(
+  team: Team,
+  projectSlugArg: string | null,
+  createProjectName: string | null,
+  noInput: boolean,
+  dryRun: boolean
+): Promise<SetupProjectSelection> {
+  if (projectSlugArg && createProjectName) {
+    throw new Error('Use either --project <slug> or --create-project <name>, not both.')
+  }
+  if ((noInput || dryRun) && !projectSlugArg && !createProjectName) {
+    throw new Error('Non-interactive setup requires --project <slug> or --create-project <name>.')
+  }
+
+  const canCreateProject = team.role === 'admin' || team.role === 'agent'
+  if (createProjectName && !canCreateProject) {
+    throw new Error(`Only team admins can create projects in '${team.slug}'. Choose an existing project or ask a team admin to create one.`)
+  }
   const projects = await fetchProjects(team.slug)
-
-  if (projects.length > 0) {
-    return projects
+  if (createProjectName) {
+    if (dryRun) {
+      throw new Error('--create-project cannot be used with --dry-run because setup cannot preview a server-generated project slug.')
+    }
+    const name = createProjectName.trim()
+    if (!name) throw new Error('--create-project requires a non-empty project name.')
+    const selected = await createProjectOnServer(team.slug, name)
+    printLine(`   Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
+    return { selected, projects: [...projects, selected] }
   }
 
-  // ALI-1140: a just-created team (or a pre-existing empty one) has no projects
-  // by definition — continue the wizard into creating the first project instead
-  // of dead-ending on the path setup itself offered.
-  if (noInput || dryRun) {
-    throw new Error(
-      `Team '${team.slug}' has no projects. Create one with \`orizu projects create --name <name> --team ${team.slug}\`, then re-run setup.`
-    )
+  const normalizedProjectSlug = projectSlugArg ? normalizeSlugInput(projectSlugArg) : null
+  if (normalizedProjectSlug) {
+    const selected = projects.find(project => project.slug === normalizedProjectSlug)
+    if (!selected) {
+      throw new Error(`Project '${team.slug}/${normalizedProjectSlug}' was not found.`)
+    }
+    return { selected, projects }
   }
 
-  printLine(`   Team '${sanitizeTerminalText(team.slug)}' has no projects yet. Let's create the first one.`)
+  if (projects.length === 0) {
+    if (!canCreateProject) throw new Error(`Team '${team.slug}' has no accessible projects, and only team admins can create one.`)
+    printLine(`   Team '${sanitizeTerminalText(team.slug)}' has no projects yet. Let's create the first one.`)
+    const name = await askText('   Project name?', '')
+    if (!name) throw new Error('Project name is required to create a project.')
+    const selected = await createProjectOnServer(team.slug, name)
+    printLine(`   Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
+    return { selected, projects: [selected] }
+  }
+
+  const choices: SetupProjectChoice[] = [
+    ...projects.map(project => ({ kind: 'project' as const, project })),
+    ...(canCreateProject ? [{ kind: 'create' as const }] : []),
+  ]
+  const choice = await promptKeyboardSelect(
+    'Choose the project you want to work in',
+    choices,
+    item => item.kind === 'create'
+      ? 'Create a new project'
+      : `${item.project.name} (${item.project.slug})`
+  )
+  if (choice.kind === 'project') {
+    return { selected: choice.project, projects }
+  }
+
   const name = await askText('   Project name?', '')
-  if (!name) {
-    throw new Error('Project name is required to create a project.')
-  }
-  const project = await createProjectOnServer(team.slug, name)
-  printLine(`   Created project ${sanitizeTerminalText(`${project.teamSlug}/${project.slug}`)}`)
-  return [project]
+  if (!name) throw new Error('Project name is required to create a project.')
+  const selected = await createProjectOnServer(team.slug, name)
+  printLine(`   Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
+  return { selected, projects: [...projects, selected] }
 }
 
 function projectSeedsFromProjects(projects: Project[]): WorkspaceProjectSeed[] {
@@ -3475,33 +3540,39 @@ interface SetupSkillChoice {
   target: SkillInstallTarget
 }
 
-function setupTargetForAgent(agent: SkillInstallAgent): SkillInstallTarget {
-  return agent === 'codex' ? 'codex-user' : 'claude-user'
-}
+const SETUP_NATIVE_SKILL_CHOICES: ReadonlyArray<{
+  agent: SkillInstallAgent
+  label: string
+  directory: string[]
+  binary?: string
+}> = [
+  { agent: 'claude', label: 'Claude Code', directory: ['.claude'], binary: 'claude' },
+  { agent: 'devin', label: 'Devin', directory: ['.devin', 'skills'] },
+  { agent: 'droid', label: 'Droid', directory: ['.factory', 'skills'] },
+  { agent: 'grok', label: 'Grok Build', directory: ['.grok', 'skills'] },
+  { agent: 'windsurf', label: 'Windsurf', directory: ['.windsurf', 'skills'] },
+  { agent: 'opencode', label: 'OpenCode', directory: ['.config', 'opencode', 'skills'], binary: 'opencode' },
+]
 
+function setupNativeTargetForAgent(agent: SkillInstallAgent): SkillInstallTarget | null {
+  if (agent === 'codex' || agent === 'pi') return null
+  return getTargetForAgent(agent, 'global')
+}
 function resolveSetupSkillHome(): string {
   return resolve(process.env.HOME || homedir())
 }
 
 function detectedSetupSkillChoices(homeDir: string): SetupSkillChoice[] {
-  const choices: SetupSkillChoice[] = []
-  if (existsSync(join(homeDir, '.codex'))) {
-    choices.push({
-      agent: 'codex',
-      label: 'Codex',
-      target: 'codex-user',
-    })
-  }
-
-  if (existsSync(join(homeDir, '.claude'))) {
-    choices.push({
-      agent: 'claude',
-      label: 'Claude Code',
-      target: 'claude-user',
-    })
-  }
-
-  return choices
+  return SETUP_NATIVE_SKILL_CHOICES
+    .filter(choice =>
+      existsSync(join(homeDir, ...choice.directory))
+      || Boolean(choice.binary && findExecutable(choice.binary))
+    )
+    .map(choice => ({
+      agent: choice.agent,
+      label: choice.label,
+      target: getTargetForAgent(choice.agent, 'global'),
+    }))
 }
 
 function setupSkillTargetsFromArgs(): SkillInstallTarget[] {
@@ -3512,28 +3583,20 @@ function setupSkillTargetsFromArgs(): SkillInstallTarget[] {
         `Unknown agent '${agent}'. Available agents: ${SKILL_INSTALL_AGENTS.join(', ')}`
       )
     }
-    const target = setupTargetForAgent(agent)
-    if (!targets.includes(target)) {
-      targets.push(target)
+    if (!targets.includes('agent-user')) {
+      targets.push('agent-user')
     }
-  }
-  for (const target of getArgs('--target')) {
-    if (!isSkillInstallTarget(target)) {
-      throw new Error(
-        `Unknown skill install target '${target}'. Available targets: ${SKILL_INSTALL_TARGETS.join(', ')}`
-      )
-    }
-    if (!targets.includes(target)) {
-      targets.push(target)
+    const nativeTarget = setupNativeTargetForAgent(agent)
+    if (nativeTarget && !targets.includes(nativeTarget)) {
+      targets.push(nativeTarget)
     }
   }
   return targets
 }
 
 function setupSkillLabel(target: SkillInstallTarget): string {
-  if (target === 'codex-user' || target === 'codex-project' || target === 'agent-user' || target === 'agents-project') {
-    return 'Codex skill'
-  }
+  if (target === 'agent-user' || target === 'agents-project') return 'Shared agent skill'
+  if (target === 'codex-user' || target === 'codex-project') return 'Legacy Codex skill'
   if (target === 'claude-user' || target === 'claude-project') return 'Claude Code skill'
   return 'Orizu skill'
 }
@@ -3545,13 +3608,24 @@ async function setupCommand() {
   const verbose = hasArg('--verbose')
   const handoffRequested = hasArg('--handoff') || Boolean(getArg('--launch'))
   const skipConfirm = hasArg('--yes')
-  const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal()
+  const inputDisabled = hasArg('--no-input') || hasArg('--non-interactive')
+  const noInput = inputDisabled || !isInteractiveTerminal()
   const workspaceArg = getOptionalArgValue('--workspace')
-  const workspaceRoot = workspaceArg ? resolve(expandHomePath(workspaceArg)) : process.cwd() // non-empty-dir guard now lives next to the hosted clone in runInteractiveHostedSetup, so --skip-login / decline-connect / local scaffolds are never blocked
+  const workspaceRoot = workspaceArg ? resolve(expandHomePath(workspaceArg)) : process.cwd()
   const teamArg = getOptionalArgValue('--team')
+  const createTeamArg = getOptionalArgValue('--create-team')
   const projectArg = getOptionalArgValue('--project')
+  const createProjectArg = getOptionalArgValue('--create-project')
   const setupSkillHome = resolveSetupSkillHome()
   const installMode: SkillInstallMode = getArg('--mode') ? parseSkillInstallMode() : 'link'
+  validateSetupFlagValues(cliArgs)
+  validateSetupSelectionArgs({ team: teamArg, createTeam: createTeamArg, project: projectArg, createProject: createProjectArg, noInput, dryRun, isRepairOrValidation: fix || validateOnly })
+  validateSetupAgentArgs(getArgs('--agent'), getArg('--launch'))
+  const workspaceManifest = hasArg('--no-workspace') ? { state: 'absent' as const } : inspectExistingWorkspaceTeam(workspaceRoot)
+  if (workspaceManifest.state === 'invalid-root' && !validateOnly) throw new Error('The workspace path is not a readable directory. Choose a directory before creating remote resources.')
+  if (workspaceManifest.state === 'invalid' && !validateOnly && !fix) throw new Error('The existing orizu.team.json is invalid or unreadable. Repair it before creating remote resources.')
+  const workspaceTeamSlug = workspaceManifest.state === 'valid' ? workspaceManifest.slug : null
+  if (createTeamArg !== null && workspaceTeamSlug) throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Create the new team from another directory.`)
 
   printBannerIfInteractive()
   printLine('Orizu setup')
@@ -3572,21 +3646,46 @@ async function setupCommand() {
   } else {
     throw new Error('Setup cancelled.')
   }
+  const serverCreateRequested = createTeamArg !== null || createProjectArg !== null
+  if ((noInput || serverCreateRequested) && auth.state === 'signed-out' && !dryRun && !validateOnly && !fix) {
+    throw new Error(
+      'Non-interactive setup requires authentication. Run `orizu login --headless`, then retry `orizu setup`.'
+    )
+  }
   printLine('')
+
+  let setupTeam: Team | null = null
+  let selectedProject: Project | null = null
+  let setupProjects: Project[] = []
+  if (auth.state === 'signed-in' && !validateOnly) {
+    setupTeam = await resolveSetupTeam(teamArg, createTeamArg, noInput, dryRun, workspaceTeamSlug)
+    if (workspaceTeamSlug && setupTeam.slug !== workspaceTeamSlug) {
+      throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Run setup in another directory to set up team '${setupTeam.slug}'.`)
+    }
+    if (fix) {
+      setupProjects = await fetchProjects(setupTeam.slug)
+      if (setupProjects.length === 0) throw new Error(`Team '${setupTeam.slug}' has no projects to restore.`)
+    } else {
+      const selection = await resolveSetupProjects(setupTeam, projectArg, createProjectArg, noInput, dryRun)
+      selectedProject = selection.selected
+      setupProjects = selection.projects
+      printLine(`Selected project ${sanitizeTerminalText(`${setupTeam.slug}/${selectedProject.slug}`)}`)
+      printLine('')
+    }
+  }
 
   // Step 2: local workspace
   printLine('Step 2: Setup your workspace')
   let workspaceState: 'created' | 'exists' | 'skipped' | 'would-create' | 'validated' | 'invalid' | 'repaired' = 'skipped'
   let workspaceResult: ReturnType<typeof initOrizuWorkspace> | null = null
   let validationLogPath: string | null = null
-  let hostedAttached = false
   if (hasArg('--no-workspace') && !validateOnly && !fix) {
     printLine('   Skipped (--no-workspace).')
   } else {
     const wantsWorkspace = validateOnly
       || fix
       || hasArg('--workspace')
-      || Boolean(teamArg || projectArg)
+      || Boolean(setupTeam || teamArg || projectArg)
       || workspaceExists(workspaceRoot)
       || !noInput
     if (wantsWorkspace) {
@@ -3595,15 +3694,11 @@ async function setupCommand() {
       let teamId: string | null = null
       let projects: WorkspaceProjectSeed[] | undefined
 
-      if (auth.state === 'signed-in' && !validateOnly) {
-        const team = await resolveSetupTeam(teamSlug, noInput, dryRun)
-        const serverProjects = await resolveSetupProjects(team, noInput, dryRun)
-        teamSlug = team.slug
-        teamId = team.id
-        projects = projectSeedsFromProjects(serverProjects)
+      if (setupTeam && !validateOnly) {
+        teamSlug = setupTeam.slug
+        teamId = setupTeam.id
+        projects = projectSeedsFromProjects(setupProjects)
         printLine(`   ${formatProjectSetupProgress(projects.length)}`)
-        if (!hasArg('--local') && !noInput && !dryRun) { let link: GithubLinkResult | null = null; try { link = await runGithubLink(team.slug, { print: printLine, fetcher: authedFetch, openUrl: openInBrowser, confirm: (org) => askYesNo(`   Connect this team to GitHub org '${org}'?`, true) }) } catch (error) { printLine(`   GitHub link skipped: ${getErrorMessage(error)} Run \`orizu github link --team ${team.slug}\` to finish.`) }
-        if (link) { try { hostedAttached = (await runInteractiveHostedSetup({ teamSlug: team.slug, targetDir: workspaceRoot, local: hasArg('--local'), activeInstallation: link.status === 'active' }, { print: printLine, fetcher: authedFetch })).attached } catch (error) { throw new Error(`Hosted setup failed: ${getErrorMessage(error)} Re-running \`orizu setup\` is safe — provisioning adopts the existing workbench repo and resumes where it left off (or pass --local to scaffold a local-only workspace).`) } } } // hint must not blame local state (ALI-1143): provisioning failures are server-side, and both provisioning (adopt) and the clone step (skip-if-cloned, ALI-1069) are idempotent on re-run
       } else if (!teamSlug && !noInput && !validateOnly) {
         teamSlug = await askText('   Team slug?', 'local-team')
       }
@@ -3618,7 +3713,6 @@ async function setupCommand() {
         printLine(`   ${formatProjectSetupProgress(localProjectCount)}`)
       }
 
-      if (hostedAttached) { workspaceState = 'exists' } else {
       const result = initOrizuWorkspace({
         workspaceRoot,
         teamSlug,
@@ -3652,7 +3746,6 @@ async function setupCommand() {
       if ((validateOnly || fix) && result.findings.some(finding => finding.severity === 'error')) {
         process.exitCode = 1
       }
-      }
     } else {
       printLine(`   Skipped. Rerun with --workspace to initialize the workspace contract.`)
     }
@@ -3667,17 +3760,20 @@ async function setupCommand() {
   } else {
     let targets = setupSkillTargetsFromArgs()
     if (targets.length === 0 && !noInput && !dryRun) {
-      const choices = detectedSetupSkillChoices(setupSkillHome)
-      if (choices.length > 0) {
-        const selectedChoices = await promptKeyboardMultiSelect(
-          'Choose the coding agents that should learn how to use Orizu',
-          choices,
-          choice => choice.label,
-          () => true
-        )
-        targets = selectedChoices.map(choice => choice.target)
-      } else {
-        printLine('   No Codex or Claude Code agent folders were detected.')
+      if (await askYesNo('   Install the Orizu skill for your coding agents?', true)) {
+        targets = ['agent-user']
+        const choices = detectedSetupSkillChoices(setupSkillHome)
+        if (choices.length > 0) {
+          const selectedChoices = await promptKeyboardMultiSelect(
+            'Choose additional native agent installs',
+            choices,
+            choice => choice.label,
+            () => true
+          )
+          for (const choice of selectedChoices) {
+            if (!targets.includes(choice.target)) targets.push(choice.target)
+          }
+        }
       }
     }
 
@@ -3687,7 +3783,7 @@ async function setupCommand() {
       printLine('   Installing skills...')
       installOutcomes = await applySkillInstallTargets(targets, {
         mode: installMode,
-        skipConfirm,
+        skipConfirm: true,
         dryRun,
         cwd: workspaceRoot,
         homeDir: setupSkillHome,
@@ -3712,44 +3808,55 @@ async function setupCommand() {
   printLine('')
 
   // Phase 4: coding-agent handoff
-  const handoffPrompt = renderAgentSetupPrompt({
-    workspacePath: workspaceResult && workspaceState !== 'invalid'
-      ? getWorkspaceRoot(workspaceRoot)
-      : null,
-  })
-  if (handoffRequested && !hasArg('--no-handoff')) {
+  const handoffTeamSlug = setupTeam?.slug || workspaceResult?.teamSlug || null
+  const handoffProjectSlug = selectedProject?.slug || (workspaceResult?.projectSlugs.length === 1 ? workspaceResult.projectSlugs[0] : null)
+  const handoffPrompt = setupLaunchPrompt(handoffTeamSlug || undefined, handoffProjectSlug || undefined)
+  let launchedAgent: string | null = null
+  if (!hasArg('--no-handoff') && !validateOnly && !fix && (isInteractiveTerminal() || handoffRequested)) {
     printLine('Step 4: Coding-agent handoff')
-    printLine('   Give your coding agent this prompt to plan repo-specific Orizu adoption:')
-    printLine('')
-    printLine('--- prompt start ---')
-    printLine(handoffPrompt)
-    printLine('--- prompt end ---')
-    printLine('')
-
-    const detected = Object.keys(LAUNCHABLE_AGENTS).filter(agent => findExecutable(LAUNCHABLE_AGENTS[agent]))
-    if (detected.length > 0) {
-      printLine(`   Detected agents: ${detected.join(', ')}. Launch one with the prompt, e.g.:`)
-      for (const agent of detected) {
-        printLine(`     ${LAUNCHABLE_AGENTS[agent]} "$(orizu setup prompt)"`)
-      }
+    if (handoffRequested) {
+      printLine('--- prompt start ---')
+      printLine(handoffPrompt)
+      printLine('--- prompt end ---')
+      printLine('')
     }
 
-    const launchAgent = getArg('--launch')
+    const detected = Object.keys(LAUNCHABLE_AGENTS)
+      .filter(agent => findExecutable(LAUNCHABLE_AGENTS[agent]))
+    let launchAgent = getArg('--launch')
+    if (launchAgent && !(launchAgent in LAUNCHABLE_AGENTS)) {
+      throw new Error(`Unknown --launch agent '${launchAgent}'. Choices: ${Object.keys(LAUNCHABLE_AGENTS).join(', ')}.`)
+    }
+
+    if (!launchAgent && !noInput && isInteractiveTerminal() && detected.length > 0 && !dryRun) {
+      const launchChoice = await promptKeyboardSelect(
+        'Choose an agent to launch',
+        [null, ...detected],
+        agent => agent === null ? "Don't launch an agent" : LAUNCHABLE_AGENTS[agent]
+      )
+      launchAgent = launchChoice
+    }
+
     if (launchAgent) {
-      if (!(launchAgent in LAUNCHABLE_AGENTS)) {
-        throw new Error(`Unknown --launch agent '${launchAgent}'. Choices: ${Object.keys(LAUNCHABLE_AGENTS).join(', ')}.`)
-      }
       const binary = findExecutable(LAUNCHABLE_AGENTS[launchAgent])
-      if (!isInteractiveTerminal()) {
+      if (inputDisabled) {
+        printLine('   Not launching: setup is non-interactive.')
+      } else if (!isInteractiveTerminal()) {
         printLine('   Not launching: --launch requires an interactive terminal.')
       } else if (!binary) {
         printLine(`   Not launching: '${LAUNCHABLE_AGENTS[launchAgent]}' was not found on PATH.`)
       } else if (dryRun) {
         printLine(`   Would launch ${binary} with the setup prompt.`)
-      } else if (skipConfirm || await askYesNo(`   Launch ${LAUNCHABLE_AGENTS[launchAgent]} with the setup prompt now?`, true)) {
+      } else if (!getArg('--launch') || skipConfirm || await askYesNo(`   Launch ${LAUNCHABLE_AGENTS[launchAgent]} with the setup prompt now?`, true)) {
         printLine(`   Launching ${binary}…`)
-        spawnSync(binary, [handoffPrompt], { stdio: 'inherit' })
+        const launched = spawnSync(binary, [handoffPrompt], { cwd: workspaceRoot, stdio: 'inherit' })
+        if (!launched.error) launchedAgent = launchAgent
+        if (launched.error || (launched.status !== null && launched.status !== 0)) {
+          printLine(`   ${LAUNCHABLE_AGENTS[launchAgent]} exited without completing successfully.`)
+        }
       }
+    } else if (detected.length === 0) {
+      printLine(`   No launchable coding agent was found. Read https://orizu.ai/llms.txt to get started.`)
     }
     printLine('')
   }
@@ -3765,6 +3872,14 @@ async function setupCommand() {
   if (hasJsonFlag()) {
     printJson({
       auth: { state: auth.state, server: auth.baseUrl },
+      selection: handoffTeamSlug && handoffProjectSlug
+        ? { team: handoffTeamSlug, project: handoffProjectSlug }
+        : null,
+      launch: {
+        prompt: handoffPrompt,
+        spawned: launchedAgent !== null,
+        agent: launchedAgent,
+      },
       integrations: installOutcomes.map(outcome => ({
         target: outcome.target,
         path: outcome.path,
@@ -3816,7 +3931,7 @@ async function setupCommand() {
   if (workspaceResult) {
     printLine(`  Validation:   ${validationSummary(workspaceResult.findings, validationLogPath)}`)
   }
-  printLine('  Next:         run `orizu setup prompt` if you want a coding-agent handoff prompt.')
+  printLine(`  Next:         ${handoffPrompt}`)
 }
 
 function setupPromptCommand() {
@@ -6429,7 +6544,6 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
   if (command === 'git-credential') { process.exitCode = await runGitCredentialInvocation(cliArgs.slice(1), { stdin: readFileSync(0, 'utf8'), cwd: process.cwd(), print: printLine, printErr: printError }); return }
-  if (command === 'github' && subcommand === 'link') { const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal(); const team = getOptionalArgValue('--team') || (await resolveSetupTeam(null, noInput, false)).slug; await runGithubLink(team, { print: printLine, fetcher: authedFetch, openUrl: openInBrowser, confirm: (org) => askYesNo(`Connect this team to GitHub org '${org}'?`, true) }); return }
   if (command === 'connectors' || command === 'manifests' || command === 'model-configs') {
     process.exitCode = await (command === 'connectors' ? connectorsCommand : command === 'manifests' ? manifestsCommand : modelConfigsCommand)(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, resolveProjectSlug })
     return
@@ -6454,7 +6568,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
       resolveTeamSlug: async () => {
         const noInput = hasArg('--no-input') || hasArg('--non-interactive') || !isInteractiveTerminal()
         try {
-          return (await resolveSetupTeam(getOptionalArgValue('--team'), noInput, false)).slug
+          return (await resolveSetupTeam(getOptionalArgValue('--team'), null, noInput, false, null)).slug
         } catch {
           return null
         }

@@ -74,8 +74,8 @@ function alreadyInstalledHintLines(teamSlug: string): string[] {
     '     • Install the App into a DIFFERENT GitHub org for this team (each org',
     '       installation can be linked to exactly one Orizu team).',
     '     • If the org is not linked to any Orizu team, uninstall the Orizu App',
-    '       from the org (GitHub → org Settings → GitHub Apps) and re-run',
-    `       \`orizu github link --team ${teamSlug}\` to do a fresh install.`,
+    '       from the org (GitHub → org Settings → GitHub Apps), then',
+    `       contact Orizu support to restart GitHub linking for team ${teamSlug}.`,
   ]
 }
 
@@ -132,7 +132,7 @@ export async function runGithubLink(teamSlug: string, io: GithubLinkIo): Promise
     io.print('   Open the URL above and install the App, then return here.')
   }
   io.print(
-    `   Waiting for you to finish installing in the browser… (Ctrl+C to abort; resume later with \`orizu github link --team ${teamSlug}\`).`
+    '   Waiting for you to finish installing in the browser… (Ctrl+C to abort).'
   )
 
   const now = io.now ?? (() => Date.now())
@@ -166,7 +166,7 @@ export async function runGithubLink(teamSlug: string, io: GithubLinkIo): Promise
       if (data.status === 'unsupported_account' || data.status === 'expired') {
         throw new Error(
           data.error ??
-            `GitHub link could not be completed. Re-run \`orizu github link --team ${teamSlug}\`.`
+            `GitHub link could not be completed for team ${teamSlug}. Contact Orizu support to restart it.`
         )
       }
       // status 'pending' → keep waiting.
@@ -178,13 +178,13 @@ export async function runGithubLink(teamSlug: string, io: GithubLinkIo): Promise
         `Timed out waiting for the GitHub App install to complete after ${Math.round(timeout / 60000)} minutes. ` +
           'If the Orizu GitHub App is already installed in that org, GitHub never notifies Orizu when you finish the "Configure" flow — ' +
           'install the App into a DIFFERENT GitHub org for this team (or uninstall it from the org first if no other Orizu team uses it). ' +
-          `Resume with \`orizu github link --team ${teamSlug}\` after finishing the install.`
+          `Contact Orizu support to resume GitHub linking for team ${teamSlug} after finishing the install.`
       )
     }
     if (!printedAlreadyInstalledHint && now() - started >= ALREADY_INSTALLED_HINT_MS) {
       for (const line of alreadyInstalledHintLines(teamSlug)) io.print(line)
       io.print(
-        `   Still waiting (Ctrl+C to abort; resume later with \`orizu github link --team ${teamSlug}\`)…`
+        '   Still waiting (Ctrl+C to abort)…'
       )
       printedAlreadyInstalledHint = true
       lastHeartbeat = now()
@@ -212,14 +212,14 @@ async function confirmLink(
   if (!io.confirm) {
     throw new Error(
       `Org ${orgLogin ?? '(unknown)'} is bound but needs confirmation. ` +
-        `Run \`orizu github link --team ${teamSlug}\` interactively to confirm.`
+        `Contact Orizu support to confirm GitHub linking for team ${teamSlug}.`
     )
   }
   const approved = await io.confirm(orgLogin)
   if (!approved) {
     throw new Error(
       `Did not confirm org ${orgLogin ?? '(unknown)'}. ` +
-        `Re-run \`orizu github link --team ${teamSlug}\` to link the correct org.`
+        `Contact Orizu support to link the correct GitHub organization for team ${teamSlug}.`
     )
   }
   const resp = await fetcher('/api/cli/github/link/confirm', {

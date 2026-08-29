@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const cliRoot = resolve(scriptDir, '..')
 const repoRoot = resolve(cliRoot, '..', '..')
-const sourceRoot = resolve(repoRoot, 'skills', 'orizu-cli')
-const vendorRoot = resolve(cliRoot, 'vendor', 'skills', 'orizu-cli')
+const sourceRoot = resolve(repoRoot, 'skills', 'orizu')
+const vendorRoot = resolve(cliRoot, 'vendor', 'skills', 'orizu')
 const shouldClean = process.argv.includes('--clean')
 const hasSourceSkill = existsSync(resolve(sourceRoot, 'SKILL.md'))
 const hasVendoredSkill = existsSync(resolve(vendorRoot, 'SKILL.md'))
@@ -43,7 +43,7 @@ if (!hasSourceSkill) {
   if (hasVendoredSkill) {
     process.exit(0)
   }
-  throw new Error(`Unable to vendor orizu-cli skill: source skill not found at ${sourceRoot}`)
+  throw new Error(`Unable to vendor orizu skill: source skill not found at ${sourceRoot}`)
 }
 
 rmSync(vendorRoot, { recursive: true, force: true })

@@ -17,7 +17,7 @@ import { homedir } from 'os'
 import { createHash } from 'crypto'
 import { workspaceExists } from './workspace.js'
 
-export const SKILL_NAME = 'orizu-cli'
+export const SKILL_NAME = 'orizu'
 export const AGENTS_START_MARKER = '<!-- orizu-cli:start -->'
 export const AGENTS_END_MARKER = '<!-- orizu-cli:end -->'
 
@@ -28,6 +28,10 @@ export const SKILL_INSTALL_TARGETS = [
   'codex-project',
   'claude-user',
   'claude-project',
+  'devin-user',
+  'droid-user',
+  'grok-user',
+  'windsurf-user',
   'opencode-user',
   'opencode-project',
   'agents-md',
@@ -37,7 +41,16 @@ export type SkillInstallTarget = typeof SKILL_INSTALL_TARGETS[number]
 
 export const SKILL_META_FILENAME = '.orizu-skill-meta.json'
 
-export const SKILL_INSTALL_AGENTS = ['claude', 'codex', 'opencode'] as const
+export const SKILL_INSTALL_AGENTS = [
+  'claude',
+  'codex',
+  'pi',
+  'devin',
+  'droid',
+  'grok',
+  'windsurf',
+  'opencode',
+] as const
 
 export type SkillInstallAgent = typeof SKILL_INSTALL_AGENTS[number]
 
@@ -221,6 +234,22 @@ export function getSkillInstallPath(
     return resolve(cwd, '.claude', 'skills', SKILL_NAME)
   }
 
+  if (target === 'devin-user') {
+    return resolve(home, '.devin', 'skills', SKILL_NAME)
+  }
+
+  if (target === 'droid-user') {
+    return resolve(home, '.factory', 'skills', SKILL_NAME)
+  }
+
+  if (target === 'grok-user') {
+    return resolve(home, '.grok', 'skills', SKILL_NAME)
+  }
+
+  if (target === 'windsurf-user') {
+    return resolve(home, '.windsurf', 'skills', SKILL_NAME)
+  }
+
   // OpenCode discovers user skills under XDG config (~/.config/opencode/skills)
   // and project skills under .opencode/skills (ALI-1044). The copy/link machinery
   // is agent-neutral; only the destination path differs.
@@ -245,7 +274,14 @@ export function getTargetForAgent(
   if (agent === 'opencode') {
     return scope === 'global' ? 'opencode-user' : 'opencode-project'
   }
-  return scope === 'global' ? 'codex-user' : 'agents-project'
+  if (scope === 'local') {
+    return 'agents-project'
+  }
+  if (agent === 'devin') return 'devin-user'
+  if (agent === 'droid') return 'droid-user'
+  if (agent === 'grok') return 'grok-user'
+  if (agent === 'windsurf') return 'windsurf-user'
+  return 'agent-user'
 }
 
 export function isSkillInstallAgent(value: string): value is SkillInstallAgent {

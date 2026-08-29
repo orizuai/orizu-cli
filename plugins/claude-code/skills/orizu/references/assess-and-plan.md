@@ -88,7 +88,7 @@ The plan artifact is always named `improvement-plan.md`; its canonical path depe
 - **Plain repository:** write `improvement-plan.md` at the repository root and record the resolved Orizu `team/project` inside it.
 
 If the matching `projects/<directorySlug>/orizu.project.json` is absent, or a resolved project directory lacks its sibling `memory.md` or any required primitive directory, do not guess the directory slug or create missing entries by hand.
-With existing authenticated CLI credentials, run `orizu setup --team <teamSlug> --non-interactive --verbose` from the workbench root; the current directory is the default workspace.
+With existing authenticated CLI credentials, run `orizu setup --team <teamSlug> --project <projectSlug> --non-interactive --verbose` from the workbench root; the current directory is the default workspace.
 Authenticated setup reconciles each required project path independently: it creates missing files and directories while preserving existing ones.
 Empty project directories are not committed and must be recreated after a fresh clone.
 This per-path seeding does not require `--fix`. Use a separate `orizu setup --team <teamSlug> --fix --non-interactive --verbose` run only when independently diagnosed ADR-004 case or pointer damage also needs repair.

@@ -14,7 +14,7 @@ import { dirname, join, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-export const SKILL_NAME = 'orizu-cli'
+export const SKILL_NAME = 'orizu'
 export const SKILL_SOURCE_DIR = join(REPO_ROOT, 'skills', SKILL_NAME)
 export const SKILL_META_FILENAME = '.orizu-skill-meta.json'
 export const PLUGINS_DIST_DIR = join(REPO_ROOT, 'dist', 'plugins')

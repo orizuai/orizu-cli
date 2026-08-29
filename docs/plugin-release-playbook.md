@@ -10,7 +10,7 @@ The CLI is the runtime; the skill teaches agents to use it; plugins are
 distribution. Releases therefore flow in one direction:
 
 ```
-packages/cli (npm)  →  skills/orizu-cli  →  plugins/*  →  mirror repo (marketplaces)
+packages/cli (npm)  →  skills/orizu  →  plugins/*  →  mirror repo (marketplaces)
 ```
 
 Never release a plugin bundle generated against an unreleased CLI version.
@@ -23,7 +23,7 @@ Never release a plugin bundle generated against an unreleased CLI version.
       `publish-cli.yml` publishes to npm (prepack vendors the skill) and
       mirrors the tag.
 2. **Regenerate plugin bundles**
-   1. `bun run plugins:build` — re-vendors `skills/orizu-cli` into both plugin
+   1. `bun run plugins:build` — re-vendors `skills/orizu` into both plugin
       roots and stamps `.orizu-skill-meta.json` with the new skill hash and
       CLI version.
    2. Bump each plugin manifest `version` when bundle content changed
@@ -53,7 +53,7 @@ Run these from the public mirror repo (or this repo for local checks).
 
 - [ ] Codex discovers the marketplace at `.agents/plugins/marketplace.json`
       and installs `orizu` from it.
-- [ ] The `orizu-cli` skill is visible and triggers on an eval-related prompt.
+- [ ] The `orizu` skill is visible and triggers on an eval-related prompt.
 - [ ] With `orizu` uninstalled, the skill's prerequisites route to
       `npm i -g orizu` / `npx orizu setup` instead of failing silently.
 - [ ] `orizu skills path --json` hash matches the bundle's
@@ -62,7 +62,7 @@ Run these from the public mirror repo (or this repo for local checks).
 ### Claude Code plugin
 
 - [ ] `claude --plugin-dir plugins/claude-code` loads the plugin; the skill
-      appears namespaced (`orizu:orizu-cli`) and invokes correctly.
+      appears namespaced (`orizu:orizu`) and invokes correctly.
 - [ ] `claude plugin validate plugins/claude-code` (or the closest available
       validation command) passes.
 - [ ] `/plugin marketplace add <owner>/<mirror-repo>` then

@@ -42,8 +42,8 @@ orizu capabilities --json
 orizu skills path [--skill-md] [--json]
 orizu skills status [--json]
 orizu skills update [--dry-run] [--json]
-orizu install-skill [--agent <claude|codex>]... [--scope global|project] [--mode auto|link|copy] [--yes] [--dry-run] [--json]
-orizu setup [--team <slug>] [--agent <claude|codex>]... [--workspace [path]|--no-workspace] [--validate] [--fix] [--no-symlinks] [--verbose] [--no-install] [--handoff] [--yes] [--dry-run] [--no-input|--non-interactive] [--json]
+orizu install-skill [--agent <claude|codex|pi|devin|droid|grok|windsurf|opencode>]... [--scope global|project] [--mode auto|link|copy] [--yes] [--dry-run] [--json]
+orizu setup [--team <slug>|--create-team <name>] [--project <slug>|--create-project <name>] [--agent <agent>]... [--workspace [path]|--no-workspace] [--validate] [--fix] [--no-symlinks] [--verbose] [--no-install] [--handoff|--no-handoff] [--launch <claude|codex|pi>] [--skip-login] [--dry-run] [--no-input|--non-interactive] [--json]
 orizu setup prompt [--json]
 ```
 
@@ -51,8 +51,8 @@ Behavior:
 - `capabilities --json` returns the full machine-readable command manifest, including `globalOptions`.
 - `skills path --json` returns where this skill's source lives (`root`, `skillMd`, `source`, `cliVersion`, `skillHash`) so you can read it without installing, and verify an installed copy matches the CLI.
 - `skills status` reports each install target as missing/current/stale/broken-link; `skills update` refreshes stale copies and repairs broken symlinks.
-- `install-skill` selects targets by agent name; `--scope global` (default) installs user-level (`~/.codex/skills`, `~/.claude/skills`), `--scope project` installs into the repo. Project-scope installs always copy; global installs symlink when the CLI path is stable. Advanced target IDs remain available via `--target`.
-- `orizu setup` is the guided onboarding flow (login → team workspace contract → global coding-agent skill install). Use `orizu setup --team <slug>` for agent-friendly setup of the current directory; after authentication it materializes every project in that team. Use `--workspace <path>` only when setting up or validating another directory. Interactive setup offers Codex when `~/.codex` exists and Claude Code when `~/.claude` exists; pass `--agent codex --agent claude` for non-interactive installs. The contract uses root `AGENTS.md`, `CLAUDE.md`, `Memory.md`, `orizu.team.json`, project manifests, primitive directories, and gitignore policy. `.orizu/` and `.logs/` are ignored cache/generated state, not the durable contract. `orizu setup prompt` prints the repo-adoption prompt for handing to a coding agent; pass `orizu setup --handoff` only when you want that prompt printed inline after setup.
+- `install-skill` selects targets by agent name; `--scope global` (default) installs user-level (`~/.agents/skills`, `~/.claude/skills`), `--scope project` installs into the repo. Project-scope installs always copy; global installs symlink when the CLI path is stable. Advanced target IDs remain available via `--target`.
+- `orizu setup` is the guided onboarding flow (login → choose/create team → choose/create project → workspace contract → shared coding-agent skill → optional launch). Non-interactive setup requires authentication plus explicit team and project choose/create flags; run `orizu login --headless` first when needed. Accepting skill installation always writes the shared `~/.agents/skills/orizu` target; Codex and Pi use it without duplicate native installs, while detected native targets such as Claude Code are selected by default. Repeat `--agent` for non-interactive installs; no agent flags writes no skills and non-interactive setup never launches. Interactive setup offers detected Claude, Codex, and Pi binaries in a single-select launch picker that defaults to no launch and passes `https://orizu.ai/llms.txt` plus the selected `team/project` as one positional prompt. Authenticated workspace setup still materializes every project in the team. The contract uses root `AGENTS.md`, `CLAUDE.md`, `Memory.md`, `orizu.team.json`, project manifests, primitive directories, and gitignore policy. `.orizu/` and `.logs/` are ignored cache/generated state, not the durable contract.
 
 ### Teams
 

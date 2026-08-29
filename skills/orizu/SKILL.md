@@ -1,5 +1,5 @@
 ---
-name: orizu-cli
+name: orizu
 description: Use when the user mentions Orizu; wants measurable improvement for a specific LLM application or agent; collects human feedback on model outputs or turns failures into evals; validates judges; optimizes instruction sets; migrates an existing GEPA setup; or establishes continuous improvement. Step aside and handle directly generic instruction-writing theory or one-off edits the user explicitly will not validate with evals.
 ---
 

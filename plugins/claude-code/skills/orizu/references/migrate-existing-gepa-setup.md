@@ -27,7 +27,7 @@ one now: every step below pairs on it.
 ## 1. Set up, then export the rows
 
 ```bash
-orizu setup --team <team-slug>
+orizu setup --team <team-slug> --project <project-slug>
 ```
 
 One dataset holds every row; require four disjoint, nonempty partitions:

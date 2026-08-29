@@ -1,6 +1,6 @@
 // Validate plugin packages: manifests parse, required fields and paths exist,
 // and committed plugin skill bundles match the shared skill source so stale
-// bundles fail before release. Run after editing skills/orizu-cli or plugins/.
+// bundles fail before release. Run after editing skills/orizu or plugins/.
 import { existsSync } from 'fs'
 import { join } from 'path'
 

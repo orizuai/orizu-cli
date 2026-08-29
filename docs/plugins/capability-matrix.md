@@ -10,7 +10,7 @@ release playbook.
   owns auth, local scorers, runners, optimizers, score submission, cloud
   sandbox handoff, and the stable command/API contract
   (`orizu capabilities --json`).
-- **The shared skill (`skills/orizu-cli`) is the agent workflow layer.** It
+- **The shared skill (`skills/orizu`) is the agent workflow layer.** It
   teaches an agent how to use the CLI and how to reason through repo-specific
   Orizu adoption.
 - **Plugins are thin native distribution/adaptation layers.** They improve
@@ -25,7 +25,7 @@ release playbook.
 
 | Capability | CLI + skill | Codex plugin | Claude Code plugin |
 | --- | --- | --- | --- |
-| Skill distribution | v1 — `orizu install-skill` copy/link | v1 — bundled `skills/orizu-cli` | v1 — bundled, namespaced `orizu:orizu-cli` |
+| Skill distribution | v1 — `orizu install-skill` copy/link | v1 — bundled `skills/orizu` | v1 — bundled, namespaced `orizu:orizu` |
 | Install/update lifecycle | v1 — `skills status` / `skills update` | v1 — host plugin install/update | v1 — host plugin install/update, `/reload-plugins` |
 | Marketplace / catalog | n/a (npm) | v1 — `.agents/plugins/marketplace.json` (repo/local) | v1 — `.claude-plugin/marketplace.json` (repo) |
 | Namespacing | n/a | v1 — plugin-scoped skill | v1 — plugin-scoped skill |
@@ -54,7 +54,7 @@ standing backlog.
   hash (same algorithm as `computeSkillContentHash` in
   `packages/cli/src/skill-installer.ts`), the CLI version the bundle was
   generated against, and the plugin version. `scripts/plugins/validate.mjs`
-  fails CI when a bundle drifts from `skills/orizu-cli`, the current CLI
+  fails CI when a bundle drifts from `skills/orizu`, the current CLI
   version, or the plugin manifest version.
 - Skill/plugin/CLI mismatch at runtime is detected by comparing
   `orizu skills path --json` (`skillHash`, `cliVersion`) against the bundle's
