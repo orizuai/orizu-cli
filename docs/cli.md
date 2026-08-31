@@ -268,7 +268,9 @@ orizu setup --workspace ./workbench --validate
   [CLI overview](https://cursor.com/docs/cli/overview) and
   [parameter reference](https://cursor.com/docs/cli/reference/parameters), retrieved
   2026-08-30; setup uses the direct positional form without a shell.
-- `--json` emits the setup summary as machine-readable JSON.
+- Human setup summaries abbreviate skill destinations inside the resolved setup
+  home as `~/…`; destinations outside that home remain absolute. `--json` keeps
+  integration paths absolute and emits the setup summary as machine-readable JSON.
 
 ### Skill install
 

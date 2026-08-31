@@ -84,6 +84,7 @@ import {
 } from './setup-onboarding.js'
 import { promptKeyboardSelect } from './keyboard-select.js'
 import { confirmExistingSetupAccount, describeSetupAuthState } from './setup-account.js'
+import { renderSetupSkillSummary, sanitizeSetupHumanInlineText } from './setup-summary.js'
 import { LoginResponse } from './types.js'
 import {
   getWorkspaceRoot,
@@ -3711,7 +3712,7 @@ async function setupCommand() {
       for (const outcome of installOutcomes) {
         const label = setupSkillLabel(outcome.target)
         if (outcome.action === 'failed') {
-          printLine(`${label} failed: ${outcome.error}`)
+          printLine(`${label} failed: ${sanitizeSetupHumanInlineText(outcome.error)}`)
         } else if (outcome.action === 'skipped') {
           printLine(`${label} skipped`)
         } else {
@@ -3792,11 +3793,6 @@ async function setupCommand() {
   }
 
   // Setup summary (success criteria checklist)
-  const summaryTargets = installOutcomes.length > 0
-    ? installOutcomes
-      .filter(outcome => outcome.action !== 'failed')
-      .map(outcome => ({ outcome, status: getSkillTargetStatus(outcome.target, { cwd: workspaceRoot, homeDir: setupSkillHome }) }))
-    : []
   const source = resolveSkillSource()
   if (hasJsonFlag()) {
     printJson({
@@ -3842,18 +3838,8 @@ async function setupCommand() {
   }
   printLine('Setup summary')
   printLine(`  Auth:         ${auth.state === 'signed-in' ? `signed in (${sanitizeTerminalText(auth.baseUrl)})` : 'not signed in — run `orizu login`'}`)
-  if (summaryTargets.length > 0) {
-    printLine('  Skills:')
-    for (const { outcome, status } of summaryTargets) {
-      const modeLabel = status.mode ? `, ${status.mode}` : ''
-      printLine(`    ${outcome.target.padEnd(16)} ${status.state}${modeLabel}  ${outcome.path}`)
-    }
-  } else {
-    printLine('  Skills:       none installed this run')
-  }
-  const failed = installOutcomes.filter(outcome => outcome.action === 'failed')
-  for (const failure of failed) {
-    printLine(`    ${failure.target.padEnd(16)} failed: ${failure.error}`)
+  for (const line of renderSetupSkillSummary(installOutcomes, setupSkillHome)) {
+    printLine(line)
   }
   printLine(`  Workspace:    ${workspaceState === 'skipped' ? 'skipped' : getWorkspaceRoot(workspaceRoot)}`)
   if (workspaceResult) {
