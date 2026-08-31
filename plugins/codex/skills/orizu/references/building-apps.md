@@ -2,7 +2,7 @@
 
 You are reading the canonical reference for coding agents producing Orizu apps. Orizu apps are React/TSX components that render inside Orizu's task and preview screens to collect feedback from human reviewers: ratings, comments, comparisons, annotations, rankings, corrections, and agent-transcript review. This document covers everything needed to author a working app — runtime contract, conventions, design principles, the import registry, the per-component reference, recipes, and common pitfalls. Read top-to-bottom on first encounter; jump to specific sections by anchor afterwards.
 
-If you are an external coding agent that found this via `orizu.ai/docs/llms.txt`, treat this document as the source of truth for both the runtime contract and the available primitives.
+If you are an external coding agent that found this via `orizu.ai/docs/references/building-apps`, treat this document as the source of truth for both the runtime contract and the available primitives.
 
 ---
 

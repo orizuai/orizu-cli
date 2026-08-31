@@ -30,7 +30,7 @@ Run the smoke test and preview flow from that reference with representative rows
 
 Record the rows previewed, the feedback, the revisions, and the approval. Do not create or publish a task, and do not start labeling, until this labeler-feedback gate is confirmed.
 
-Use the draft-first ordering, URL-approval gate, and assignee-selector contract in `SKILL.md` under “Execution facts”; use `references/cli-reference.md` for the command surface. This reference adds one versioning safeguard: the task pins the app version selected at creation.
+Use the draft-first ordering, URL-approval gate, assignee-selector contract, and command surface in `cli-reference.md`. This reference adds one versioning safeguard: the task pins the app version selected at creation.
 
 If draft testing reveals a problem, revise through `orizu apps update`, repeat the preview and pointed-feedback gate, capture the returned version number `n`, and explicitly repin the draft before testing its URL again:
 
@@ -38,7 +38,7 @@ If draft testing reveals a problem, revise through `orizu apps update`, repeat t
 orizu tasks update --task <taskId> --app <appId> --version <n>
 ```
 
-Then return to the approval and publish sequence in “Execution facts.” If the strategy requires an explicit row-to-labeler map, it must still cover every row in this task's separate annotation dataset uniformly.
+Then return to the task create, draft-URL test, approval, and publish sequence in `references/cli-reference.md` under “End-to-End Flows” → “New Team to Export”. If the strategy requires an explicit row-to-labeler map, it must still cover every row in this task's separate annotation dataset uniformly.
 
 After labeling, inspect the machine-readable status before task completion or export:
 

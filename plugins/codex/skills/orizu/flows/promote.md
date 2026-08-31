@@ -22,7 +22,7 @@ Choose validation proportional to risk and available infrastructure. These are m
 - **Replay on past traffic:** run the candidate over representative historical inputs and show what outputs, scores, costs, latency, and decisions would have changed without affecting users.
 - **Staged rollout or experiment:** expose a small bounded cohort, define success and regression limits in advance, monitor the agreed measures, and retain an explicit rollback path before expanding.
 
-Present the report and validation evidence. The human makes the promotion decision and executes every production/default pointer move through the Authority map in `SKILL.md`.
+Present the report and validation evidence. The human makes the promotion decision and executes every production/default pointer move through `references/authority-map.md`.
 
 ## Offer the post-win flows
 

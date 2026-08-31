@@ -243,7 +243,7 @@ evals/<project>/
 In a local workflow under the user's token, push the executable artifacts and
 register both the row scorer used for per-example feedback and the set scorer
 used for kappa plus confusion diagnostics. Hosted sessions follow the artifact
-authority and commit rules in `SKILL.md`. Substitute IDs returned by each
+authority and commit rules in `authority-map.md`. Substitute IDs returned by each
 command in subsequent commands:
 
 For a custom deterministic code assertion that must complete the submitted J5
@@ -341,14 +341,14 @@ decision with the human label and returns per-row feedback for reflection.
 
 Materialize those components in `orizu.instruction-set.json` before GEPA. Create
 the stable instruction set once, or push a revised seed for a later optimization
-cycle. `SKILL.md` is authoritative for who runs each mutation; hosted sessions
+cycle. `authority-map.md` is authoritative for who runs each mutation; hosted sessions
 prepare the manifest and exact human handoff:
 
 ```bash
-# Local surface (agent-allowed under the user's token): see the SKILL.md authority map.
+# Local surface (agent-allowed under the user's token): see `authority-map.md`.
 orizu instructions create ./evals/<project>/judges/<failure-mode>/orizu.instruction-set.json --project <team/project> --model-config <provider/model> --json
 
-# Local surface (agent-allowed under the user's token): see the SKILL.md authority map.
+# Local surface (agent-allowed under the user's token): see `authority-map.md`.
 orizu instructions push ./evals/<project>/judges/<failure-mode>/orizu.instruction-set.json --project <team/project> --set <judge-instruction-set> --json
 ```
 
@@ -430,7 +430,7 @@ Only after parity holds, publish fresh instruction and judge versions before
 touching judge-test. Under the user's token, the local sequence is:
 
 ```bash
-# Local surface (agent-allowed under the user's token): see the SKILL.md authority map.
+# Local surface (agent-allowed under the user's token): see `authority-map.md`.
 orizu instructions push ./evals/<project>/judges/<failure-mode>/orizu.instruction-set.json --project <team/project> --set <judge-instruction-set> --json
 
 orizu judges push ./evals/<project>/judges/<failure-mode>/judge --project <team/project> --runner-version <materialized-judge-runner-version-id> --json
@@ -464,7 +464,7 @@ submitted judge-test commands above deliberately use `<new-judge-version-id>`.
 Require human acceptance and gatekeeper-grade judge-test validation for any ship
 or promotion decision even when the judge used for reflection met only the
 optimization-signal judge trust bar. Hosted sessions commit the accepted component map and
-follow the handoff boundary in `SKILL.md`.
+follow the handoff boundary in `authority-map.md`.
 
 The default GEPA scorer contract supplies a GEPA-shaped row containing
 `source_row`, `candidate_id`, and `candidate_output`. If reusing a scorer runner

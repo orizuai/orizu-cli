@@ -2,28 +2,24 @@
 
 > **Core idea:** You can't improve what you can't measure — but measuring the wrong thing is worse than not measuring at all. This doc walks from raw failure logs to a continuously-running evaluation loop, and shows how Orizu operationalizes each step.
 
-The operational loop starts at **J3 — Build the dataset** and branches on the
-approved ground-truth source:
+The operational method is organized by the installed skill's flows:
 
+```text
+Onboard → First win ───────────────→ Promote
+            ├─ complete approved ground truth → judges → optimization run
+            ├─ partial approved coverage → annotate uncovered ground truth → judges → optimization run
+            └─ no approved coverage → annotation → judges → optimization run
+                                                   │
+                                                   └─ after Promote: Recurse, Triage, or Expand by user interest
 ```
-approved golden ground truth covers the scenario classes: J3 → J5
-missing ground truth needs human labels:                    J3 → J4 → J5
-                                                                 │
-                                                                 ▼
-                                                   J6 → new traces → J3
-```
 
-In the diagram, **J4 — Ground truth via annotation (conditional)** is taken only
-for missing labels, **J5 — Build & validate judges** consumes the approved
-ground truth, and **J6 — Optimize & promote** feeds new traces into the next J3
-dataset version. Approved golden ground truth therefore goes directly from J3
-to J5 instead of passing through annotation.
+First win builds the evidence and ends at a completed optimization run. Promote owns reporting, validation, and the human promotion decision. Recurse turns newly deployed traces into a later same-surface cycle; Triage starts from an incident and closes its eval gap before a fix; Expand chooses and plans another surface. Onboard owns pre-data inventory and plan ratification.
 
-The CLI covers the full operational loop. Start instruction sets with `orizu instructions`: one instruction set per agent or LLM experience, one profile per model config, and components owned by that profile. Human annotation still happens through apps/tasks when J4 is needed, while judge/scorer logic and optimization execution run locally and report back through the instruction control plane. Follow the applicable branch and require its prior journey step's exit criterion before continuing.
+The CLI covers this operational loop. Start instruction sets with `orizu instructions`: one instruction set per agent or LLM experience, one profile per model config, and components owned by that profile. Human annotation happens through apps/tasks only for required ground truth, while judge/scorer logic and optimization execution run locally and report back through the instruction control plane. The active flow file owns ordering and its exit criterion; this primer explains why the stages exist rather than replacing that procedure.
 
 An instruction-set manifest carries its `name`, optional `description`, fixed, ordered `shape`, and component values. The set's slug is its stable CLI reference even when its display name changes. Profiles have their own component values; components are never shared between profiles or sets. The set-wide default serves model configs without a production profile version.
 
-Start by inspecting the set, then follow the [Authority map](../SKILL.md#authority-map)
+Start by inspecting the set, then follow the [Authority map](authority-map.md)
 for mutation custody before syncing through the same surface:
 
 ```bash
@@ -59,7 +55,7 @@ The most common mistake teams make is jumping straight to evals before they unde
 
 ---
 
-## J3 detail: Upload — gather diverse traces
+## First win detail: Upload — gather diverse traces
 
 ### Why
 
@@ -105,7 +101,7 @@ Full surface: `cli-reference.md`.
 
 ---
 
-## Conditional J4 detail: Annotate — binary labels per failure mode
+## Conditional First win detail: Annotate — binary labels per failure mode
 
 ### Why
 
@@ -158,7 +154,7 @@ Authoring the labeler app — contract, design principles, and common patterns: 
 
 ---
 
-## J5 detail: Judge — turn labels into automated evaluators
+## First win detail: Judge — turn labels into automated evaluators
 
 ### Why
 
@@ -191,7 +187,7 @@ Control-plane commands: `prompt-control-plane.md`. Detailed alignment-first walk
 
 ---
 
-## J6 detail: Optimize — hill-climb against validated judges
+## First win detail: Optimize — hill-climb against validated judges
 
 ### Why
 
@@ -206,8 +202,8 @@ Done locally, reported to Orizu:
 1. Package the candidate execution as a runner, or use the customer's existing local app wrapper.
 2. Register validated scorers.
 3. Run the bundled Orizu GEPA-style text optimizer, or a custom optimizer against the scorer set.
-4. Stream optimization events to Orizu, promote accepted candidates into the target instruction-set profile, and submit comparable scores.
-5. Diff before/after on the eval suite. Ship if it holds; new traces feed back to J3.
+4. Stream optimization events to Orizu and complete the run with a selected candidate or a recorded no-valid-candidate outcome.
+5. Stop First win at that completed run. Route to Promote for the report, supported Final-held-out comparison, validation evidence, and human ship, gather-more-evidence, or do-not-promote decision. After Promote, use Recurse for a human-agreed cadence that turns traces from the currently deployed version into a new immutable dataset version.
 
 Control-plane commands: `prompt-control-plane.md`. Detailed walkthrough — GEPA mechanics, optional DSPy context for customers already using it, and before/after comparison: `optimization-with-gepa.md`.
 

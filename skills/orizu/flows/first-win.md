@@ -20,7 +20,7 @@ Decide by label existence, not perceived effort:
 
 Follow `references/building-judges.md`. Prefer deterministic assertions for deterministic rules and LLM judges for nuanced criteria. Validate against human labels, agree the judge trust bar for each downstream decision and failure mode, register the runner and scorer, submit measured evidence, and obtain the required human score acceptance before the judge gates optimization.
 
-Use `references/prompt-control-plane.md` for artifact contracts and the Authority map in `SKILL.md` for mutation custody.
+Use `references/prompt-control-plane.md` for artifact contracts and `references/authority-map.md` for mutation custody.
 
 ## Optimize
 

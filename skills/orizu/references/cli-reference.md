@@ -80,7 +80,7 @@ orizu projects create --name "Quality Eval" --team my-team
 
 ### Instruction sets
 
-Follow the [Authority map](../SKILL.md#authority-map) for the executor on the current surface.
+Follow the [Authority map](authority-map.md) for the executor on the current surface.
 
 ```bash
 orizu instructions list --project my-team/quality-eval [--status active|archived|all] [--json]
@@ -105,7 +105,7 @@ should not teach it. A set can be addressed by its stable slug or exact name;
 the slug does not change when the display name changes. `list` returns each
 instruction set and its ordered shape. `show` returns the default and every
 model-config profile's production state. Use `--status archived` or `--status
-all` to include archived sets. The [Authority map](../SKILL.md#authority-map) selects the
+all` to include archived sets. The [Authority map](authority-map.md) selects the
 executor for each surface. Archive and restore change visibility only:
 archived sets continue to resolve and sync. `create` and `push` read a local
 manifest; JSON output is one document per line. `push --set` updates the named
@@ -115,7 +115,7 @@ or slug-addressed set independently of the manifest's display name.
 changing its production resolution. `profiles promote` moves that profile to a
 version, and `profiles rollback` creates a new version copied from `--to`,
 including that target version's settings version, before moving production.
-`SKILL.md` supplies the promotion-decision and execution hand-off. For a
+`authority-map.md` supplies the promotion-decision execution hand-off. For a
 single-component set that wraps a prompt, only default-profile promote and rollback also move the wrapped
 prompt's production label in the same transaction and print `default profile →
 prompt label`. This coupling is one-way: moving the prompt label directly does
@@ -262,7 +262,7 @@ Delete dataset:
 - There is no non-interactive confirmation flag.
 
 Edit rows requirements:
-- `--file` rows must include canonical `id` for each row being updated.
+- Every `--file` row must carry a non-empty string `id`.
 
 ### Tasks
 
@@ -483,6 +483,7 @@ Use these shortcuts only in TTY environments where prompts can run.
 
 ## Notes and Limits
 
+- `--json` may appear before or after a command. Non-streaming commands emit one JSON document, with long-running summaries on the final stdout line; streaming `orizu run tail --json` instead emits JSONL, one event object per line.
 - `tasks create` creates a draft by default, does not require `--assignees`, and pins the app's current version when the task is created.
 - `tasks create --publish --assignees <...>` intentionally creates and ships immediately.
 - `--assignees` and assignment-file rows accept member emails or user IDs. Email selectors resolve to canonical member IDs within the task's project team; ambiguous or unknown emails are rejected.
@@ -491,9 +492,9 @@ Use these shortcuts only in TTY environments where prompts can run.
 - Assignment completion payloads are validated against the pinned app-version `output_json_schema`.
 - `datasets delete-rows` requires `--row-ids`.
 - `datasets delete` requires interactive terminal confirmation and has no non-interactive confirmation flag.
-- `datasets edit-rows` requires row objects in `--file` to include canonical `id`.
+- `datasets edit-rows --file` requires every row to carry a non-empty string `id`.
 - `--row-ids` is the canonical row selection for delete operations.
-- Locked datasets reject append/edit/delete row mutations.
+- Locked datasets reject append/edit/delete row mutations, but whole-dataset deletion does not check the lock.
 - Row deletes are rejected when targeted rows are assignment-referenced.
 - Login callback binding defaults to `127.0.0.1:43123`. If that port is unavailable, set `ORIZU_AUTH_PORT` to an available port from 1024–65535.
 - New CLI logins use personal access tokens rather than short-lived Supabase session credentials.

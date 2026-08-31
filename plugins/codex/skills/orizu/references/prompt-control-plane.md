@@ -1,6 +1,6 @@
 # Instruction Control Plane
 
-Use this reference for the Phase 0 instruction, judge, scorer, runner, score, run, and optimization event control plane. Follow the [Authority map](../SKILL.md#authority-map) before executing its command sequences.
+Use this reference for the Phase 0 instruction, judge, scorer, runner, score, run, and optimization event control plane. Follow the [Authority map](authority-map.md) before executing its command sequences.
 
 ## Contents
 
@@ -23,7 +23,7 @@ Use this reference for the Phase 0 instruction, judge, scorer, runner, score, ru
 8. After `run-gepa`, inspect `logs/<optimization_run_id>` first; it is the complete local trace for coding-agent analysis.
 9. Use `orizu optimizations export <run-id> --out <run-id>.optimization.json` when the local log is missing or the run happened elsewhere.
 10. Write and attach a markdown report for finished, failed, or cancelled runs; use `optimization-reports.md` for structure and diagnostic guidance.
-11. Follow the [Authority map](../SKILL.md#authority-map). Simpler one-shot path: after the human accepts the report, a human curator runs `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`, materializing and labeling once. Equivalent two-stage path: an agent runs `orizu optimizations promote <run-id> --candidate <id> --project <team/project>` after acceptance. A human curator re-runs the same promotion as `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`. The idempotent finalizer finds the exact existing materialized version by run and candidate provenance, moves production, and creates no duplicate profile version or candidate-promoted event.
+11. Follow the [Authority map](authority-map.md). Simpler one-shot path: after the human accepts the report, a human curator runs `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`, materializing and labeling once. Equivalent two-stage path: an agent runs `orizu optimizations promote <run-id> --candidate <id> --project <team/project>` after acceptance. A human curator re-runs the same promotion as `orizu optimizations promote <run-id> --candidate <id> --label production --project <team/project>`. The idempotent finalizer finds the exact existing materialized version by run and candidate provenance, moves production, and creates no duplicate profile version or candidate-promoted event.
 12. For custom optimizers, start an optimization run before local execution, then stream events into that run.
 13. Use bare HTTP for optimization events; use `orizu log` only as a shell fallback.
 14. Promote only accepted candidates; rejected candidates stay in optimization events.
@@ -35,7 +35,7 @@ Customer model-provider secrets stay local. Do not upload Anthropic/OpenAI/etc. 
 Work within the fixed, ordered component shape and model-config profiles defined
 for instruction sets in Vocabulary. Existing prompts appear as one-component
 sets. Inspect or write them with the customer-facing `orizu instructions`
-namespace. Follow the [Authority map](../SKILL.md#authority-map) for mutation
+namespace. Follow the [Authority map](authority-map.md) for mutation
 custody before copying a command:
 
 ```bash
@@ -560,7 +560,7 @@ orizu --local scorers list --project <team>/<project>
 orizu --local scorers detail <scorer-id-or-name> --project <team>/<project> --json
 ```
 
-Production scorer labels are pointer moves. The agent prepares the scorer name, version id, and evidence. After human acceptance, follow the [Authority map](../SKILL.md#authority-map): a human curator runs `orizu --local scorers labels set hip-note-judge-score production --version <scorer-version-id> --project <team>/<project> --json`.
+Production scorer labels are pointer moves. The agent prepares the scorer name, version id, and evidence. After human acceptance, follow the [Authority map](authority-map.md): a human curator runs `orizu --local scorers labels set hip-note-judge-score production --version <scorer-version-id> --project <team>/<project> --json`.
 
 Use scorer versions directly with the runner contract:
 
@@ -1054,7 +1054,7 @@ JUDGE_VERSION_ID="$(orizu --local judges push ./judge --project hip/judge-optimi
 SCORER_VERSION_ID="$(orizu --local scorers register --project hip/judge-optimization --name hip-note-judge-score --manifest ./scorer.manifest.json --prompt-version "$JUDGE_VERSION_ID" --runner-version "$RUNNER_VERSION_ID" --json | jq -r .scorer_version_id)"
 ```
 
-Human curator hand-off through the [Authority map](../SKILL.md#authority-map) (do not run as the agent): no standalone runner-label command exists, so the human first runs `orizu --local runners pull hip-note-judge-runner --project hip/judge-optimization --version "$RUNNER_VERSION_ID" --out ./runner-default-handoff`, leaves that fresh exact-version directory unchanged, then runs `orizu --local runners push ./runner-default-handoff --project hip/judge-optimization --name hip-note-judge-runner --label default --json`. The human curator then runs `orizu --local scorers labels set hip-note-judge-score production --version "$SCORER_VERSION_ID" --project hip/judge-optimization --json`.
+Human curator hand-off through the [Authority map](authority-map.md) (do not run as the agent): no standalone runner-label command exists, so the human first runs `orizu --local runners pull hip-note-judge-runner --project hip/judge-optimization --version "$RUNNER_VERSION_ID" --out ./runner-default-handoff`, leaves that fresh exact-version directory unchanged, then runs `orizu --local runners push ./runner-default-handoff --project hip/judge-optimization --name hip-note-judge-runner --label default --json`. The human curator then runs `orizu --local scorers labels set hip-note-judge-score production --version "$SCORER_VERSION_ID" --project hip/judge-optimization --json`.
 The agent continues with an unlabeled optimizer version:
 
 ```bash

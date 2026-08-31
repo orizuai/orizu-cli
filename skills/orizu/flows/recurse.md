@@ -16,7 +16,7 @@ Review changed failure modes and coverage with the human. Gather approved labels
 
 ## Rerun the loop
 
-Run `flows/first-win.md` on the same instruction surface using the new evidence, then run `flows/promote.md` for the next human promotion decision. Reuse validated artifacts only while their trust evidence still applies; cadence cannot move a production pointer without the human decision in Promote.
+Run `flows/first-win.md` on the same instruction surface using the new evidence, then run `flows/promote.md` for the next human promotion decision. Reuse validated artifacts only while their trust evidence still applies; do not let cadence move a production pointer without the human decision in Promote.
 
 ## Exit criterion
 

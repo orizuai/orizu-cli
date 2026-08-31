@@ -6,7 +6,7 @@ For a customer already running official GEPA from a plain script — inline
 become the set's fixed shape, and its values become that profile's components.
 Use `orizu instructions` as the only creation and update path for those
 customer-owned instructions. Prepare the complete manifest, then follow the
-[Authority map](../SKILL.md#authority-map) for its mutations.
+[Authority map](authority-map.md) for its mutations.
 
 The ordering rule: **nothing is optimized until parity is proven.** The last
 step before `run-gepa` is always `orizu scorers verify-parity`, which runs the
@@ -104,7 +104,7 @@ orizu --local instructions create ./orizu.instruction-set.json \
   --model-config <provider/model> --json
 ```
 
-The agent-created runner version is unlabeled. No standalone runner-label command exists. Following the [Authority map](../SKILL.md#authority-map), if a human accepts its exact ID as default, the human curator runs `orizu --local runners pull gepa-candidate-runner --project <team>/<project> --version <candidate-runner-version-id> --out ./candidate-runner-default-handoff`, leaves that fresh exact-version directory unchanged, then runs `orizu --local runners push ./candidate-runner-default-handoff --project <team>/<project> --name gepa-candidate-runner --label default --json`. The manifest
+The agent-created runner version is unlabeled. No standalone runner-label command exists. Following the [Authority map](authority-map.md), if a human accepts its exact ID as default, the human curator runs `orizu --local runners pull gepa-candidate-runner --project <team>/<project> --version <candidate-runner-version-id> --out ./candidate-runner-default-handoff`, leaves that fresh exact-version directory unchanged, then runs `orizu --local runners push ./candidate-runner-default-handoff --project <team>/<project> --name gepa-candidate-runner --label default --json`. The manifest
 carries the set's `name`, human-readable `description`, fixed `shape`, and component values. Put each original dict
 value in a file without changing its bytes. This one-component example maps
 the old `system` key to `system.md`:
@@ -317,6 +317,10 @@ agreed. A limited run reports `parity: false` with
 `scope: {compared, total}` and the line "Smoke check passed on N of M rows"
 — it exits 0, but it is not the proof.
 
+## Router handoff after parity
+
+When the router sends an existing setup here, stop after all three scorer parity checks pass. Open `flows/first-win.md`; do not continue directly to section 7. First win owns the validated-judge optimization run, and `flows/promote.md` separately owns its report, validation, and human promotion decision. The remaining sections are reference detail only when the active flow explicitly reaches them.
+
 ## 7. Optimizer and run
 
 ```bash
@@ -361,7 +365,7 @@ reflected on each round.
 Pass `--scorer-candidate-field <field>` here too if you passed it to
 `verify-parity`: the payload the runner sees must be the one parity was proven
 under. Select one candidate on validation evidence, then reserve one final-held-out seed-versus-selected-candidate comparison for the promotion decision.
-Write and attach the optimization report, then obtain the human decision. Following the [Authority map](../SKILL.md#authority-map), in the simpler one-shot path a human curator runs `orizu --local optimizations promote <run-id> --candidate <candidate-id> --label production --project <team>/<project> --json` after acceptance. In the equivalent two-stage path for separate materialization, the coding agent materializes once with the unlabeled command below.
+Write and attach the optimization report, then obtain the human decision. Following the [Authority map](authority-map.md), in the simpler one-shot path a human curator runs `orizu --local optimizations promote <run-id> --candidate <candidate-id> --label production --project <team>/<project> --json` after acceptance. In the equivalent two-stage path for separate materialization, the coding agent materializes once with the unlabeled command below.
 
 ```bash
 orizu --local optimizations promote <run-id> --candidate <candidate-id> \

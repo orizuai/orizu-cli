@@ -67,7 +67,7 @@ The dataset version freezes its rows. Server-side split membership is mutable, b
 
 ## Guard live rows before annotation and version later data
 
-Use the dataset mutation contract in `SKILL.md` under “Execution facts” rather than inferring lock or row-edit semantics here.
+Use the dataset mutation contract in `cli-reference.md` rather than inferring lock or row-edit semantics here.
 
 After source approval and the split audit, the dataset must be locked before annotation starts because tasks pin live dataset rows rather than the immutable version:
 

@@ -77,12 +77,12 @@ text, then prepare a manifest such as:
 ```
 
 Commit the complete manifest and its component files, then follow the
-[Authority map](../SKILL.md#authority-map) for each mutation.
+[Authority map](authority-map.md) for each mutation.
 
 ## Consolidation
 
 Consolidation changes ownership and visibility. Create the consolidated set
-through the surface selected by the [Authority map](../SKILL.md#authority-map) and inspect its complete
+through the surface selected by the [Authority map](authority-map.md) and inspect its complete
 profiles before changing any pointer:
 
 ```bash

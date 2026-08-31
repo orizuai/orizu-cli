@@ -20,7 +20,7 @@ Compare the inventoried surfaces using source metadata only: availability, prove
 
 ## Install and establish the project
 
-After the human chooses Orizu, check whether `orizu` is available and record `orizu --version`. If it is missing, require Node.js 20+ and install the CLI with `npm i -g orizu`. Then run `orizu setup`; verify authentication and runtime with `orizu whoami --json` and `orizu capabilities --json`, and verify the installed skill separately with `orizu skills status --json` (use `orizu skills update` when stale). Use `references/cli-reference.md` for authentication and team/project commands. Follow the Authority map in `SKILL.md` for who executes each action. Do not rely on remembered commands.
+After the human chooses Orizu, check whether `orizu` is available and record `orizu --version`. If it is missing, require Node.js 20+ and install the CLI with `npm i -g orizu`. Then run `orizu setup`; verify authentication and runtime with `orizu whoami --json` and `orizu capabilities --json`, and verify the installed skill separately with `orizu skills status --json` (use `orizu skills update` when stale). Use `references/cli-reference.md` for authentication and team/project commands. Follow `references/authority-map.md` for who executes each action. Do not rely on remembered commands.
 
 ## Ratify the improvement plan
 
