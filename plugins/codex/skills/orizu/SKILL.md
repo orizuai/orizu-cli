@@ -15,17 +15,7 @@ A judge runner built for flat rows will silently score every candidate 0 unless 
 
 # Vocabulary
 
-- **Evals-first** — understand observed failures, build and validate evaluations, then optimize the LLM application against that evidence.
-- **Journey step** — one ordered stage in the workflow: J0 — Discover & evaluate, J1 — Install & set up, J2 — Assess & plan, J3 — Build the dataset, J4 — Ground truth via annotation (conditional), J5 — Build & validate judges, or J6 — Optimize & promote.
-- **Exit criterion** — the checkable evidence required before leaving one journey step for the next.
-- **Human-only** — an action the agent prepares with exact evidence and an authorized human executes.
-- **Local surface** — a CLI action executed under the user's token; the authority map, not the surface, determines whether an agent or human executes it.
-- **Hosted session** — a platform-managed coding-agent session authenticated with session credentials and bound to its signed team and project scope.
-- **Instruction set** — the customer-facing identity for one agent or LLM experience, with a fixed ordered component shape and model-config profiles that own component values.
-- **Judge trust bar** — the user-agreed metric thresholds a judge must clear for a named downstream decision and failure mode.
-- **Decision class** — the judge's downstream use: gatekeeper, optimization signal, or triage / monitoring.
-- **Scenario class** — a named, meaningful family of cases from the ratified improvement plan whose coverage and results are tracked separately.
-- **Final-held-out** — the application partition reserved for J6's single seed-versus-selected-candidate comparison.
+Read `references/vocabulary.md` for the canonical Orizu workflow and method vocabulary.
 
 # Journey
 
@@ -96,6 +86,7 @@ The loop is established when a cadence is agreed and its first cycle is complete
 
 # Reference index
 
+- `references/vocabulary.md` — canonical workflow and method vocabulary.
 - `references/primer.md` — end-to-end evals-first methodology.
 - `references/assess-and-plan.md` — codebase survey, user-owned decisions, plan conversation, and durable J2 artifact.
 - `references/cli-reference.md` — current CLI command surface.
