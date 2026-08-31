@@ -88,15 +88,26 @@ Install the CLI globally with your package manager:
 
 Then run the guided setup — it signs you in, asks you to choose or create a
 team and project, initializes the local workspace contract, and optionally
-launches Claude, Codex, or Pi. If you accept skill installation, a destination
-picker starts with `Universal (.agents — Codex and others) —
-~/.agents/skills/orizu` and shows each detected native target with its
-`~/.../orizu` destination on the same line before any write; all visible choices
-start selected, and any choice—including Universal—can be deselected. In
-non-interactive setup, `--agent` opts into skill installation.
+hands off to Claude, Codex, Pi, OpenCode, and Cursor when their commands are
+installed. Available commands appear in that order, with the first available
+command selected by default. Other is always last. Enter launches the highlighted
+agent; Esc skips agent launch and completes setup. Selecting Other prints the
+complete prompt without launching anything. Explicit
+`--launch claude|codex|pi|opencode|cursor` still requires an interactive terminal
+and asks for confirmation unless `--yes` is supplied; non-interactive setup never
+launches. Cursor uses the `agent` executable, not the Cursor editor `cursor` command.
+The official [Cursor CLI overview](https://cursor.com/docs/cli/overview) and
+[parameter reference](https://cursor.com/docs/cli/reference/parameters), retrieved
+2026-08-30, document direct `agent "prompt"` and `agent -p "prompt"` initial prompts;
+setup uses the direct positional form without a shell.
+
+If you accept skill installation, the picker starts with
+`Universal (.agents — Codex and others) — ~/.agents/skills/orizu` and shows each
+detected native target with its `~/.../orizu` destination on the same line before
+any write. All visible choices start selected, and any choice—including Universal—
+can be deselected. In non-interactive setup, `--agent` opts into skill installation.
 Every accepted `--agent` always includes Universal, plus that agent's native
-destination where needed. Duplicate destinations are removed. With no `--agent`
-flags, setup writes no skills.
+destination where needed. Duplicate destinations are removed. With no `--agent` flags, setup writes no skills.
 
 For example:
 

@@ -1,3 +1,5 @@
+import { AGENT_LAUNCH_SPECS } from './setup-onboarding.js'
+
 export interface CliOptionDoc {
   name: string
   help: string
@@ -20,6 +22,9 @@ interface CliGroupDoc {
   name: string
   summary: string
 }
+
+const SETUP_LAUNCH_AGENT_NAMES = Object.keys(AGENT_LAUNCH_SPECS)
+const SETUP_LAUNCH_AGENT_USAGE = SETUP_LAUNCH_AGENT_NAMES.join('|')
 
 const GLOBAL_OPTIONS = [
   ['--json', 'Emit machine-readable JSON instead of human text. Available on every command, as a prefix (orizu --json <command>) or trailing flag.'],
@@ -244,7 +249,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['setup'],
-    usage: 'orizu setup [--team <slug>|--create-team <name>] [--project <slug>|--create-project <name>] [--agent <agent>]... [--workspace [path]|--no-workspace] [--validate] [--fix] [--no-symlinks] [--verbose] [--no-install] [--handoff|--no-handoff] [--launch <claude|codex|pi>] [--skip-login] [--dry-run] [--no-input|--non-interactive] [--json]',
+    usage: `orizu setup [--team <slug>|--create-team <name>] [--project <slug>|--create-project <name>] [--agent <agent>]... [--workspace [path]|--no-workspace] [--validate] [--fix] [--no-symlinks] [--verbose] [--no-install] [--handoff|--no-handoff] [--launch <${SETUP_LAUNCH_AGENT_USAGE}>] [--skip-login] [--dry-run] [--no-input|--non-interactive] [--json]`,
     summary: 'Guided onboarding: sign in, initialize the workbench contract, and install agent skills.',
     group: 'Agent setup',
     options: [
@@ -264,7 +269,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
       { name: '--no-install', help: 'Skip the coding-agent skill install step.' },
       { name: '--handoff', help: 'Print the llms.txt and selected-project handoff prompt after setup.' },
       { name: '--no-handoff', help: 'Compatibility flag; suppresses the final launch picker and explicit handoff/launch.' },
-      { name: '--launch <agent>', help: 'Launch a detected coding agent with the selected project and llms.txt prompt (interactive terminals only).', choices: ['claude', 'codex', 'pi'] },
+      { name: '--launch <agent>', help: 'Launch a detected coding agent with the selected project and llms.txt prompt (interactive terminals only). The cursor selector uses the Cursor Agent `agent` executable, not the editor `cursor` command.', choices: SETUP_LAUNCH_AGENT_NAMES },
       { name: '--skip-login', help: 'Skip the authentication phase.' },
       { name: '--dry-run', help: 'Preview every planned change without writing.' },
       { name: '--no-input', help: 'Never prompt; behave as in a non-interactive terminal.' },

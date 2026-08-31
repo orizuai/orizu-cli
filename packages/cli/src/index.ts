@@ -72,9 +72,9 @@ import { renderBanner } from './banner.js'
 import { formatTaskCreateError } from './task-create-error.js'
 import { renderAgentSetupPrompt } from './setup-prompt.js'
 import {
+  AGENT_LAUNCH_SPECS,
   detectedSetupSkillChoices,
   findExecutable,
-  LAUNCHABLE_AGENTS,
   resolveSetupSkillHome,
   setupLaunchPrompt,
   setupNativeTargetForAgent,
@@ -82,6 +82,7 @@ import {
   validateSetupFlagValues,
   validateSetupSelectionArgs,
 } from './setup-onboarding.js'
+import { promptKeyboardSelect } from './keyboard-select.js'
 import { confirmExistingSetupAccount, describeSetupAuthState } from './setup-account.js'
 import { LoginResponse } from './types.js'
 import {
@@ -2776,87 +2777,6 @@ async function waitForAnyKeyOrEscape(message: string): Promise<boolean> {
   })
 }
 
-async function promptKeyboardSelect<T>(
-  title: string,
-  items: T[],
-  label: (item: T, index: number) => string
-): Promise<T> {
-  if (items.length === 0) {
-    throw new Error(`No options available for ${title.toLowerCase()}`)
-  }
-  if (!isInteractiveTerminal()) {
-    throw new Error(`${title} selection requires interactive terminal. Provide flags explicitly instead.`)
-  }
-
-  printLine(`\n${sanitizeTerminalText(title)}`)
-  printLine('Use ↑/↓ to choose, Enter to confirm, or Esc to cancel.')
-
-  let selected = 0
-  let rendered = false
-  const rawInput = input as RawInput
-  const wasRaw = Boolean(rawInput.isRaw)
-  emitKeypressEvents(input)
-
-  function render() {
-    if (rendered) {
-      output.write(`\x1b[${items.length}A`)
-    }
-    items.forEach((item, index) => {
-      output.write('\x1b[2K')
-      const marker = index === selected ? '●' : '○'
-      output.write(`  ${marker} ${sanitizeTerminalText(label(item, index))}\n`)
-    })
-    rendered = true
-  }
-
-  render()
-  output.write('\x1b[?25l')
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    function cleanup() {
-      input.off('keypress', onKeypress)
-      if (rawInput.setRawMode && !wasRaw) {
-        rawInput.setRawMode(false)
-      }
-      input.pause()
-      output.write('\x1b[?25h')
-      printLine('')
-    }
-
-    function onKeypress(_chunk: string, key: KeypressInfo) {
-      if (key.ctrl && key.name === 'c') {
-        cleanup()
-        rejectPromise(new Error('Setup cancelled.'))
-        return
-      }
-      if (key.name === 'escape') {
-        cleanup()
-        rejectPromise(new Error('Setup cancelled.'))
-        return
-      }
-      if (key.name === 'up') {
-        selected = (selected - 1 + items.length) % items.length
-        render()
-        return
-      }
-      if (key.name === 'down') {
-        selected = (selected + 1) % items.length
-        render()
-        return
-      }
-      if (key.name === 'return' || key.name === 'enter') {
-        const item = items[selected]
-        cleanup()
-        resolvePromise(item)
-      }
-    }
-
-    input.on('keypress', onKeypress)
-    input.resume()
-    rawInput.setRawMode?.(true)
-  })
-}
-
 async function promptKeyboardMultiSelect<T>(
   title: string,
   items: T[],
@@ -3814,39 +3734,58 @@ async function setupCommand() {
       printLine('--- prompt end ---')
       printLine('')
     }
-    const detected = Object.keys(LAUNCHABLE_AGENTS)
-      .filter(agent => findExecutable(LAUNCHABLE_AGENTS[agent]))
+    const detected = Object.entries(AGENT_LAUNCH_SPECS)
+      .filter(([, spec]) => findExecutable(spec.command))
+      .map(([agent]) => agent)
     let launchAgent = getArg('--launch')
-    if (launchAgent && !(launchAgent in LAUNCHABLE_AGENTS)) {
-      throw new Error(`Unknown --launch agent '${launchAgent}'. Choices: ${Object.keys(LAUNCHABLE_AGENTS).join(', ')}.`)
+    let completedInteractiveHandoff = false
+    if (launchAgent && !(launchAgent in AGENT_LAUNCH_SPECS)) {
+      throw new Error(`Unknown --launch agent '${launchAgent}'. Choices: ${Object.keys(AGENT_LAUNCH_SPECS).join(', ')}.`)
     }
-    if (!launchAgent && !noInput && isInteractiveTerminal() && detected.length > 0 && !dryRun) {
+
+    if (!launchAgent && !noInput && isInteractiveTerminal() && !dryRun) {
       const launchChoice = await promptKeyboardSelect(
         'Choose an agent to launch',
-        [null, ...detected],
-        agent => agent === null ? "Don't launch an agent" : LAUNCHABLE_AGENTS[agent]
+        [...detected, 'other'],
+        agent => agent === 'other' ? 'Other' : AGENT_LAUNCH_SPECS[agent].displayLabel,
+        { onEscape: () => 'escape', escapeLabel: 'skip' }
       )
-      launchAgent = launchChoice
+      completedInteractiveHandoff = true
+      if (launchChoice === 'other') {
+        if (!handoffRequested) {
+          printLine('--- prompt start ---')
+          printLine(handoffPrompt)
+          printLine('--- prompt end ---')
+          printLine('')
+        }
+      } else if (launchChoice !== 'escape') {
+        launchAgent = launchChoice
+      }
     }
     if (launchAgent) {
-      const binary = findExecutable(LAUNCHABLE_AGENTS[launchAgent])
+      const launchSpec = AGENT_LAUNCH_SPECS[launchAgent]
+      const binary = findExecutable(launchSpec.command)
       if (inputDisabled) {
         printLine('Not launching: setup is non-interactive.')
       } else if (!isInteractiveTerminal()) {
         printLine('Not launching: --launch requires an interactive terminal.')
       } else if (!binary) {
-        printLine(`Not launching: '${LAUNCHABLE_AGENTS[launchAgent]}' was not found on PATH.`)
+        printLine(`Not launching: '${launchSpec.command}' was not found on PATH.`)
       } else if (dryRun) {
         printLine(`Would launch ${binary} with the setup prompt.`)
-      } else if (!getArg('--launch') || skipConfirm || await askYesNo(`Launch ${LAUNCHABLE_AGENTS[launchAgent]} with the setup prompt now?`, true)) {
+      } else if (!getArg('--launch') || skipConfirm || await askYesNo(`Launch ${launchSpec.displayLabel} with the setup prompt now?`, true)) {
         printLine(`Launching ${binary}…`)
-        const launched = spawnSync(binary, [handoffPrompt], { cwd: workspaceRoot, stdio: 'inherit' })
+        const launched = spawnSync(binary, launchSpec.buildPromptArgs(handoffPrompt), {
+          cwd: workspaceRoot,
+          stdio: 'inherit',
+          shell: false,
+        })
         if (!launched.error) launchedAgent = launchAgent
         if (launched.error || (launched.status !== null && launched.status !== 0)) {
-          printLine(`${LAUNCHABLE_AGENTS[launchAgent]} exited without completing successfully.`)
+          printLine(`${launchSpec.displayLabel} exited without completing successfully.`)
         }
       }
-    } else if (detected.length === 0) {
+    } else if (detected.length === 0 && !completedInteractiveHandoff) {
       printLine('No launchable coding agent was found. Read https://orizu.ai/llms.txt to get started.')
     }
     printLine('')

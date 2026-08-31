@@ -252,12 +252,22 @@ orizu setup --workspace ./workbench --validate
   safe idempotent repairs, such as missing starter files, directories, and
   gitignore defaults. It also repairs old `Agents.md`/`Claude.md` casing when
   there is no canonical conflict.
-- Interactive setup ends with a single-select picker for detected Claude,
-  Codex, and Pi binaries; “Don’t launch an agent” is the default. A selected
-  agent receives one positional prompt naming the selected team/project and
-  `https://orizu.ai/llms.txt`, without shell interpolation. Non-interactive
-  setup never launches. `--handoff` and `--launch claude|codex|pi` remain
-  explicit compatibility controls.
+- Interactive setup can hand off to Claude, Codex, Pi, OpenCode, and Cursor
+  when their commands are installed. Available commands appear in that order,
+  with the first available command selected by default. Other is always last.
+  Enter launches the highlighted agent; Esc skips agent launch and completes setup.
+  A selected agent receives one positional prompt naming the selected team/project
+  and `https://orizu.ai/llms.txt`, without shell interpolation. Selecting Other
+  prints that complete prompt for copying without launching anything.
+  Non-interactive setup never launches. `--handoff` explicitly prints the prompt;
+  `--launch claude|codex|pi|opencode|cursor` explicitly selects an installed agent,
+  still requires an interactive terminal, and asks for confirmation unless `--yes`
+  is supplied. Cursor uses the `agent` executable, not the Cursor editor `cursor`
+  command. Cursor's direct `agent "prompt"` and `agent -p "prompt"` initial-prompt
+  forms were verified from the official
+  [CLI overview](https://cursor.com/docs/cli/overview) and
+  [parameter reference](https://cursor.com/docs/cli/reference/parameters), retrieved
+  2026-08-30; setup uses the direct positional form without a shell.
 - `--json` emits the setup summary as machine-readable JSON.
 
 ### Skill install

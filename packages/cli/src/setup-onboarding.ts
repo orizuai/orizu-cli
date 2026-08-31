@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'fs'
+import { accessSync, constants, statSync } from 'fs'
 import { homedir } from 'os'
 import { delimiter, join, relative, resolve, sep } from 'path'
 
@@ -12,10 +12,37 @@ import {
   type SkillInstallTarget,
 } from './skill-installer.js'
 
-export const LAUNCHABLE_AGENTS: Readonly<Record<string, string>> = {
-  claude: 'claude',
-  codex: 'codex',
-  pi: 'pi',
+export interface AgentLaunchSpec {
+  command: string
+  displayLabel: string
+  buildPromptArgs: (prompt: string) => string[]
+}
+
+const directPromptArgs = (prompt: string): string[] => [prompt]
+
+/**
+ * Measured launch contracts:
+ * - Local `claude --help`, `codex --help`, and `pi --help` expose a direct
+ *   positional prompt/message (observed 2026-08-30).
+ * - OpenCode's primary CLI reference documents `opencode run [message..]`.
+ * - Cursor's primary CLI overview and parameter reference document the Cursor
+ *   Agent executable as `agent`, with direct `agent "prompt"` and
+ *   `agent -p "prompt"` initial-prompt forms (retrieved 2026-08-30):
+ *   https://cursor.com/docs/cli/overview
+ *   https://cursor.com/docs/cli/reference/parameters
+ *   Cursor is not installed locally; `cursor` is the editor command and is not
+ *   detected as Cursor Agent.
+ */
+export const AGENT_LAUNCH_SPECS: Readonly<Record<string, AgentLaunchSpec>> = {
+  claude: { command: 'claude', displayLabel: 'claude', buildPromptArgs: directPromptArgs },
+  codex: { command: 'codex', displayLabel: 'codex', buildPromptArgs: directPromptArgs },
+  pi: { command: 'pi', displayLabel: 'pi', buildPromptArgs: directPromptArgs },
+  opencode: {
+    command: 'opencode',
+    displayLabel: 'opencode',
+    buildPromptArgs: prompt => ['run', prompt],
+  },
+  cursor: { command: 'agent', displayLabel: 'cursor', buildPromptArgs: directPromptArgs },
 }
 
 export interface SetupSelectionArgs {
@@ -55,8 +82,8 @@ export function validateSetupAgentArgs(agents: string[], launchAgent: string | n
   for (const agent of agents) {
     if (!isSkillInstallAgent(agent)) throw new Error(`Unknown agent '${agent}'. Available agents: ${SKILL_INSTALL_AGENTS.join(', ')}`)
   }
-  if (launchAgent && !(launchAgent in LAUNCHABLE_AGENTS)) {
-    throw new Error(`Unknown --launch agent '${launchAgent}'. Choices: ${Object.keys(LAUNCHABLE_AGENTS).join(', ')}.`)
+  if (launchAgent && !(launchAgent in AGENT_LAUNCH_SPECS)) {
+    throw new Error(`Unknown --launch agent '${launchAgent}'. Choices: ${Object.keys(AGENT_LAUNCH_SPECS).join(', ')}.`)
   }
 }
 
@@ -67,7 +94,15 @@ export function setupLaunchPrompt(teamSlug?: string, projectSlug?: string): stri
 
 export function findExecutable(name: string, pathValue = process.env.PATH || ''): string | null {
   for (const directory of pathValue.split(delimiter)) {
-    if (directory && existsSync(join(directory, name))) return resolve(directory, name)
+    if (!directory) continue
+    const candidate = join(directory, name)
+    try {
+      if (!statSync(candidate).isFile()) continue
+      accessSync(candidate, constants.X_OK)
+      return resolve(candidate)
+    } catch {
+      // A stale PATH entry must not hide a later launchable command.
+    }
   }
   return null
 }
