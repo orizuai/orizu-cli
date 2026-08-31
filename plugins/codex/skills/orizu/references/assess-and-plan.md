@@ -1,12 +1,12 @@
 # Assess & plan
 
-This journey turns evidence from the customer's codebase into an evals-first improvement plan. It ends before dataset construction: the durable exit artifact is a human-ratified `improvement-plan.md` written to the canonical path in section 7 and committed before data access.
+This reference turns evidence from the customer's codebase into an evals-first improvement plan. It ends before dataset construction: the durable exit artifact is a human-ratified `improvement-plan.md` written to the canonical path in section 7 and committed before data access.
 
 ## 1. Hold the data boundary
 
-Survey code, configuration, documentation, and the names and wiring of integrations. Inventory candidate customer data, but do not open or read, export, sample, transform, or upload it. Do not call a provider, run a production query, copy traces, or create an Orizu dataset during this journey. Inspect secret names and configuration shape only; never read credential values.
+Survey code, configuration, documentation, and the names and wiring of integrations. Inventory candidate customer data, but do not open or read, export, sample, transform, or upload it. Do not call a provider, run a production query, copy traces, or create an Orizu dataset during Onboard's pre-ratification planning. Inspect secret names and configuration shape only; never read credential values.
 
-Only after the user ratifies the plan and the ratified plan is committed at its canonical path, together with the required workbench memory pointer, may J3 — Build the dataset access the approved sources. If the user asks to move data while decisions remain open, show the missing decisions and ask for ratification first.
+Only after the user ratifies the plan and the ratified plan is committed at its canonical path, together with the required workbench memory pointer, may First win's dataset-curation stage access the approved sources. If the user asks to move data while decisions remain open, show the missing decisions and ask for ratification first.
 
 ## 2. Survey the codebase
 
@@ -100,8 +100,8 @@ Track newly materialized project-stub files and commit them together with the pl
 
 The repo is truth for the plan contents. In a workbench, both `projects/<directorySlug>/improvement-plan.md` and its sibling `memory.md` pointer must be tracked and committed together. In a plain repository, the root plan must be tracked and committed. These commits make the ratified plan durable and keep later work in the approved project.
 
-There is no dedicated CLI command for uploading an improvement plan or arbitrary project context. The generic `orizu workspace apply <path>` command can promote a registered repo-owned resource such as project `memory.md`; it does not make the plan a DB-native artifact or introduce a plan-specific storage format. Richer structured persistence is arriving through the **J2 — Assess & plan** project; until it ships in the installed CLI, use only the Git-backed files above.
+There is no dedicated CLI command for uploading an improvement plan or arbitrary project context. The generic `orizu workspace apply <path>` command can promote a registered repo-owned resource such as project `memory.md`; it does not make the plan a DB-native artifact or introduce a plan-specific storage format. Richer structured persistence is arriving through the assess-and-plan project; until it ships in the installed CLI, use only the Git-backed files above.
 
 ## Exit criterion
 
-J2 is complete only when the user has explicitly ratified the complete plan and `improvement-plan.md` records that ratification and the resolved Orizu project. The canonical plan must be tracked and committed; in a workbench, its sibling `memory.md` pointer must be tracked and committed together with it. Otherwise remain in assess-and-plan; do not start dataset work.
+The assess-and-plan procedure is complete only when the user has explicitly ratified the complete plan and `improvement-plan.md` records that ratification and the resolved Orizu project. The canonical plan must be tracked and committed; in a workbench, its sibling `memory.md` pointer must be tracked and committed together with it. Otherwise remain in assess-and-plan; do not start dataset work.

@@ -23,7 +23,7 @@ arrive with:
 - multiply labeled rows for measuring human–human agreement.
 
 If the labels are Likert scores or an “overall quality” bundle, return to the
-**J4 — Ground truth via annotation (conditional)** and rewrite the rubric as one binary question
+First win's conditional ground-truth annotation stage and rewrite the rubric as one binary question
 per failure mode before building a judge.
 
 - A **judge** is the evaluator, often an LLM instruction set plus a runner.
@@ -58,7 +58,7 @@ rows or overall agreement. Judge–human kappa should normally land within about
 0.05–0.10 of human–human kappa.
 
 When human–human kappa is itself low (below ~0.6), the rubric or labels are the
-bottleneck. Return to **J4 — Ground truth via annotation (conditional)**: clarify the
+bottleneck. Return to First win's conditional ground-truth annotation stage: clarify the
 failure-mode definition, add boundary examples, repair the labeler workflow, and
 relabel a shared sample. Recompute the human ceiling before changing judge
 instructions. Judge tuning against disputed labels only automates the dispute.
@@ -112,7 +112,7 @@ assertion, such as schema validation when schema validity is the entire failure
 definition, does not need prompt tuning or model-selection statistics. Record
 why the assertion is identical to the human-approved rule. If it is gating, it
 still needs an agreed judge trust bar and the registered, submitted evidence path from
-**J5 — Build & validate judges**. A regex, keyword, or other heuristic is not
+First win's judge-validation stage. A regex, keyword, or other heuristic is not
 tautological merely because it is code; validate it against the human labels
 like any other judge.
 
@@ -207,11 +207,10 @@ that as overfitting and return to a new development cycle rather than iterating
 on judge-test rows.
 
 The application final-held-out partition reserved for the single
-seed-versus-selected comparison in the dataset-design reference (J3) never
+seed-versus-selected comparison in the dataset-design reference never
 appears in judge train, judge dev, judge test, or any other judge-alignment
 material. A judge selected for agreement on those rows would bias the final
-comparison through the judge itself. Those rows need no human labels. At the
-**J6 — Optimize & promote**, the accepted judge scores the application
+comparison through the judge itself. Those rows need no human labels. During Promote's final comparison, the accepted judge scores the application
 final-held-out rows exactly once for that comparison; this application scoring
 is not judge-alignment measurement or tuning.
 
@@ -246,7 +245,7 @@ used for kappa plus confusion diagnostics. Hosted sessions follow the artifact
 authority and commit rules in `authority-map.md`. Substitute IDs returned by each
 command in subsequent commands:
 
-For a custom deterministic code assertion that must complete the submitted J5
+For a custom deterministic code assertion that must complete the submitted judge-validation
 evidence path, use the executable `prompt_runner` control-plane shape. The
 runner implements the assertion without calling an LLM; the judge artifact is
 its versioned execution contract and output-schema identity. A `runner_only`
@@ -290,7 +289,7 @@ orizu scorers register --project <team/project> --name <kappa-scorer-name> --man
 
 For the LLM judge-test split, execute the row scorer, submit its row results,
 and then execute the dependent set scorer. `scorers exec` submits the aggregate
-score run by default, so omit `--no-submit` at the J5 — Build & validate judges
+score run by default, so omit `--no-submit` at the First win judge-validation
 boundary. See `prompt-control-plane.md` for the canonical submission behavior:
 
 ```bash
@@ -315,7 +314,7 @@ for acceptance:
 orizu scores accept <score-run-id> --project <team/project> --json
 ```
 
-J5 — Build & validate judges is complete only when every gating judge clears its
+First win's judge-validation stage is complete only when every gating judge clears its
 agreed judge trust bar, the scorer versions are registered, `runners exec`, `scores submit`,
 and the measured `scorers exec` run have all succeeded, and the human curator has
 accepted that score run. Gate decisions only on accepted evidence. A locally
@@ -487,7 +486,7 @@ in `prompt-control-plane.md` before choosing either contract.
 - [ ] Development rows were used for iteration and judge-test was used only
       after the candidate was frozen.
 - [ ] The application final-held-out partition was excluded from all judge
-      material and is reserved for one accepted-judge scoring pass at J6.
+      material and is reserved for one accepted-judge scoring pass during Promote.
 - [ ] The versioned judge and runners are stored; row and set scorers are
       registered.
 - [ ] `runners exec` evidence was submitted with `scores submit`, and a measured

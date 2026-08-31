@@ -1,6 +1,6 @@
 # Dataset design
 
-Use this reference for **J3 — Build the dataset** after the improvement plan is ratified and before annotation or judge work. Treat the plan's approved source choice and named scenario classes as input constraints rather than reopening them while moving data.
+Use this reference during First win's dataset-curation stage after the improvement plan is ratified and before annotation or judge work. Treat the plan's approved source choice and named scenario classes as input constraints rather than reopening them while moving data.
 
 ## Carry the approved source choice into the dataset
 
@@ -18,7 +18,7 @@ Before upload, fail the coverage check if any scenario class from the plan has z
 
 Build one predefined split with exactly three application partitions for the primary dataset at dataset-build time: train, validation, and final-held-out. Auxiliary partitions, such as a migration-only parity corpus, may coexist in specialized workflows without changing this three-partition application doctrine. Validation is the valset that ranks candidates during optimization. Apply the Vocabulary contract to final-held-out: exclude its rows from candidate ranking, selection, reflection, and judge development.
 
-**Judge-development data (J5)** comes from the labeled export, and `references/building-judges.md` owns its split mechanics; exclude final-held-out rows from all judge-development material (judge-dev and judge-test/alignment) because judge selection on final-held-out labels biases the final comparison through the judge itself.
+**Judge-development data** comes from the labeled export, and `references/building-judges.md` owns its split mechanics; exclude final-held-out rows from all judge-development material (judge-dev and judge-test/alignment) because judge selection on final-held-out labels biases the final comparison through the judge itself.
 
 Final-held-out rows need no human labels; exclude their row IDs from annotation tasks.
 
@@ -30,7 +30,7 @@ Budget this together with the valset. With the skilled/custom proposer, the engi
 
 No budget dry-run exists, so calculate the resolved metric-call limit before launching a skilled/custom proposer. Explicit `--max-metric-calls n` resolves to `n`; `--max-full-evals f` resolves to `f * (len(trainset) + len(valset))`; and named/default `--budget` presets resolve through the formula in `packages/orizu-gepa-python/src/orizu_gepa/optimizer.py:361-405` using the chosen preset, component count, and valset size. Require `resolved_metric_calls - len(valset) >= b`; otherwise increase or change the budget, or record that the coverage guarantee does not hold. If the available rows or optimization budget cannot support the computed size, add rows, combine only genuinely equivalent scenario classes with human approval, or record that the plan is not ready for optimization.
 
-The canonical split-file schema and version/split command contract live in `references/prompt-control-plane.md` under “Dataset Versions And Splits.” J3 adds the coverage requirement: use a predefined three-way split when scenario-class coverage matters, and build its partitions from the independently reviewed coverage table rather than a random split that could omit a class. For example:
+The canonical split-file schema and version/split command contract live in `references/prompt-control-plane.md` under “Dataset Versions And Splits.” First win's dataset-curation stage adds the coverage requirement: use a predefined three-way split when scenario-class coverage matters, and build its partitions from the independently reviewed coverage table rather than a random split that could omit a class. For example:
 
 ```json
 {
@@ -90,11 +90,11 @@ Never rewrite a prior version to make later labels or corrections appear histori
 
 ## Exit criterion
 
-J3 exits only when the evidence records all of the following:
+Dataset curation exits only when the evidence records all of the following:
 
 - the human-ratified source choice and spot-check;
 - the plan's complete scenario-class list, with nonzero total, training, validation, and final-held-out counts for every scenario class;
 - an immutable dataset version ID plus the reviewed local split file and recorded split-set ID whose predefined train, validation, and final-held-out rows match that coverage table;
-- final-held-out row IDs excluded from all judge-development material (judge-dev and judge-test/alignment) and reserved for the final J6 comparison;
+- final-held-out row IDs excluded from all judge-development material (judge-dev and judge-test/alignment) and reserved for Promote's final comparison;
 - for the annotation path, proof that the dataset was locked before any task was created; and
 - either approved golden ground truth with annotation skipped or reduced, or rows ready for the eval-strategy and annotation path.

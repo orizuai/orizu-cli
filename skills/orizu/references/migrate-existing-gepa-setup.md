@@ -33,10 +33,10 @@ orizu setup --team <team-slug> --project <project-slug>
 One dataset holds every row; require four disjoint, nonempty partitions:
 `TRAINSET`, `VALSET`, `PARITYSET`, and `FINAL_HELD_OUT`. Mirror existing
 train/validation membership exactly. Here, `parity` is a migration-only
-auxiliary partition, not an application partition; the canonical J3
+auxiliary partition, not an application partition; the canonical dataset-design
 application doctrine remains train, validation, and final-held-out. Source and
 approve representative `PARITYSET` rows before reserving final-held-out, then
-reserve `FINAL_HELD_OUT` only from the remaining rows. Apply J3's coverage
+reserve `FINAL_HELD_OUT` only from the remaining rows. Apply First win's dataset-coverage
 discipline:
 every named scenario class must have nonzero train, validation, and
 final-held-out counts. Stop when that coverage, ordering, or four-way
@@ -308,7 +308,7 @@ gate. Repeat the command with `--split train` and `outputs-train.jsonl`; the
 explicit `parity` command above covers the independently selected corpus.
 Require exit 0 on all three parity runs.
 
-Keep final-held-out untouched until J6. It is exercised exactly once, at the
+Keep final-held-out untouched until Promote. It is exercised exactly once, at the
 final seed-vs-selected comparison, by the already-parity-proven scorer and
 supplies no scorer-development feedback.
 
