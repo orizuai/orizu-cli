@@ -5,7 +5,6 @@ import { fileURLToPath } from 'url'
 import { createServer } from 'http'
 import { gunzipSync, gzipSync } from 'zlib'
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,7 +14,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { spawn, spawnSync } from 'child_process'
-import { homedir, tmpdir } from 'os'
+import { tmpdir } from 'os'
 import { createInterface } from 'readline/promises'
 import { emitKeypressEvents } from 'readline'
 import { stdin as input, stdout as output } from 'process'
@@ -57,7 +56,6 @@ import {
   resolveSkillSource,
   SKILL_INSTALL_AGENTS,
   SKILL_INSTALL_TARGETS,
-  SkillInstallAgent,
   SkillInstallMode,
   SkillInstallScope,
   SkillInstallTarget,
@@ -67,7 +65,17 @@ import {
 import { renderBanner } from './banner.js'
 import { formatTaskCreateError } from './task-create-error.js'
 import { renderAgentSetupPrompt } from './setup-prompt.js'
-import { findExecutable, LAUNCHABLE_AGENTS, setupLaunchPrompt, validateSetupAgentArgs, validateSetupFlagValues, validateSetupSelectionArgs } from './setup-onboarding.js'
+import {
+  detectedSetupSkillChoices,
+  findExecutable,
+  LAUNCHABLE_AGENTS,
+  resolveSetupSkillHome,
+  setupLaunchPrompt,
+  setupNativeTargetForAgent,
+  validateSetupAgentArgs,
+  validateSetupFlagValues,
+  validateSetupSelectionArgs,
+} from './setup-onboarding.js'
 import { LoginResponse } from './types.js'
 import {
   getWorkspaceRoot,
@@ -3534,47 +3542,6 @@ function formatProjectSetupProgress(count: number): string {
   return `${count} project${count === 1 ? '' : 's'} being set up in workspace...`
 }
 
-interface SetupSkillChoice {
-  agent: SkillInstallAgent
-  label: string
-  target: SkillInstallTarget
-}
-
-const SETUP_NATIVE_SKILL_CHOICES: ReadonlyArray<{
-  agent: SkillInstallAgent
-  label: string
-  directory: string[]
-  binary?: string
-}> = [
-  { agent: 'claude', label: 'Claude Code', directory: ['.claude'], binary: 'claude' },
-  { agent: 'devin', label: 'Devin', directory: ['.devin', 'skills'] },
-  { agent: 'droid', label: 'Droid', directory: ['.factory', 'skills'] },
-  { agent: 'grok', label: 'Grok Build', directory: ['.grok', 'skills'] },
-  { agent: 'windsurf', label: 'Windsurf', directory: ['.windsurf', 'skills'] },
-  { agent: 'opencode', label: 'OpenCode', directory: ['.config', 'opencode', 'skills'], binary: 'opencode' },
-]
-
-function setupNativeTargetForAgent(agent: SkillInstallAgent): SkillInstallTarget | null {
-  if (agent === 'codex' || agent === 'pi') return null
-  return getTargetForAgent(agent, 'global')
-}
-function resolveSetupSkillHome(): string {
-  return resolve(process.env.HOME || homedir())
-}
-
-function detectedSetupSkillChoices(homeDir: string): SetupSkillChoice[] {
-  return SETUP_NATIVE_SKILL_CHOICES
-    .filter(choice =>
-      existsSync(join(homeDir, ...choice.directory))
-      || Boolean(choice.binary && findExecutable(choice.binary))
-    )
-    .map(choice => ({
-      agent: choice.agent,
-      label: choice.label,
-      target: getTargetForAgent(choice.agent, 'global'),
-    }))
-}
-
 function setupSkillTargetsFromArgs(): SkillInstallTarget[] {
   const targets: SkillInstallTarget[] = []
   for (const agent of getArgs('--agent')) {
@@ -3761,19 +3728,13 @@ async function setupCommand() {
     let targets = setupSkillTargetsFromArgs()
     if (targets.length === 0 && !noInput && !dryRun) {
       if (await askYesNo('   Install the Orizu skill for your coding agents?', true)) {
-        targets = ['agent-user']
-        const choices = detectedSetupSkillChoices(setupSkillHome)
-        if (choices.length > 0) {
-          const selectedChoices = await promptKeyboardMultiSelect(
-            'Choose additional native agent installs',
-            choices,
-            choice => choice.label,
-            () => true
-          )
-          for (const choice of selectedChoices) {
-            if (!targets.includes(choice.target)) targets.push(choice.target)
-          }
-        }
+        const selectedChoices = await promptKeyboardMultiSelect(
+          'Choose skill installation destinations',
+          detectedSetupSkillChoices(setupSkillHome),
+          choice => choice.label,
+          () => true
+        )
+        targets = selectedChoices.map(choice => choice.target)
       }
     }
 

@@ -193,12 +193,10 @@ non-zero with a message on stderr. The `capabilities --json` manifest lists
 
 The mental model: the **CLI is the runtime and source of truth** (auth,
 scorers, runners, optimizers, score submission); the **skill is the agent
-workflow layer** that teaches a coding agent to use it. Setup installs the
-shared `~/.agents/skills/orizu` symlink so compatible agents, including Codex
-and Pi, track the globally installed CLI without duplicate native copies.
-Detected agents that require a native target, including Claude Code, can receive
-an additional symlink. Plugins remain an optional distribution experiment, not
-the default onboarding path.
+workflow layer** that teaches a coding agent to use it. Interactive setup offers
+the shared `~/.agents/skills/orizu` destination for compatible agents, including
+Codex and Pi, plus detected native destinations such as Claude Code. Plugins
+remain an optional distribution experiment, not the default onboarding path.
 
 ### Guided setup
 
@@ -229,14 +227,20 @@ orizu setup --workspace ./workbench --validate
   directory. `--non-interactive` is an alias for `--no-input`.
 - A directory can only be attached to one team. To set up another team, run
   `orizu setup --team <other-slug>` from another directory.
-- Setup offers a third step to install global coding-agent skills. Accepting
-  always installs `~/.agents/skills/orizu`; Codex, Pi, and other compatible
-  agents discover this shared target without duplicate native installs.
-  Detected native-only targets, including Claude Code, are selected by default.
-  Detection uses user-global directories and known Claude, Codex, and Pi
-  binaries. In non-interactive mode repeat `--agent`; no agent flags skips all
-  skill writes. Installs symlink to the CLI-managed source and replace the exact
-  Orizu destination while preserving sibling skills.
+- Setup offers a third step to install global coding-agent skills. After you
+  accept, a destination picker shows `Universal (.agents — Codex and others) —
+  ~/.agents/skills/orizu` and each detected native target with its
+  `~/.../orizu` destination on the same line before any write. Every
+  visible choice starts selected, and every choice—including Universal—can be
+  deselected; confirming with none selected skips skill installation. Detection
+  uses user-global config directories (not same-named regular files) and known
+  agent binaries. In non-interactive setup,
+  `--agent` opts into skill installation. Every accepted `--agent` always
+  includes Universal, plus that agent's native destination where needed.
+  Duplicate destinations are removed. With no `--agent` flags, setup writes no
+  skills. Installs symlink to the CLI-managed
+  source and replace the exact Orizu destination while preserving sibling
+  skills.
 - Validation details are written to ignored `.logs/<hash>.log` files when
   findings exist; the terminal summary shows counts by severity.
 - `.orizu/` remains a gitignored cache/generated directory for exports,

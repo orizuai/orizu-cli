@@ -87,9 +87,18 @@ Install the CLI globally with your package manager:
 | Bun | `bun add -g orizu` |
 
 Then run the guided setup — it signs you in, asks you to choose or create a
-team and project, initializes the local workspace contract, installs the shared
-`~/.agents/skills/orizu` skill plus selected native targets, and optionally
-launches Claude, Codex, or Pi:
+team and project, initializes the local workspace contract, and optionally
+launches Claude, Codex, or Pi. If you accept skill installation, a destination
+picker starts with `Universal (.agents — Codex and others) —
+~/.agents/skills/orizu` and shows each detected native target with its
+`~/.../orizu` destination on the same line before any write; all visible choices
+start selected, and any choice—including Universal—can be deselected. In
+non-interactive setup, `--agent` opts into skill installation.
+Every accepted `--agent` always includes Universal, plus that agent's native
+destination where needed. Duplicate destinations are removed. With no `--agent`
+flags, setup writes no skills.
+
+For example:
 
 ```bash
 orizu setup

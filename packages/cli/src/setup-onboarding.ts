@@ -1,7 +1,16 @@
-import { existsSync } from 'fs'
-import { delimiter, join, resolve } from 'path'
+import { existsSync, statSync } from 'fs'
+import { homedir } from 'os'
+import { delimiter, join, relative, resolve, sep } from 'path'
 
-import { isSkillInstallAgent, SKILL_INSTALL_AGENTS } from './skill-installer.js'
+import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
+import {
+  getSkillInstallPath,
+  getTargetForAgent,
+  isSkillInstallAgent,
+  SKILL_INSTALL_AGENTS,
+  type SkillInstallAgent,
+  type SkillInstallTarget,
+} from './skill-installer.js'
 
 export const LAUNCHABLE_AGENTS: Readonly<Record<string, string>> = {
   claude: 'claude',
@@ -61,4 +70,83 @@ export function findExecutable(name: string, pathValue = process.env.PATH || '')
     if (directory && existsSync(join(directory, name))) return resolve(directory, name)
   }
   return null
+}
+
+export interface SetupSkillChoice {
+  label: string
+  target: SkillInstallTarget
+}
+
+const SETUP_NATIVE_SKILL_CHOICES: ReadonlyArray<{
+  agent: SkillInstallAgent
+  label: string
+  directory: string[]
+  binary?: string
+}> = [
+  { agent: 'claude', label: 'Claude Code', directory: ['.claude'], binary: 'claude' },
+  { agent: 'devin', label: 'Devin', directory: ['.devin', 'skills'] },
+  { agent: 'droid', label: 'Droid', directory: ['.factory', 'skills'] },
+  { agent: 'grok', label: 'Grok Build', directory: ['.grok', 'skills'] },
+  { agent: 'windsurf', label: 'Windsurf', directory: ['.windsurf', 'skills'] },
+  { agent: 'opencode', label: 'OpenCode', directory: ['.config', 'opencode'], binary: 'opencode' },
+]
+
+export function setupNativeTargetForAgent(agent: SkillInstallAgent): SkillInstallTarget | null {
+  if (agent === 'codex' || agent === 'pi') return null
+  return getTargetForAgent(agent, 'global')
+}
+
+export function resolveSetupSkillHome(): string {
+  return resolve(process.env.HOME || homedir())
+}
+
+function isSetupConfigDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+const SETUP_SKILL_CHOICE_MAX_WIDTH = 72
+
+function setupSkillChoiceLabel(name: string, target: SkillInstallTarget, homeDir: string): string {
+  const destination = getSkillInstallPath(target, { homeDir })
+  const userFacingDestination = `~/${relative(homeDir, destination).split(sep).join('/')}`
+  const label = sanitizeHumanInlineText(sanitizeTerminalText, `${name} — ${userFacingDestination}`)
+  if (label.length > SETUP_SKILL_CHOICE_MAX_WIDTH) {
+    throw new Error(`Setup skill destination label exceeds ${SETUP_SKILL_CHOICE_MAX_WIDTH} columns.`)
+  }
+  return label
+}
+
+export function detectedSetupSkillChoices(homeDir: string): SetupSkillChoice[] {
+  const detectedNativeChoices = SETUP_NATIVE_SKILL_CHOICES.filter(choice =>
+    isSetupConfigDirectory(join(homeDir, ...choice.directory))
+    || Boolean(choice.binary && findExecutable(choice.binary))
+  )
+  const priority = (choice: typeof SETUP_NATIVE_SKILL_CHOICES[number]) =>
+    choice.agent === 'claude' ? 0 : choice.agent === 'opencode' ? 1 : 2
+  const universalTarget: SkillInstallTarget = 'agent-user'
+
+  return [{
+    label: setupSkillChoiceLabel(
+      'Universal (.agents — Codex and others)',
+      universalTarget,
+      homeDir
+    ),
+    target: universalTarget,
+  }, ...detectedNativeChoices
+    .sort((left, right) => priority(left) - priority(right))
+    .map(choice => {
+      const target = getTargetForAgent(choice.agent, 'global')
+      return {
+        label: setupSkillChoiceLabel(
+          choice.agent === 'claude' ? 'Claude' : choice.label,
+          target,
+          homeDir
+        ),
+        target,
+      }
+    })]
 }
