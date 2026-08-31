@@ -4,6 +4,12 @@ You are reading the canonical reference for coding agents producing Orizu apps. 
 
 If you are an external coding agent that found this via `orizu.ai/docs/references/building-apps`, treat this document as the source of truth for both the runtime contract and the available primitives.
 
+## Where this reference fits
+
+This deep reference owns only the app: the one-row React interface that shows evidence and returns a structured response. When the goal is human ground truth for an eval, start with the [eval strategy](eval-strategy.md) to ratify the questions, rows, labeler qualifications, and disagreement path before authoring the app. After that strategy is ratified, author, smoke-test, preview, and obtain approval for the app here.
+
+A task is the separate labeling round that binds a pinned app version to dataset rows and assignments. The [CLI reference](cli-reference.md) owns task creation, draft-URL approval, publication, assignment, status, export, and completion commands. Return to the [eval strategy](eval-strategy.md) for response-completeness proof and the annotation exit criterion.
+
 ---
 
 ## TL;DR

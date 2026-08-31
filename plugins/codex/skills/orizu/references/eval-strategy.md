@@ -6,6 +6,14 @@ Final-held-out rows need no human labels; exclude their row IDs from annotation 
 
 A derived unresolved-rows dataset is a labeling vehicle, not an optimization dataset. Preserve each source row's canonical `id` field from `datasets download` in the derived row's `row_data`; this is the stable identifier used by split files. Before creating any task, create and record the derived dataset's immutable version ID and lock the live dataset; it does not need its own per-class three-way split. Task creation waits for both records.
 
+## Annotation artifact map
+
+When ground truth requires human labels, keep the three artifacts and their owners distinct:
+
+1. **Strategy:** ratify the eval strategy in this reference before building a labeler or task.
+2. **App:** author and validate the app through the [app reference](building-apps.md). An app renders one row and returns its structured response; it does not own assignments or the labeling round.
+3. **Task:** create the task draft only after the app feedback gate passes. A task binds the pinned app version to dataset rows and assignments. Follow the [CLI reference](cli-reference.md) for task create, draft-URL approval, publish, assignment, status, export, and completion commands; return here for response-completeness proof and the annotation exit criterion.
+
 ## Guide the eval-strategy conversation
 
 Start from the ratified improvement plan and dataset coverage table; do not ask the human to restate facts already recorded. Walk through the decisions below with concrete rows, propose a draft answer where the evidence supports one, and ask the human to correct or ratify it.
@@ -52,12 +60,7 @@ Verify that `task.counts.completed` equals `task.totalRequiredAssignments` and t
 orizu tasks export --task <task-id> --format jsonl --out ./labels.jsonl
 ```
 
-Parse every non-empty JSONL line. Require the export row count to equal `task.totalRequiredAssignments`, require each `dataset_row_id` to appear exactly `task.requiredAssignmentsPerRow` times, and require every record to carry a non-null `response_id` and `response_data`. Any mismatch means a planned row lacks a response and blocks completion. Only after this response-level proof may the task be completed and its report published:
-
-```bash
-orizu tasks complete --task <task-id>
-orizu tasks report set --task <task-id> --report-file ./task-report.md --json
-```
+Parse every non-empty JSONL line. Require the export row count to equal `task.totalRequiredAssignments`, require each `dataset_row_id` to appear exactly `task.requiredAssignmentsPerRow` times, and require every record to carry a non-null `response_id` and `response_data`. Any mismatch means a planned row lacks a response and blocks completion. Only after this response-level proof may the task be completed and its report published; follow the Completion and Report commands in the [CLI reference](cli-reference.md), in that order.
 
 ## Exit criterion
 

@@ -369,6 +369,14 @@ Defaults:
 - format defaults to `jsonl`
 - output file defaults to `<taskId>.<format>`
 
+Complete:
+
+```bash
+orizu tasks complete --task <taskId>
+```
+
+Mark an active or paused task completed only after its required response-bearing export has been verified. Completion does not publish the task report; use the Report commands above after completion.
+
 ### Instruction Control Plane
 
 For instruction sets, judges, runners, run submission, optimizer artifacts,
