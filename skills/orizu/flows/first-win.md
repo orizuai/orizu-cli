@@ -2,7 +2,7 @@
 
 the first pass through the loop on the recommended surface: curate the dataset, gather ground truth (annotation only when approved labels don't exist), build and validate judges, hill-climb to a completed optimization run.
 
-Reach for First win after Onboard exits with a human-ratified improvement plan and recommended quick win.
+Reach for First win after Onboard exits with a human-ratified improvement plan and recommended quick win, or when Recurse starts a later cycle on the same ratified surface with refreshed evidence.
 
 ## Curate the dataset
 
