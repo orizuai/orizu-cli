@@ -32,6 +32,10 @@ import { parseDatasetReference } from './dataset-download.js'
 import { editDatasetRows as runEditDatasetRows } from './dataset-edit-rows.js'
 import { ensureDatasetUploadSnapshot } from './dataset-upload-snapshot.js'
 import { extractErrorMessage } from './error-response.js'
+import {
+  describeLogoutHttpFailure,
+  describeLogoutTransportFailure,
+} from './logout-diagnostic.js'
 import { parseGlobalFlags } from './global-flags.js'
 import { shouldUseHeadlessLogin, waitForHeadlessAuthorization } from './headless-login.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
@@ -40,10 +44,12 @@ import { readAssignmentManifestJsonlFile } from './task-assignment-manifest.js'
 import {
   assertSecureTokenTransport,
   authedFetch,
+  captureAuthenticatedRequestContext,
   credentialRequestRedirectPolicy,
   getBaseUrl,
   resolveLoginBaseUrl,
   setGlobalFlags,
+  type AuthenticatedRequestContext,
 } from './http.js'
 import {
   computeSkillContentHash,
@@ -76,6 +82,7 @@ import {
   validateSetupFlagValues,
   validateSetupSelectionArgs,
 } from './setup-onboarding.js'
+import { confirmExistingSetupAccount, describeSetupAuthState } from './setup-account.js'
 import { LoginResponse } from './types.js'
 import {
   getWorkspaceRoot,
@@ -674,24 +681,26 @@ async function promptSelect<T>(
   }
 }
 
-async function fetchTeams(): Promise<Team[]> {
-  const response = await authedFetch('/api/cli/teams')
+type AuthenticatedRequest = AuthenticatedRequestContext['fetch']
+async function fetchTeams(request: AuthenticatedRequest = authedFetch): Promise<Team[]> {
+  const response = await request('/api/cli/teams')
   if (!response.ok) {
     throw new Error(`Failed to fetch teams: ${await response.text()}`)
   }
-
   const data = await parseJsonResponse<{ teams: Team[] }>(response, 'Teams list')
   return data.teams
 }
 
-async function fetchProjects(teamSlug?: string): Promise<Project[]> {
+async function fetchProjects(
+  teamSlug?: string,
+  request: AuthenticatedRequest = authedFetch
+): Promise<Project[]> {
   const normalizedTeamSlug = teamSlug ? normalizeSlugInput(teamSlug) : undefined
   const query = normalizedTeamSlug ? `?teamSlug=${encodeURIComponent(normalizedTeamSlug)}` : ''
-  const response = await authedFetch(`/api/cli/projects${query}`)
+  const response = await request(`/api/cli/projects${query}`)
   if (!response.ok) {
     throw new Error(`Failed to fetch projects: ${await response.text()}`)
   }
-
   const data = await parseJsonResponse<{ projects: Project[] }>(response, 'Projects list')
   return data.projects
 }
@@ -744,32 +753,35 @@ async function fetchTeamMembers(teamSlug: string): Promise<TeamMember[]> {
   return data.members
 }
 
-async function createTeamOnServer(name: string): Promise<Team> {
-  const response = await authedFetch('/api/cli/teams', {
+async function createTeamOnServer(
+  name: string,
+  request: AuthenticatedRequest = authedFetch
+): Promise<Team> {
+  const response = await request('/api/cli/teams', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   })
-
   if (!response.ok) {
     throw new Error(`Failed to create team: ${await response.text()}`)
   }
-
   const data = await parseJsonResponse<{ team: Team }>(response, 'Team create')
   return data.team
 }
 
-async function createProjectOnServer(teamSlug: string, name: string): Promise<Project> {
-  const response = await authedFetch('/api/cli/projects', {
+async function createProjectOnServer(
+  teamSlug: string,
+  name: string,
+  request: AuthenticatedRequest = authedFetch
+): Promise<Project> {
+  const response = await request('/api/cli/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ teamSlug, name }),
   })
-
   if (!response.ok) {
     throw new Error(`Failed to create project: ${await response.text()}`)
   }
-
   const data = await parseJsonResponse<{
     project: {
       id: string
@@ -781,7 +793,6 @@ async function createProjectOnServer(teamSlug: string, name: string): Promise<Pr
       role?: string
     }
   }>(response, 'Project create')
-
   return {
     id: data.project.id,
     name: data.project.name,
@@ -1060,8 +1071,9 @@ function resolveAuthCallbackPort(): number {
   return parsed
 }
 
-async function login() {
-  const baseUrl = hasArg('--no-prompt-if-logged-in') ? getBaseUrl() : resolveLoginBaseUrl()
+async function login(baseUrlOverride?: string) {
+  const baseUrl = baseUrlOverride
+    ?? (hasArg('--no-prompt-if-logged-in') ? getBaseUrl() : resolveLoginBaseUrl())
   assertSecureTokenTransport(baseUrl)
 
   // hasResolvableAuth (ALI-1090): an env bearer (ORIZU_TOKEN / ORIZU_TOKEN_FILE)
@@ -1192,7 +1204,6 @@ async function whoami() {
   if (!response.ok) {
     throw new Error(`whoami failed: ${await response.text()}`)
   }
-
   const data = await response.json() as { user: { id: string; email: string | null } }
   if (hasJsonFlag()) {
     printJson({ user: data.user, server: getBaseUrl() })
@@ -1201,8 +1212,8 @@ async function whoami() {
   printLine(sanitizeTerminalText(data.user.email ?? data.user.id))
 }
 
-async function logout() {
-  const baseUrl = getBaseUrl()
+async function logout(baseUrlOverride?: string) {
+  const baseUrl = baseUrlOverride || getBaseUrl()
   const credentials = getServerCredentials(baseUrl)
   if (!credentials) {
     if (hasJsonFlag()) {
@@ -1212,7 +1223,13 @@ async function logout() {
     printLine(`Already logged out for ${sanitizeTerminalText(baseUrl)}.`)
     return
   }
-
+  const authorizationToken = 'accessToken' in credentials
+    ? credentials.accessToken
+    : credentials.apiKey
+  const logoutSecrets = [
+    authorizationToken,
+    ...('refreshToken' in credentials ? [credentials.refreshToken] : []),
+  ]
   let remoteLogoutError: string | null = null
   try {
     assertSecureTokenTransport(baseUrl)
@@ -1220,22 +1237,19 @@ async function logout() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${'accessToken' in credentials ? credentials.accessToken : credentials.apiKey}`,
+        Authorization: `Bearer ${authorizationToken}`,
       },
       body: 'refreshToken' in credentials
         ? JSON.stringify({ refreshToken: credentials.refreshToken })
         : undefined,
       ...credentialRequestRedirectPolicy(),
     })
-
     if (!response.ok) {
-      remoteLogoutError = sanitizeTerminalText(await response.text()).slice(0, 180)
+      remoteLogoutError = await describeLogoutHttpFailure(response, logoutSecrets)
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    remoteLogoutError = sanitizeTerminalText(message).slice(0, 180)
+    remoteLogoutError = describeLogoutTransportFailure(error, logoutSecrets)
   }
-
   clearServerCredentials(baseUrl)
   if (hasJsonFlag()) {
     printJson({ status: 'logged-out', server: baseUrl, remoteLogoutError })
@@ -2992,14 +3006,14 @@ function writeWorkspaceValidationLog(
 
 function printWorkspaceFindings(findings: { severity: string, code: string, path?: string, message: string }[]) {
   if (findings.length === 0) {
-    printLine('   Validation passed.')
+    printLine('Validation passed.')
     return
   }
 
-  printLine('   Validation findings:')
+  printLine('Validation findings:')
   for (const finding of findings) {
     const path = finding.path ? ` ${finding.path}` : ''
-    printLine(`   - ${finding.severity.toUpperCase()} ${finding.code}:${path} ${finding.message}`)
+    printLine(`- ${finding.severity.toUpperCase()} ${finding.code}:${path} ${finding.message}`)
   }
 }
 
@@ -3375,15 +3389,6 @@ function skillsPathCommand() {
   printLine(hasArg('--skill-md') ? source.skillMd : source.root)
 }
 
-function describeSetupAuthState(): { state: 'signed-in' | 'signed-out', baseUrl: string } {
-  const baseUrl = getBaseUrl()
-  return {
-    // ALI-1090: an env bearer (ORIZU_TOKEN / ORIZU_TOKEN_FILE) is signed-in too.
-    state: hasResolvableAuth(baseUrl) ? 'signed-in' : 'signed-out',
-    baseUrl,
-  }
-}
-
 type SetupTeamChoice =
   | { kind: 'team', team: Team }
   | { kind: 'create' }
@@ -3393,7 +3398,8 @@ async function resolveSetupTeam(
   createTeamName: string | null,
   noInput: boolean,
   dryRun: boolean,
-  workspaceTeamSlug: string | null
+  workspaceTeamSlug: string | null,
+  request: AuthenticatedRequest = authedFetch
 ): Promise<Team> {
   if (teamSlugArg && createTeamName) {
     throw new Error('Use either --team <slug> or --create-team <name>, not both.')
@@ -3405,14 +3411,12 @@ async function resolveSetupTeam(
     if (workspaceTeamSlug) throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Create the new team from another directory.`)
     const name = createTeamName.trim()
     if (!name) throw new Error('--create-team requires a non-empty team name.')
-    const team = await createTeamOnServer(name)
-    printLine(`   Created team ${sanitizeTerminalText(team.slug)}`)
+    const team = await createTeamOnServer(name, request)
+    printLine(`Created team ${sanitizeTerminalText(team.slug)}`)
     return team
   }
-
-  const teams = await fetchTeams()
+  const teams = await fetchTeams(request)
   const normalizedTeamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null
-
   if (normalizedTeamSlug) {
     const team = teams.find(candidate => candidate.slug === normalizedTeamSlug)
     if (!team) {
@@ -3420,11 +3424,9 @@ async function resolveSetupTeam(
     }
     return team
   }
-
   if (noInput || dryRun) {
     throw new Error('Non-interactive setup requires --team <slug> or --create-team <name>.')
   }
-
   const choices: SetupTeamChoice[] = [
     ...teams.map(team => ({ kind: 'team' as const, team })),
     ...(teams.some(team => team.role === 'agent') ? [] : [{ kind: 'create' as const }]),
@@ -3436,18 +3438,16 @@ async function resolveSetupTeam(
       ? 'Create a new team'
       : `${item.team.name} (${item.team.slug})`
   )
-
   if (choice.kind === 'team') {
     return choice.team
   }
-
-  const name = await askText('   Team name?', '')
+  const name = await askText('Team name?', '')
   if (!name) {
     throw new Error('Team name is required to create a team.')
   }
   if (workspaceTeamSlug) throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Create the new team from another directory.`)
-  const team = await createTeamOnServer(name)
-  printLine(`   Created team ${sanitizeTerminalText(team.slug)}`)
+  const team = await createTeamOnServer(name, request)
+  printLine(`Created team ${sanitizeTerminalText(team.slug)}`)
   return team
 }
 
@@ -3464,7 +3464,8 @@ async function resolveSetupProjects(
   projectSlugArg: string | null,
   createProjectName: string | null,
   noInput: boolean,
-  dryRun: boolean
+  dryRun: boolean,
+  request: AuthenticatedRequest
 ): Promise<SetupProjectSelection> {
   if (projectSlugArg && createProjectName) {
     throw new Error('Use either --project <slug> or --create-project <name>, not both.')
@@ -3472,23 +3473,21 @@ async function resolveSetupProjects(
   if ((noInput || dryRun) && !projectSlugArg && !createProjectName) {
     throw new Error('Non-interactive setup requires --project <slug> or --create-project <name>.')
   }
-
   const canCreateProject = team.role === 'admin' || team.role === 'agent'
   if (createProjectName && !canCreateProject) {
     throw new Error(`Only team admins can create projects in '${team.slug}'. Choose an existing project or ask a team admin to create one.`)
   }
-  const projects = await fetchProjects(team.slug)
+  const projects = await fetchProjects(team.slug, request)
   if (createProjectName) {
     if (dryRun) {
       throw new Error('--create-project cannot be used with --dry-run because setup cannot preview a server-generated project slug.')
     }
     const name = createProjectName.trim()
     if (!name) throw new Error('--create-project requires a non-empty project name.')
-    const selected = await createProjectOnServer(team.slug, name)
-    printLine(`   Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
+    const selected = await createProjectOnServer(team.slug, name, request)
+    printLine(`Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
     return { selected, projects: [...projects, selected] }
   }
-
   const normalizedProjectSlug = projectSlugArg ? normalizeSlugInput(projectSlugArg) : null
   if (normalizedProjectSlug) {
     const selected = projects.find(project => project.slug === normalizedProjectSlug)
@@ -3497,17 +3496,15 @@ async function resolveSetupProjects(
     }
     return { selected, projects }
   }
-
   if (projects.length === 0) {
     if (!canCreateProject) throw new Error(`Team '${team.slug}' has no accessible projects, and only team admins can create one.`)
-    printLine(`   Team '${sanitizeTerminalText(team.slug)}' has no projects yet. Let's create the first one.`)
-    const name = await askText('   Project name?', '')
+    printLine(`Team '${sanitizeTerminalText(team.slug)}' has no projects yet. Let's create the first one.`)
+    const name = await askText('Project name?', '')
     if (!name) throw new Error('Project name is required to create a project.')
-    const selected = await createProjectOnServer(team.slug, name)
-    printLine(`   Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
+    const selected = await createProjectOnServer(team.slug, name, request)
+    printLine(`Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
     return { selected, projects: [selected] }
   }
-
   const choices: SetupProjectChoice[] = [
     ...projects.map(project => ({ kind: 'project' as const, project })),
     ...(canCreateProject ? [{ kind: 'create' as const }] : []),
@@ -3522,11 +3519,10 @@ async function resolveSetupProjects(
   if (choice.kind === 'project') {
     return { selected: choice.project, projects }
   }
-
-  const name = await askText('   Project name?', '')
+  const name = await askText('Project name?', '')
   if (!name) throw new Error('Project name is required to create a project.')
-  const selected = await createProjectOnServer(team.slug, name)
-  printLine(`   Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
+  const selected = await createProjectOnServer(team.slug, name, request)
+  printLine(`Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
   return { selected, projects: [...projects, selected] }
 }
 
@@ -3593,26 +3589,68 @@ async function setupCommand() {
   if (workspaceManifest.state === 'invalid' && !validateOnly && !fix) throw new Error('The existing orizu.team.json is invalid or unreadable. Repair it before creating remote resources.')
   const workspaceTeamSlug = workspaceManifest.state === 'valid' ? workspaceManifest.slug : null
   if (createTeamArg !== null && workspaceTeamSlug) throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Create the new team from another directory.`)
-
   printBannerIfInteractive()
   printLine('Orizu setup')
   printLine('')
-
   // Step 1: login
   printLine('Step 1: Login')
   let auth = describeSetupAuthState()
+  let setupAuthContext: AuthenticatedRequestContext | null = null
   if (hasArg('--skip-login')) {
-    printLine('   Skipped (--skip-login).')
+    printLine('Skipped (--skip-login).')
   } else if (auth.state === 'signed-in') {
-    printLine(`   Already authenticated with ${sanitizeTerminalText(auth.baseUrl)}.`)
+    if (!validateOnly) {
+      setupAuthContext = captureAuthenticatedRequestContext({ allowRefresh: !dryRun })
+    }
+    if (!noInput && !validateOnly) {
+      const confirmation = await confirmExistingSetupAccount(
+        setupAuthContext!,
+        email => promptKeyboardSelect(
+          'Confirm the account to use for setup',
+          ['continue', 'switch'] as const,
+          item => item === 'continue'
+            ? `Continue as ${email}`
+            : 'Log in with a different account'
+        ),
+        async () => {
+          const context = setupAuthContext!
+          const logoutResult = await context.logout()
+          if (logoutResult.remoteError) {
+            const localOutcome = logoutResult.localCredentialCleared
+              ? 'Local credentials were cleared.'
+              : 'Local credentials were not cleared because a newer login is active.'
+            console.warn(
+              `Warning: remote logout failed: ${logoutResult.remoteError} ${localOutcome}`
+            )
+          } else if (!logoutResult.localCredentialCleared) {
+            console.warn('Warning: local credentials were not cleared because a newer login is active.')
+          }
+          printLine(logoutResult.localCredentialCleared
+            ? `Logged out from ${sanitizeTerminalText(context.baseUrl)}.`
+            : `Kept the newer login for ${sanitizeTerminalText(context.baseUrl)}.`)
+          await login(context.baseUrl)
+        },
+        { dryRun }
+      )
+      if (confirmation === 'switched') {
+        setupAuthContext = captureAuthenticatedRequestContext({ allowRefresh: !dryRun })
+      }
+      auth = { state: 'signed-in', baseUrl: setupAuthContext!.baseUrl }
+    } else {
+      printLine(`Already authenticated with ${sanitizeTerminalText(auth.baseUrl)}.`)
+    }
   } else if (noInput || dryRun) {
-    printLine('   Not signed in. Run `orizu login` to authenticate.')
-  } else if (await waitForAnyKeyOrEscape('   Press any key to connect your account, or Esc to cancel.')) {
+    printLine('Not signed in. Run `orizu login` to authenticate.')
+  } else if (await waitForAnyKeyOrEscape('Press any key to connect your account, or Esc to cancel.')) {
     await login()
     auth = describeSetupAuthState()
   } else {
     throw new Error('Setup cancelled.')
   }
+  if (auth.state === 'signed-in' && !validateOnly && !setupAuthContext) {
+    setupAuthContext = captureAuthenticatedRequestContext({ allowRefresh: !dryRun })
+  }
+  if (setupAuthContext) auth = { state: 'signed-in', baseUrl: setupAuthContext.baseUrl }
   const serverCreateRequested = createTeamArg !== null || createProjectArg !== null
   if ((noInput || serverCreateRequested) && auth.state === 'signed-out' && !dryRun && !validateOnly && !fix) {
     throw new Error(
@@ -3620,20 +3658,20 @@ async function setupCommand() {
     )
   }
   printLine('')
-
   let setupTeam: Team | null = null
   let selectedProject: Project | null = null
   let setupProjects: Project[] = []
   if (auth.state === 'signed-in' && !validateOnly) {
-    setupTeam = await resolveSetupTeam(teamArg, createTeamArg, noInput, dryRun, workspaceTeamSlug)
+    const setupRequest = setupAuthContext!.fetch.bind(setupAuthContext)
+    setupTeam = await resolveSetupTeam(teamArg, createTeamArg, noInput, dryRun, workspaceTeamSlug, setupRequest)
     if (workspaceTeamSlug && setupTeam.slug !== workspaceTeamSlug) {
       throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Run setup in another directory to set up team '${setupTeam.slug}'.`)
     }
     if (fix) {
-      setupProjects = await fetchProjects(setupTeam.slug)
+      setupProjects = await fetchProjects(setupTeam.slug, setupRequest)
       if (setupProjects.length === 0) throw new Error(`Team '${setupTeam.slug}' has no projects to restore.`)
     } else {
-      const selection = await resolveSetupProjects(setupTeam, projectArg, createProjectArg, noInput, dryRun)
+      const selection = await resolveSetupProjects(setupTeam, projectArg, createProjectArg, noInput, dryRun, setupRequest)
       selectedProject = selection.selected
       setupProjects = selection.projects
       printLine(`Selected project ${sanitizeTerminalText(`${setupTeam.slug}/${selectedProject.slug}`)}`)
@@ -3647,7 +3685,7 @@ async function setupCommand() {
   let workspaceResult: ReturnType<typeof initOrizuWorkspace> | null = null
   let validationLogPath: string | null = null
   if (hasArg('--no-workspace') && !validateOnly && !fix) {
-    printLine('   Skipped (--no-workspace).')
+    printLine('Skipped (--no-workspace).')
   } else {
     const wantsWorkspace = validateOnly
       || fix
@@ -3660,26 +3698,24 @@ async function setupCommand() {
       const projectSlug = projectArg
       let teamId: string | null = null
       let projects: WorkspaceProjectSeed[] | undefined
-
       if (setupTeam && !validateOnly) {
         teamSlug = setupTeam.slug
         teamId = setupTeam.id
         projects = projectSeedsFromProjects(setupProjects)
-        printLine(`   ${formatProjectSetupProgress(projects.length)}`)
+        printLine(formatProjectSetupProgress(projects.length))
       } else if (!teamSlug && !noInput && !validateOnly) {
-        teamSlug = await askText('   Team slug?', 'local-team')
+        teamSlug = await askText('Team slug?', 'local-team')
       }
       if (auth.state !== 'signed-in' && (!teamSlug || !projectSlug) && noInput && hasArg('--workspace')) {
-        printLine('   Using starter local-only team/project. Pass --team with authentication to materialize server projects.')
+        printLine('Using starter local-only team/project. Pass --team with authentication to materialize server projects.')
       }
       if (projectSlug && auth.state !== 'signed-in') {
         projects = [{ slug: projectSlug }]
       }
       if (auth.state !== 'signed-in' && !validateOnly) {
         const localProjectCount = projects?.length || 1
-        printLine(`   ${formatProjectSetupProgress(localProjectCount)}`)
+        printLine(formatProjectSetupProgress(localProjectCount))
       }
-
       const result = initOrizuWorkspace({
         workspaceRoot,
         teamSlug,
@@ -3699,12 +3735,12 @@ async function setupCommand() {
       workspaceState = result.state
       if (dryRun || verbose) {
         for (const action of result.actions) {
-          printLine(`   ${dryRun ? 'Would ' : 'Did '}${action}`)
+          printLine(`${dryRun ? 'Would ' : 'Did '}${action}`)
         }
       } else if (result.actions.length > 0) {
-        printLine(validateOnly ? '   Workspace validation complete' : '   Workspace setup complete')
+        printLine(validateOnly ? 'Workspace validation complete' : 'Workspace setup complete')
       } else if (!validateOnly) {
-        printLine('   Workspace setup complete')
+        printLine('Workspace setup complete')
       }
       validationLogPath = writeWorkspaceValidationLog(result.root, result.findings, dryRun)
       if (verbose) {
@@ -3714,20 +3750,19 @@ async function setupCommand() {
         process.exitCode = 1
       }
     } else {
-      printLine(`   Skipped. Rerun with --workspace to initialize the workspace contract.`)
+      printLine('Skipped. Rerun with --workspace to initialize the workspace contract.')
     }
   }
   printLine('')
-
   // Step 3: global coding-agent skills
   let installOutcomes: SkillInstallOutcome[] = []
   printLine('Step 3: Install coding agent skills')
   if (hasArg('--no-install') || validateOnly || fix) {
-    printLine(hasArg('--no-install') ? '   Skipped (--no-install).' : '   Skipped for validation/repair.')
+    printLine(hasArg('--no-install') ? 'Skipped (--no-install).' : 'Skipped for validation/repair.')
   } else {
     let targets = setupSkillTargetsFromArgs()
     if (targets.length === 0 && !noInput && !dryRun) {
-      if (await askYesNo('   Install the Orizu skill for your coding agents?', true)) {
+      if (await askYesNo('Install the Orizu skill for your coding agents?', true)) {
         const selectedChoices = await promptKeyboardMultiSelect(
           'Choose skill installation destinations',
           detectedSetupSkillChoices(setupSkillHome),
@@ -3737,11 +3772,10 @@ async function setupCommand() {
         targets = selectedChoices.map(choice => choice.target)
       }
     }
-
     if (targets.length === 0) {
-      printLine('   Skipped skill install.')
+      printLine('Skipped skill install.')
     } else {
-      printLine('   Installing skills...')
+      printLine('Installing skills...')
       installOutcomes = await applySkillInstallTargets(targets, {
         mode: installMode,
         skipConfirm: true,
@@ -3752,22 +3786,21 @@ async function setupCommand() {
         printResults: false,
       })
       if (dryRun) {
-        printLine('   Dry run: no skill files were changed.')
+        printLine('Dry run: no skill files were changed.')
       }
       for (const outcome of installOutcomes) {
         const label = setupSkillLabel(outcome.target)
         if (outcome.action === 'failed') {
-          printLine(`   ${label} failed: ${outcome.error}`)
+          printLine(`${label} failed: ${outcome.error}`)
         } else if (outcome.action === 'skipped') {
-          printLine(`   ${label} skipped`)
+          printLine(`${label} skipped`)
         } else {
-          printLine(`   ${label} installed`)
+          printLine(`${label} installed`)
         }
       }
     }
   }
   printLine('')
-
   // Phase 4: coding-agent handoff
   const handoffTeamSlug = setupTeam?.slug || workspaceResult?.teamSlug || null
   const handoffProjectSlug = selectedProject?.slug || (workspaceResult?.projectSlugs.length === 1 ? workspaceResult.projectSlugs[0] : null)
@@ -3781,14 +3814,12 @@ async function setupCommand() {
       printLine('--- prompt end ---')
       printLine('')
     }
-
     const detected = Object.keys(LAUNCHABLE_AGENTS)
       .filter(agent => findExecutable(LAUNCHABLE_AGENTS[agent]))
     let launchAgent = getArg('--launch')
     if (launchAgent && !(launchAgent in LAUNCHABLE_AGENTS)) {
       throw new Error(`Unknown --launch agent '${launchAgent}'. Choices: ${Object.keys(LAUNCHABLE_AGENTS).join(', ')}.`)
     }
-
     if (!launchAgent && !noInput && isInteractiveTerminal() && detected.length > 0 && !dryRun) {
       const launchChoice = await promptKeyboardSelect(
         'Choose an agent to launch',
@@ -3797,27 +3828,26 @@ async function setupCommand() {
       )
       launchAgent = launchChoice
     }
-
     if (launchAgent) {
       const binary = findExecutable(LAUNCHABLE_AGENTS[launchAgent])
       if (inputDisabled) {
-        printLine('   Not launching: setup is non-interactive.')
+        printLine('Not launching: setup is non-interactive.')
       } else if (!isInteractiveTerminal()) {
-        printLine('   Not launching: --launch requires an interactive terminal.')
+        printLine('Not launching: --launch requires an interactive terminal.')
       } else if (!binary) {
-        printLine(`   Not launching: '${LAUNCHABLE_AGENTS[launchAgent]}' was not found on PATH.`)
+        printLine(`Not launching: '${LAUNCHABLE_AGENTS[launchAgent]}' was not found on PATH.`)
       } else if (dryRun) {
-        printLine(`   Would launch ${binary} with the setup prompt.`)
-      } else if (!getArg('--launch') || skipConfirm || await askYesNo(`   Launch ${LAUNCHABLE_AGENTS[launchAgent]} with the setup prompt now?`, true)) {
-        printLine(`   Launching ${binary}…`)
+        printLine(`Would launch ${binary} with the setup prompt.`)
+      } else if (!getArg('--launch') || skipConfirm || await askYesNo(`Launch ${LAUNCHABLE_AGENTS[launchAgent]} with the setup prompt now?`, true)) {
+        printLine(`Launching ${binary}…`)
         const launched = spawnSync(binary, [handoffPrompt], { cwd: workspaceRoot, stdio: 'inherit' })
         if (!launched.error) launchedAgent = launchAgent
         if (launched.error || (launched.status !== null && launched.status !== 0)) {
-          printLine(`   ${LAUNCHABLE_AGENTS[launchAgent]} exited without completing successfully.`)
+          printLine(`${LAUNCHABLE_AGENTS[launchAgent]} exited without completing successfully.`)
         }
       }
     } else if (detected.length === 0) {
-      printLine(`   No launchable coding agent was found. Read https://orizu.ai/llms.txt to get started.`)
+      printLine('No launchable coding agent was found. Read https://orizu.ai/llms.txt to get started.')
     }
     printLine('')
   }
@@ -3829,7 +3859,6 @@ async function setupCommand() {
       .map(outcome => ({ outcome, status: getSkillTargetStatus(outcome.target, { cwd: workspaceRoot, homeDir: setupSkillHome }) }))
     : []
   const source = resolveSkillSource()
-
   if (hasJsonFlag()) {
     printJson({
       auth: { state: auth.state, server: auth.baseUrl },
@@ -3872,7 +3901,6 @@ async function setupCommand() {
     })
     return
   }
-
   printLine('Setup summary')
   printLine(`  Auth:         ${auth.state === 'signed-in' ? `signed in (${sanitizeTerminalText(auth.baseUrl)})` : 'not signed in — run `orizu login`'}`)
   if (summaryTargets.length > 0) {

@@ -3,6 +3,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -11,8 +12,9 @@ import {
   writeFileSync,
 } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
+import { AsyncLocalStorage } from 'async_hooks'
 import {
   ServerCredentials,
   StoredCredentialsV1,
@@ -33,6 +35,225 @@ function getConfigDir(): string {
 
 function getCredentialsPath(): string {
   return join(getConfigDir(), 'credentials.json')
+}
+
+const DEFAULT_CREDENTIALS_LOCK_TIMEOUT_MS = 2_000
+const MAX_CREDENTIALS_LOCK_TIMEOUT_MS = 10_000
+const CREDENTIALS_LOCK_RETRY_MS = 20
+
+interface CredentialsLockMetadata {
+  version: 1
+  pid: number
+  hostname: string
+  createdAt: number
+  instanceId: string
+}
+
+interface HeldCredentialsLock {
+  path: string
+  metadata: string
+  depth: number
+  asyncOwner?: symbol
+  released: Promise<void>
+  resolveReleased: () => void
+}
+
+let heldCredentialsLock: HeldCredentialsLock | null = null
+const credentialsTransactionOwner = new AsyncLocalStorage<symbol>()
+
+function getCredentialsLockPath(): string {
+  return `${getCredentialsPath()}.lock`
+}
+
+function readLockDuration(name: string, fallback: number, maximum = Number.MAX_SAFE_INTEGER): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const parsed = Number(raw)
+  return Number.isSafeInteger(parsed) && parsed > 0
+    ? Math.min(parsed, maximum)
+    : fallback
+}
+
+function sleepSync(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
+}
+
+function acquireCredentialsLock(): HeldCredentialsLock {
+  const dir = getConfigDir()
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+
+  const lockPath = getCredentialsLockPath()
+  const timeoutMs = readLockDuration(
+    'ORIZU_CREDENTIALS_LOCK_TIMEOUT_MS',
+    DEFAULT_CREDENTIALS_LOCK_TIMEOUT_MS,
+    MAX_CREDENTIALS_LOCK_TIMEOUT_MS
+  )
+  const deadline = Date.now() + timeoutMs
+
+  while (true) {
+    const metadata = JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      hostname: hostname(),
+      createdAt: Date.now(),
+      instanceId: randomBytes(16).toString('hex'),
+    } satisfies CredentialsLockMetadata)
+    const tempPath = join(
+      dir,
+      `.credentials.json.lock.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+    )
+
+    try {
+      const fd = openSync(tempPath, 'wx', 0o600)
+      try {
+        writeFileSync(fd, metadata, 'utf8')
+        fsyncSync(fd)
+        chmodSync(tempPath, 0o600)
+      } finally {
+        closeSync(fd)
+      }
+
+      try {
+        // link(2) publishes the already-complete inode without replacing an
+        // existing owner. No contender ever unlinks the canonical lock.
+        linkSync(tempPath, lockPath)
+      } catch (error) {
+        if (!(isNodeError(error) && error.code === 'EEXIST')) throw error
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `ORIZU_CREDENTIALS_LOCK_TIMEOUT: credentials mutation did not acquire the lock within ${timeoutMs}ms. Verify no Orizu process is running, then remove credentials.json.lock manually.`
+          )
+        }
+        sleepSync(Math.min(CREDENTIALS_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())))
+        continue
+      }
+
+      let resolveReleased = () => {}
+      const released = new Promise<void>(resolve => { resolveReleased = resolve })
+      return { path: lockPath, metadata, depth: 1, released, resolveReleased }
+    } finally {
+      // The unique owner-only preparation link is never retained, whether
+      // publication succeeds, loses to an owner, or fails unexpectedly.
+      rmSync(tempPath, { force: true })
+    }
+  }
+}
+
+function releaseCredentialsLock(lock: HeldCredentialsLock): void {
+  let currentMetadata: string
+  try {
+    currentMetadata = readFileSync(lock.path, 'utf8')
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return
+    throw error
+  }
+  // Preserve a changed/replaced lock rather than risking removal of another owner.
+  if (currentMetadata !== lock.metadata) return
+  rmSync(lock.path)
+}
+
+/**
+ * Runs a synchronous credentials transaction under the one process-wide and
+ * cross-process lock. Exported so real-process fixtures can hold the production
+ * lock; CLI credential mutations use this same helper.
+ */
+export function withCredentialsTransactionLock<T>(operation: () => T): T {
+  const lockPath = getCredentialsLockPath()
+  if (heldCredentialsLock) {
+    if (heldCredentialsLock.path !== lockPath) {
+      throw new Error('ORIZU_CREDENTIALS_LOCK_NESTED_CONFIG: credentials config changed during a mutation.')
+    }
+    if (
+      heldCredentialsLock.asyncOwner
+      && credentialsTransactionOwner.getStore() !== heldCredentialsLock.asyncOwner
+    ) {
+      throw new Error('ORIZU_CREDENTIALS_LOCK_REQUIRED: an asynchronous credentials transaction already owns the lock.')
+    }
+    heldCredentialsLock.depth += 1
+    try {
+      return operation()
+    } finally {
+      heldCredentialsLock.depth -= 1
+    }
+  }
+
+  const lock = acquireCredentialsLock()
+  heldCredentialsLock = lock
+  try {
+    return operation()
+  } finally {
+    heldCredentialsLock = null
+    try {
+      releaseCredentialsLock(lock)
+    } finally {
+      lock.resolveReleased()
+    }
+  }
+}
+
+/**
+ * Holds the credentials lock until an awaited transaction settles. Nested
+ * synchronous credential writes are admitted only from this transaction's
+ * async execution context; unrelated same-process work must wait or fail.
+ */
+export async function withCredentialsTransactionLockAsync<T>(
+  operation: () => Promise<T>
+): Promise<T> {
+  const lockPath = getCredentialsLockPath()
+  const currentOwner = credentialsTransactionOwner.getStore()
+  if (heldCredentialsLock) {
+    if (heldCredentialsLock.path !== lockPath) {
+      throw new Error('ORIZU_CREDENTIALS_LOCK_NESTED_CONFIG: credentials config changed during a mutation.')
+    }
+    if (heldCredentialsLock.asyncOwner === currentOwner && currentOwner) {
+      heldCredentialsLock.depth += 1
+      try {
+        return await operation()
+      } finally {
+        heldCredentialsLock.depth -= 1
+      }
+    }
+
+    const timeoutMs = readLockDuration(
+      'ORIZU_CREDENTIALS_LOCK_TIMEOUT_MS',
+      DEFAULT_CREDENTIALS_LOCK_TIMEOUT_MS,
+      MAX_CREDENTIALS_LOCK_TIMEOUT_MS
+    )
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const didRelease = await Promise.race([
+      heldCredentialsLock.released.then(() => true),
+      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs) }),
+    ])
+    if (timer) clearTimeout(timer)
+    if (!didRelease) {
+      throw new Error(
+        `ORIZU_CREDENTIALS_LOCK_TIMEOUT: credentials mutation did not acquire the lock within ${timeoutMs}ms. Verify no Orizu process is running, then remove credentials.json.lock manually.`
+      )
+    }
+    return await withCredentialsTransactionLockAsync(operation)
+  }
+
+  const lock = acquireCredentialsLock()
+  const owner = Symbol('credentials-transaction-owner')
+  lock.asyncOwner = owner
+  heldCredentialsLock = lock
+  try {
+    return await credentialsTransactionOwner.run(owner, operation)
+  } finally {
+    heldCredentialsLock = null
+    try {
+      releaseCredentialsLock(lock)
+    } finally {
+      lock.resolveReleased()
+    }
+  }
+}
+
+function assertCredentialsLockHeld(): void {
+  if (!heldCredentialsLock || heldCredentialsLock.path !== getCredentialsLockPath()) {
+    throw new Error('ORIZU_CREDENTIALS_LOCK_REQUIRED: credentials writes require a transaction lock.')
+  }
 }
 
 function isStoredCredentialsV2(value: unknown): value is StoredCredentialsV2 {
@@ -82,6 +303,7 @@ function migrateToV2(stored: StoredCredentialsV1): StoredCredentialsV2 {
 }
 
 function writeCredentials(config: StoredCredentialsV2 | StoredCredentialsV3) {
+  assertCredentialsLockHeld()
   const dir = getConfigDir()
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
@@ -92,28 +314,26 @@ function writeCredentials(config: StoredCredentialsV2 | StoredCredentialsV3) {
     `.credentials.json.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
   )
   const payload = JSON.stringify(config, null, 2) + '\n'
-  const fd = openSync(tempPath, 'wx', 0o600)
 
   try {
-    writeFileSync(fd, payload, 'utf-8')
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-
-  chmodSync(tempPath, 0o600)
-  try {
-    renameSync(tempPath, path)
-  } catch (error: unknown) {
-    if (process.platform === 'win32' && isNodeError(error) && error.code === 'EEXIST') {
-      rmSync(path, { force: true })
-      renameSync(tempPath, path)
-    } else {
-      rmSync(tempPath, { force: true })
-      throw error
+    const fd = openSync(tempPath, 'wx', 0o600)
+    try {
+      writeFileSync(fd, payload, 'utf-8')
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
     }
+
+    chmodSync(tempPath, 0o600)
+    // Never delete the destination to emulate replacement. If this platform
+    // cannot atomically replace it, preserve the old file and surface the error.
+    renameSync(tempPath, path)
+    chmodSync(path, 0o600)
+  } finally {
+    // On success rename has already removed this path; on every error this
+    // removes the owner-only temporary file containing credential material.
+    rmSync(tempPath, { force: true })
   }
-  chmodSync(path, 0o600)
 }
 
 function createEmptyCredentialsConfig(): StoredCredentialsV3 {
@@ -178,31 +398,60 @@ export function getServerCredentials(baseUrl: string): ServerCredentials | null 
 }
 
 export function saveServerCredentials(baseUrl: string, credentials: ServerCredentials) {
-  const loaded = loadCredentialsConfigForWrite()
-  const config: StoredCredentialsV3 = loaded.version === 3
-    ? loaded
-    : {
-      version: 3,
-      activeBaseUrl: loaded.activeBaseUrl,
-      servers: loaded.servers,
-    }
+  return withCredentialsTransactionLock(() => {
+    const loaded = loadCredentialsConfigForWrite()
+    const config: StoredCredentialsV3 = loaded.version === 3
+      ? loaded
+      : {
+        version: 3,
+        activeBaseUrl: loaded.activeBaseUrl,
+        servers: loaded.servers,
+      }
 
-  config.servers[baseUrl] = credentials
-  config.activeBaseUrl = baseUrl
-  writeCredentials(config)
+    config.servers[baseUrl] = credentials
+    config.activeBaseUrl = baseUrl
+    writeCredentials(config)
+  })
 }
 
 export function updateServerCredentials(baseUrl: string, credentials: ServerCredentials) {
-  const loaded = loadCredentialsConfigForWrite()
-  const config: StoredCredentialsV3 = loaded.version === 3
-    ? loaded
-    : {
-      version: 3,
-      activeBaseUrl: loaded.activeBaseUrl,
-      servers: loaded.servers,
-    }
-  config.servers[baseUrl] = credentials
-  writeCredentials(config)
+  return withCredentialsTransactionLock(() => {
+    const loaded = loadCredentialsConfigForWrite()
+    const config: StoredCredentialsV3 = loaded.version === 3
+      ? loaded
+      : {
+        version: 3,
+        activeBaseUrl: loaded.activeBaseUrl,
+        servers: loaded.servers,
+      }
+    config.servers[baseUrl] = credentials
+    writeCredentials(config)
+  })
+}
+
+export function credentialsEqual(left: ServerCredentials, right: ServerCredentials): boolean {
+  if ('apiKey' in left || 'apiKey' in right) {
+    return 'apiKey' in left && 'apiKey' in right && left.apiKey === right.apiKey
+  }
+  return left.accessToken === right.accessToken
+    && left.refreshToken === right.refreshToken
+    && left.expiresAt === right.expiresAt
+}
+
+export function updateServerCredentialsIfCurrent(
+  baseUrl: string,
+  expected: ServerCredentials,
+  replacement: ServerCredentials
+): boolean {
+  return withCredentialsTransactionLock(() => {
+    const config = loadCredentialsConfig()
+    const current = config?.servers[baseUrl]
+    if (!config || !current || !credentialsEqual(current, expected)) return false
+
+    config.servers[baseUrl] = replacement
+    writeCredentials(config)
+    return true
+  })
 }
 
 export function getActiveBaseUrl(): string | null {
@@ -297,28 +546,48 @@ export function hasResolvableAuth(baseUrl: string): boolean {
 }
 
 export function setActiveBaseUrl(baseUrl: string | null) {
-  const config = loadCredentialsConfigForWrite()
-  config.activeBaseUrl = baseUrl
-  writeCredentials(config)
+  return withCredentialsTransactionLock(() => {
+    const config = loadCredentialsConfigForWrite()
+    config.activeBaseUrl = baseUrl
+    writeCredentials(config)
+  })
+}
+
+export function clearServerCredentialsIfCurrent(
+  baseUrl: string,
+  expected: ServerCredentials
+): boolean {
+  return withCredentialsTransactionLock(() => {
+    const config = loadCredentialsConfig()
+    const current = config?.servers[baseUrl]
+    if (!config || !current || !credentialsEqual(current, expected)) return false
+
+    delete config.servers[baseUrl]
+    if (config.activeBaseUrl === baseUrl) config.activeBaseUrl = null
+    writeCredentials(config)
+    return true
+  })
 }
 
 export function clearServerCredentials(baseUrl: string): boolean {
-  const config = loadCredentialsConfig()
-  if (!config || !Object.hasOwn(config.servers, baseUrl)) {
-    return false
-  }
+  return withCredentialsTransactionLock(() => {
+    const config = loadCredentialsConfig()
+    if (!config || !Object.hasOwn(config.servers, baseUrl)) {
+      return false
+    }
 
-  delete config.servers[baseUrl]
-  if (config.activeBaseUrl === baseUrl) {
-    config.activeBaseUrl = null
-  }
-  writeCredentials(config)
-  return true
+    delete config.servers[baseUrl]
+    if (config.activeBaseUrl === baseUrl) {
+      config.activeBaseUrl = null
+    }
+    writeCredentials(config)
+    return true
+  })
 }
 
 export function clearCredentialsFile() {
-  const path = getCredentialsPath()
-  if (existsSync(path)) {
-    rmSync(path)
-  }
+  return withCredentialsTransactionLock(() => {
+    const path = getCredentialsPath()
+    if (existsSync(path)) rmSync(path)
+  })
 }
