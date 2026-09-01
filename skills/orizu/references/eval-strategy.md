@@ -1,6 +1,6 @@
 # Eval strategy and labeler validation
 
-Use this reference only after First win's dataset-curation stage has versioned the PRIMARY dataset and created its three-way split set. If approved golden data already supplies all required ground truth, record the source, approval, and scenario-class coverage, then skip annotation. If only unresolved rows need labels, clone or filter those rows into a separate dataset because automatic assignments cover every current dataset row and explicit assignment files require uniform whole-dataset coverage.
+Use this reference only after the current flow has versioned the PRIMARY dataset and created its three-way split set. If approved golden data already supplies all required ground truth, record the source, approval, and scenario-class coverage, then skip annotation. If only unresolved rows need labels, clone or filter those rows into a separate dataset because automatic assignments cover every current dataset row and explicit assignment files require uniform whole-dataset coverage.
 
 Final-held-out rows need no human labels; exclude their row IDs from annotation tasks and from the unresolved-rows clone/filter.
 

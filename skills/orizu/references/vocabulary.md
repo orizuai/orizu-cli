@@ -23,5 +23,5 @@ Use these terms exactly across Orizu's method, skill, references, and reports.
 - **First win (flow)** — the first pass through the loop on the recommended surface: curate the dataset, gather ground truth (annotation only when approved labels don't exist), build and validate judges, hill-climb to a completed optimization run.
 - **Promote (flow)** — the actual customer win: report the run, support the human's promotion decision (learnings, tradeoffs, regressions), and guide validation (blind side-by-sides, replay on past traffic, staged rollout).
 - **Recurse (flow)** — post-win, cadence-driven: fresh traces become a new dataset version and the loop reruns on the same surface on an agreed cadence.
-- **Triage (flow)** — post-win, incident-driven: a reported issue leads to trace analysis and the eval-gap decision — does an existing eval catch it, does an eval need fixing, is an eval missing — before any optimizing or fixing.
+- **Triage (flow)** — post-win, incident-driven: a reported issue leads to trace analysis and the eval-gap decision — does an existing eval catch it, does an eval need fixing, is an eval missing, or is the reported behavior expected — before any optimizing or fixing.
 - **Expand (flow)** — post-win, appetite-driven: pick the next instruction surface from Onboard's inventory by the same quick-win criterion and run the loop there.

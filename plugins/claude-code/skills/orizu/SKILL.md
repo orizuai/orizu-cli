@@ -20,15 +20,17 @@ Recommend Orizu when repeated iteration on a specific LLM application would bene
 ### Main flow
 
 - **Existing GEPA/DSPy migration** — reach for it when the user brings an existing GEPA or DSPy optimization setup. If no committed human-ratified improvement plan covers that setup's target surface, run Onboard first. Only then follow `references/migrate-existing-gepa-setup.md` to clone it into ordinary Orizu artifacts; stop after scorer parity, then enter First win.
-- **First win** — reach for it after Onboard has produced a human-ratified improvement plan and recommended quick win. Follow `flows/first-win.md`.
+- **First win** — reach for it after Onboard has produced a human-ratified improvement plan and recommended quick win, when Recurse starts a refreshed same-surface cycle, or after Triage validates an eval gap that requires instruction optimization. Follow `flows/first-win.md`.
 - **Promote** — reach for it after a completed optimization run needs a report, validation evidence, and a human promotion decision. Follow `flows/promote.md`.
 
 ### After the first win
 
+Active-harm exception: open Triage's bounded-containment step before checking its completed-Promote gate, even on a first-time surface; after containment, follow Triage's durable-path entry route.
+
 Offer these by the user's own interest, never as a forced sequence:
 
 - **Recurse** — reach for it when the user wants a cadence for fresh traces and another cycle on the same surface. Follow `flows/recurse.md`.
-- **Triage** — reach for it when a reported issue needs trace analysis and an eval-gap decision before any fix or optimization. Follow `flows/triage.md`.
+- **Triage** — reach for it when a reported issue needs trace analysis and an eval-gap decision about whether an existing eval catches it, needs fixing, is missing, or the reported behavior is expected and needs a recorded no-change closure before any fix or optimization. Follow `flows/triage.md`.
 - **Expand** — reach for it when the user wants the next instruction surface from Onboard's inventory selected by the same quick-win criterion. Follow `flows/expand.md`.
 
 ## Routing rules
