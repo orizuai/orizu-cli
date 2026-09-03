@@ -819,7 +819,7 @@ async function checkGroup4(
       if (!identifier) continue
       usedIdentifiers.add(identifier)
       const foundDestination = importMap.imports.get(identifier) ?? 'missing'
-      const expectedDestination = `../instruction-sets/${version.setSlug}/${version.profileSlug}/${version.versionSlug}/components.generated`
+      const expectedDestination = `../instruction-sets/${version.setSlug}/${version.profileSlug}/${version.versionSlug}/components.generated.js`
       if (foundDestination !== expectedDestination) {
         const manifest = manifests.get(version.relativePath)
         const specifier = manifest

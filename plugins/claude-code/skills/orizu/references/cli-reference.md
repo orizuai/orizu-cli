@@ -573,7 +573,9 @@ runner-agnostic Helper self-tests, a static-only `generated/index.ts` import map
 and `<out>/orizu/orizu.lock.json`. For the TypeScript target, only
 `components.generated.ts`, `generated/index.ts`, and `helpers/*.ts` are
 target-specific; Component files, Version manifests, and the Lock remain
-language-neutral. The loader returns Components and Version-manifest settings
+language-neutral. Every relative import the CLI emits carries an explicit `.js`
+extension so the tree compiles under `moduleResolution` `nodenext` and `bundler`
+alike. The loader returns Components and Version-manifest settings
 plus Provenance from the selected Lock entry without calling Orizu or
 re-resolving a Pointer. It also retains the generated module's Provenance claim
 for offline integrity cross-checking. An existing Lock Version whose immutable

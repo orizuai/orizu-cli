@@ -620,9 +620,13 @@ version under:
 For the `ts` target, the only target-specific files are
 `components.generated.ts`, `generated/index.ts`, and `helpers/*.ts`.
 `generated/index.ts` contains static imports for every Synced version in the
-Lock. `loadInstructions(specifier)` uses only that generated map and the Lock
-values embedded from sync time: it never calls Orizu, dynamically imports a
-path, or re-resolves a Pointer. It returns Components, settings from the Version
+Lock. Every relative import emitted by the CLI carries an explicit `.js`
+extension, so the tree compiles with TypeScript `moduleResolution` set to either
+`nodenext` or `bundler`. Direct execution of the vendored `.ts` files with
+`node --experimental-strip-types` is not supported: compile them first or use a
+TypeScript-aware runtime. `loadInstructions(specifier)` uses only that generated
+map and the Lock values embedded from sync time: it never calls Orizu,
+dynamically imports a path, or re-resolves a Pointer. It returns Components, settings from the Version
 manifest, and exact Provenance from the selected Lock entry atomically. The
 returned `generatedProvenance` retains the Version module's claim so
 `verifyIntegrity({ ...loaded, digest: loaded.provenance.digest }, lock)` can

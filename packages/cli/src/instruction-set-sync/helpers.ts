@@ -5,7 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { serializeLock, type InstructionSetLockV1 } from '../instruction-set-lock/index.js'
 import type { SyncTarget } from './index.js'
 
-const LOAD_HELPER = String.raw`import { lock, versions } from '../generated/index'
+const LOAD_HELPER = String.raw`import { lock, versions } from '../generated/index.js'
 
 interface VersionModule {
   components: Record<string, string>
@@ -92,7 +92,7 @@ export function loadInstructions(specifier: string): {
 }
 `
 
-const LOAD_TEST = String.raw`import { InstructionSetLoadError, loadInstructions } from './load'
+const LOAD_TEST = String.raw`import { InstructionSetLoadError, loadInstructions } from './load.js'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -153,7 +153,7 @@ export function attachProvenance<T extends SpanLike | AttributionPayload>(
 }
 `
 
-const PROVENANCE_TEST = String.raw`import { attachProvenance, provenanceOf } from './provenance'
+const PROVENANCE_TEST = String.raw`import { attachProvenance, provenanceOf } from './provenance.js'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -339,7 +339,7 @@ export function verifyIntegrity(loadedBytes: LoadedBytes, lock: ParsedLock): voi
 }
 `
 
-const VERIFY_TEST = String.raw`import { IntegrityVerificationError, verifyIntegrity } from './verify'
+const VERIFY_TEST = String.raw`import { IntegrityVerificationError, verifyIntegrity } from './verify.js'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -420,7 +420,7 @@ export function renderGeneratedIndex(lock: InstructionSetLockV1): string {
       for (const [versionSlug] of Object.entries(profile.versions).sort((left, right) => left[1].versionNumber - right[1].versionNumber)) {
         const identifier = `v${importNumber}`
         importNumber += 1
-        imports.push(`import * as ${identifier} from '../instruction-sets/${setSlug}/${profileSlug}/${versionSlug}/components.generated'`)
+        imports.push(`import * as ${identifier} from '../instruction-sets/${setSlug}/${profileSlug}/${versionSlug}/components.generated.js'`)
         versions.push(`${JSON.stringify(versionSlug)}: ${identifier}`)
       }
       profiles.push(`${JSON.stringify(profileSlug)}: { ${versions.join(', ')} }`)
