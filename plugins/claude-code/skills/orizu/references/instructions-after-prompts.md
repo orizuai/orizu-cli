@@ -99,12 +99,12 @@ source.
 orizu instructions archive <slug-or-exact-name> --project <team/project> --json
 ```
 
-After the explicit promotion decision, move the consolidated set's default or
-promote a named model-config profile through the Authority map:
+Promote the named model-config Profile first, then move the consolidated set's
+Default Profile through the Authority map:
 
 ```bash
-orizu instructions default move <set> --project <team/project> --model-config <identity> --version <n> --json
 orizu instructions profiles promote <set> --project <team/project> --model-config <identity> --version <n> --json
+orizu instructions default move <set> --project <team/project> --model-config <identity> --json
 ```
 
 Confirm the resolved default and every production profile after the move. If a

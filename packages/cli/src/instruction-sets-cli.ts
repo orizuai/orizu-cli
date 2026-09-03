@@ -1,6 +1,13 @@
 import { authedFetch } from './http.js'
+import {
+  INSTRUCTION_SET_COMPONENT_KEY,
+  windowsPathIdentity,
+} from './instruction-set-lock/index.js'
 import { loadInstructionSetManifest, MAX_INSTRUCTION_SET_COMPONENT_BYTES, type InstructionSetManifest } from './instruction-set-manifest.js'
 import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
+import { parseSyncTarget, planSyncRequest, syncPayloadToDisk, type SyncPayload, type SyncTarget } from './instruction-set-sync/index.js'
+import { applyPrune, applyUpdate, lockedProfileIdentity, makeUpdatePlan, planPrune, PruneKeepUnresolvedError, readUpdateLock } from './instruction-set-update/index.js'
+import { printVerifyReport, verifyInstructionSetTree } from './instruction-set-verify/index.js'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -31,6 +38,45 @@ function argValue(args: string[], flag: string): string | null {
     : args[index + 1]!
 }
 
+function requiredOptionValue(args: string[], flag: string): string | null {
+  const value = argValue(args, flag)
+  if (args.includes(flag) && value === null) {
+    throw new Error(`instruction_set_sync_option_value_missing:${flag}`)
+  }
+  return value
+}
+
+function waitAtPrunePlanBarrierForProcessTest(): void {
+  const readyPath = process.env.ORIZU_TEST_PRUNE_PLAN_READY_PATH
+  const releasePath = process.env.ORIZU_TEST_PRUNE_PLAN_RELEASE_PATH
+  if (readyPath === undefined && releasePath === undefined) return
+  if (!readyPath || !releasePath) throw new Error('instruction_set_prune_test_barrier_invalid')
+  writeFileSync(readyPath, `${process.pid}\n`, { flag: 'wx' })
+  const deadline = Date.now() + 10_000
+  while (!existsSync(releasePath)) {
+    if (Date.now() >= deadline) throw new Error('instruction_set_prune_test_barrier_timeout')
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+  }
+}
+
+function unknownPruneOption(args: string[]): string | undefined {
+  const allowed = new Set(['--out', '--keep', '--yes', '--json'])
+  return args.find(value => value.startsWith('--') && !allowed.has(value))
+}
+
+function lifecycleOptionValues(args: string[], command: 'update' | 'prune', flag: string): string[] {
+  const values: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== flag) continue
+    const value = args[index + 1]
+    if (!value || value.startsWith('--')) {
+      throw new Error(`instruction_set_${command}_option_missing_value:${flag}`)
+    }
+    values.push(value)
+  }
+  return values
+}
+
 async function responsePayload(response: Response, action: string): Promise<Record<string, unknown>> {
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>
   if (!response.ok) {
@@ -40,6 +86,8 @@ async function responsePayload(response: Response, action: string): Promise<Reco
 }
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
+const WINDOWS_RESERVED_COMPONENT_KEY = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu
+
 export interface SyncComponent { body?: string; repoPath?: string; contentSha?: string; commitSha?: string }
 export interface SyncMaterial { profileVersionId: string; versionNumber: number; modelConfigIdentity: string; resolvedFrom: string; components: Record<string, SyncComponent> }
 export interface SyncProfile { modelConfigIdentity: string; resolvedFrom: string; production: SyncMaterial | null }
@@ -54,7 +102,19 @@ export interface SyncSet {
   profiles: SyncProfile[]
   filteredTo?: string[]
 }
-function safeSegment(value: string) { if (!SAFE_SEGMENT.test(value) || value === '.' || value === '..' || value.startsWith('.')) throw new Error('instruction_set_path_unsafe') }
+function safeSegment(value: string) {
+  if (!SAFE_SEGMENT.test(value) || value === '.' || value === '..' || value.startsWith('.')) {
+    throw new Error('instruction_set_path_unsafe')
+  }
+}
+function safeComponentKey(value: string, platform: NodeJS.Platform) {
+  if (
+    !INSTRUCTION_SET_COMPONENT_KEY.test(value) ||
+    (platform === 'win32' && WINDOWS_RESERVED_COMPONENT_KEY.test(value))
+  ) {
+    throw new Error('instruction_set_path_unsafe')
+  }
+}
 function isSafeSegment(value: string) {
   try { safeSegment(value); return true } catch { return false }
 }
@@ -68,12 +128,12 @@ export interface SyncFileOps {
   rmSync?: typeof rmSync
 }
 
-function writeMaterial(root: string, material: SyncMaterial, shape: string[], manifestRoot: string, fileOps: SyncFileOps = { writeFileSync }) {
+function writeMaterial(root: string, material: SyncMaterial, shape: string[], manifestRoot: string, platform: NodeJS.Platform, fileOps: SyncFileOps = { writeFileSync }) {
   const files: Record<string, string> = {}
   const syncedContentSha256: Record<string, string> = {}
   const pinnedComponents: Record<string, unknown> = {}
   for (const key of [...shape].sort()) {
-    safeSegment(key)
+    safeComponentKey(key, platform)
     const component = material.components[key]
     if (typeof component?.body === 'string') {
       const relative = `${manifestRoot}/${key}.md`
@@ -156,7 +216,12 @@ function removePublishedBackups(
   if (firstError) throw new Error('instruction_set_sync_cleanup_failed')
 }
 
-export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { writeFileSync }) {
+export function syncToDisk(
+  out: string,
+  set: SyncSet,
+  fileOps: SyncFileOps = { writeFileSync },
+  platform: NodeJS.Platform = process.platform
+) {
   const directoryName = set.slug || set.name
   safeSegment(directoryName)
   const hasProjectId = set.projectId !== undefined
@@ -169,8 +234,9 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
   for (const profile of set.profiles) {
     const value = slug(profile.modelConfigIdentity)
     safeSegment(value)
-    if (profileSlugs.has(value)) throw new Error('instruction_set_slug_collision')
-    profileSlugs.add(value)
+    const pathIdentity = windowsPathIdentity(value)
+    if (profileSlugs.has(pathIdentity)) throw new Error('instruction_set_slug_collision')
+    profileSlugs.add(pathIdentity)
   }
   mkdirSync(out, { recursive: true })
   const destination = join(out, directoryName)
@@ -197,10 +263,24 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
   const backups: Array<{ original: string; backup: string }> = []
   mkdirSync(temp)
   try {
-    const defaultMaterial = writeMaterial(temp, set.default, set.shape, 'default', fileOps)
+    const defaultMaterial = writeMaterial(
+      temp,
+      set.default,
+      set.shape,
+      'default',
+      platform,
+      fileOps
+    )
     const profiles = set.profiles.map(profile => ({
       modelConfigIdentity: profile.modelConfigIdentity, slug: slug(profile.modelConfigIdentity), resolvedFrom: profile.resolvedFrom,
-      production: profile.production ? writeMaterial(temp, profile.production, set.shape, `profiles/${slug(profile.modelConfigIdentity)}`, fileOps) : null,
+      production: profile.production ? writeMaterial(
+        temp,
+        profile.production,
+        set.shape,
+        `profiles/${slug(profile.modelConfigIdentity)}`,
+        platform,
+        fileOps
+      ) : null,
     })).sort((a, b) => a.modelConfigIdentity.localeCompare(b.modelConfigIdentity))
     const components = [
       ...Object.entries(defaultMaterial.files).map(([key, path]) => ({ key, path, syncedContentSha256: defaultMaterial.syncedContentSha256[key] })),
@@ -247,9 +327,61 @@ export function syncToDisk(out: string, set: SyncSet, fileOps: SyncFileOps = { w
 export async function instructionSetsCommand(args: string[], io: InstructionSetsCommandIo): Promise<number> {
   const positionals = positionalArgs(args)
   const [subcommand, reference] = positionals
-  if (subcommand === 'default' && reference === 'move') {
-    const version = argValue(args, '--version')
-    if (!version || !/^[0-9]+$/u.test(version) || Number(version) < 1) throw new Error('--version must be a positive integer')
+  if (subcommand === 'verify') {
+    const report = await verifyInstructionSetTree(requiredOptionValue(args, '--out') ?? '.')
+    printVerifyReport(report, io.json, io.print)
+    return report.ok ? 0 : 1
+  }
+  if (subcommand === 'prune') {
+    const unknownOption = unknownPruneOption(args)
+    if (unknownOption) {
+      const code = `instruction_set_prune_option_unknown:${unknownOption}`
+      if (!io.json) throw new Error(code)
+      io.print(JSON.stringify({ removals: [], applied: false, error: code }))
+      return 1
+    }
+    const output = lifecycleOptionValues(args, 'prune', '--out')[0] ?? '.'
+    const keepSpecifiers = lifecycleOptionValues(args, 'prune', '--keep')
+    let plan: Awaited<ReturnType<typeof planPrune>>
+    try {
+      plan = await planPrune(output, keepSpecifiers)
+    } catch (error) {
+      if (!(io.json && error instanceof PruneKeepUnresolvedError)) throw error
+      io.print(JSON.stringify({ removals: [], applied: false, error: error.code, unresolved: error.unresolved }))
+      return 1
+    }
+    const isApproved = args.includes('--yes')
+    if (!isApproved) {
+      if (io.json) io.print(JSON.stringify({ removals: plan.removals, skipped: [], applied: false }))
+      else {
+        for (const removal of plan.removals) io.print(`Remove ${removal.key}: ${removal.reason}`)
+        io.print('Plan only; pass --yes to prune.')
+      }
+      return 0
+    }
+    waitAtPrunePlanBarrierForProcessTest()
+    try {
+      const result = await applyPrune(output, plan, keepSpecifiers)
+      if (io.json) io.print(JSON.stringify({ removals: plan.removals, skipped: result.skipped, applied: true }))
+      else {
+        for (const removal of plan.removals) io.print(`Remove ${removal.key}: ${removal.reason}`)
+        for (const removal of result.skipped) {
+          const reason = removal.reason === 'profile_directory_has_unmanaged_files'
+            ? `profile directory contains unmanaged files (${removal.unmanagedEntries!.join(', ')})`
+            : 'became referenced after planning'
+          io.print(`Skipped ${removal.key}: ${reason}`)
+        }
+      }
+      return 0
+    } catch (error) {
+      if (!io.json) throw error
+      const code = error instanceof Error ? error.message : String(error)
+      io.print(JSON.stringify({ removals: plan.removals, applied: false, error: code }))
+      return 1
+    }
+  }
+  if (subcommand === 'default' && reference === 'move' && args.includes('--version')) {
+    throw new Error('--version is not valid for default move; use instructions profiles promote')
   }
   let writeManifest: InstructionSetManifest | undefined
   if (subcommand === 'create' || subcommand === 'push') {
@@ -258,7 +390,48 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
       : 'Usage: orizu instructions push <manifest> --project <team/project> [--set <slug-or-exact-name>] [--runner-version <id>] [--json]')
     writeManifest = loadInstructionSetManifest(reference)
   }
-  const project = await io.resolveProjectSlug(argValue(args, '--project'))
+  let syncTarget: SyncTarget | undefined
+  if (subcommand === 'sync') {
+    for (const option of ['--project', '--out', '--version', '--target']) {
+      if (args.filter(value => value === option).length > 1) {
+        throw new Error(`instruction_set_sync_option_duplicate:${option}`)
+      }
+    }
+    const suppliedTarget = argValue(args, '--target')
+    syncTarget = parseSyncTarget(args.includes('--target') ? suppliedTarget ?? '' : undefined)
+  }
+  const projectOption = subcommand === 'update'
+    ? lifecycleOptionValues(args, 'update', '--project')[0] ?? null
+    : argValue(args, '--project')
+  const project = await io.resolveProjectSlug(projectOption)
+  if (subcommand === 'update') {
+    const output = lifecycleOptionValues(args, 'update', '--out')[0] ?? '.'
+    const lock = readUpdateLock(output, project)
+    const payloads: SyncPayload[] = []
+    for (const [setSlug, set] of Object.entries(lock.instructionSets)) {
+      const barePath = `/api/cli/instruction-sets/${encodeURIComponent(setSlug)}/sync?project=${encodeURIComponent(project)}`
+      payloads.push(await responsePayload(await authedFetch(barePath, { method: 'GET' }), 'Instruction sets update') as unknown as SyncPayload)
+      for (const profileSlugValue of Object.keys(set.profiles)) {
+        const identity = lockedProfileIdentity(output, setSlug, profileSlugValue)
+        const query = new URLSearchParams({ project, profile: identity })
+        const path = `/api/cli/instruction-sets/${encodeURIComponent(setSlug)}/sync?${query.toString()}`
+        payloads.push(await responsePayload(await authedFetch(path, { method: 'GET' }), 'Instruction sets update') as unknown as SyncPayload)
+      }
+    }
+    const plan = makeUpdatePlan(project, lock, payloads)
+    const isApproved = args.includes('--yes')
+    const result = isApproved
+      ? applyUpdate(output, project, plan, args.includes('--no-sync'))
+      : { absent: [], warnings: [] }
+    if (io.json) io.print(JSON.stringify({ plan: plan.lines, applied: isApproved, absent: result.absent, warnings: result.warnings }))
+    else {
+      for (const line of plan.lines) io.print(line)
+      for (const specifier of result.absent) io.print(`Referenced but absent: ${specifier}`)
+      for (const warning of result.warnings) io.print(warning)
+      if (!isApproved) io.print('Plan only; pass --yes to update.')
+    }
+    return 0
+  }
   if (subcommand === 'scorers') {
     const action = reference
     const set = positionals[2]
@@ -298,22 +471,20 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     return 0
   }
   if (subcommand === 'default') {
-    const operation = reference; const set = positionals[2]; const identity = argValue(args, '--model-config'); const version = argValue(args, '--version')
-    if ((operation !== 'show' && operation !== 'move') || !set) throw new Error('Usage: orizu instructions default show|move <set> --project <team/project> [--model-config <identity> --version <n>] [--json]')
-    if (operation === 'move' && (!identity || !version || !/^[0-9]+$/u.test(version) || Number(version) < 1)) throw new Error('--version must be a positive integer')
+    const operation = reference; const set = positionals[2]; const identity = argValue(args, '--model-config')
+    if ((operation !== 'show' && operation !== 'move') || !set) throw new Error('Usage: orizu instructions default show|move <set> --project <team/project> [--model-config <identity>] [--json]')
+    if (operation === 'move' && !identity) throw new Error('--model-config is required')
     const path = `/api/cli/instruction-sets/${encodeURIComponent(set)}/default?project=${encodeURIComponent(project)}`
     if (operation === 'show') {
       const payload = await responsePayload(await authedFetch(path, { method: 'GET' }), 'Instruction sets default show')
-      if (io.json) io.print(JSON.stringify(payload)); else io.print(`Default: v${(payload.default as { versionNumber?: number } | undefined)?.versionNumber ?? '?'}`)
+      const current = payload.default as { modelConfigIdentity?: string; production?: { versionNumber?: number } | null } | null
+      if (io.json) io.print(JSON.stringify(payload))
+      else if (!current?.modelConfigIdentity) io.print('Default: unset')
+      else io.print(`Default: ${sanitizeTerminalText(current.modelConfigIdentity)} (${current.production ? `production v${current.production.versionNumber ?? '?'}` : 'not promoted'})`)
       return 0
     }
-    if (!io.json) {
-      const impact = await responsePayload(await authedFetch(path, { method: 'GET' }), 'Instruction sets default show')
-      const resolvesToDefault = Array.isArray(impact.resolvesToDefault) ? impact.resolvesToDefault.filter((item): item is string => typeof item === 'string') : []
-      io.print(`These model configs resolve to the default: ${resolvesToDefault.join(', ')}`)
-    }
-    const payload = await responsePayload(await authedFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelConfigIdentity: identity, versionNumber: Number(version) }) }), 'Instruction sets default move')
-    if (io.json) io.print(JSON.stringify(payload)); else io.print(`Default moved to ${identity} v${version}`)
+    const payload = await responsePayload(await authedFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelConfigIdentity: identity }) }), 'Instruction sets default move')
+    if (io.json) io.print(JSON.stringify(payload)); else io.print(`Default moved to ${sanitizeTerminalText(identity!)}`)
     return 0
   }
   if (subcommand === 'shape') {
@@ -413,19 +584,28 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     return 0
   }
   const status = argValue(args, '--status') || 'active'
-  if (subcommand !== 'list' && subcommand !== 'show' && subcommand !== 'sync') throw new Error('Usage: orizu instructions list|show|sync|archive|restore')
+  if (subcommand !== 'list' && subcommand !== 'show' && subcommand !== 'sync') throw new Error('Usage: orizu instructions list|show|sync|update|prune|verify|archive|restore')
   if (subcommand === 'sync') {
-    const output = argValue(args, '--out')
-    if (!reference || !output) throw new Error('Usage: orizu instructions sync <set> --out <dir> --project <team/project> [--model-config <identity>] [--json]')
-    const modelConfig = argValue(args, '--model-config')
-    const path = `/api/cli/instruction-sets/${encodeURIComponent(reference)}/sync?project=${encodeURIComponent(project)}${modelConfig ? `&modelConfig=${encodeURIComponent(modelConfig)}` : ''}`
-    const payload = await responsePayload(await authedFetch(path, { method: 'GET' }), 'Instruction sets sync')
-    const set = payload.instructionSet as SyncSet
-    if (!set || (set.slug !== reference && set.name !== reference) || (modelConfig && (!Array.isArray(set.filteredTo) || set.filteredTo.length !== 1 || set.filteredTo[0] !== modelConfig))) {
-      throw new Error('instruction_set_sync_response_mismatch')
+    if (!reference) throw new Error('Usage: orizu instructions sync <specifier> [--version <n>] [--out <app-root>] [--target <ts>] [--force-helpers] --project <team/project> [--json]')
+    if (args.includes('--model-config')) {
+      throw new Error('instruction_set_sync_option_retired:--model-config; use <set>/<profile> (see docs/cli.md#specifiers)')
     }
-    const destination = syncToDisk(output, set)
-    if (io.json) io.print(JSON.stringify(payload)); else io.print(`Synced ${set.name} to ${destination}`)
+    const allowedOptions = new Set(['--project', '--out', '--version', '--target', '--json', '--force-helpers'])
+    const unknownOption = args.find(value => value.startsWith('--') && !allowedOptions.has(value))
+    if (unknownOption) throw new Error(`instruction_set_sync_option_unknown:${unknownOption}`)
+    const output = requiredOptionValue(args, '--out') ?? '.'
+    const plan = planSyncRequest(reference, requiredOptionValue(args, '--version'), output, project)
+    const payload = await responsePayload(await authedFetch(plan.path, { method: 'GET' }), 'Instruction sets sync') as unknown as SyncPayload
+    const result = syncPayloadToDisk(output, project, plan, payload, {
+      forceHelpers: args.includes('--force-helpers'),
+      target: syncTarget!,
+    })
+    if (io.json) io.print(JSON.stringify({ ...payload, warnings: result.warnings }))
+    else {
+      io.print(`Synced ${reference} to ${result.destination}`)
+      for (const warning of result.warnings) io.print(`Warning: ${warning}`)
+      if (plan.usedRecordedPointer) io.print('Using recorded Pointer values; run orizu instructions update to re-resolve them.')
+    }
     return 0
   }
   if (subcommand === 'show' && (!reference || reference.startsWith('--'))) throw new Error('Instruction set name is required')
@@ -449,10 +629,10 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     }
     return 0
   }
-  const set = payload.instructionSet as { name?: string; description?: string | null; shape?: string[]; status?: string; default?: { versionNumber?: number } | null; profiles?: Array<{ modelConfigIdentity?: string | null; production?: { versionNumber?: number } | null; latestVersionNumber?: number | null }> } | undefined
+  const set = payload.instructionSet as { name?: string; description?: string | null; shape?: string[]; status?: string; default?: { modelConfigIdentity?: string } | null; profiles?: Array<{ modelConfigIdentity?: string | null; production?: { versionNumber?: number } | null; latestVersionNumber?: number | null }> } | undefined
   io.print(`${set?.name || reference}${set?.status === 'archived' ? ' [archived]' : ''}: ${set?.shape?.join(', ') || ''}`)
   if (set?.description) io.print(`Description: ${sanitizeHumanInlineText(sanitizeTerminalText, set.description)}`)
-  if (set?.default) io.print(`Default: v${set.default.versionNumber ?? '?'}`)
+  if (set?.default?.modelConfigIdentity) io.print(`Default: ${sanitizeTerminalText(set.default.modelConfigIdentity)}`)
   for (const profile of set?.profiles || []) {
     io.print(`${profile.modelConfigIdentity || 'unspecified'}: production ${profile.production ? `v${profile.production.versionNumber}` : '—'}, latest ${profile.latestVersionNumber ?? '—'}`)
   }

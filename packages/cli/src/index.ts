@@ -40,6 +40,7 @@ import { parseGlobalFlags } from './global-flags.js'
 import { shouldUseHeadlessLogin, waitForHeadlessAuthorization } from './headless-login.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
 import { runLocalAppPreview } from './preview-runtime.js'
+import { formatScoreForCli } from './score-format.js'
 import { readAssignmentManifestJsonlFile } from './task-assignment-manifest.js'
 import {
   assertSecureTokenTransport,
@@ -1403,10 +1404,13 @@ async function showScorerDetail() {
   const scorerId = getPositionalArg(2)
   const project = getArg('--project') || await resolveProjectSlug(null)
   if (!scorerId) {
-    throw new Error('Usage: orizu scorers detail <scorer-id-or-name> --project <team/project> [--json]')
+    throw new Error('Usage: orizu scorers detail <scorer-id-or-name> --project <team/project> [--profile-version <id>] [--json]')
   }
 
-  const response = await authedFetch(`/api/cli/scorers/${encodeURIComponent(scorerId)}?project=${encodeURIComponent(project)}`)
+  const scorerParams = new URLSearchParams({ project })
+  const profileVersionId = getArg('--profile-version')
+  if (profileVersionId) scorerParams.set('profileVersionId', profileVersionId)
+  const response = await authedFetch(`/api/cli/scorers/${encodeURIComponent(scorerId)}?${scorerParams.toString()}`)
   if (!response.ok) {
     throw new Error(`Failed to fetch scorer: ${await response.text()}`)
   }
@@ -1420,6 +1424,13 @@ async function showScorerDetail() {
   const scorer = data.scorer as Record<string, unknown> | undefined
   printLine(`${sanitizeTerminalText(String(scorer?.name || scorerId))}`)
   printLine(`Metric: ${sanitizeTerminalText(String(scorer?.metricLabel || 'Score'))}`)
+  const scoreRuns = Array.isArray(scorer?.scoreRuns) ? scorer.scoreRuns : []
+  for (const value of scoreRuns) {
+    if (!value || typeof value !== 'object') continue
+    const scoreRun = value as Record<string, unknown>
+    const formattedScore = formatScoreForCli(scoreRun.scoreValue, scoreRun.scoreFormat)
+    printLine(`Score run ${sanitizeTerminalText(String(scoreRun.id || '?'))}: ${sanitizeTerminalText(formattedScore)} (Profile Version ${sanitizeTerminalText(String(scoreRun.profileVersionId || '—'))})`)
+  }
 }
 
 async function setScorerLabel() {

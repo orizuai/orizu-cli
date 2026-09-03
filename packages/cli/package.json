@@ -28,14 +28,14 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.201",
-    "@vercel/sandbox": "1.10.2"
+    "@vercel/sandbox": "1.10.2",
+    "esbuild": "^0.25.8"
   },
   "devDependencies": {
     "@daytonaio/sdk": "0.193.0",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4.1.7",
     "@types/node": "^24.0.0",
-    "esbuild": "^0.25.8",
     "postcss": "^8.5.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",

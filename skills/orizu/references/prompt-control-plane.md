@@ -47,7 +47,7 @@ orizu instructions profiles new planner --project core/evals --model-config anth
 orizu instructions profiles promote planner --project core/evals --model-config anthropic/claude-haiku --version 2
 orizu instructions profiles rollback planner --project core/evals --model-config anthropic/claude-haiku --to 1
 orizu instructions default show planner --project core/evals
-orizu instructions default move planner --project core/evals --model-config anthropic/claude-haiku --version 2
+orizu instructions default move planner --project core/evals --model-config anthropic/claude-haiku
 orizu instructions shape add planner --project core/evals --key safety --from ./orizu.instruction-set.json
 orizu instructions shape remove planner --project core/evals --key safety
 orizu instructions archive planner --project core/evals --json
@@ -59,10 +59,11 @@ component-key `shape`, and `components`; every shape key needs a set-wide
 component (`key` plus `text` or a manifest-relative `path`). A component may
 additionally specify `modelConfig` to override that key in a named profile.
 Create materializes each named profile with its complete base-plus-override
-component map. The default starts on the seed profile version. A profile with a
-production version resolves to that component map; a profile without one
-resolves to the default. Sets accept either their stable slug or exact display
-name. Archiving changes list visibility only, so archived sets still resolve
+component map. The Default names a Profile, not a version, and newly created
+Profiles have no Production until explicitly promoted. Resolution uses only the
+requested Profile's Production; an unset Production is a named refusal and
+never falls back to the Default. Sets accept either their stable slug or exact
+display name. Archiving changes list visibility only, so archived sets still resolve
 and sync; use `--status archived` or `--status all` to find them before
 restoring.
 
@@ -71,23 +72,26 @@ production pointers in place. The instruction set does not resolve for affected
 model configs until those pointers move to their new shape-change versions; use
 the follow-up commands printed by the text CLI.
 
-Before moving a default, `default show` lists the model configs whose
-resolution would change. A move targets a version by model-config identity and
-version number, and the database rejects an unsealed or non-commit-anchored
-component map. Shape changes create a new `shape_change` version for every profile;
-they do not repoint the default or any production label.
+`default show` reports the Default Profile and the Version its Production
+currently names, or `null` when that Profile is unpromoted. `default move`
+targets a Profile by model-config identity, never a Version, and does not move
+Production. Moving Default to an unpromoted Profile makes bare resolution refuse
+with `instruction_set_profile_not_promoted`; no other Profile falls back to it.
+Shape changes create a new `shape_change` Version for every Profile; they do not
+repoint Default or any Production label.
 
 Sync an offline runner directory with `orizu instructions sync planner
---out ./instructions --project core/evals`. The layout root is the stable set
-slug (`./instructions/planner/`), containing `manifest.json`,
-`default/<key>.md`, and `profiles/<identity-slug>/<key>.md`; loaders are
-`loadInstructionSet(dir, setReference, modelConfigIdentity)` in TypeScript and
-`load_instruction_set(dir, set_reference, model_config_identity)` in Python.
-Prefer the stable slug; exact manifest names remain accepted for compatibility. A
-Git-pinned component is recorded in the manifest but is intentionally not
-downloaded; either loader raises `instruction_set_component_unavailable`. A
-missing or unreadable local component file is distinct:
-`instruction_set_component_unreadable`.
+--out ./instructions --project core/evals`. Sync resolves the bare Set as
+Default Profile → that Profile's Production Version, then writes immutable
+material under the version-addressed paved directory documented in
+`cli-reference.md` and records Default and Production pointers in
+`./instructions/orizu/orizu.lock.json`.
+A named or Default Profile without Production refuses with
+`instruction_set_profile_not_promoted`; nothing falls back. Runtime consumers
+use the generated Component module described in `cli-reference.md`. A Git-pinned
+component stays recorded rather than downloaded and raises
+`instruction_set_component_unavailable` until the application resolves its
+canonical Git bytes.
 
 The sync manifest carries immutable `projectId` and `instructionSetId`; modern
 sync replacement requires both identities as well as the slug to match.

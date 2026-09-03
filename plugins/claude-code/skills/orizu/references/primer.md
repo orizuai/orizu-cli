@@ -17,7 +17,7 @@ First win builds the evidence and ends at a completed optimization run. Promote 
 
 The CLI covers this operational loop. Start instruction sets with `orizu instructions`: one instruction set per agent or LLM experience, one profile per model config, and components owned by that profile. Human annotation happens through apps/tasks only for required ground truth, while judge/scorer logic and optimization execution run locally and report back through the instruction control plane. The active flow file owns ordering and its exit criterion; this primer explains why the stages exist rather than replacing that procedure.
 
-An instruction-set manifest carries its `name`, optional `description`, fixed, ordered `shape`, and component values. The set's slug is its stable CLI reference even when its display name changes. Profiles have their own component values; components are never shared between profiles or sets. The set-wide default serves model configs without a production profile version.
+An instruction-set manifest carries its `name`, optional `description`, fixed, ordered `shape`, and component values. The set's slug is its stable CLI reference even when its display name changes. Profiles have their own component values; components are never shared between profiles or sets. Default names one Profile, and a bare Set resolves only through that Profile's Production. A missing or unpromoted requested Profile refuses with a named error instead of using Default.
 
 Start by inspecting the set, then follow the [Authority map](authority-map.md)
 for mutation custody before syncing through the same surface:

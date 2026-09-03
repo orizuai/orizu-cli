@@ -124,8 +124,8 @@ For a multi-component seed, list every original key once in `shape`, in stable
 order, and add one component entry per key. `--model-config` selects the
 profile whose seed is created; it must name an existing model config with the
 same settings used by the original script. The JSON result includes the set's
-stable `slug` and its default profile version. Record the slug — later reads,
-optimization, archiving, and restoration should use it even if the display
+stable `slug`, its Default Profile, and that Profile's nullable Production
+version. Record the slug — later reads, optimization, archiving, and restoration should use it even if the display
 name changes.
 
 ## 4. Wrap their metric in a scorer runner
@@ -353,10 +353,10 @@ reflection model is refused at launch without it
 `packages/orizu-gepa/src/orizu_gepa_connector/runtime.py:193-196`). Drop it only
 if you also pass an `openai/...` `--reflection-model`.
 
-`--instruction-set` and `--model-config` select exactly one profile. The CLI
-uses that profile's production version when it has one and otherwise uses the
-set default; it refuses the legacy `--candidate-version-id` selector when the
-instruction-set selectors are present. `round-robin` updates one component per
+`--instruction-set` and `--model-config` select exactly one Profile. The CLI
+uses only that Profile's Production Version. A missing or unpromoted Profile
+refuses with a named error instead of using Default; the CLI also refuses the
+legacy `--candidate-version-id` selector when the instruction-set selectors are present. `round-robin` updates one component per
 round; use `--component-selector all` only when every component should be
 reflected on each round.
 

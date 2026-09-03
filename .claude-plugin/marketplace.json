@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Official Orizu plugins: eval-first LLM optimization workflows powered by the Orizu CLI.",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "plugins": [
     {

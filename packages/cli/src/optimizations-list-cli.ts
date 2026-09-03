@@ -28,6 +28,7 @@ interface OptimizationRunSummary {
   archiveStatus?: string
   archivedAt?: string | null
   optimizerVersionId: string | null
+  profileVersionId: string | null
   datasetVersionId: string | null
   bestScore: number | null
   resultPromptVersionId: string | null
@@ -80,11 +81,13 @@ export async function listOptimizationRunsCommand(args: string[], io: Optimizati
   if (!['active', 'archived', 'all'].includes(status)) {
     throw new Error(
       'Usage: orizu optimizations list [--project <team/project>] ' +
-      '[--status active|archived|all] [--json]'
+      '[--status active|archived|all] [--profile-version <id>] [--json]'
     )
   }
   const params = new URLSearchParams({ project })
   if (status !== 'active') params.set('status', status)
+  const profileVersionId = argValue(args, '--profile-version')
+  if (profileVersionId) params.set('profileVersionId', profileVersionId)
   const response = await fetcher(`/api/cli/optimization-runs?${params.toString()}`)
   if (!response.ok) {
     throw new Error(
@@ -121,13 +124,13 @@ export async function listOptimizationRunsCommand(args: string[], io: Optimizati
     'ARCHIVE'.length,
     ...rows.map(row => String(row.archiveStatus || 'active').length)
   )
-  io.print(`${'ID'.padEnd(idWidth)}  ${'STATUS'.padEnd(statusWidth)}  ${'ARCHIVE'.padEnd(archiveWidth)}  BEST   PROMOTED_VERSION`)
-  io.print(`${'-'.repeat(idWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(archiveWidth)}  ${'-'.repeat(5)}  ${'-'.repeat('PROMOTED_VERSION'.length)}`)
+  io.print(`${'ID'.padEnd(idWidth)}  ${'STATUS'.padEnd(statusWidth)}  ${'ARCHIVE'.padEnd(archiveWidth)}  BEST   PROFILE_VERSION  PROMOTED_VERSION`)
+  io.print(`${'-'.repeat(idWidth)}  ${'-'.repeat(statusWidth)}  ${'-'.repeat(archiveWidth)}  ${'-'.repeat(5)}  ${'-'.repeat('PROFILE_VERSION'.length)}  ${'-'.repeat('PROMOTED_VERSION'.length)}`)
   for (const row of rows) {
     const best = row.bestScore === null || row.bestScore === undefined ? '-' : String(row.bestScore)
     const promoted = row.resultPromptVersionId || '-'
     const archiveStatus = row.archiveStatus || 'active'
-    io.print(`${String(row.id).padEnd(idWidth)}  ${String(row.status).padEnd(statusWidth)}  ${archiveStatus.padEnd(archiveWidth)}  ${best.padEnd(5)}  ${promoted}`)
+    io.print(`${String(row.id).padEnd(idWidth)}  ${String(row.status).padEnd(statusWidth)}  ${archiveStatus.padEnd(archiveWidth)}  ${best.padEnd(5)}  ${row.profileVersionId || '-'}  ${promoted}`)
   }
   // ALI-1175: label the claim — nothing here is server-attested.
   io.print(BEST_SCORE_PROVENANCE_NOTICE)

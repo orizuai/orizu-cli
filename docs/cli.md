@@ -557,34 +557,242 @@ Exports the stored `.tsx` source for the app's current version by default. Use `
 
 Use the customer-facing `orizu instructions …` namespace for instruction-set
 workflows. The legacy `orizu instruction-sets …` spelling remains a
-compatibility alias, but new workflows should not teach it.
+compatibility alias, but new workflows should not teach it. The on-disk
+`orizu.lock.json` contract is specified in [Instruction set Lock v1](instruction-set-lock.md).
 
 ```bash
 orizu instructions list --project my-team/quality-eval --status active
 orizu instructions show planner --project my-team/quality-eval
-orizu instructions sync planner --out ./instructions --project my-team/quality-eval
+orizu instructions sync planner/openai/gpt-5.6-luna@v2 --out . --target ts --project my-team/quality-eval
+orizu instructions update --out . --project my-team/quality-eval
+orizu instructions prune --out . --keep planner/openai/gpt-5.6-luna@v2
 orizu instructions profiles new planner --project my-team/quality-eval --model-config anthropic/claude-haiku
 # After prior plan ratification, a local agent under the user's token runs create/push; hosted sessions hand them to a human.
 orizu instructions push ./orizu.instruction-set.json --project my-team/quality-eval --set planner --json
 ```
 
-`sync` writes `<out>/<stable-set-slug>/manifest.json` with immutable `projectId`
-and `instructionSetId` ownership fields. Pass that stable slug to the
-TypeScript or Python offline loader; exact manifest names remain accepted for
-compatibility with earlier sync layouts. The unversioned instruction-set
-description round-trips through the sync manifest.
+### Specifiers
 
-The push manifest is a separate file and must carry the sync manifest's name,
-description, and ordered shape plus a complete set-wide component entry for
-every key. `--model-config` selects a profile on `profiles new` and `sync`;
-`push` targets the existing set with `--set` and reads profile overrides from
-each component's `modelConfig` field.
+`sync` accepts `set`, `set/profile`, and `set/profile@vN` Specifiers; `--version N`
+is equivalent to `@vN` when a Profile is present. A bare set resolves its Default
+Profile and then that Profile's Production Version. A Profile Specifier resolves
+its Production Version. Unset Production is a hard error that names the exact
+`profiles promote` command; it never falls back. The retired sync-only
+`--model-config` option refuses with guidance to use `set/profile`. Supplying
+`--out` or `--version` without a value is an error naming that option. Any
+other unrecognized sync flag refuses as `instruction_set_sync_option_unknown:<flag>`.
 
-A pre-slug manifest has no immutable project/set identity, so a modern sync
-cannot safely prove it owns that directory in a shared `--out` root. The CLI
-refuses it with `instruction_set_sync_legacy_identity_required`; move the old
-tree aside or choose a clean output root, verify the intended project, and sync
-again. It never auto-deletes the identity-less tree.
+The Default names a Profile, never a version. `default move` therefore accepts
+`--model-config` and rejects `--version`; move Production first with
+`instructions profiles promote`.
+
+`default show --json` returns:
+
+```json
+{"default":{"profileId":"<uuid>","modelConfigIdentity":"openai/gpt-5.4-mini","production":{"profileVersionId":"<uuid>","versionNumber":8}}}
+```
+
+`production` is `null` when the Default Profile is not promoted, and `default`
+is `null` when the Default is unset. `default move --json` returns the standard
+`{"instructionSet": ...}` envelope. Neither payload contains
+`resolvesToDefault` or a `resolvedFrom: "default"` fallback report.
+
+`--target` selects the generated modules and Helpers and defaults to `ts`.
+TypeScript is currently the only target; any other value refuses before network
+or disk access with `instruction_set_sync_target_unsupported:<value>`. The target
+is not recorded in the Lock or Version manifest: those files and exact
+`components/*.prompt.md` bytes are language-neutral.
+
+`--out` names the app root and defaults to `.`. Sync writes one atomic Synced
+version under:
+
+```text
+<out>/orizu/instruction-sets/<set-slug>/<profile-slug>/v<N>/
+  manifest.json
+  components/<name>.prompt.md
+  components.generated.ts
+<out>/orizu/helpers/load.ts, provenance.ts, verify.ts (+ matching .selfcheck.ts files)
+<out>/orizu/generated/index.ts
+<out>/orizu/orizu.lock.json
+<out>/.gitattributes              # orizu/generated/** linguist-generated=true
+```
+
+For the `ts` target, the only target-specific files are
+`components.generated.ts`, `generated/index.ts`, and `helpers/*.ts`.
+`generated/index.ts` contains static imports for every Synced version in the
+Lock. `loadInstructions(specifier)` uses only that generated map and the Lock
+values embedded from sync time: it never calls Orizu, dynamically imports a
+path, or re-resolves a Pointer. It returns Components, settings from the Version
+manifest, and exact Provenance from the selected Lock entry atomically. The
+returned `generatedProvenance` retains the Version module's claim so
+`verifyIntegrity({ ...loaded, digest: loaded.provenance.digest }, lock)` can
+cross-check it against the Lock before hashing the strings and settings the
+process actually loaded. Identity substitution and whitespace-only changes are
+detected. `settings` is required on verifier input, including when it is `{}`. Non-empty settings
+use sorted-key, whitespace-free canonical JSON in the whole-Version digest;
+missing or non-finite settings fail closed.
+
+The vendored `*.selfcheck.ts` files use no runner globals and avoid test-runner
+discovery globs. They export `runLoadSelfCheck()` and `runVerifySelfCheck()` so
+a customer's Bun, Vitest, or other runner can invoke them from an ordinary test
+wrapper.
+
+`provenanceOf(loaded)` returns the loaded Synced version's exact Provenance.
+`attachProvenance(target, loaded)` writes the stable attributes
+`orizu.instruction_set.id`, `orizu.profile_version.id`, and
+`orizu.instruction_set.digest` to a duck-typed OpenTelemetry span or merges them
+into a plain attribution object. See [Instruction Set Helpers](instruction-set-helpers.md)
+for both ingestion paths and read-back commands.
+
+The Lock fingerprints every vendored Helper. On re-sync, a Helper whose bytes no
+longer match its recorded pristine fingerprint is preserved and named in a
+warning. Pass `--force-helpers` to overwrite edited Helpers and refresh their
+fingerprints. Helpers whose bytes already match the current template are also
+pristine, allowing a re-sync to recover if a prior upgrade wrote a Helper but
+was interrupted before writing the Lock. In `--json` mode every warning appears
+in the single output document's always-present `warnings` array. Managed
+artifact paths are symlink-confined beneath the app root. The generated import
+map is machine-owned and is marked through the app root's `.gitattributes`.
+
+Component files preserve the API bytes exactly. The Version manifest includes
+that Profile Version's frozen Model Config `settings`; `components.generated.ts`
+exports the same object through its `manifest` export. Settings live only in the
+Version manifest, not the Lock, and non-empty settings participate in the
+whole-Version digest. `instructions show --json` exposes every Profile Version
+as a `versions` entry with its `settings`. The Version manifest and Lock carry
+the same Component hashes and whole-Version digest. If an existing Lock entry
+disagrees on any immutable Version field, sync refuses with
+`instruction_set_sync_version_conflict:<set>/<profile>@vN`; only `syncedAt` is
+preserved independently. Re-syncing a present Version writes nothing and
+preserves `syncedAt`; syncing another Version is additive. If the Lock records a
+non-null Default or Production Pointer needed by
+the Specifier, `sync` uses that value and prints an `update` hint rather than
+re-resolving it; `null` means the Pointer was never resolved, so `sync` may fill
+it once.
+
+### Updating Pointers and pruning Versions
+
+`update` is the only verb that re-resolves recorded Pointers. It reads the
+current Default for every set and the current Production for every Profile in
+the Lock, then prints a before/after plan. It changes no files without `--yes`:
+
+```bash
+orizu instructions update --out . --project my-team/quality-eval
+orizu instructions update --out . --project my-team/quality-eval --yes
+```
+
+Approved updates sync newly referenced Versions by default, so the repository
+is not left pointing at absent material. `--no-sync` opts out: the Lock records
+the fresh Pointers and output names every referenced-but-absent exact Specifier.
+Sync those Specifiers before verify or runtime use. Existing Versions retain
+their original `syncedAt`; Pins and unrelated Lock fields are preserved. Any
+unset Production refuses with `instruction_set_pointer_unresolved:production`
+and never falls back.
+
+`prune` runs offline verify first and refuses with
+`instruction_set_prune_unverified` if verification has failures (warnings are
+allowed). It prints each unreferenced Version folder and does nothing without
+`--yes`:
+
+```bash
+orizu instructions prune --out .
+orizu instructions prune --out . --keep planner/openai/gpt-5.6-luna@v2 --yes
+```
+
+Production Pointers, customer-owned Lock Pins, and repeatable exact `--keep`
+Specifiers are retained. Lock Pins are durable; `--keep` is invocation-local.
+Malformed Specifiers refuse rather than silently retaining a wider set.
+Value-less `--out`/`--keep` options refuse with
+`instruction_set_prune_option_missing_value:<flag>`, and every unknown prune
+option refuses with `instruction_set_prune_option_unknown:<flag>` before a plan
+or deletion. A `--keep` or Lock Pin that resolves to no recorded Version refuses
+with `instruction_set_prune_keep_unresolved:<specifier>`; the diagnostic names
+whether each unresolved Specifier came from `--keep` or `lock.pins`. If a
+Profile's final managed Version is beside unmanaged entries,
+prune skips that Version so the Profile stays referenced and reports the entry
+names.
+
+### Offline verification and CI step
+
+`verify` reads only the target tree. It requires no credentials, never calls
+Orizu, exits 1 when any check fails, and leaves the exit status at 0 for warnings
+alone:
+
+```bash
+orizu instructions verify --out .
+```
+
+A GitHub Actions step can use the same command:
+
+```yaml
+- name: Verify synced Orizu instructions
+  run: npx orizu instructions verify --out .
+```
+
+The four output groups check the Version manifests against the Lock, exact
+Component bytes and imported `components.generated.ts` values, bytes returned by
+the vendored `loadInstructions` Helper through `verifyIntegrity`, and Pointer /
+folder / import-map / Helper consistency. A modified fingerprinted Helper is a
+warning because Helpers are customer-editable; a fingerprinted Helper missing
+from disk is a failure. A missing `generated/index.ts` causes `helper_import_failed` and exit 1
+because the runtime load Helper consumes that map; a present incomplete map is
+also a failure. Runtime probes execute only integrity-checked generated modules
+and scrub the child environment to basic process paths and `NO_COLOR`; Orizu
+credentials and unrelated CI secrets are not inherited. A `default` Profile
+that has not been synced is valid Lock state and is not probed or reported.
+
+`--json` emits one document with this stable shape:
+
+```json
+{
+  "ok": false,
+  "groups": { "group1": "PASS", "group2": "FAIL", "group3": "PASS", "group4": "PASS" },
+  "failures": [
+    { "group": "group2", "code": "component_hash_mismatch", "path": "instruction-sets/planner/openai__gpt/v2/components/system.prompt.md", "expected": "sha256:…", "found": "sha256:…" }
+  ],
+  "warnings": []
+}
+```
+
+Every failure uses one of these named codes:
+
+- Group 1: `version_manifest_invalid`, directory identity and Provenance mismatch codes,
+  `manifest_instruction_set_id_mismatch`, `manifest_profile_version_id_mismatch`,
+  `manifest_version_number_mismatch`, `manifest_digest_mismatch`.
+- Group 2: `component_missing`, `component_not_regular_file`, `component_unreadable`,
+  `component_unexpected:<name>`, `component_hash_mismatch`,
+  `manifest_component_hash_mismatch`, `manifest_component_not_locked`,
+  `version_digest_mismatch`, `generated_components_missing`,
+  `generated_components_invalid`, `generated_components_import_failed`,
+  `generated_component_mismatch`, `generated_manifest_invalid`,
+  `generated_manifest_mismatch:<field>`, `generated_module_drift`.
+- Group 3: `helpers_missing`, `helper_import_failed`, `helper_import_timeout`,
+  `helper_exports_invalid`, `load_failed`, `pointer_load_failed`, `integrity_failed`,
+  `helper_integrity_inert`, `helper_provenance_mismatch`, `helper_rejection_inert`,
+  and loaded/Pointer identity mismatch codes.
+- Group 4: `lock_invalid`, `default_pointer_target_missing`, `pointer_target_missing`,
+  `lock_version_folder_missing`, `orphan_version_folder`,
+  `orphan_instruction_set_folder`, `orphan_profile_folder`,
+  `helper_path_unsafe`, `helper_missing`, `helper_fingerprint_missing`,
+  `generated_lock_stale`, `generated_module_drift`, `import_map_mismatch`,
+  `import_map_destination_mismatch:<specifier>`.
+
+Warnings use `helper_modified` or `import_map_missing` and never change the exit
+status. Each finding names a path; hash comparisons also include `expected` and
+`found`.
+
+### Migrating the legacy sync layout
+
+The retired set-level `manifest.json`, `default/`, and `profiles/` tree cannot be
+mixed with the paved-path layout. If `<out>` contains that legacy tree for the
+set, sync refuses with `instruction_set_sync_legacy_layout`. Move the old tree
+aside, verify the intended project and Profile Version, run the version-addressed
+sync, then review and remove the old tree. The CLI never auto-deletes it.
+
+The shipped legacy TypeScript and Python loaders do not read the paved tree. If
+they see one, they fail with `instruction_set_legacy_loader_retired` and this
+migration anchor instead of reporting it as generically not synced. Paved-path
+replacement loaders arrive with the later Helper work.
 
 ## Legacy prompt reads
 
@@ -1042,11 +1250,15 @@ component or judge version as a prompt version id.
 
 ### Scorers
 
-List active scorers by default or select archive visibility explicitly:
+List active scorers by default or select archive visibility explicitly. Scorer
+detail lists recent Score runs and can filter them by the exact Profile Version
+recorded in their Provenance:
 
 ```bash
 orizu scorers list --project my-team/quality-eval
 orizu scorers list --project my-team/quality-eval --status archived
+orizu scorers detail accuracy --project my-team/quality-eval --profile-version <profile-version-id>
+orizu optimizations list --project my-team/quality-eval --profile-version <profile-version-id>
 ```
 
 Register a scorer:

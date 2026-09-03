@@ -87,12 +87,15 @@ orizu instructions list --project my-team/quality-eval [--status active|archived
 orizu instructions show <set> --project my-team/quality-eval [--status active|archived|all] [--json]
 orizu instructions create ./orizu.instruction-set.json --project my-team/quality-eval [--runner-version <id>] [--model-config <identity>] [--json]
 orizu instructions push ./orizu.instruction-set.json --project my-team/quality-eval [--set <slug-or-exact-name>] [--runner-version <id>] [--json]
-orizu instructions sync <set> --out ./instructions --project my-team/quality-eval [--model-config <identity>] [--json]
+orizu instructions sync <set|set/profile|set/profile@vN> [--version <n>] [--out <app-root>] [--target ts] [--force-helpers] --project my-team/quality-eval [--json]
+orizu instructions update [--out <app-root>] --project my-team/quality-eval [--no-sync] [--yes] [--json]
+orizu instructions prune [--out <app-root>] [--keep <set/profile@vN>]... [--yes] [--json]
+orizu instructions verify [--out <app-root>] [--json]
 orizu instructions profiles new <set> --project my-team/quality-eval --model-config <identity> [--json]
 orizu instructions profiles promote <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
 orizu instructions profiles rollback <set> --project my-team/quality-eval --model-config <identity> --to <n> [--json]
 orizu instructions default show <set> --project my-team/quality-eval [--json]
-orizu instructions default move <set> --project my-team/quality-eval --model-config <identity> --version <n> [--json]
+orizu instructions default move <set> --project my-team/quality-eval --model-config <identity> [--json]
 orizu instructions shape add <set> --project my-team/quality-eval --key <key> --from <manifest> [--json]
 orizu instructions shape remove <set> --project my-team/quality-eval --key <key> [--json]
 orizu instructions archive <slug-or-exact-name> --project my-team/quality-eval [--json]
@@ -121,11 +124,14 @@ prompt's production label in the same transaction and print `default profile →
 prompt label`. This coupling is one-way: moving the prompt label directly does
 not repoint the profile.
 
-`default show` reports the default and the model configs that currently resolve
-to it. `default move` first reads that impact before moving
-the pointer to a sealed, commit-anchored profile version. `shape add` and
-`shape remove` create a new complete version for every profile; they never move
-the default or a production label. The set does not resolve for affected model
+`default show` reports the Default Profile and the version its Production
+currently points at, or `null` when that Profile is unpromoted. Default names a
+Profile, never a version, and exposes no fallback or affected-Profile list.
+`default move` repoints
+Default to the named Profile without moving Production; if that Profile is
+unpromoted, bare resolution refuses with `instruction_set_profile_not_promoted`.
+`shape add` and `shape remove` create a new complete version for every profile;
+they never move Default or a Production label. The set does not resolve for affected model
 configs until those pointers move to the new shape-change profile versions; the
 text CLI prints the required follow-up commands.
 
@@ -139,24 +145,54 @@ with the set-wide component map plus its overrides, while `push` updates named
 profiles already present on the set. `push` refuses a manifest whose shape
 differs from the stored set.
 
-`sync` writes `<out>/<stable-set-slug>/manifest.json`, `default/<key>.md`, and
-`profiles/<identity-slug>/<key>.md` for offline execution. TypeScript runners
-use `loadInstructionSet(dir, setReference, modelConfigIdentity)` from `orizu`;
-Python runners use
-`orizu_gepa_connector.instruction_set_loader.load_instruction_set`. Prefer the
-stable slug as `setReference`; both loaders also resolve the manifest's exact
-name for compatibility with directories synced before slugs shipped. The
-manifest's immutable `projectId` and `instructionSetId` prevent a shared
-`--out` root from replacing another project's same-slug set.
-Identity-less pre-slug trees cannot prove project ownership and are preserved;
-sync returns `instruction_set_sync_legacy_identity_required` until the operator
-moves the old tree aside or selects a clean output root.
-Both select that model config's production component map or the default without a
-network call. Git-pinned components have no local bytes: loading one raises
-`instruction_set_component_unavailable` until the runner supplies those bytes.
-An existing manifest file that cannot be read is instead
-`instruction_set_component_unreadable`, which means re-sync or repair disk
-state rather than supplying a Git-pinned component.
+`sync --target ts` (the default and currently the only supported target) writes
+one immutable Synced version under
+`<out>/orizu/instruction-sets/<set-slug>/<profile-slug>/vN/`: exact Component
+bytes in `components/<name>.prompt.md`, a Version manifest, and
+`components.generated.ts` for runtimes without filesystem access. The Version
+manifest and its generated `manifest` export include the Profile Version's
+frozen `settings`; `instructions show --json` exposes settings for every Version.
+Non-empty settings participate in the Version digest but settings do not appear
+in the Lock. Sync updates `<out>/orizu/orizu.lock.json`, whose IDs and hashes
+attest the same Synced version. A runtime selects committed material from the
+Lock without calling Orizu. The shipped legacy TypeScript and Python loaders
+fail paved trees with `instruction_set_legacy_loader_retired` and migration
+guidance; do not infer a fallback from another Profile.
+
+Sync vendors fingerprinted `helpers/load.ts` and `verifyIntegrity` support. The
+loader imports Version material only from `generated/index.ts`, whose static
+imports are reconciled by sync and prune; it uses no filesystem or computed
+dynamic imports. Re-sync refreshes an unedited Helper and its pristine
+fingerprint. Customer edits are preserved unless `--force-helpers` is supplied.
+The generated tree is marked with `orizu/generated/** linguist-generated=true`.
+
+The retired set-level `manifest.json`, `default/`, and `profiles/` tree is never
+written or loaded by the paved path. If it exists, sync preserves it and refuses
+with `instruction_set_sync_legacy_layout`; follow the migration guide in
+`docs/cli.md` and then use the paved-path Lock and generated module.
+
+`update` is the only command that re-resolves recorded Default and Production
+Pointers. It prints every before/after value and is a no-op until `--yes`.
+Approved updates sync newly referenced Versions by default. `--no-sync` records
+the new Pointer values without materializing absent Versions and names every
+absent exact Specifier, so follow it with exact sync commands before verify or
+runtime use. An unset Production refuses with
+`instruction_set_pointer_unresolved:production`; it never falls back.
+
+`prune` first runs the real offline verify gate, then lists unreferenced Version
+folders. It is also a no-op until `--yes`. It retains every Production Pointer,
+customer-owned Lock Pins, and each repeatable exact `--keep <set/profile@vN>`.
+Lock Pins are durable repo policy; `--keep` applies only to that invocation.
+Malformed Specifiers refuse rather than broadening retention. Value-less
+`--out`/`--keep` options refuse with
+`instruction_set_prune_option_missing_value:<flag>`, and unknown prune options
+refuse with `instruction_set_prune_option_unknown:<flag>` before planning or
+applying. A `--keep` or Lock Pin that resolves to no recorded Version refuses
+with `instruction_set_prune_keep_unresolved:<specifier>`; the diagnostic names
+whether each unresolved Specifier came from `--keep` or `lock.pins`. If a
+Profile's final managed Version is beside unmanaged entries,
+prune skips that Version so the Profile stays referenced and reports the entry
+names.
 
 ### Apps
 
@@ -520,13 +556,68 @@ Worker assignment reads are self-only:
 - Use `tasks status` and `tasks export` for operator-side reporting.
 ### Offline instruction-set sync
 
-`orizu instructions sync <set> --project <team/project> --out <dir>` writes
-an atomic local manifest. A resolver failure for either the default or any
-selected profile refuses the entire sync as `instruction_set_unresolvable`; the
-route never silently downgrades a failed production component map to default bytes. A
-filtered `--model-config` sync records `filteredTo`, and a loader must refuse an
-identity excluded by that marker with `instruction_set_profile_not_synced`.
+`orizu instructions sync` accepts `set`, `set/profile`, and `set/profile@vN`
+Specifiers; `--version N` is the exact-Version equivalent when a Profile is
+present. The retired sync `--model-config` option refuses; use `set/profile`.
+Unknown sync flags refuse with `instruction_set_sync_option_unknown:<flag>`.
+Value-less `--out` and `--version` options refuse by name. `--target` defaults
+to `ts`; unsupported values refuse before network or disk access with
+`instruction_set_sync_target_unsupported:<value>`. The target selects generated
+modules and Helpers only and is not recorded in the Lock or Version manifest.
+`--out` names the app root and defaults to `.`. It writes exact Component bytes,
+a Version manifest, and `components.generated.ts` under
+`<out>/orizu/instruction-sets/<set-slug>/<profile-slug>/vN/`. It also writes
+vendored `helpers/load.ts`, `helpers/provenance.ts`, `helpers/verify.ts`,
+runner-agnostic Helper self-tests, a static-only `generated/index.ts` import map,
+and `<out>/orizu/orizu.lock.json`. For the TypeScript target, only
+`components.generated.ts`, `generated/index.ts`, and `helpers/*.ts` are
+target-specific; Component files, Version manifests, and the Lock remain
+language-neutral. The loader returns Components and Version-manifest settings
+plus Provenance from the selected Lock entry without calling Orizu or
+re-resolving a Pointer. It also retains the generated module's Provenance claim
+for offline integrity cross-checking. An existing Lock Version whose immutable
+IDs or hashes disagree refuses with `instruction_set_sync_version_conflict`;
+only its `syncedAt` observation is preserved. `attachProvenance(target, loaded)`
+sets `orizu.instruction_set.id`, `orizu.profile_version.id`, and
+`orizu.instruction_set.digest` on a span-like target or plain attribution object.
+Filter read-back with `scorers detail --profile-version <id>` or
+`optimizations list --profile-version <id>`.
 
-Use `import { loadInstructionSet } from 'orizu/instruction-set-loader'` for the
-small typed TypeScript loader surface; Python uses
-`from orizu_gepa_connector import load_instruction_set`.
+The Lock fingerprints exact pristine Helper bytes, including runner-safe
+`load.selfcheck.ts`, `provenance.selfcheck.ts`, and `verify.selfcheck.ts` files. Re-sync warns and preserves
+an edited Helper; `--force-helpers` overwrites it and refreshes the fingerprint.
+Bytes matching the current template recover an interrupted upgrade without a
+warning. `sync --json` includes every warning in one document's always-present
+`warnings` array. `verifyIntegrity({ ...loaded, digest:
+loaded.provenance.digest }, lock)` cross-checks generated Provenance and hashes
+the strings and required Version-manifest settings the process loaded, detecting
+identity substitution, whitespace-only mutation, or a mismatched digest.
+Managed artifact writes are symlink-confined. Emitted code imports no `fs` runtime and
+is suitable for Workers and Node TypeScript targets. The app-root
+`.gitattributes` marks `orizu/generated/** linguist-generated=true`.
+
+Sync reuses non-null Default and Production Pointer values recorded in the Lock
+and prints an `update` hint; a null value was never resolved and may be filled
+once. Unset Production is
+a hard error with a `profiles promote` command. A second identical sync writes
+nothing, and another Version is additive. A retired set-level `manifest.json` /
+`default/` / `profiles/` tree refuses as `instruction_set_sync_legacy_layout`;
+follow the migration guide in `docs/cli.md` rather than mixing layouts.
+
+### Offline instruction-set verification
+
+Use this copy-pasteable CI gate after sync and on every committed change:
+
+```bash
+orizu instructions verify --out .
+```
+
+It is fully offline: do not add credentials or a project flag. It exits non-zero
+for Lock, Version manifest, exact Component byte, generated-module,
+runtime-loaded byte, Pointer, folder, import-map, or missing-Helper failures.
+`--json` emits `{ ok, failures, warnings }` with stable `group`, `code`, `path`,
+`expected`, and `found` fields. A customer-modified fingerprinted Helper is a
+warning and does not change the exit status; a missing fingerprinted Helper is a
+failure. A `default` Profile absent from the synced `profiles` map is valid and
+is not probed. Runtime probes execute only integrity-checked generated modules
+and scrub Orizu credentials and unrelated CI secrets from the child environment.

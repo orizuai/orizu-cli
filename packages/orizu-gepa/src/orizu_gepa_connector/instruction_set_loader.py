@@ -1,7 +1,11 @@
 """Offline reader for the ALI-1532 synced instruction-set layout."""
 
 import json
+import re
 from pathlib import Path
+
+
+LEGACY_LOADER_RETIRED = "instruction_set_legacy_loader_retired: this tree was synced by the paved path; see docs/cli.md#migrating-the-legacy-sync-layout"
 
 
 class InstructionSetLoaderError(Exception):
@@ -18,10 +22,37 @@ def _inside(root: Path, candidate: Path) -> bool:
         return False
 
 
+def _paved_tree_matches_display_name(directory_root: Path, reference: str) -> bool:
+    sets_root = directory_root / "orizu" / "instruction-sets"
+    try:
+        for manifest_path in sets_root.glob("*/*/v*/manifest.json"):
+            if not _inside(directory_root, manifest_path.resolve()):
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if manifest.get("instructionSetName") == reference or manifest.get("instructionSetSlug") == reference:
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _resolve_set_root(directory: str, reference: str) -> Path:
     directory_root = Path(directory).resolve()
     if not directory_root.is_dir():
         raise InstructionSetLoaderError("instruction_set_not_synced")
+    paved_candidates = (
+        directory_root / "orizu" / "instruction-sets" / reference,
+        directory_root / "instruction-sets" / reference,
+    )
+    if (
+        any(candidate.is_dir() and _inside(directory_root, candidate.resolve()) for candidate in paved_candidates)
+        or (not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", reference)
+            and _paved_tree_matches_display_name(directory_root, reference))
+    ):
+        raise InstructionSetLoaderError(LEGACY_LOADER_RETIRED)
     direct = (directory_root / reference).resolve()
     if _inside(directory_root, direct) and direct.is_dir():
         try:
@@ -61,8 +92,13 @@ def load_instruction_set(directory: str, name: str, model_config_identity: str) 
         raise InstructionSetLoaderError("instruction_set_manifest_version_unsupported")
     if manifest.get("filteredTo") and model_config_identity not in manifest["filteredTo"]:
         raise InstructionSetLoaderError("instruction_set_profile_not_synced")
-    production = next((profile.get("production") for profile in manifest.get("profiles", []) if profile.get("modelConfigIdentity") == model_config_identity), None)
-    material = production or manifest.get("default", {})
+    profile = next((profile for profile in manifest.get("profiles", []) if profile.get("modelConfigIdentity") == model_config_identity), None)
+    if profile is None:
+        raise InstructionSetLoaderError("instruction_set_profile_not_found")
+    production = profile.get("production")
+    if production is None:
+        raise InstructionSetLoaderError("instruction_set_profile_not_promoted")
+    material = production
     values: dict[str, str] = {}
     for key in manifest.get("shape", []):
         if key in material.get("pinnedComponents", {}):

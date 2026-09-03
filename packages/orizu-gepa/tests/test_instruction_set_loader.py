@@ -15,6 +15,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPOSITORY_ROOT / "packages/orizu-gepa/src"))
 
 from orizu_gepa_connector.instruction_set_loader import (
+    LEGACY_LOADER_RETIRED,
     InstructionSetLoaderError,
     load_instruction_set,
 )
@@ -76,10 +77,10 @@ class InstructionSetLoaderConformanceTest(unittest.TestCase):
         shutil.copy2(self.fixture_root / self.cases["name"] / "manifest.json", Path(self.temp_dir.name) / self.cases["name"] / "manifest.json")
         manifest_path = Path(self.temp_dir.name) / self.cases["name"] / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        manifest["default"]["files"]["system"] = "../escape.md"
+        manifest["profiles"][0]["production"]["files"]["system"] = "../escape.md"
         manifest_path.write_text(json.dumps(manifest) + "\n")
         with self.assertRaises(InstructionSetLoaderError) as ctx:
-            load_instruction_set(self.temp_dir.name, self.cases["name"], "acme/no-profile")
+            load_instruction_set(self.temp_dir.name, self.cases["name"], "acme/gpt-5.4")
         self.assertEqual(ctx.exception.code, "instruction_set_path_unsafe")
 
     def test_refuses_a_symlink_component_that_resolves_outside_the_set(self):
@@ -88,24 +89,59 @@ class InstructionSetLoaderConformanceTest(unittest.TestCase):
         outside.write_text("outside\n")
         manifest_path = root / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        (root / "default" / "linked.md").symlink_to(outside)
-        manifest["default"]["files"]["system"] = "default/linked.md"
+        (root / "profiles" / "acme__gpt-5.4" / "linked.md").symlink_to(outside)
+        manifest["profiles"][0]["production"]["files"]["system"] = "profiles/acme__gpt-5.4/linked.md"
         manifest_path.write_text(json.dumps(manifest) + "\n")
         with self.assertRaises(InstructionSetLoaderError) as ctx:
-            load_instruction_set(self.temp_dir.name, self.cases["name"], "acme/no-profile")
+            load_instruction_set(self.temp_dir.name, self.cases["name"], "acme/gpt-5.4")
         self.assertEqual(ctx.exception.code, "instruction_set_path_unsafe")
 
     def test_names_an_unreadable_component_differently_from_a_pin(self):
-        (Path(self.temp_dir.name) / self.cases["name"] / "default" / "system.md").unlink()
+        (Path(self.temp_dir.name) / self.cases["name"] / "profiles" / "acme__gpt-5.4" / "system.md").unlink()
         with self.assertRaises(InstructionSetLoaderError) as ctx:
-            load_instruction_set(self.temp_dir.name, self.cases["name"], "acme/no-profile")
+            load_instruction_set(self.temp_dir.name, self.cases["name"], "acme/gpt-5.4")
         self.assertEqual(ctx.exception.code, "instruction_set_component_unreadable")
+
+    def test_refuses_a_paved_tree_addressed_by_display_name(self):
+        # Mutant killed: inspect paved directories only by slug-shaped paths.
+        version = Path(self.temp_dir.name) / "orizu" / "instruction-sets" / "planner" / "openai__gpt" / "v2"
+        version.mkdir(parents=True)
+        (version / "manifest.json").write_text(json.dumps({
+            "instructionSetName": "Planner Agent",
+            "instructionSetSlug": "planner",
+        }))
+        with self.assertRaises(InstructionSetLoaderError) as ctx:
+            load_instruction_set(self.temp_dir.name, "Planner Agent", "openai/gpt")
+        self.assertEqual(ctx.exception.code, LEGACY_LOADER_RETIRED)
 
     def test_loads_directory_written_by_the_built_sync_cli(self):
         """Drive the built public CLI, then load its actual on-disk artifact."""
-        payload = json.loads(
-            (REPOSITORY_ROOT / "test/fixtures/instruction-set-sync-route-payload.json").read_text()
-        )
+        payload = {
+            "instructionSet": {
+                "instructionSetId": "11111111-1111-4111-8111-111111111111",
+                "name": "Planner",
+                "slug": "planner",
+                "defaultProfile": {
+                    "modelConfigIdentity": "acme/default",
+                    "profileSlug": "acme__default",
+                },
+                "profile": {
+                    "modelConfigIdentity": "acme/default",
+                    "profileSlug": "acme__default",
+                    "production": "v2",
+                },
+                "version": {
+                    "profileVersionId": "22222222-2222-4222-8222-222222222222",
+                    "versionNumber": 2,
+                    "components": {
+                        "system": {"body": "Default system\n"},
+                        "skill": {"body": "Default skill\n"},
+                        "tools": {"body": "Default tools\n"},
+                    },
+                    "settings": {"temperature": 0.2, "max_tokens": 512},
+                },
+            }
+        }
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802 - HTTPServer public hook
@@ -159,15 +195,26 @@ class InstructionSetLoaderConformanceTest(unittest.TestCase):
             thread.join()
             server.server_close()
 
-        # Mutants killed: let the writer emit a manifest unreadable by this
-        # loader, or turn a pinned component into empty text on disk.
-        self.assertEqual(
-            load_instruction_set(str(output), "planner", "acme/no-profile"),
-            {"system": "Default system\n", "skill": "Default skill\n", "tools": "Default tools\n"},
+        version_manifest = json.loads(
+            (
+                output
+                / "orizu/instruction-sets/planner/acme__default/v2/manifest.json"
+            ).read_text()
         )
+        self.assertEqual(
+            version_manifest["settings"],
+            {"temperature": 0.2, "max_tokens": 512},
+        )
+
+        # Mutants killed: drop required settings from the public payload,
+        # collapse the paved tree into generic not-synced, or let the retired
+        # loader misinterpret the Version manifest.
         with self.assertRaises(InstructionSetLoaderError) as ctx:
-            load_instruction_set(str(output), "planner", "acme/gpt-5.4")
-        self.assertEqual(ctx.exception.code, "instruction_set_component_unavailable")
+            load_instruction_set(str(output), "planner", "acme/default")
+        self.assertEqual(
+            ctx.exception.code,
+            "instruction_set_legacy_loader_retired: this tree was synced by the paved path; see docs/cli.md#migrating-the-legacy-sync-layout",
+        )
 
 
 if __name__ == "__main__":
