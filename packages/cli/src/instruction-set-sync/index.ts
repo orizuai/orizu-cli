@@ -11,7 +11,7 @@ import {
   type InstructionSetLockV1,
   type ParsedSpecifier,
 } from '../instruction-set-lock/index.js'
-import { assertOutputConfined, emitManagedArtifacts } from './helpers.js'
+import { assertOutputConfined, createManagedArtifactJournal, emitManagedArtifacts } from './helpers.js'
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
 const SYNC_LOCK_WAIT_MS = 5_000
@@ -429,16 +429,6 @@ function assertExistingVersionMatches(
   }
 }
 
-function writeAtomicFile(path: string, bytes: string): void {
-  if (existsSync(path) && readFileSync(path, 'utf8') === bytes) return
-  const temp = `${path}.${randomUUID()}.tmp`
-  writeFileSync(temp, bytes)
-  try { renameSync(temp, path) } catch (error) {
-    rmSync(temp, { force: true })
-    throw error
-  }
-}
-
 interface ObservedSyncLock {
   raw: string
   mtimeMs: number
@@ -704,18 +694,37 @@ export function syncPayloadToDisk(
           [set.profile.profileSlug]: { production, versions },
         },
       }
-      if (stagedTemp) {
-        assertOutputConfined(out, destination)
-        if (existsSync(destination)) {
-          assertExistingVersionMatches(destination, componentHashes, manifestBytes, generatedBytes)
-          rmSync(stagedTemp, { recursive: true, force: true })
-        } else {
-          renameSync(stagedTemp, destination)
+      const journal = createManagedArtifactJournal()
+      const priorHelpers = currentLock.helpers
+      let publishedDestination: string | null = null
+      try {
+        if (stagedTemp) {
+          assertOutputConfined(out, destination)
+          if (existsSync(destination)) {
+            assertExistingVersionMatches(destination, componentHashes, manifestBytes, generatedBytes)
+            rmSync(stagedTemp, { recursive: true, force: true })
+          } else {
+            renameSync(stagedTemp, destination)
+            publishedDestination = destination
+          }
+          stagedTemp = null
         }
-        stagedTemp = null
+        warnings = emitManagedArtifacts(out, appRoot, currentLock, options.forceHelpers ?? false, target, journal)
+        journal.write(join(appRoot, 'orizu.lock.json'), serializeLock(currentLock))
+      } catch (error) {
+        journal.rollback()
+        currentLock.helpers = priorHelpers
+        if (publishedDestination) {
+          rmSync(publishedDestination, { recursive: true, force: true })
+          const instructionSetsRoot = join(appRoot, 'instruction-sets')
+          let ancestor = join(publishedDestination, '..')
+          while (ancestor !== instructionSetsRoot && existsSync(ancestor) && readdirSync(ancestor).length === 0) {
+            rmSync(ancestor, { recursive: true })
+            ancestor = join(ancestor, '..')
+          }
+        }
+        throw error
       }
-      warnings = emitManagedArtifacts(out, appRoot, currentLock, options.forceHelpers ?? false, target)
-      writeAtomicFile(join(appRoot, 'orizu.lock.json'), serializeLock(currentLock))
     })
   } finally {
     if (stagedTemp) rmSync(stagedTemp, { recursive: true, force: true })

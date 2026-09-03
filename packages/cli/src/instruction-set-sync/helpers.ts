@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { serializeLock, type InstructionSetLockV1 } from '../instruction-set-lock/index.js'
@@ -92,7 +92,13 @@ export function loadInstructions(specifier: string): {
 }
 `
 
-const LOAD_TEST = String.raw`import { InstructionSetLoadError, loadInstructions } from './load.js'
+const LOAD_TEST = String.raw`import { lock, versions } from '../generated/index.js'
+import { InstructionSetLoadError, loadInstructions } from './load.js'
+
+interface VersionModule {
+  components: Record<string, string>
+  manifest: { provenance: { instructionSetId: string; profileVersionId: string; digest: string } }
+}
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -103,6 +109,38 @@ export function runLoadSelfCheck(): void {
   try { loadInstructions('orizu-self-check-missing') } catch (error) { failure = error }
   assert(failure instanceof InstructionSetLoadError, 'load Helper must reject an unknown Specifier')
   assert(failure.code === 'instruction_set_specifier_unknown', 'load Helper must use its named unknown-Specifier error')
+
+  const generated = versions as unknown as Record<string, Record<string, Record<string, VersionModule | undefined>> | undefined>
+  let inspected = 0
+  for (const [setSlug, instructionSet] of Object.entries(lock.instructionSets)) {
+    for (const [profileSlug, profile] of Object.entries(instructionSet.profiles)) {
+      for (const [versionSlug, lockedVersion] of Object.entries(profile.versions)) {
+        const versionModule = generated[setSlug]?.[profileSlug]?.[versionSlug]
+        assert(versionModule, 'load Helper generated map must contain every locked Version')
+        const provenance = versionModule.manifest.provenance
+        assert(provenance.instructionSetId === instructionSet.instructionSetId
+          && provenance.profileVersionId === lockedVersion.profileVersionId
+          && provenance.digest === lockedVersion.digest,
+        'load Helper module Provenance must match the Lock')
+        inspected += 1
+      }
+    }
+    const defaultProfile = instructionSet.profiles[instructionSet.default]
+    if (defaultProfile) {
+      if (defaultProfile.production === null) {
+        let pointerFailure: unknown
+        try { loadInstructions(setSlug) } catch (error) { pointerFailure = error }
+        assert(pointerFailure instanceof InstructionSetLoadError
+          && pointerFailure.code === 'instruction_set_pointer_unresolved:production',
+        'load Helper must reject an unresolved Production pointer')
+      } else {
+        const loaded = loadInstructions(setSlug)
+        assert(loaded.provenance.profileVersionId === defaultProfile.versions[defaultProfile.production]?.profileVersionId,
+          'load Helper bare Set must select the default Profile Production Version')
+      }
+    }
+  }
+  assert(inspected > 0, 'load Helper must inspect at least one locked Version')
 }
 `
 
@@ -161,10 +199,22 @@ function assert(condition: unknown, message: string): asserts condition {
 
 export function runProvenanceSelfCheck(): void {
   const loaded = { provenance: { instructionSetId: 'set', profileVersionId: 'version', digest: 'sha256:digest' } }
+  const expected = {
+    'orizu.instruction_set.id': 'set',
+    'orizu.profile_version.id': 'version',
+    'orizu.instruction_set.digest': 'sha256:digest',
+  }
   const payload: Record<string, unknown> = { existing: true }
   attachProvenance(payload, loaded)
   assert(payload.existing === true, 'Provenance Helper must preserve attribution payload fields')
-  assert(payload['orizu.profile_version.id'] === 'version', 'Provenance Helper must attach the stable Profile Version attribute')
+  for (const [name, value] of Object.entries(expected)) {
+    assert(payload[name] === value, 'Provenance Helper must attach every stable attribute to payloads')
+  }
+  const spanAttributes: Record<string, string> = {}
+  attachProvenance({ setAttribute(name: string, value: string) { spanAttributes[name] = value } }, loaded)
+  for (const [name, value] of Object.entries(expected)) {
+    assert(spanAttributes[name] === value, 'Provenance Helper must attach every stable attribute to spans')
+  }
   assert(provenanceOf(loaded).digest === 'sha256:digest', 'Provenance Helper must return the loaded digest')
 }
 `
@@ -307,7 +357,6 @@ export function verifyIntegrity(loadedBytes: LoadedBytes, lock: ParsedLock): voi
       }
     }
   }
-  if (!hasDigest) throw new IntegrityVerificationError('instruction_set_integrity_digest_unknown')
   if (!locked) throw new IntegrityVerificationError('instruction_set_integrity_provenance_mismatch')
   const lockedProvenance = {
     instructionSetId: locked.instructionSetId,
@@ -320,6 +369,11 @@ export function verifyIntegrity(loadedBytes: LoadedBytes, lock: ParsedLock): voi
       || provenance.digest !== lockedProvenance.digest) {
       throw new IntegrityVerificationError('instruction_set_integrity_provenance_mismatch')
     }
+  }
+  if (loadedBytes.digest !== lockedProvenance.digest) {
+    throw new IntegrityVerificationError(hasDigest
+      ? 'instruction_set_integrity_digest_unselected'
+      : 'instruction_set_integrity_digest_unknown')
   }
 
   const names = Object.keys(loadedBytes.components).sort()
@@ -339,24 +393,53 @@ export function verifyIntegrity(loadedBytes: LoadedBytes, lock: ParsedLock): voi
 }
 `
 
-const VERIFY_TEST = String.raw`import { IntegrityVerificationError, verifyIntegrity } from './verify.js'
+const VERIFY_TEST = String.raw`import { lock, versions } from '../generated/index.js'
+import { IntegrityVerificationError, verifyIntegrity } from './verify.js'
+
+interface VersionModule {
+  components: Record<string, string>
+  manifest: { settings?: Record<string, unknown>; modelSettings?: Record<string, unknown> }
+}
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
 }
 
 export function runVerifySelfCheck(): void {
-  const digest = 'sha256:b71899f0e13a58405ecef8ed7b7e0930a32f40e799828f8716ea8ace8e8ca782'
-  const provenance = { instructionSetId: 'set-check', profileVersionId: 'version-check', digest }
-  const lock = { instructionSets: { check: { instructionSetId: provenance.instructionSetId, profiles: { profile: { versions: { v1: {
-    profileVersionId: provenance.profileVersionId,
-    digest,
-    components: { a: 'sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881' },
-  } } } } } } }
-  verifyIntegrity({ components: { a: 'x' }, settings: {}, digest, provenance, generatedProvenance: provenance }, lock)
-  let failure: unknown
-  try { verifyIntegrity({ components: { a: 'x ' }, settings: {}, digest, provenance, generatedProvenance: provenance }, lock) } catch (error) { failure = error }
-  assert(failure instanceof IntegrityVerificationError, 'verify Helper must reject changed bytes')
+  const generated = versions as unknown as Record<string, Record<string, Record<string, VersionModule | undefined>> | undefined>
+  let inspected = 0
+  for (const [setSlug, instructionSet] of Object.entries(lock.instructionSets)) {
+    for (const [profileSlug, profile] of Object.entries(instructionSet.profiles)) {
+      for (const [versionSlug, lockedVersion] of Object.entries(profile.versions)) {
+        const versionModule = generated[setSlug]?.[profileSlug]?.[versionSlug]
+        assert(versionModule, 'verify Helper generated map must contain every locked Version')
+        const provenance = {
+          instructionSetId: instructionSet.instructionSetId,
+          profileVersionId: lockedVersion.profileVersionId,
+          digest: lockedVersion.digest,
+        }
+        const loaded = {
+          components: versionModule.components,
+          settings: versionModule.manifest.settings ?? versionModule.manifest.modelSettings ?? {},
+          digest: lockedVersion.digest,
+          provenance,
+          generatedProvenance: provenance,
+        }
+        verifyIntegrity(loaded, lock)
+        const firstName = Object.keys(versionModule.components)[0]
+        assert(firstName !== undefined, 'verify Helper must inspect a real Component')
+        let failure: unknown
+        try {
+          verifyIntegrity({ ...loaded, components: { ...versionModule.components, [firstName]: versionModule.components[firstName]! + ' ' } }, lock)
+        } catch (error) { failure = error }
+        assert(failure instanceof IntegrityVerificationError
+          && failure.code === 'instruction_set_integrity_component_mismatch:' + firstName,
+        'verify Helper must reject changed synced bytes')
+        inspected += 1
+      }
+    }
+  }
+  assert(inspected > 0, 'verify Helper must inspect at least one locked Version')
 }
 `
 
@@ -457,13 +540,58 @@ export function reconcileGeneratedIndex(appRoot: string, lock: InstructionSetLoc
   writeAtomic(join(appRoot, 'generated', 'index.ts'), renderGeneratedIndex(lock))
 }
 
-function addGeneratedAttribute(out: string): void {
+export interface ManagedArtifactJournal {
+  write(path: string, bytes: string): void
+  remove(path: string): void
+  rollback(): void
+}
+
+export function createManagedArtifactJournal(): ManagedArtifactJournal {
+  const prior = new Map<string, string | null>()
+  const order: string[] = []
+  const createdDirectories: string[] = []
+  const record = (path: string): void => {
+    if (prior.has(path)) return
+    const wasPresent = existsSync(path)
+    prior.set(path, wasPresent ? readFileSync(path, 'utf8') : null)
+    order.push(path)
+    if (!wasPresent) {
+      let ancestor = join(path, '..')
+      while (!existsSync(ancestor)) {
+        if (!createdDirectories.includes(ancestor)) createdDirectories.push(ancestor)
+        ancestor = join(ancestor, '..')
+      }
+    }
+  }
+  return {
+    write(path, bytes) { record(path); writeAtomic(path, bytes) },
+    remove(path) { record(path); rmSync(path, { force: true }) },
+    rollback() {
+      for (const path of [...order].reverse()) {
+        const bytes = prior.get(path)
+        if (bytes === null) rmSync(path, { force: true })
+        else if (bytes !== undefined) writeAtomic(path, bytes)
+      }
+      for (const directory of createdDirectories) {
+        if (existsSync(directory) && readdirSync(directory).length === 0) rmSync(directory, { recursive: true })
+      }
+    },
+  }
+}
+
+const MANAGED_ATTRIBUTE_LINES = [
+  'orizu/** -text',
+  'orizu/generated/** linguist-generated=true',
+]
+
+function addManagedAttributes(out: string, journal: ManagedArtifactJournal): void {
   const path = join(out, '.gitattributes')
-  const line = 'orizu/generated/** linguist-generated=true'
   const existing = existsSync(path) ? readFileSync(path, 'utf8') : ''
-  if (existing.split(/\r?\n/u).includes(line)) return
+  const present = existing.split(/\r?\n/u)
+  const missing = MANAGED_ATTRIBUTE_LINES.filter(line => !present.includes(line))
+  if (missing.length === 0) return
   const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''
-  writeAtomic(path, `${existing}${separator}${line}\n`)
+  journal.write(path, `${existing}${separator}${missing.join('\n')}\n`)
 }
 
 export function emitManagedArtifacts(
@@ -471,7 +599,8 @@ export function emitManagedArtifacts(
   appRoot: string,
   lock: InstructionSetLockV1,
   forceHelpers: boolean,
-  target: SyncTarget
+  target: SyncTarget,
+  journal: ManagedArtifactJournal = createManagedArtifactJournal()
 ): string[] {
   if (target !== 'ts') throw new Error(`instruction_set_sync_target_unsupported:${String(target)}`)
   const warnings: string[] = []
@@ -491,7 +620,7 @@ export function emitManagedArtifacts(
       warnings.push(`Helper ${relative} differs from its pristine fingerprint; preserving the edited file.`)
       continue
     }
-    rmSync(path, { force: true })
+    journal.remove(path)
     delete nextFingerprints[relative]
   }
   for (const [relative, bytes] of Object.entries(HELPER_FILES)) {
@@ -506,11 +635,11 @@ export function emitManagedArtifacts(
       warnings.push(`Helper ${relative} differs from its pristine fingerprint; preserving the edited file (use --force-helpers to overwrite).`)
       continue
     }
-    writeAtomic(path, bytes)
+    journal.write(path, bytes)
     nextFingerprints[relative] = currentFingerprint
   }
   lock.helpers = nextFingerprints
-  reconcileGeneratedIndex(appRoot, lock)
-  addGeneratedAttribute(out)
+  journal.write(join(appRoot, 'generated', 'index.ts'), renderGeneratedIndex(lock))
+  addManagedAttributes(out, journal)
   return warnings
 }

@@ -591,17 +591,17 @@ with optional `--instructions-root <dir>` resolves Provenance only through the
 Lock, never calls Orizu, and refuses an unpromoted Profile.
 
 The Lock fingerprints exact pristine Helper bytes, including runner-safe
-`load.selfcheck.ts`, `provenance.selfcheck.ts`, and `verify.selfcheck.ts` files. Re-sync warns and preserves
+`load.selfcheck.ts`, `provenance.selfcheck.ts`, and `verify.selfcheck.ts` files. These self-checks read the customer's generated map and synced bytes and refuse an empty map instead of using synthetic fixtures. Re-sync warns and preserves
 an edited Helper; `--force-helpers` overwrites it and refreshes the fingerprint.
 Bytes matching the current template recover an interrupted upgrade without a
 warning. `sync --json` includes every warning in one document's always-present
 `warnings` array. `verifyIntegrity({ ...loaded, digest:
 loaded.provenance.digest }, lock)` cross-checks generated Provenance and hashes
 the strings and required Version-manifest settings the process loaded, detecting
-identity substitution, whitespace-only mutation, or a mismatched digest.
+identity substitution, whitespace-only mutation, or a mismatched digest. The supplied digest must equal the Provenance-selected Lock entry: a digest belonging only to another Version fails with `instruction_set_integrity_digest_unselected`, while one absent from the Lock fails with `instruction_set_integrity_digest_unknown`.
 Managed artifact writes are symlink-confined. Emitted code imports no `fs` runtime and
 is suitable for Workers and Node TypeScript targets. The app-root
-`.gitattributes` marks `orizu/generated/** linguist-generated=true`.
+`.gitattributes` applies `orizu/** -text` so Git EOL conversion cannot alter fingerprinted bytes, and marks `orizu/generated/** linguist-generated=true`.
 
 Sync reuses non-null Default and Production Pointer values recorded in the Lock
 and prints an `update` hint; a null value was never resolved and may be filled

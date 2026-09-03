@@ -618,7 +618,7 @@ version under:
 <out>/orizu/helpers/load.ts, provenance.ts, verify.ts (+ matching .selfcheck.ts files)
 <out>/orizu/generated/index.ts
 <out>/orizu/orizu.lock.json
-<out>/.gitattributes              # orizu/generated/** linguist-generated=true
+<out>/.gitattributes              # orizu/** -text; generated files marked linguist-generated
 ```
 
 For the `ts` target, the only target-specific files are
@@ -638,12 +638,16 @@ cross-check it against the Lock before hashing the strings and settings the
 process actually loaded. Identity substitution and whitespace-only changes are
 detected. `settings` is required on verifier input, including when it is `{}`. Non-empty settings
 use sorted-key, whitespace-free canonical JSON in the whole-Version digest;
-missing or non-finite settings fail closed.
+missing or non-finite settings fail closed. The supplied digest must equal the
+Provenance-selected Lock entry's digest: a digest found only on another Version
+fails with `instruction_set_integrity_digest_unselected`, while a digest absent
+from the Lock fails with `instruction_set_integrity_digest_unknown`.
 
 The vendored `*.selfcheck.ts` files use no runner globals and avoid test-runner
 discovery globs. They export `runLoadSelfCheck()` and `runVerifySelfCheck()` so
 a customer's Bun, Vitest, or other runner can invoke them from an ordinary test
-wrapper.
+wrapper. Both checks read the customer's generated map and synced bytes and
+refuse an empty map rather than relying on synthetic fixtures.
 
 `provenanceOf(loaded)` returns the loaded Synced version's exact Provenance.
 `attachProvenance(target, loaded)` writes the stable attributes
@@ -661,6 +665,8 @@ was interrupted before writing the Lock. In `--json` mode every warning appears
 in the single output document's always-present `warnings` array. Managed
 artifact paths are symlink-confined beneath the app root. The generated import
 map is machine-owned and is marked through the app root's `.gitattributes`.
+That file also applies `orizu/** -text`, so Git EOL conversion never changes any
+fingerprinted bytes (including Component bodies that intentionally use CRLF).
 
 Component files preserve the API bytes exactly. The Version manifest includes
 that Profile Version's frozen Model Config `settings`; `components.generated.ts`
@@ -740,7 +746,10 @@ A GitHub Actions step can use the same command:
 The four output groups check the Version manifests against the Lock, exact
 Component bytes and imported `components.generated.ts` values, bytes returned by
 the vendored `loadInstructions` Helper through `verifyIntegrity`, and Pointer /
-folder / import-map / Helper consistency. A modified fingerprinted Helper is a
+folder / import-map / Helper consistency. Runtime verification binds the supplied
+digest to the Provenance-selected Lock Version; it reports
+`instruction_set_integrity_digest_unselected` when another locked Version owns
+the digest and `instruction_set_integrity_digest_unknown` when none does. A modified fingerprinted Helper is a
 warning because Helpers are customer-editable; a fingerprinted Helper missing
 from disk is a failure. A missing `generated/index.ts` causes `helper_import_failed` and exit 1
 because the runtime load Helper consumes that map; a present incomplete map is
