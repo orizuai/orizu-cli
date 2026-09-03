@@ -28,8 +28,10 @@ orizu instructions show <slug-or-exact-name> --project <team>/<project>
 orizu instructions create ./orizu.instruction-set.json --project <team>/<project> --model-config <identity>
 orizu instructions push ./orizu.instruction-set.json --project <team>/<project> --set <slug-or-exact-name>
 orizu instructions profiles new <slug-or-exact-name> --project <team>/<project> --model-config <identity>
-orizu instructions sync <slug-or-exact-name> --out ./instructions --project <team>/<project>
+orizu instructions sync <slug-or-exact-name> --project <team>/<project> --out <app-root>
 ```
+
+Synced material lands under `<app-root>/orizu/`; use `.` when the repository root is the application root.
 
 Do not create or mutate standalone prompts. If a legacy identifier leads to a prompt read view, use its owner information to find the instruction set and continue with `orizu instructions`.
 

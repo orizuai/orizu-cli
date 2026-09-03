@@ -137,7 +137,8 @@ text CLI prints the required follow-up commands.
 
 The manifest is a JSON object with `name`, optional unversioned `description`,
 ordered `shape`, and `components`. The description belongs to the instruction
-set rather than any profile and round-trips through sync. Every component
+set rather than any profile; `instructions show` and `instructions list` report
+it, while sync emits it into no Version artifact. Every component
 supplies `{ key, text }` or `{ key, path }`; paths are relative to the manifest.
 Set-wide components must cover the complete shape. A component may add
 `modelConfig` for a profile override: `create` materializes that named profile
@@ -561,7 +562,7 @@ Worker assignment reads are self-only:
 Specifiers; `--version N` is the exact-Version equivalent when a Profile is
 present. The retired sync `--model-config` option refuses; use `set/profile`.
 Unknown sync flags refuse with `instruction_set_sync_option_unknown:<flag>`.
-Value-less `--out` and `--version` options refuse by name. `--target` defaults
+Value-less `--project`, `--out`, and `--version` options refuse by name. `--target` defaults
 to `ts`; unsupported values refuse before network or disk access with
 `instruction_set_sync_target_unsupported:<value>`. The target selects generated
 modules and Helpers only and is not recorded in the Lock or Version manifest.

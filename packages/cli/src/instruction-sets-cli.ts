@@ -402,7 +402,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   }
   const projectOption = subcommand === 'update'
     ? lifecycleOptionValues(args, 'update', '--project')[0] ?? null
-    : argValue(args, '--project')
+    : requiredOptionValue(args, '--project')
   const project = await io.resolveProjectSlug(projectOption)
   if (subcommand === 'update') {
     const output = lifecycleOptionValues(args, 'update', '--out')[0] ?? '.'

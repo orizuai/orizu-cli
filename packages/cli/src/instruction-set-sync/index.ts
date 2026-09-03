@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { join } from 'node:path'
 
 import {
+  MAX_VERSION_NUMBER,
   parseLock,
   parseSpecifier,
   serializeLock,
@@ -115,7 +116,7 @@ function positiveVersion(value: string | null): number | undefined {
   if (value === null) return undefined
   if (!/^[1-9][0-9]*$/u.test(value)) throw new Error('--version must be a positive integer')
   const version = Number(value)
-  if (!Number.isSafeInteger(version)) throw new Error('--version must be a positive integer')
+  if (!Number.isSafeInteger(version) || version > MAX_VERSION_NUMBER) throw new Error('--version must be a positive integer')
   return version
 }
 
@@ -133,7 +134,7 @@ export function planSyncRequest(
   if (flagVersion !== undefined && parsed.profile === undefined) {
     throw new Error('instruction_set_sync_version_requires_profile')
   }
-  const versionNumber = parsed.versionNumber ?? flagVersion
+  let versionNumber = parsed.versionNumber ?? flagVersion
   const appRoot = join(out, 'orizu')
   const lock = readLock(appRoot, project)
   const lockedSet = lock.instructionSets[parsed.set]
@@ -165,13 +166,14 @@ export function planSyncRequest(
   } else if (selectedProfileSlug) {
     const production = lockedSet?.profiles[selectedProfileSlug]?.production
     if (production) {
-      query.set('version', production.slice(1))
+      versionNumber = Number(production.slice(1))
+      query.set('version', String(versionNumber))
       usedRecordedPointer = true
     }
   }
 
   return {
-    parsed: { ...parsed, ...(flagVersion !== undefined ? { versionNumber: flagVersion } : {}) },
+    parsed: { ...parsed, ...(versionNumber !== undefined ? { versionNumber } : {}) },
     path: `/api/cli/instruction-sets/${encodeURIComponent(parsed.set)}/sync?${query.toString()}`,
     lock,
     usedRecordedPointer,
@@ -544,6 +546,7 @@ export interface SyncDiskOptions {
   forceHelpers?: boolean
   pointerMode?: 'preserve' | 'replace'
   target?: SyncTarget
+  platform?: NodeJS.Platform
 }
 
 export function syncPayloadToDisk(
@@ -592,7 +595,7 @@ export function syncPayloadToDisk(
   const componentHashes: Record<string, string> = Object.create(null)
   const componentNames = Object.keys(material.components).sort()
   for (const name of componentNames) safeSegment(name)
-  validateInstructionSetComponentKeys(componentNames, '/components', process.platform === 'win32')
+  validateInstructionSetComponentKeys(componentNames, '/components', (options.platform ?? process.platform) === 'win32')
   for (const name of componentNames) {
     const body = material.components[name]?.body
     if (typeof body !== 'string') throw new Error('instruction_set_unresolvable')

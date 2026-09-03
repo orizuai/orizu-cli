@@ -81,11 +81,11 @@ Shape changes create a new `shape_change` Version for every Profile; they do not
 repoint Default or any Production label.
 
 Sync an offline runner directory with `orizu instructions sync planner
---out ./instructions --project core/evals`. Sync resolves the bare Set as
+--out . --project core/evals`. Sync resolves the bare Set as
 Default Profile → that Profile's Production Version, then writes immutable
 material under the version-addressed paved directory documented in
 `cli-reference.md` and records Default and Production pointers in
-`./instructions/orizu/orizu.lock.json`.
+`./orizu/orizu.lock.json`.
 A named or Default Profile without Production refuses with
 `instruction_set_profile_not_promoted`; nothing falls back. Runtime consumers
 use the generated Component module described in `cli-reference.md`. A Git-pinned

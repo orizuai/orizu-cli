@@ -107,7 +107,7 @@ const PROFILE_IDENTITY = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/u
 export const INSTRUCTION_SET_COMPONENT_KEY = /^(?!\.)[A-Za-z0-9._-]+$/u
 const WINDOWS_RESERVED_COMPONENT_KEY = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu
 export const INSTRUCTION_SET_HELPER_PATH = /^helpers\/(?!\.{1,2}(?:\/|$))(?!.*\/\.{1,2}(?:\/|$))[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/u
-const MAX_VERSION_NUMBER = 2_147_483_647
+export const MAX_VERSION_NUMBER = 2_147_483_647
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const VERSION = /^v([1-9][0-9]*)$/u
 

@@ -579,8 +579,12 @@ Profile and then that Profile's Production Version. A Profile Specifier resolves
 its Production Version. Unset Production is a hard error that names the exact
 `profiles promote` command; it never falls back. The retired sync-only
 `--model-config` option refuses with guidance to use `set/profile`. Supplying
-`--out` or `--version` without a value is an error naming that option. Any
-other unrecognized sync flag refuses as `instruction_set_sync_option_unknown:<flag>`.
+`--project`, `--out`, or `--version` without a value is an error naming that
+option. Any other unrecognized sync flag refuses as
+`instruction_set_sync_option_unknown:<flag>`. If an existing app root belongs
+to another project, sync refuses before writing with the bare code
+`instruction_set_sync_project_mismatch`; it does not name the two projects or
+migrate the existing tree.
 
 The Default names a Profile, never a version. `default move` therefore accepts
 `--model-config` and rejects `--version`; move Production first with
