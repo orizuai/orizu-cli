@@ -3,7 +3,6 @@ import { parseJsonResponse } from './json-response.js'
 
 interface InstructionSetResolution {
   instructionSet?: {
-    default?: { profileVersionId?: string } | null
     profiles?: Array<{
       modelConfigIdentity?: string | null
       production?: { profileVersionId?: string } | null
@@ -11,7 +10,7 @@ interface InstructionSetResolution {
   }
 }
 
-/** Resolve the same production-or-default tuple served for a model identity. */
+/** Resolve the requested Profile's Production tuple for optimization. */
 export async function resolveGepaInstructionSetProfileVersion(
   instructionSetName: string,
   modelConfigIdentity: string,
@@ -22,7 +21,8 @@ export async function resolveGepaInstructionSetProfileVersion(
   const payload = await parseJsonResponse<InstructionSetResolution>(response, 'Instruction set resolution')
   const instructionSet = payload.instructionSet
   const profile = instructionSet?.profiles?.find(candidate => candidate.modelConfigIdentity === modelConfigIdentity)
-  const profileVersionId = profile?.production?.profileVersionId || instructionSet?.default?.profileVersionId
-  if (!profileVersionId) throw new Error('instruction_set_profile_version_unresolvable')
+  if (!profile) throw new Error(`instruction_set_profile_not_found: ${modelConfigIdentity}`)
+  const profileVersionId = profile.production?.profileVersionId
+  if (!profileVersionId) throw new Error(`instruction_set_profile_not_promoted: ${modelConfigIdentity}`)
   return profileVersionId
 }

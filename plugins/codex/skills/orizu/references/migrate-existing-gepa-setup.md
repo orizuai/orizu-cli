@@ -354,8 +354,7 @@ reflection model is refused at launch without it
 if you also pass an `openai/...` `--reflection-model`.
 
 `--instruction-set` and `--model-config` select exactly one Profile. The CLI
-uses only that Profile's Production Version. A missing or unpromoted Profile
-refuses with a named error instead of using Default; the CLI also refuses the
+uses only that Profile's Production Version. A missing Profile refuses with `instruction_set_profile_not_found`, and an unpromoted Profile refuses with `instruction_set_profile_not_promoted`, instead of using Default; the CLI also refuses the
 legacy `--candidate-version-id` selector when the instruction-set selectors are present. `round-robin` updates one component per
 round; use `--component-selector all` only when every component should be
 reflected on each round.

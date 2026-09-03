@@ -380,7 +380,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
       return 1
     }
   }
-  if (subcommand === 'default' && reference === 'move' && args.includes('--version')) {
+  if (subcommand === 'default' && reference === 'move' && args.some(arg => arg === '--version' || arg.startsWith('--version='))) {
     throw new Error('--version is not valid for default move; use instructions profiles promote')
   }
   let writeManifest: InstructionSetManifest | undefined
@@ -509,7 +509,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
       for (const pointer of affected) if (pointer && typeof pointer === 'object') {
         const item = pointer as { modelConfigIdentity?: unknown; pointer?: unknown; stalePointerVersionNumber?: unknown; headVersionNumber?: unknown; branchedFromVersionNumber?: unknown }
         if (typeof item.modelConfigIdentity === 'string' && (item.pointer === 'production' || item.pointer === 'default') && typeof item.headVersionNumber === 'number') {
-          const command = item.pointer === 'production' ? 'profiles promote' : 'default move'
+          const command = 'profiles promote'
           const operatorAction = item.pointer === 'production' ? 'promote' : 'default move'
           if (typeof item.stalePointerVersionNumber === 'number' && typeof item.branchedFromVersionNumber === 'number' && item.branchedFromVersionNumber !== item.stalePointerVersionNumber) io.print(`${operatorAction} would move ${item.pointer} from v${item.stalePointerVersionNumber}'s text to v${item.headVersionNumber} = v${item.branchedFromVersionNumber}'s text + ${key}`)
           io.print(`Follow up: instructions ${command} ${set} --project ${project} --model-config ${item.modelConfigIdentity} --version ${item.headVersionNumber}`)
