@@ -175,8 +175,9 @@ with `instruction_set_sync_legacy_layout`; follow the migration guide in
 Pointers. It prints every before/after value and is a no-op until `--yes`.
 Approved updates sync newly referenced Versions by default. `--no-sync` records
 the new Pointer values without materializing absent Versions and names every
-absent exact Specifier, so follow it with exact sync commands before verify or
-runtime use. An unset Production refuses with
+absent exact Specifier. When every referenced Version is already materialized it also rewrites
+`generated/index.ts` so the runtime resolves the new Pointers; when any is absent it leaves the
+index alone and says so. Follow it with exact sync commands before verify or runtime use. An unset Production refuses with
 `instruction_set_pointer_unresolved:production`; it never falls back.
 
 `prune` first runs the real offline verify gate, then lists unreferenced Version

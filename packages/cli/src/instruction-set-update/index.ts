@@ -128,6 +128,21 @@ export interface UpdateResult {
   warnings: string[]
 }
 
+function missingVersionModules(appRootPath: string, lock: InstructionSetLockV1): string[] {
+  const missing: string[] = []
+  for (const setSlug of Object.keys(lock.instructionSets).sort()) {
+    const set = lock.instructionSets[setSlug]!
+    for (const profileSlugValue of Object.keys(set.profiles).sort()) {
+      const profile = set.profiles[profileSlugValue]!
+      for (const versionSlug of Object.keys(profile.versions).sort()) {
+        const relativePath = `instruction-sets/${setSlug}/${profileSlugValue}/${versionSlug}/components.generated.ts`
+        if (!existsSync(join(appRootPath, relativePath))) missing.push(relativePath)
+      }
+    }
+  }
+  return missing
+}
+
 export function applyUpdate(
   out: string,
   project: string,
@@ -146,9 +161,19 @@ export function applyUpdate(
         const versionSlug = `v${material.versionNumber}`
         const destination = join(appRoot(out), 'instruction-sets', set.slug, set.profile.profileSlug, versionSlug)
         lock = recordResolvedPayloadInLock(lock, resolution.payload, now)
-        if (!existsSync(destination)) absent.push(`${set.slug}/${resolution.profileIdentity}@${versionSlug}`)
+        if (!existsSync(join(destination, 'components.generated.ts'))) {
+          absent.push(`${set.slug}/${resolution.profileIdentity}@${versionSlug}`)
+        }
       }
-      atomicWrite(join(appRoot(out), 'orizu.lock.json'), serializeLock(lock))
+      const appRootPath = appRoot(out)
+      const missing = missingVersionModules(appRootPath, lock)
+      const importMapPath = join(appRootPath, 'generated', 'index.ts')
+      if (missing.length === 0 && existsSync(importMapPath)) {
+        reconcileGeneratedIndex(appRootPath, lock)
+      } else if (missing.length > 0) {
+        warnings.push(`instruction_set_update_generated_index_stale:${missing[0]}; the generated index still resolves the previous Version — run orizu instructions sync <specifier> then orizu instructions verify`)
+      }
+      atomicWrite(join(appRootPath, 'orizu.lock.json'), serializeLock(lock))
     })
     return { absent, warnings }
   }
