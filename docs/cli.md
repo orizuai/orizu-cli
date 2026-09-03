@@ -1263,7 +1263,10 @@ orizu scorers list --project my-team/quality-eval
 orizu scorers list --project my-team/quality-eval --status archived
 orizu scorers detail accuracy --project my-team/quality-eval --profile-version <profile-version-id>
 orizu optimizations list --project my-team/quality-eval --profile-version <profile-version-id>
+orizu runs list --project my-team/quality-eval --profile-version <profile-version-id>
 ```
+
+When submitting runs or scores, or executing a scorer, pass `--instructions <specifier>` and optionally `--instructions-root <dir>` to attach the exact loaded Provenance triple. The CLI resolves the specifier only through `<dir>/orizu/orizu.lock.json`; it never calls Orizu and refuses when the selected profile has no promoted Production version.
 
 Register a scorer:
 

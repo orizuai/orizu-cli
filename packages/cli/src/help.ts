@@ -543,7 +543,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['scorers', 'exec'],
-    usage: 'orizu scorers exec --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) --dataset-version <id> --split-set <id> --split <name> [--subject-results <jsonl>] [--dependency-score-run <alias=id>] [--dependency-results <alias=path>] [--no-submit] [--out <score.json>] [--project <team/project>] [--json]',
+    usage: 'orizu scorers exec --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) --dataset-version <id> --split-set <id> --split <name> [--subject-results <jsonl>] [--dependency-score-run <alias=id>] [--dependency-results <alias=path>] [--no-submit] [--out <score.json>] [--project <team/project>] [--instructions <specifier>] [--instructions-root <dir>] [--json]',
     summary: 'Execute a scorer locally for a prompt version or optimization candidate.',
     group: 'Scorers and runners',
   },
@@ -555,7 +555,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['scores', 'submit'],
-    usage: 'orizu scores submit <results.jsonl|results.json> --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) [--aggregate] [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--json]',
+    usage: 'orizu scores submit <results.jsonl|results.json> --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) [--aggregate] [--dataset-version <id> --split-set <id> --split <name>] [--project <team/project>] [--instructions <specifier>] [--instructions-root <dir>] [--json]',
     summary: 'Submit score results for a scorer against a prompt version or optimization candidate.',
     group: 'Scorers and runners',
   },
@@ -609,8 +609,14 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['runs', 'submit'],
-    usage: 'orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>]',
+    usage: 'orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>] [--instructions <specifier>] [--instructions-root <dir>]',
     summary: 'Submit local prompt-run results.',
+    group: 'Scorers and runners',
+  },
+  {
+    path: ['runs', 'list'],
+    usage: 'orizu runs list [--project <team/project>] [--profile-version <id>] [--prompt-version <id>] [--limit <n>] [--json]',
+    summary: 'List execution runs, optionally filtered by exact Profile Version or prompt version.',
     group: 'Scorers and runners',
   },
   {

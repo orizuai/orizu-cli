@@ -583,8 +583,11 @@ IDs or hashes disagree refuses with `instruction_set_sync_version_conflict`;
 only its `syncedAt` observation is preserved. `attachProvenance(target, loaded)`
 sets `orizu.instruction_set.id`, `orizu.profile_version.id`, and
 `orizu.instruction_set.digest` on a span-like target or plain attribution object.
-Filter read-back with `scorers detail --profile-version <id>` or
-`optimizations list --profile-version <id>`.
+Filter read-back with `scorers detail --profile-version <id>`,
+`optimizations list --profile-version <id>`, or `runs list --profile-version <id>`.
+For `runs submit`, `scorers exec`, and `scores submit`, `--instructions <specifier>`
+with optional `--instructions-root <dir>` resolves Provenance only through the
+Lock, never calls Orizu, and refuses an unpromoted Profile.
 
 The Lock fingerprints exact pristine Helper bytes, including runner-safe
 `load.selfcheck.ts`, `provenance.selfcheck.ts`, and `verify.selfcheck.ts` files. Re-sync warns and preserves

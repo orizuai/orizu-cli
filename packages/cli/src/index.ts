@@ -120,6 +120,7 @@ import { applyHostedInstructionSetProfileOverride, dispatchHostedCommands } from
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredentialInvocation } from './git-credential.js'
 import { instructionSetsCommand, syncToDisk } from './instruction-sets-cli.js'; export { loadInstructionSet } from './instruction-set-loader.js'
+import { provenanceRequestFields, resolveInstructionSetProvenance } from './instruction-set-provenance.js'
 import { runnerInputInstructionSet, runnerInputPrompt, runnerInstructionSetSyncSet, type RunnerInstructionSet } from './runner-instruction-set-contract.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
 import { readMarkdownReportInput } from './markdown-report-input.js'
@@ -426,6 +427,21 @@ function getArg(name: string): string | null {
   }
 
   return cliArgs[index + 1]
+}
+
+function instructionSetProvenanceFields(project: string) {
+  for (const flag of ['--instructions', '--instructions-root']) {
+    if (cliArgs.some(argument => argument.startsWith(`${flag}=`))) {
+      throw new Error(`instruction_set_option_equals_form:${flag}`)
+    }
+  }
+  const specifier = getArg('--instructions')
+  if (!specifier) return {}
+  return provenanceRequestFields(resolveInstructionSetProvenance({
+    specifier,
+    root: getArg('--instructions-root') || '.',
+    project,
+  }))
 }
 
 function getArchiveListStatus(command: string): string {
@@ -1433,6 +1449,34 @@ async function showScorerDetail() {
   }
 }
 
+async function listRuns() {
+  const project = getArg('--project') || await resolveProjectSlug(null)
+  const params = new URLSearchParams({ project })
+  const profileVersionId = getArg('--profile-version')
+  const promptVersionId = getArg('--prompt-version')
+  const limit = getArg('--limit')
+  if (profileVersionId) params.set('profileVersionId', profileVersionId)
+  if (promptVersionId) params.set('promptVersionId', promptVersionId)
+  if (limit) params.set('limit', limit)
+
+  const response = await authedFetch(`/api/cli/runs?${params.toString()}`)
+  if (!response.ok) throw new Error(`Failed to fetch runs: ${await response.text()}`)
+  const data = await parseJsonResponse<{ runs: Array<Record<string, unknown>> }>(response, 'Runs list')
+  if (hasJsonFlag()) {
+    printJson(data as unknown as Record<string, unknown>)
+    return
+  }
+  for (const run of data.runs) {
+    printLine([
+      sanitizeTerminalText(String(run.id ?? '?')),
+      `prompt ${sanitizeTerminalText(String(run.promptVersionId ?? '—'))}`,
+      `split ${sanitizeTerminalText(String(run.splitName ?? '—'))}`,
+      `score ${sanitizeTerminalText(formatScoreForCli(run.aggregateScore, 'number'))}`,
+      `Profile Version ${sanitizeTerminalText(String(run.profileVersionId ?? '—'))}`,
+    ].join(' | '))
+  }
+}
+
 async function setScorerLabel() {
   const scorerName = getPositionalArg(3)
   const label = getPositionalArg(4)
@@ -1946,6 +1990,7 @@ async function submitRunResults() {
       judgeVersionId: getArg('--judge-version') || undefined,
       judgeRunnerVersionId: getArg('--judge-runner-version') || undefined,
       resultsJsonl,
+      ...instructionSetProvenanceFields(project),
     }),
   })
 
@@ -1997,6 +2042,7 @@ async function submitScoreResults() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...aggregatePayload,
+      ...instructionSetProvenanceFields(project),
       scorerVersionId,
       subjectPromptVersionId: subjectPromptVersionId || undefined,
       datasetVersionId: getArg('--dataset-version') || undefined,
@@ -2153,6 +2199,7 @@ async function execScorer() {
       subjectResultsJsonl: readOptionalJsonlFile(getArg('--subject-results') || getArg('--outputs')),
       dependencyScoreRunIds: parseAliasAssignments(getArg('--dependency-score-run') || getArg('--dependency-score-runs')),
       dependencyResultsJsonl: readDependencyResultAssignments(getArg('--dependency-results')),
+      ...instructionSetProvenanceFields(project),
     }),
   })
 
@@ -6258,6 +6305,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'runs' && subcommand === 'submit') {
     await submitRunResults()
+    return
+  }
+
+  if (command === 'runs' && subcommand === 'list') {
+    await listRuns()
     return
   }
 
