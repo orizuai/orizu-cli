@@ -629,7 +629,10 @@ For the `ts` target, the only target-specific files are
 `generated/index.ts` contains static imports for every Synced version in the
 Lock. Every relative import emitted by the CLI carries an explicit `.js`
 extension, so the tree compiles with TypeScript `moduleResolution` set to either
-`nodenext` or `bundler`. Direct execution of the vendored `.ts` files with
+`nodenext` or `bundler`. Configure compiled JavaScript with an `outDir`.
+Verification rejects every in-place `.js` sibling of an emitted `.ts` file as
+`generated_index_compiled_shadow`; a fresh in-place compile is also refused
+because this rule enforces the supported layout rather than checking staleness. Direct execution of the vendored `.ts` files with
 `node --experimental-strip-types` is not supported: compile them first or use a
 TypeScript-aware runtime. `loadInstructions(specifier)` uses only that generated
 map and the Lock values embedded from sync time: it never calls Orizu,
@@ -669,8 +672,10 @@ sync fails without writing and reports `instruction_set_sync_lock_profile_identi
 `model_config_identity_unbound`. Until newly added Helpers are vendored, `verify` fails with a finding such
 as `FAIL group4 helpers/model-config.ts helper_missing expected managed Helper found missing`. On re-sync, a Helper whose bytes no
 longer match its recorded pristine fingerprint is preserved and named in a
-warning. Pass `--force-helpers` to overwrite edited Helpers and refresh their
-fingerprints. Helpers whose bytes already match the current template are also
+warning. A hand-written or older Lock may have no `helpers` fingerprints, so an
+older Helper with different bytes is conservatively treated as edited; to overwrite
+edited Helpers and refresh their fingerprints, re-run sync with `--force-helpers`.
+Helpers whose bytes already match the current template are also
 pristine, allowing a re-sync to recover if a prior upgrade wrote a Helper but
 was interrupted before writing the Lock. In `--json` mode every warning appears
 in the single output document's always-present `warnings` array. Managed
@@ -709,7 +714,9 @@ orizu instructions update --out . --project my-team/quality-eval --yes
 Approved updates sync newly referenced Versions by default, so the repository
 is not left pointing at absent material. `--no-sync` opts out: the Lock records
 the fresh Pointers and output names every referenced-but-absent exact Specifier.
-Sync those Specifiers before verify or runtime use. Existing Versions retain
+When every referenced Version is materialized and an `orizu/generated/index.ts` already exists, `--no-sync` also rewrites that index to select the fresh
+Pointers. If either prerequisite is absent, it leaves the index alone and says
+so. Sync absent Specifiers before verify or runtime use. Existing Versions retain
 their original `syncedAt`; reserved Pins and unrelated Lock fields are preserved. Any
 unset Production refuses with `instruction_set_pointer_unresolved:production`
 and never falls back.
@@ -746,6 +753,15 @@ alone:
 ```bash
 orizu instructions verify --out .
 ```
+
+After upgrading the Orizu CLI, re-run `orizu instructions sync <specifier>` for
+each retained Specifier before verification or pruning. Until re-sync refreshes
+the generated map and Helpers, `verify` can report `generated_module_drift` and
+`import_map_destination_mismatch`. When every verification failure is index drift,
+`prune` refuses with `instruction_set_prune_stale_import_map`. When any other
+verification failure is red, `prune` refuses with `instruction_set_prune_unverified`;
+for example, an older Lock without Helper fingerprints reports
+`helper_fingerprint_missing`.
 
 A GitHub Actions step can use the same command:
 
@@ -803,8 +819,12 @@ Every failure uses one of these named codes:
   `lock_version_folder_missing`, `orphan_version_folder`,
   `orphan_instruction_set_folder`, `orphan_profile_folder`,
   `helper_path_unsafe`, `helper_missing`, `helper_fingerprint_missing`,
-  `generated_lock_stale`, `generated_module_drift`, `import_map_mismatch`,
-  `import_map_destination_mismatch:<specifier>`.
+  `generated_lock_stale`, `generated_module_drift`, `generated_index_compiled_shadow`,
+  `import_map_mismatch`, `import_map_destination_mismatch:<specifier>`.
+
+Related lifecycle refusals include `instruction_set_prune_stale_import_map` when
+prune needs a re-sync and `instruction_set_update_generated_module_unverified`
+when `update --no-sync` cannot trust already materialized output.
 
 Warnings use `helper_modified` or `import_map_missing` and never change the exit status. Each finding names a path; hash comparisons also include `expected` and
 `found`.

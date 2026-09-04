@@ -93,11 +93,10 @@ component stays recorded rather than downloaded and raises
 `instruction_set_component_unavailable` until the application resolves its
 canonical Git bytes.
 
-The sync manifest carries immutable `projectId` and `instructionSetId`; modern
-sync replacement requires both identities as well as the slug to match.
-Identity-less pre-slug trees are never auto-migrated: sync preserves them and
-returns `instruction_set_sync_legacy_identity_required`, requiring a verified
-clean output root or an explicit operator move.
+A retired display-name tree containing the set-level `manifest.json`, `default/`,
+or `profiles/` layout is never auto-migrated or deleted. Sync preserves it and
+refuses with `instruction_set_sync_legacy_layout`, pointing at the paved-path
+migration guide in `cli-reference.md`; move the old tree explicitly before re-syncing.
 
 Use `profiles new` to seed an additional model-config profile from the default.
 Use `profiles

@@ -596,8 +596,10 @@ export function renderGeneratedIndex(lock: InstructionSetLockV1): string {
   return `// @generated\n${imports.join('\n')}\n\n${lockType}\n\nexport const versions = { ${sets.join(', ')} } as const\n\nexport const lock = JSON.parse(${lockJsonLiteral}) as GeneratedLock\n`
 }
 
-export function reconcileGeneratedIndex(appRoot: string, lock: InstructionSetLockV1): void {
-  writeAtomic(join(appRoot, 'generated', 'index.ts'), renderGeneratedIndex(lock))
+export function reconcileGeneratedIndex(out: string, appRoot: string, lock: InstructionSetLockV1): void {
+  const destination = join(appRoot, 'generated', 'index.ts')
+  assertOutputConfined(out, destination)
+  writeAtomic(destination, renderGeneratedIndex(lock))
 }
 
 export interface ManagedArtifactJournal {
@@ -692,7 +694,7 @@ export function emitManagedArtifacts(
       && existingFingerprint !== priorFingerprint
       && existingFingerprint !== currentFingerprint
     if (isEdited && !forceHelpers) {
-      warnings.push(`Helper ${relative} differs from its pristine fingerprint; preserving the edited file (use --force-helpers to overwrite).`)
+      warnings.push(`Helper ${relative} differs from its pristine fingerprint; preserving the edited file. Re-run sync with --force-helpers to overwrite it.`)
       continue
     }
     journal.write(path, bytes)

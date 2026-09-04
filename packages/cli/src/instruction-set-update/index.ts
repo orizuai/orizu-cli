@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
+import { shellQuote } from '../git-recovery-environment.js'
 import {
   parseLock,
   parseSpecifier,
@@ -9,8 +10,8 @@ import {
   type InstructionSetLockV1,
 } from '../instruction-set-lock/index.js'
 import { assertOutputConfined, reconcileGeneratedIndex } from '../instruction-set-sync/helpers.js'
-import { profileSlug, recordResolvedPayloadInLock, syncPayloadToDisk, withSyncLock, type SyncPayload } from '../instruction-set-sync/index.js'
-import { verifyInstructionSetTree } from '../instruction-set-verify/index.js'
+import { profileSlug, recordResolvedPayloadInLock, renderGeneratedVersionModule, syncPayloadToDisk, withSyncLock, type SyncPayload } from '../instruction-set-sync/index.js'
+import { verifyInstructionSetTree, verifyInstructionSetVersionIntegrity } from '../instruction-set-verify/index.js'
 
 export interface UpdateResolution {
   payload: SyncPayload
@@ -145,6 +146,19 @@ function atomicWrite(path: string, bytes: string): void {
   }
 }
 
+function waitAtUpdateLockPublicationBarrierForProcessTest(): void {
+  const readyPath = process.env.ORIZU_TEST_UPDATE_LOCK_WRITE_READY_PATH
+  const releasePath = process.env.ORIZU_TEST_UPDATE_LOCK_WRITE_RELEASE_PATH
+  if (readyPath === undefined && releasePath === undefined) return
+  if (!readyPath || !releasePath) throw new Error('instruction_set_update_test_barrier_invalid')
+  writeFileSync(readyPath, `${process.pid}\n`, { flag: 'wx' })
+  const deadline = Date.now() + 10_000
+  while (!existsSync(releasePath)) {
+    if (Date.now() >= deadline) throw new Error('instruction_set_update_test_barrier_timeout')
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+  }
+}
+
 export interface UpdateResult {
   absent: string[]
   warnings: string[]
@@ -165,17 +179,59 @@ function missingVersionModules(appRootPath: string, lock: InstructionSetLockV1):
   return missing
 }
 
-export function applyUpdate(
+async function assertGeneratedModulesVerified(appRootPath: string, lock: InstructionSetLockV1): Promise<void> {
+  for (const setSlug of Object.keys(lock.instructionSets).sort()) {
+    const set = lock.instructionSets[setSlug]!
+    for (const profileSlugValue of Object.keys(set.profiles).sort()) {
+      const profile = set.profiles[profileSlugValue]!
+      for (const versionSlug of Object.keys(profile.versions).sort()) {
+        const locked = profile.versions[versionSlug]!
+        let manifest: { digest?: unknown; components?: unknown }
+        let generatedModuleMatches = false
+        try {
+          const versionRoot = join(appRootPath, 'instruction-sets', setSlug, profileSlugValue, versionSlug)
+          manifest = JSON.parse(readFileSync(join(versionRoot, 'manifest.json'), 'utf8')) as { digest?: unknown; components?: unknown }
+          const actualComponents = Object.fromEntries(Object.keys(locked.components).sort().map(key => [
+            key,
+            readFileSync(join(versionRoot, 'components', `${key}.prompt.md`), 'utf8'),
+          ]))
+          generatedModuleMatches = readFileSync(join(versionRoot, 'components.generated.ts'), 'utf8')
+            === renderGeneratedVersionModule(actualComponents, manifest)
+        } catch {
+          manifest = {}
+        }
+        const componentsMatch = manifest.components !== null && typeof manifest.components === 'object'
+          && Object.keys(locked.components).sort().every(key =>
+            (manifest.components as Record<string, unknown>)[key] === locked.components[key]
+          )
+          && Object.keys(manifest.components as Record<string, unknown>).length === Object.keys(locked.components).length
+        const integrityFailures = await verifyInstructionSetVersionIntegrity(
+          appRootPath,
+          lock,
+          setSlug,
+          profileSlugValue,
+          versionSlug
+        )
+        if (manifest.digest !== locked.digest || !componentsMatch || !generatedModuleMatches || integrityFailures.length > 0) {
+          const identity = profile.modelConfigIdentity ?? profileSlugValue
+          throw new Error(`instruction_set_update_generated_module_unverified:${setSlug}/${identity}@${versionSlug}`)
+        }
+      }
+    }
+  }
+}
+
+export async function applyUpdate(
   out: string,
   project: string,
   plan: UpdatePlan,
   noSync: boolean,
   now: () => Date = () => new Date()
-): UpdateResult {
+): Promise<UpdateResult> {
   const absent: string[] = []
   const warnings: string[] = []
   if (noSync) {
-    withSyncLock(appRoot(out), () => {
+    await withSyncLock(appRoot(out), async () => {
       let lock = readUpdateLock(out, project)
       for (const resolution of plan.resolutions) {
         const set = resolution.payload.instructionSet
@@ -190,8 +246,24 @@ export function applyUpdate(
       const appRootPath = appRoot(out)
       const missing = missingVersionModules(appRootPath, lock)
       const importMapPath = join(appRootPath, 'generated', 'index.ts')
-      if (missing.length === 0 && existsSync(importMapPath)) {
-        reconcileGeneratedIndex(appRootPath, lock)
+      const hasImportMap = existsSync(importMapPath)
+      if (missing.length === 0 && hasImportMap) {
+        await assertGeneratedModulesVerified(appRootPath, lock)
+        const priorImportMap = readFileSync(importMapPath, 'utf8')
+        waitAtUpdateLockPublicationBarrierForProcessTest()
+        let wasReconciled = false
+        try {
+          reconcileGeneratedIndex(out, appRootPath, lock)
+          wasReconciled = true
+          atomicWrite(join(appRootPath, 'orizu.lock.json'), serializeLock(lock))
+        } catch (error) {
+          if (wasReconciled) atomicWrite(importMapPath, priorImportMap)
+          throw error
+        }
+        return
+      }
+      if (!hasImportMap) {
+        warnings.push('instruction_set_update_generated_index_missing; the generated index was not reconciled — run orizu instructions sync <specifier> then orizu instructions verify')
       } else if (missing.length > 0) {
         warnings.push(`instruction_set_update_generated_index_stale:${missing[0]}; the generated index still resolves the previous Version — run orizu instructions sync <specifier> then orizu instructions verify`)
       }
@@ -240,6 +312,29 @@ export class PruneKeepUnresolvedError extends Error {
   }
 }
 
+function staleImportMapRepairSpecifier(lock: InstructionSetLockV1): string | undefined {
+  for (const setSlug of Object.keys(lock.instructionSets).sort()) {
+    const set = lock.instructionSets[setSlug]!
+    const defaultProfile = set.profiles[set.default]
+    if (defaultProfile?.production && defaultProfile.modelConfigIdentity) {
+      return `${setSlug}/${defaultProfile.modelConfigIdentity}@${defaultProfile.production}`
+    }
+  }
+  for (const setSlug of Object.keys(lock.instructionSets).sort()) {
+    const set = lock.instructionSets[setSlug]!
+    for (const profileKey of Object.keys(set.profiles).sort()) {
+      const profile = set.profiles[profileKey]!
+      const versionSlug = Object.keys(profile.versions).sort((left, right) =>
+        profile.versions[left]!.versionNumber - profile.versions[right]!.versionNumber
+      )[0]
+      if (versionSlug && profile.modelConfigIdentity) {
+        return `${setSlug}/${profile.modelConfigIdentity}@${versionSlug}`
+      }
+    }
+  }
+  return undefined
+}
+
 export async function planPrune(out: string, keepSpecifiers: string[]): Promise<PrunePlan> {
   const lock = readUpdateLock(out)
   const retained = new Set<string>()
@@ -265,7 +360,22 @@ export async function planPrune(out: string, keepSpecifiers: string[]): Promise<
   }
   if (unresolved.length > 0) throw new PruneKeepUnresolvedError(unresolved)
   const report = await verifyInstructionSetTree(out)
-  if (!report.ok) throw new Error('instruction_set_prune_unverified')
+  if (!report.ok) {
+    const staleImportMapFailures = report.failures.filter(failure =>
+      failure.group === 'group4' &&
+      failure.path === 'generated/index.ts' &&
+      (failure.code === 'generated_module_drift' || failure.code.startsWith('import_map_destination_mismatch:'))
+    )
+    if (staleImportMapFailures.length === report.failures.length) {
+      const mismatch = staleImportMapFailures.find(failure => failure.code.startsWith('import_map_destination_mismatch:'))
+      const specifier = mismatch?.code.slice('import_map_destination_mismatch:'.length)
+        ?? staleImportMapRepairSpecifier(lock)
+      if (specifier) {
+        throw new Error(`instruction_set_prune_stale_import_map; repair_specifier:${specifier}; run orizu instructions sync ${shellQuote(specifier)} --out ${shellQuote(out)} --project ${shellQuote(lock.project)}`)
+      }
+    }
+    throw new Error('instruction_set_prune_unverified')
+  }
 
   const removals: PrunePlan['removals'] = []
   for (const [setSlug, set] of Object.entries(lock.instructionSets)) {
@@ -359,7 +469,7 @@ export async function applyPrune(out: string, plan: PrunePlan, keepSpecifiers: s
         rmdirSync(profilePath)
       }
       atomicWrite(lockPath, serializeLock(candidate))
-      if (existsSync(importMapPath)) reconcileGeneratedIndex(appRoot(out), candidate)
+      if (existsSync(importMapPath)) reconcileGeneratedIndex(out, appRoot(out), candidate)
       holdBeforePruneVerifyForProcessTest()
       const report = await verifyInstructionSetTree(out)
       if (!report.ok) {

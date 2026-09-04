@@ -544,6 +544,29 @@ async function checkGroup2(
   }
 }
 
+export async function verifyInstructionSetVersionIntegrity(
+  appRoot: string,
+  lock: InstructionSetLockV1,
+  setSlug: string,
+  profileSlugValue: string,
+  versionSlug: string
+): Promise<VerifyFinding[]> {
+  const versions = lockedVersions(lock, appRoot).filter(version =>
+    version.setSlug === setSlug
+    && version.profileSlug === profileSlugValue
+    && version.versionSlug === versionSlug
+  )
+  const failures: VerifyFinding[] = []
+  const manifests = new Map<string, VersionManifest>()
+  for (const version of versions) {
+    const manifest = readManifest(version)
+    if (manifest) manifests.set(version.relativePath, manifest)
+    else failures.push(finding('group2', 'version_manifest_invalid', `${version.relativePath}/manifest.json`))
+  }
+  await checkGroup2(versions, manifests, failures)
+  return failures
+}
+
 async function runHelperChecks(
   appRoot: string,
   loadPath: string,
@@ -797,6 +820,23 @@ async function checkGroup3(
   }
 }
 
+function compiledShadowFindings(
+  appRoot: string,
+  versions: ReturnType<typeof lockedVersions>
+): VerifyFinding[] {
+  const emittedTypeScriptPaths = [
+    'generated/index.ts',
+    ...managedHelperPaths(),
+    ...versions.map(version => `${version.relativePath}/components.generated.ts`),
+  ]
+  return emittedTypeScriptPaths.flatMap(emittedPath => {
+    const shadowPath = `${emittedPath.slice(0, -'.ts'.length)}.js`
+    return existsSync(join(appRoot, shadowPath))
+      ? [finding('group4', 'generated_index_compiled_shadow', shadowPath)]
+      : []
+  })
+}
+
 async function checkGroup4(
   appRoot: string,
   lock: InstructionSetLockV1,
@@ -804,7 +844,8 @@ async function checkGroup4(
   versions: ReturnType<typeof lockedVersions>,
   manifests: Map<string, VersionManifest>,
   failures: VerifyFinding[],
-  warnings: VerifyFinding[]
+  warnings: VerifyFinding[],
+  hasCompiledShadows: boolean
 ): Promise<void> {
   for (const [setSlug, set] of Object.entries(lock.instructionSets)) {
     const defaultProfile = set.profiles[set.default]
@@ -877,7 +918,7 @@ async function checkGroup4(
     failures.push(finding('group4', 'generated_module_drift', 'generated/index.ts'))
   }
   const versionModuleIntegrityFailed = failures.some(failure => failure.group === 'group2')
-  if (!importMapDrifted && !versionModuleIntegrityFailed) {
+  if (!importMapDrifted && !versionModuleIntegrityFailed && !hasCompiledShadows) {
     try {
       const generatedLock = await importGeneratedLock(importMapPath)
       if (!isDeepStrictEqual(generatedLock, lock)) {
@@ -952,12 +993,18 @@ export async function verifyInstructionSetTree(out: string): Promise<VerifyRepor
   const manifests = new Map<string, VersionManifest>()
   checkGroup1(locations, lock, manifests, failures)
   await checkGroup2(versions, manifests, failures)
-  await checkGroup3(appRoot, lock, versions, manifests, failures)
-  await checkGroup4(appRoot, lock, locations, versions, manifests, failures, warnings)
+  const shadowFailures = compiledShadowFindings(appRoot, versions)
+  failures.push(...shadowFailures)
+  if (shadowFailures.length === 0) {
+    await checkGroup3(appRoot, lock, versions, manifests, failures)
+  }
+  await checkGroup4(appRoot, lock, locations, versions, manifests, failures, warnings, shadowFailures.length > 0)
   const groups = Object.fromEntries(
     (['group1', 'group2', 'group3', 'group4'] as const).map(group => [
       group,
-      failures.some(failure => failure.group === group) ? 'FAIL' : 'PASS',
+      group === 'group3' && shadowFailures.length > 0
+        ? 'SKIPPED'
+        : failures.some(failure => failure.group === group) ? 'FAIL' : 'PASS',
     ])
   ) as Record<VerifyGroup, VerifyGroupStatus>
   return { ok: failures.length === 0, groups, failures, warnings }

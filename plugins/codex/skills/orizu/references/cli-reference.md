@@ -179,9 +179,10 @@ with `instruction_set_sync_legacy_layout`; follow the migration guide in
 Pointers. It prints every before/after value and is a no-op until `--yes`.
 Approved updates sync newly referenced Versions by default. `--no-sync` records
 the new Pointer values without materializing absent Versions and names every
-absent exact Specifier. When every referenced Version is already materialized it also rewrites
-`generated/index.ts` so the runtime resolves the new Pointers; when any is absent it leaves the
-index alone and says so. Follow it with exact sync commands before verify or runtime use. An unset Production refuses with
+absent exact Specifier. When every referenced Version is already materialized and
+an `orizu/generated/index.ts` already exists, it also rewrites that index so the
+runtime resolves the new Pointers; when either prerequisite is absent it leaves the index alone
+and says so. Follow it with exact sync commands before verify or runtime use. An unset Production refuses with
 `instruction_set_pointer_unresolved:production`; it never falls back.
 
 `prune` first runs the real offline verify gate, then lists unreferenced Version
@@ -580,7 +581,12 @@ and `<out>/orizu/orizu.lock.json`. For the TypeScript target, only
 target-specific; Component files, Version manifests, and the Lock remain
 language-neutral. Every relative import the CLI emits carries an explicit `.js`
 extension so the tree compiles under `moduleResolution` `nodenext` and `bundler`
-alike. The loader returns Components and Version-manifest settings
+alike. Put compiled JavaScript in an `outDir`. Verification rejects every
+in-place `.js` sibling of an emitted `.ts` file; a fresh in-place compile is also
+refused because this is a layout rule, not a staleness check. Direct
+`node --experimental-strip-types` execution cannot resolve the vendored `.ts`
+files through those `.js` specifiers; compile first or use a TypeScript-aware
+runtime. The loader returns Components and Version-manifest settings
 plus Provenance. `loadModelConfig` names the selected Version's `PROVIDER`,
 `MODEL`, `CONFIG_IDENTITY`, `PROTOCOL`, `THINKING_LEVEL`, `MAX_OUTPUT_TOKENS`,
 `TEMPERATURE`, `TOP_P`, and `STRICT_JSON_SCHEMA`, and retains all settings under
@@ -602,7 +608,9 @@ version without requiring Production.
 The Lock fingerprints exact pristine Helper bytes, including runner-safe
 `load.selfcheck.ts`, `provenance.selfcheck.ts`, and `verify.selfcheck.ts` files. These self-checks read the customer's generated map and synced bytes and refuse an empty map instead of using synthetic fixtures. Re-sync warns and preserves
 an edited Helper; `--force-helpers` overwrites it and refreshes the fingerprint.
-Bytes matching the current template recover an interrupted upgrade without a
+A hand-written or older Lock without `helpers` fingerprints conservatively treats
+older differing Helper bytes as edited; re-run sync with `--force-helpers` to
+replace them. Bytes matching the current template recover an interrupted upgrade without a
 warning. `sync --json` includes every warning in one document's always-present
 `warnings` array. `verifyIntegrity({ ...loaded, digest:
 loaded.provenance.digest }, lock)` cross-checks generated Provenance and hashes

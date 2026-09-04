@@ -1,8 +1,5 @@
 import { authedFetch } from './http.js'
-import {
-  INSTRUCTION_SET_COMPONENT_KEY,
-  windowsPathIdentity,
-} from './instruction-set-lock/index.js'
+import { INSTRUCTION_SET_COMPONENT_KEY } from './instruction-set-lock/index.js'
 import { loadInstructionSetManifest, MAX_INSTRUCTION_SET_COMPONENT_BYTES, type InstructionSetManifest } from './instruction-set-manifest.js'
 import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 import { parseSyncTarget, planSyncRequest, syncPayloadToDisk, type SyncPayload, type SyncTarget } from './instruction-set-sync/index.js'
@@ -38,10 +35,10 @@ function argValue(args: string[], flag: string): string | null {
     : args[index + 1]!
 }
 
-function requiredOptionValue(args: string[], flag: string): string | null {
+function requiredOptionValue(args: string[], subcommand: string, flag: string): string | null {
   const value = argValue(args, flag)
   if (args.includes(flag) && value === null) {
-    throw new Error(`instruction_set_sync_option_value_missing:${flag}`)
+    throw new Error(`instruction_set_${subcommand}_option_value_missing:${flag}`)
   }
   return value
 }
@@ -92,10 +89,7 @@ export interface SyncComponent { body?: string; repoPath?: string; contentSha?: 
 export interface SyncMaterial { profileVersionId: string; versionNumber: number; modelConfigIdentity: string; resolvedFrom: string; components: Record<string, SyncComponent> }
 export interface SyncProfile { modelConfigIdentity: string; resolvedFrom: string; production: SyncMaterial | null }
 export interface SyncSet {
-  projectId?: string
-  instructionSetId?: string
   name: string
-  slug?: string
   description?: string | null
   shape: string[]
   default: SyncMaterial
@@ -114,9 +108,6 @@ function safeComponentKey(value: string, platform: NodeJS.Platform) {
   ) {
     throw new Error('instruction_set_path_unsafe')
   }
-}
-function isSafeSegment(value: string) {
-  try { safeSegment(value); return true } catch { return false }
 }
 function slug(identity: string) { return identity.replaceAll('/', '__').replace(/[^A-Za-z0-9._-]/gu, '_') }
 function stable(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n` }
@@ -154,49 +145,14 @@ function removeOwnScratch(paths: Array<string | null>) {
   for (const path of paths) if (path && existsSync(path)) rmSync(path, { recursive: true, force: true })
 }
 
-function existingDestinationIsSynced(
-  destination: string,
-  set: Pick<SyncSet, 'projectId' | 'instructionSetId' | 'name' | 'slug'>
-) {
-  if (
-    set.slug &&
-    set.projectId === undefined &&
-    set.instructionSetId === undefined
-  ) {
-    return existingDestinationIsLegacySynced(destination, set.name, set.slug)
-  }
-  try {
-    if (!statSync(destination).isDirectory()) return false
-    const manifest = JSON.parse(readFileSync(join(destination, 'manifest.json'), 'utf8')) as {
-      manifestVersion?: number
-      projectId?: string
-      instructionSetId?: string
-      name?: string
-      slug?: string
-    }
-    return manifest.manifestVersion === 1 && (set.slug
-      ? manifest.slug === set.slug &&
-        manifest.projectId === set.projectId &&
-        manifest.instructionSetId === set.instructionSetId
-      : manifest.name === set.name)
-  } catch { return false }
-}
-
-function existingDestinationIsLegacySynced(
-  destination: string,
-  name: string,
-  slug?: string
-) {
+function existingDestinationIsSynced(destination: string, set: Pick<SyncSet, 'name'>) {
   try {
     if (!statSync(destination).isDirectory()) return false
     const manifest = JSON.parse(readFileSync(join(destination, 'manifest.json'), 'utf8')) as {
       manifestVersion?: number
       name?: string
-      slug?: string
     }
-    return manifest.manifestVersion === 1 &&
-      manifest.name === name &&
-      manifest.slug === slug
+    return manifest.manifestVersion === 1 && manifest.name === set.name
   } catch { return false }
 }
 
@@ -222,39 +178,13 @@ export function syncToDisk(
   fileOps: SyncFileOps = { writeFileSync },
   platform: NodeJS.Platform = process.platform
 ) {
-  const directoryName = set.slug || set.name
+  const directoryName = set.name
   safeSegment(directoryName)
-  const hasProjectId = set.projectId !== undefined
-  const hasInstructionSetId = set.instructionSetId !== undefined
-  if (set.slug && hasProjectId !== hasInstructionSetId) {
-    throw new Error('instruction_set_sync_identity_missing')
-  }
   for (const key of set.shape) safeSegment(key)
-  const profileSlugs = new Set<string>()
-  for (const profile of set.profiles) {
-    const value = slug(profile.modelConfigIdentity)
-    safeSegment(value)
-    const pathIdentity = windowsPathIdentity(value)
-    if (profileSlugs.has(pathIdentity)) throw new Error('instruction_set_slug_collision')
-    profileSlugs.add(pathIdentity)
-  }
+  for (const profile of set.profiles) safeSegment(slug(profile.modelConfigIdentity))
   mkdirSync(out, { recursive: true })
   const destination = join(out, directoryName)
-  const legacyDestination = set.slug && set.name !== set.slug && isSafeSegment(set.name)
-    ? join(out, set.name)
-    : null
-  if (existsSync(destination)) {
-    if (set.slug && existingDestinationIsLegacySynced(destination, set.name)) {
-      throw new Error('instruction_set_sync_legacy_identity_required')
-    }
-    if (!existingDestinationIsSynced(destination, set)) {
-      throw new Error('instruction_set_sync_destination_not_synced')
-    }
-  }
-  if (legacyDestination && existsSync(legacyDestination)) {
-    if (existingDestinationIsLegacySynced(legacyDestination, set.name)) {
-      throw new Error('instruction_set_sync_legacy_identity_required')
-    }
+  if (existsSync(destination) && !existingDestinationIsSynced(destination, set)) {
     throw new Error('instruction_set_sync_destination_not_synced')
   }
   const priorDestinations = [destination]
@@ -290,10 +220,7 @@ export function syncToDisk(
     ]
     const manifest = {
       manifestVersion: 1,
-      ...(set.projectId ? { projectId: set.projectId } : {}),
-      ...(set.instructionSetId ? { instructionSetId: set.instructionSetId } : {}),
       name: set.name,
-      ...(set.slug ? { slug: set.slug } : {}),
       ...(Object.hasOwn(set, 'description') ? { description: set.description ?? null } : {}),
       shape: set.shape,
       components,
@@ -327,8 +254,15 @@ export function syncToDisk(
 export async function instructionSetsCommand(args: string[], io: InstructionSetsCommandIo): Promise<number> {
   const positionals = positionalArgs(args)
   const [subcommand, reference] = positionals
+  const knownSubcommands = new Set([
+    'archive', 'create', 'default', 'list', 'profiles', 'prune', 'push',
+    'restore', 'scorers', 'shape', 'show', 'sync', 'update', 'verify',
+  ])
+  if (!subcommand || !knownSubcommands.has(subcommand)) {
+    throw new Error('Usage: orizu instructions list|show|sync|update|prune|verify|archive|restore')
+  }
   if (subcommand === 'verify') {
-    const report = await verifyInstructionSetTree(requiredOptionValue(args, '--out') ?? '.')
+    const report = await verifyInstructionSetTree(requiredOptionValue(args, subcommand, '--out') ?? '.')
     printVerifyReport(report, io.json, io.print)
     return report.ok ? 0 : 1
   }
@@ -402,7 +336,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   }
   const projectOption = subcommand === 'update'
     ? lifecycleOptionValues(args, 'update', '--project')[0] ?? null
-    : requiredOptionValue(args, '--project')
+    : requiredOptionValue(args, subcommand, '--project')
   const project = await io.resolveProjectSlug(projectOption)
   if (subcommand === 'update') {
     const output = lifecycleOptionValues(args, 'update', '--out')[0] ?? '.'
@@ -421,7 +355,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     const plan = makeUpdatePlan(project, lock, payloads)
     const isApproved = args.includes('--yes')
     const result = isApproved
-      ? applyUpdate(output, project, plan, args.includes('--no-sync'))
+      ? await applyUpdate(output, project, plan, args.includes('--no-sync'))
       : { absent: [], warnings: [] }
     if (io.json) io.print(JSON.stringify({ plan: plan.lines, applied: isApproved, absent: result.absent, warnings: result.warnings }))
     else {
@@ -583,7 +517,6 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     return 0
   }
   const status = argValue(args, '--status') || 'active'
-  if (subcommand !== 'list' && subcommand !== 'show' && subcommand !== 'sync') throw new Error('Usage: orizu instructions list|show|sync|update|prune|verify|archive|restore')
   if (subcommand === 'sync') {
     if (!reference) throw new Error('Usage: orizu instructions sync <specifier> [--version <n>] [--out <app-root>] [--target <ts>] [--force-helpers] --project <team/project> [--json]')
     if (args.includes('--model-config')) {
@@ -592,8 +525,8 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     const allowedOptions = new Set(['--project', '--out', '--version', '--target', '--json', '--force-helpers'])
     const unknownOption = args.find(value => value.startsWith('--') && !allowedOptions.has(value))
     if (unknownOption) throw new Error(`instruction_set_sync_option_unknown:${unknownOption}`)
-    const output = requiredOptionValue(args, '--out') ?? '.'
-    const plan = planSyncRequest(reference, requiredOptionValue(args, '--version'), output, project)
+    const output = requiredOptionValue(args, subcommand, '--out') ?? '.'
+    const plan = planSyncRequest(reference, requiredOptionValue(args, subcommand, '--version'), output, project)
     const payload = await responsePayload(await authedFetch(plan.path, { method: 'GET' }), 'Instruction sets sync') as unknown as SyncPayload
     const result = syncPayloadToDisk(output, project, plan, payload, {
       forceHelpers: args.includes('--force-helpers'),
