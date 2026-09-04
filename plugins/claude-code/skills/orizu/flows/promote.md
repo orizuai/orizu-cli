@@ -24,6 +24,10 @@ Choose validation proportional to risk and available infrastructure. These are m
 
 Present the report and validation evidence. The human makes the promotion decision and executes every production/default pointer move through `references/authority-map.md`.
 
+## Ship the approved Version to the repository
+
+When an authorized multi-component instruction-set promotion produces a Profile Version, follow `references/orizu-in-your-codebase.md`: run `orizu instructions sync <set/profile@vN>` for the exact approved Version (or use the documented `update` plan for an existing Pointer), then review the Component, generated-artifact, and Lock diff. Plain-prompt promotions do not produce a Profile Version and have nothing to sync through this step. Do not move a customer rollout flag until the repository's offline verification and runtime-byte check are green.
+
 ## Offer the post-win flows
 
 After the decision, offer Recurse for cadence-driven improvement on this surface, Triage for a reported incident, and Expand when the user wants to improve another inventoried surface. Offer them by the user's own interest, never as a forced sequence.

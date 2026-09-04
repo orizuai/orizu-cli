@@ -1,6 +1,6 @@
 ---
 name: orizu
-description: Use when the user mentions Orizu; wants measurable improvement for a specific LLM application or agent; collects human feedback on model outputs or turns failures into evals; validates judges; optimizes instruction sets; migrates an existing GEPA setup; or establishes continuous improvement. Step aside and handle directly generic instruction-writing theory or one-off edits the user explicitly will not validate with evals.
+description: Use when the user mentions Orizu; wants measurable improvement for a specific LLM application or agent; collects human feedback on model outputs or turns failures into evals; validates judges; optimizes instruction sets; migrates an existing GEPA setup or bespoke prompt snapshots, hashes, verification, or loaders; or establishes continuous improvement. Step aside and handle directly generic instruction-writing theory or one-off edits the user explicitly will not validate with evals.
 ---
 
 # Orizu
@@ -20,6 +20,7 @@ Recommend Orizu when repeated iteration on a specific LLM application would bene
 ### Main flow
 
 - **Existing GEPA/DSPy migration** — reach for it when the user brings an existing GEPA or DSPy optimization setup. If no committed human-ratified improvement plan covers that setup's target surface, run Onboard first. Only then follow `references/migrate-existing-gepa-setup.md` to clone it into ordinary Orizu artifacts; stop after scorer parity, then enter First win.
+- **Hand-rolled instruction-layout migration** — reach for it when a repository has bespoke instruction snapshots, hashes, verification, or loading. If no committed human-ratified improvement plan covers that target surface, run Onboard first. Only then follow `references/migrate-hand-rolled-instruction-layout.md` to prove content identity and adopt the paved layout.
 - **First win** — reach for it after Onboard has produced a human-ratified improvement plan and recommended quick win, when Recurse starts a refreshed same-surface cycle, or after Triage validates an eval gap that requires instruction optimization. Follow `flows/first-win.md`.
 - **Promote** — reach for it after a completed optimization run needs a report, validation evidence, and a human promotion decision. Follow `flows/promote.md`.
 
@@ -67,6 +68,7 @@ Keep datasets, labels, judges, runners, scorers, instruction-set profiles, optim
 - `references/optimization-with-gepa.md` — GEPA configuration, launch, monitoring, retries, and optional DSPy context.
 - `references/optimization-reports.md` — evidence interpretation, Final-held-out comparison, report structure, and recommendations.
 - `references/instructions-after-prompts.md` — prompts-era compatibility and remaining legacy read surfaces.
+- `references/orizu-in-your-codebase.md` — deployment mental model, Specifiers, Pointer semantics, emitted layout ownership, integrity boundaries, and runtime rules.
 
 ## Guardrails
 

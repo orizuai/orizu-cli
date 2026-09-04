@@ -89,7 +89,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     usage: 'orizu instructions sync <set|set/profile|set/profile@vN> [--version <n>] [--out <app-root>] [--target <ts>] [--force-helpers] [--project <team/project>] [--json]',
     summary: 'Materialize one Profile Version and update the instruction set Lock.',
     group: 'Instruction sets',
-    options: [{ name: '--version <n>', help: 'Exact Profile Version (equivalent to @vN).' }, { name: '--out <app-root>', help: 'App root containing orizu/ (default: current directory).' }, { name: '--target <ts>', help: 'Generated artifact target (default: ts).' }, { name: '--force-helpers', help: 'Overwrite edited vendored Helpers and refresh pristine fingerprints.' }, { name: '--project <team/project>', help: 'Project slug.' }, { name: '--json', help: 'Print source transport JSON.' }],
+    options: [{ name: '--version <n>', help: 'Exact Profile Version (equivalent to @vN).' }, { name: '--out <app-root>', help: 'App root containing orizu/ (default: current directory).' }, { name: '--target <ts>', help: 'Generated artifact target (default: ts).', choices: ['ts'] }, { name: '--force-helpers', help: 'Overwrite edited vendored Helpers and refresh pristine fingerprints.' }, { name: '--project <team/project>', help: 'Project slug.' }, { name: '--json', help: 'Print source transport JSON.' }],
     examples: ['orizu instructions sync planner/openai/gpt-5.6-luna@v2 --out . --project core/evals'],
   },
   {

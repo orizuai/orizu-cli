@@ -559,6 +559,8 @@ Use the customer-facing `orizu instructions …` namespace for instruction-set
 workflows. The legacy `orizu instruction-sets …` spelling remains a
 compatibility alias, but new workflows should not teach it. The on-disk
 `orizu.lock.json` contract is specified in [Instruction set Lock v1](instruction-set-lock.md).
+For deployment semantics and ownership, read [Orizu in your codebase](https://orizu.ai/docs/references/orizu-in-your-codebase).
+For bespoke snapshots, hashes, verification, or loading, read [Migrate a hand-rolled instruction layout](https://orizu.ai/docs/references/migrate-hand-rolled-instruction-layout).
 
 ```bash
 orizu instructions list --project my-team/quality-eval --status active
@@ -699,7 +701,7 @@ Approved updates sync newly referenced Versions by default, so the repository
 is not left pointing at absent material. `--no-sync` opts out: the Lock records
 the fresh Pointers and output names every referenced-but-absent exact Specifier.
 Sync those Specifiers before verify or runtime use. Existing Versions retain
-their original `syncedAt`; Pins and unrelated Lock fields are preserved. Any
+their original `syncedAt`; reserved Pins and unrelated Lock fields are preserved. Any
 unset Production refuses with `instruction_set_pointer_unresolved:production`
 and never falls back.
 
@@ -713,8 +715,8 @@ orizu instructions prune --out .
 orizu instructions prune --out . --keep planner/openai/gpt-5.6-luna@v2 --yes
 ```
 
-Production Pointers, customer-owned Lock Pins, and repeatable exact `--keep`
-Specifiers are retained. Lock Pins are durable; `--keep` is invocation-local.
+Production Pointers, reserved Lock Pins already written by tooling, and repeatable exact `--keep`
+Specifiers are retained. Do not hand-edit Pins; until a Pin command ships, use invocation-local `--keep`.
 Malformed Specifiers refuse rather than silently retaining a wider set.
 Value-less `--out`/`--keep` options refuse with
 `instruction_set_prune_option_missing_value:<flag>`, and every unknown prune
@@ -808,8 +810,7 @@ sync, then review and remove the old tree. The CLI never auto-deletes it.
 
 The shipped legacy TypeScript and Python loaders do not read the paved tree. If
 they see one, they fail with `instruction_set_legacy_loader_retired` and this
-migration anchor instead of reporting it as generically not synced. Paved-path
-replacement loaders arrive with the later Helper work.
+migration anchor instead of reporting it as generically not synced. Use the paved-path vendored `helpers/load.ts`; it ships with matching loader and verifier self-checks.
 
 ## Legacy prompt reads
 

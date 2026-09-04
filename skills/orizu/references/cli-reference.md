@@ -183,8 +183,8 @@ index alone and says so. Follow it with exact sync commands before verify or run
 
 `prune` first runs the real offline verify gate, then lists unreferenced Version
 folders. It is also a no-op until `--yes`. It retains every Production Pointer,
-customer-owned Lock Pins, and each repeatable exact `--keep <set/profile@vN>`.
-Lock Pins are durable repo policy; `--keep` applies only to that invocation.
+reserved Lock Pins already written by tooling, and each repeatable exact `--keep <set/profile@vN>`.
+Do not hand-edit Pins; until a Pin command ships, `--keep` applies only to that invocation.
 Malformed Specifiers refuse rather than broadening retention. Value-less
 `--out`/`--keep` options refuse with
 `instruction_set_prune_option_missing_value:<flag>`, and unknown prune options
