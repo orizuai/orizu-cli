@@ -120,7 +120,7 @@ import { applyHostedInstructionSetProfileOverride, dispatchHostedCommands } from
 import { workspaceSyncCommand } from './workspace-sync.js'
 import { runGitCredentialInvocation } from './git-credential.js'
 import { instructionSetsCommand, syncToDisk } from './instruction-sets-cli.js'; export { loadInstructionSet } from './instruction-set-loader.js'
-import { provenanceRequestFields, resolveInstructionSetProvenance } from './instruction-set-provenance.js'
+import { noSubmitScorerOutput, provenanceRequestFields, resolveInstructionSetProvenance } from './instruction-set-provenance.js'
 import { runnerInputInstructionSet, runnerInputPrompt, runnerInstructionSetSyncSet, type RunnerInstructionSet } from './runner-instruction-set-contract.js'
 import { pushPromptDraft } from './prompt-draft-push.js'
 import { readMarkdownReportInput } from './markdown-report-input.js'
@@ -434,12 +434,21 @@ function instructionSetProvenanceFields(project: string) {
     if (cliArgs.some(argument => argument.startsWith(`${flag}=`))) {
       throw new Error(`instruction_set_option_equals_form:${flag}`)
     }
+    const index = cliArgs.indexOf(flag)
+    if (index !== -1) {
+      const value = cliArgs[index + 1]
+      if (!value || value.startsWith('-')) {
+        throw new Error(`instruction_set_option_value_missing:${flag}`)
+      }
+    }
   }
   const specifier = getArg('--instructions')
+  const root = getArg('--instructions-root')
+  if (root && !specifier) throw new Error('instruction_set_option_orphan_root:--instructions-root')
   if (!specifier) return {}
   return provenanceRequestFields(resolveInstructionSetProvenance({
     specifier,
-    root: getArg('--instructions-root') || '.',
+    root: root || '.',
     project,
   }))
 }
@@ -2183,6 +2192,8 @@ async function execScorer() {
     throw new Error('Usage: orizu scorers exec --scorer-version <id> (--subject-version <prompt-version-id> | --optimization-run <id> --candidate <id>) --dataset-version <id> --split-set <id> --split <name> [--subject-results <jsonl>] [--dependency-score-run <alias=id>] [--dependency-results <alias=path>] [--no-submit] [--out <score.json>] [--project <team/project>] [--json]')
   }
 
+  const instructionSetProvenance = instructionSetProvenanceFields(project)
+  const isNoSubmit = hasArg('--no-submit')
   const response = await authedFetch(`/api/cli/scorers/exec?project=${encodeURIComponent(project)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2194,12 +2205,12 @@ async function execScorer() {
       datasetVersionId,
       splitSetId,
       splitName,
-      submit: !hasArg('--no-submit'),
+      submit: !isNoSubmit,
       reuseExisting: !hasArg('--no-reuse-existing'),
       subjectResultsJsonl: readOptionalJsonlFile(getArg('--subject-results') || getArg('--outputs')),
       dependencyScoreRunIds: parseAliasAssignments(getArg('--dependency-score-run') || getArg('--dependency-score-runs')),
       dependencyResultsJsonl: readDependencyResultAssignments(getArg('--dependency-results')),
-      ...instructionSetProvenanceFields(project),
+      ...instructionSetProvenance,
     }),
   })
 
@@ -2208,11 +2219,16 @@ async function execScorer() {
   }
 
   const data = await parseJsonResponse<Record<string, unknown>>(response, 'Scorer exec')
+  const noSubmitOutput = isNoSubmit
+    ? noSubmitScorerOutput(data, instructionSetProvenance)
+    : null
   if (outPath) {
-    writeFileSync(expandHomePath(outPath), `${JSON.stringify(data.scoreResult || data, null, 2)}\n`)
+    const output = noSubmitOutput ?? data.scoreResult ?? data
+    writeFileSync(expandHomePath(outPath), `${JSON.stringify(output, null, 2)}\n`)
   }
   if (hasJsonFlag()) {
-    printJson(data)
+    const output = noSubmitOutput ?? data
+    printJson(output)
     return
   }
 
@@ -2240,6 +2256,9 @@ async function execScorer() {
     printLine(`Executed scorer ${sanitizeTerminalText(scorerVersionId)} -> score ${sanitizeTerminalText(scoreRun.id)} (${formatPercent(numberFromUnknown(scoreValue))})${provenanceSuffix}`)
   } else {
     printLine(`Executed scorer ${sanitizeTerminalText(scorerVersionId)} (${formatPercent(numberFromUnknown(scoreValue))})${provenanceSuffix}`)
+  }
+  if (isNoSubmit && Object.keys(instructionSetProvenance).length > 0) {
+    printLine(`Provenance: ${sanitizeTerminalText(String(instructionSetProvenance['orizu.instruction_set.id']))} / ${sanitizeTerminalText(String(instructionSetProvenance['orizu.profile_version.id']))} / ${sanitizeTerminalText(String(instructionSetProvenance['orizu.instruction_set.digest']))}`)
   }
   if (outPath) {
     printLine(`Wrote scorer result to ${sanitizeTerminalText(outPath)}`)

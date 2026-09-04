@@ -1289,7 +1289,7 @@ orizu optimizations list --project my-team/quality-eval --profile-version <profi
 orizu runs list --project my-team/quality-eval --profile-version <profile-version-id>
 ```
 
-When submitting runs or scores, or executing a scorer, pass `--instructions <specifier>` and optionally `--instructions-root <dir>` to attach the exact loaded Provenance triple. The CLI resolves the specifier only through `<dir>/orizu/orizu.lock.json`; it never calls Orizu and refuses when the selected profile has no promoted Production version.
+When submitting runs or scores, or executing a scorer, pass `--instructions <specifier>` and optionally `--instructions-root <dir>` to attach the exact loaded Provenance triple. The CLI resolves the specifier only through `<dir>/orizu/orizu.lock.json`; it never calls Orizu. Bare and `set/profile` specifiers require a promoted Production version; an exact `set/profile@vN` specifier resolves that locked version without requiring Production.
 
 Register a scorer:
 

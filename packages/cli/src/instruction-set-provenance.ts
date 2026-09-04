@@ -28,8 +28,13 @@ export function resolveInstructionSetProvenance({
   const lockPath = join(root, 'orizu', 'orizu.lock.json')
   if (!existsSync(lockPath)) throw new Error(`instruction_set_lock_missing:${lockPath}`)
   const lock = parseLock(readFileSync(lockPath, 'utf8'))
-  if (lock.project !== project) {
-    throw new Error(`instruction_set_lock_project_mismatch:${lock.project}!=${project}`)
+  const projectSegments = project.split('/').map(segment => segment.trim().toLowerCase())
+  if (projectSegments.length !== 2 || projectSegments.some(segment => segment.length === 0)) {
+    throw new Error(`instruction_set_project_invalid:${projectSegments.join('/')}`)
+  }
+  const normalizedProject = projectSegments.join('/')
+  if (lock.project !== normalizedProject) {
+    throw new Error(`instruction_set_lock_project_mismatch:${lock.project}!=${normalizedProject}`)
   }
 
   const parsed = parseSpecifier(specifier)
@@ -43,6 +48,16 @@ export function resolveInstructionSetProvenance({
   const selectedVersion = parsed.versionNumber === undefined
     ? profile.production
     : `v${parsed.versionNumber}`
+  if (profile.modelConfigIdentity === undefined) {
+    const repairVersion = selectedVersion ?? Object.keys(profile.versions).sort()[0]!
+    const legacyIdentity = selectedProfile.replace('__', '/')
+    throw new Error(
+      `instruction_set_lock_profile_identity_missing:${parsed.set}/${selectedProfile}; repair with orizu instructions sync ${parsed.set}/${legacyIdentity}@${repairVersion}`
+    )
+  }
+  if (parsed.profile !== undefined && profile.modelConfigIdentity !== parsed.profile) {
+    throw new Error(`instruction_set_specifier_profile_mismatch:${profile.modelConfigIdentity}`)
+  }
   if (selectedVersion === null) {
     throw new Error('instruction_set_pointer_unresolved:production')
   }
@@ -62,4 +77,13 @@ export function provenanceRequestFields(triple: InstructionSetProvenanceTriple |
     [PROVENANCE_ATTRIBUTE_NAMES.profileVersionId]: triple.profileVersionId,
     [PROVENANCE_ATTRIBUTE_NAMES.digest]: triple.digest,
   } : {}
+}
+
+export function noSubmitScorerOutput(
+  data: Record<string, unknown>,
+  instructionSetProvenance: Record<string, unknown>
+): Record<string, unknown> {
+  const scoreResult = data.scoreResult
+  if (typeof scoreResult !== 'object' || scoreResult === null || Array.isArray(scoreResult)) return data
+  return { ...scoreResult, provenance: data.provenance, ...instructionSetProvenance }
 }

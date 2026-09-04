@@ -595,7 +595,9 @@ Filter read-back with `scorers detail --profile-version <id>`,
 `optimizations list --profile-version <id>`, or `runs list --profile-version <id>`.
 For `runs submit`, `scorers exec`, and `scores submit`, `--instructions <specifier>`
 with optional `--instructions-root <dir>` resolves Provenance only through the
-Lock, never calls Orizu, and refuses an unpromoted Profile.
+Lock and never calls Orizu. Bare and `set/profile` specifiers require a promoted
+Production version; an exact `set/profile@vN` specifier resolves that locked
+version without requiring Production.
 
 The Lock fingerprints exact pristine Helper bytes, including runner-safe
 `load.selfcheck.ts`, `provenance.selfcheck.ts`, and `verify.selfcheck.ts` files. These self-checks read the customer's generated map and synced bytes and refuse an empty map instead of using synthetic fixtures. Re-sync warns and preserves
