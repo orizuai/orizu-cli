@@ -86,12 +86,25 @@ function readLock(appRoot: string, project: string): InstructionSetLockV1 {
   return lock
 }
 
+function missingProfileIdentityError(
+  setSlug: string,
+  profileSlugValue: string,
+  profile: InstructionSetLockV1['instructionSets'][string]['profiles'][string]
+): Error {
+  const versionSlug = profile.production ?? Object.keys(profile.versions).sort()[0]!
+  const legacyIdentity = profileSlugValue.replace('__', '/')
+  return new Error(
+    `instruction_set_sync_lock_profile_identity_missing:${setSlug}/${profileSlugValue}; repair with orizu instructions sync ${setSlug}/${legacyIdentity}@${versionSlug}`
+  )
+}
+
 function lockedProfileIdentity(
   appRoot: string,
   setSlug: string,
   profileSlugValue: string,
   profile: InstructionSetLockV1['instructionSets'][string]['profiles'][string]
 ): string {
+  if (profile.modelConfigIdentity !== undefined) return profile.modelConfigIdentity
   const versionSlugs = [
     ...(profile.production ? [profile.production] : []),
     ...Object.keys(profile.versions).filter(version => version !== profile.production).sort(),
@@ -109,7 +122,30 @@ function lockedProfileIdentity(
       // Try another Synced version before failing closed.
     }
   }
-  throw new Error('instruction_set_sync_lock_profile_identity_missing')
+  throw missingProfileIdentityError(setSlug, profileSlugValue, profile)
+}
+
+function bindRetainedProfiles(
+  appRoot: string,
+  instructionSets: InstructionSetLockV1['instructionSets'],
+  repair?: { setSlug: string; profileSlug: string; modelConfigIdentity: string }
+): InstructionSetLockV1['instructionSets'] {
+  return Object.fromEntries(Object.entries(instructionSets).map(([setSlug, instructionSet]) => [
+    setSlug,
+    {
+      ...instructionSet,
+      profiles: Object.fromEntries(Object.entries(instructionSet.profiles).map(([profileSlugValue, profile]) => {
+        if (profile.modelConfigIdentity !== undefined) return [profileSlugValue, profile]
+        if (repair?.setSlug === setSlug && repair.profileSlug === profileSlugValue) {
+          return [profileSlugValue, { ...profile, modelConfigIdentity: repair.modelConfigIdentity }]
+        }
+        return [profileSlugValue, {
+          ...profile,
+          modelConfigIdentity: lockedProfileIdentity(appRoot, setSlug, profileSlugValue, profile),
+        }]
+      })),
+    },
+  ]))
 }
 
 function positiveVersion(value: string | null): number | undefined {
@@ -289,6 +325,10 @@ export function recordResolvedPayloadInLock(
     components: componentHashes,
   }
   const existingProfile = existingSet.profiles[set.profile.profileSlug]
+  if (existingProfile?.modelConfigIdentity !== undefined
+    && existingProfile.modelConfigIdentity !== set.profile.modelConfigIdentity) {
+    throw new Error(`instruction_set_update_model_config_identity_mismatch:${set.slug}/${set.profile.profileSlug}`)
+  }
   const existingVersion = existingProfile?.versions[versionSlug]
   assertVersionMatches(existingVersion, expectedVersion, `${set.slug}/${set.profile.profileSlug}@${versionSlug}`)
   lock.instructionSets[set.slug] = {
@@ -297,6 +337,7 @@ export function recordResolvedPayloadInLock(
     profiles: {
       ...existingSet.profiles,
       [set.profile.profileSlug]: {
+        modelConfigIdentity: set.profile.modelConfigIdentity,
         production: versionSlug,
         versions: {
           ...(existingProfile?.versions ?? {}),
@@ -383,6 +424,7 @@ function validateVersionIdentity(
         default: set.defaultProfile.profileSlug,
         profiles: {
           [set.profile.profileSlug]: {
+            modelConfigIdentity: set.profile.modelConfigIdentity,
             production: versionSlug,
             versions: {
               [versionSlug]: { ...version, syncedAt: '2000-01-01T00:00:00.000Z' },
@@ -631,7 +673,8 @@ export function syncPayloadToDisk(
   const manifestBytes = stableJson(manifest)
   const generatedBytes = renderGeneratedVersionModule(componentBytes, manifest)
   const appRoot = join(out, 'orizu')
-  if (existingProfile && lockedProfileIdentity(appRoot, set.slug, set.profile.profileSlug, existingProfile) !== set.profile.modelConfigIdentity) {
+  if (existingProfile?.modelConfigIdentity !== undefined
+    && existingProfile.modelConfigIdentity !== set.profile.modelConfigIdentity) {
     throw new Error(`instruction_set_slug_collision:${set.profile.profileSlug}`)
   }
   const destination = join(appRoot, 'instruction-sets', set.slug, set.profile.profileSlug, versionSlug)
@@ -661,12 +704,23 @@ export function syncPayloadToDisk(
       holdForProcessTest('ORIZU_TEST_SYNC_HOLD_BEFORE_PUBLISH_MS')
       const currentLock = readLock(appRoot, project)
       holdForProcessTest('ORIZU_TEST_SYNC_HOLD_LOCK_MS')
+      currentLock.instructionSets = bindRetainedProfiles(
+        appRoot,
+        currentLock.instructionSets,
+        plan.parsed.versionNumber === undefined ? undefined : {
+          setSlug: set.slug,
+          profileSlug: set.profile.profileSlug,
+          modelConfigIdentity: set.profile.modelConfigIdentity,
+        }
+      )
       const currentSet = currentLock.instructionSets[set.slug]
       if (currentSet && currentSet.instructionSetId !== set.instructionSetId) {
         throw new Error('instruction_set_sync_identity_mismatch')
       }
-      const currentProfile = currentSet?.profiles[set.profile.profileSlug]
-      if (currentProfile && lockedProfileIdentity(appRoot, set.slug, set.profile.profileSlug, currentProfile) !== set.profile.modelConfigIdentity) {
+      const retainedProfiles = currentSet?.profiles ?? existingSet?.profiles ?? {}
+      const currentProfile = retainedProfiles[set.profile.profileSlug]
+      if (currentProfile?.modelConfigIdentity !== undefined
+        && currentProfile.modelConfigIdentity !== set.profile.modelConfigIdentity) {
         throw new Error(`instruction_set_slug_collision:${set.profile.profileSlug}`)
       }
       const currentVersion = currentProfile?.versions[versionSlug]
@@ -690,8 +744,12 @@ export function syncPayloadToDisk(
         instructionSetId: set.instructionSetId,
         default: defaultProfileSlug,
         profiles: {
-          ...(currentSet?.profiles ?? existingSet?.profiles ?? {}),
-          [set.profile.profileSlug]: { production, versions },
+          ...retainedProfiles,
+          [set.profile.profileSlug]: {
+            modelConfigIdentity: set.profile.modelConfigIdentity,
+            production,
+            versions,
+          },
         },
       }
       const journal = createManagedArtifactJournal()

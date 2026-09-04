@@ -16,9 +16,10 @@ Read [Orizu in your codebase](orizu-in-your-codebase.md) for Pointer, ownership,
 | Version registry/index | Machine-owned `orizu/generated/index.ts` |
 | Verify script | `orizu instructions verify --out .` and `helpers/verify.ts` |
 | Loader | `helpers/load.ts` |
-| Helper self-checks | `helpers/load.selfcheck.ts`, `helpers/provenance.selfcheck.ts`, and `helpers/verify.selfcheck.ts`, exporting `runLoadSelfCheck()`, `runProvenanceSelfCheck()`, and `runVerifySelfCheck()` |
+| Model Config hydration | `helpers/model-config.ts` |
+| Helper self-checks | `helpers/load.selfcheck.ts`, `helpers/model-config.selfcheck.ts`, `helpers/provenance.selfcheck.ts`, and `helpers/verify.selfcheck.ts`, exporting `runLoadSelfCheck()`, `runModelConfigSelfCheck()`, `runProvenanceSelfCheck()`, and `runVerifySelfCheck()` |
 
-The paved Version manifest exports frozen `settings`. Provider and model are represented by the Profile's Model Config identity. Use the identity exactly as Orizu reports it—suffixes such as `-luna` are significant. Find it with `orizu instructions show <set> --project <team/project>` and read `modelConfigIdentity`; an old manifest may call the equivalent field `model.configIdentity`. Bespoke fields such as `model.provider`, `model.protocol`, and `model.strictJsonSchema` are **not exported yet**; a hydrated model-config object is coming in separate follow-up work. Customer-only identifiers such as an internal model ID have no Orizu mapping and stay in customer code if still needed.
+The paved Version manifest exports frozen `settings`. Provider and model are represented by the Profile's Model Config identity. Use the identity exactly as Orizu reports it—suffixes such as `-luna` are significant. Find it with `orizu instructions show <set> --project <team/project>` and read `modelConfigIdentity`; an old manifest may call the equivalent field `model.configIdentity`. The paved `loadModelConfig` Helper hydrates provider, model, protocol, strict-schema, and generation fields from those frozen settings. Customer-only identifiers such as an internal model ID have no Orizu mapping and stay in customer code if still needed.
 
 A paved `manifest.json` contains this shape (IDs and hashes abbreviated):
 
@@ -113,7 +114,7 @@ Now inventory every old-tree path that the conversion will delete, plus every de
 
    It must print no diff and exit 0. For a paved-shaped hand-rolled tree, the old side is `<backup>/instruction-sets/<set>/…`; for any other hand-rolled shape, use wherever your layout kept the Component files. If the old tree used `<key>.md`, rename only the external backup's comparison copy to `<key>.prompt.md`, or compare each corresponding file separately. Also compare each old Component hash with the new Lock entry. Compare the old Profile Version id noted before the move with the paved manifest's `profileVersionId`; every value must match. Stop on the first mismatch.
 
-Before committing, replace the bespoke verify script and CI wiring with `orizu instructions verify --out <app-root>`. Remove old byte/hash/layout checks only after that paved check is green; retain checks for metadata Orizu does not export. Also migrate every import and call of the bespoke loader to `orizu/helpers/load.ts`, wire the three Helper self-check functions into customer tests, and run the customer's build and tests. Retain a compatibility adapter until all consumers move if they cannot be changed atomically.
+Before committing, replace the bespoke verify script and CI wiring with `orizu instructions verify --out <app-root>`. Remove old byte/hash/layout checks only after that paved check is green; retain checks for metadata Orizu does not export. Also migrate every import and call of the bespoke loader to `orizu/helpers/load.ts`, wire the four Helper self-check functions into customer tests, and run the customer's build and tests. Retain a compatibility adapter until all consumers move if they cannot be changed atomically.
 
 7. Inspect the complete conversion, including verifier and loader consumers:
 
@@ -150,6 +151,8 @@ The first `git status --short` is **not empty**. It reports deletion or relocati
 ?? orizu/generated/index.ts
 ?? orizu/helpers/load.ts
 ?? orizu/helpers/load.selfcheck.ts
+?? orizu/helpers/model-config.ts
+?? orizu/helpers/model-config.selfcheck.ts
 ?? orizu/helpers/provenance.ts
 ?? orizu/helpers/provenance.selfcheck.ts
 ?? orizu/helpers/verify.ts
@@ -165,7 +168,7 @@ orizu/generated/** linguist-generated=true
 
 These lines prevent Git from normalizing CRLF or missing-final-newline Component bytes and mark the generated index. First sync legitimately changes Profile directory slug, manifest fields, digest formula, generated modules, Helpers, the Lock `helpers` map, and `syncedAt`. Those wrapper differences are expected.
 
-The Lock's `helpers` map contains pristine byte fingerprints for exactly six vendored Helpers—load, provenance, verify, and their three self-checks. `verify` group 4 checks that every fingerprinted Helper exists and reports customer edits as warnings.
+The Lock's `helpers` map contains pristine byte fingerprints for exactly eight vendored Helpers—load, model-config, provenance, verify, and their four self-checks. `verify` group 4 checks that every fingerprinted Helper exists and reports customer edits as warnings.
 
 The no-op proof has three independent checks:
 
@@ -238,7 +241,7 @@ Use the same boundary in CI:
 
 Complete this replacement before §3 step 9. Import `loadInstructions()` from `orizu/helpers/load.ts`. It resolves only the generated map and Lock embedded at sync time, returns Components, settings, and Provenance atomically, and never calls Orizu. Registries, deployment-key adapters, and model-call assembly outside `orizu/` remain customer-owned. Before deleting the old loader, grep the repository for imports and calls of its exported functions, then migrate every call site to the vendored Helper.
 
-The `*.selfcheck.ts` files deliberately export plain functions without test-runner globals. Call `runLoadSelfCheck()`, `runProvenanceSelfCheck()`, and `runVerifySelfCheck()` from ordinary Bun, Vitest, or another customer-owned test wrapper. This proves the production-default Helper wiring rather than a copied fake.
+The `*.selfcheck.ts` files deliberately export plain functions without test-runner globals. Call `runLoadSelfCheck()`, `runModelConfigSelfCheck()`, `runProvenanceSelfCheck()`, and `runVerifySelfCheck()` from ordinary Bun, Vitest, or another customer-owned test wrapper. This proves the production-default Helper wiring rather than a copied fake.
 
 If the repository uses Orizu's **earlier shipped loader**, remove it: only that earlier Orizu loader throws `instruction_set_legacy_loader_retired` when it sees a paved tree. An arbitrary hand-written loader does not emit that code; replace it with the vendored `helpers/load.ts` after migrating its consuming call sites.
 

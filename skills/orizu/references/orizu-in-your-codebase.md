@@ -90,6 +90,8 @@ One app owns one output root. `--out` names the **app root that contains `orizu/
 | `orizu/generated/index.ts` | Machine-owned static import map; the only file that imports Version modules. |
 | `orizu/helpers/load.ts` | Customer-editable, fingerprinted vendored Helper. |
 | `orizu/helpers/load.selfcheck.ts` | Customer-editable, fingerprinted self-check exporting `runLoadSelfCheck()`. |
+| `orizu/helpers/model-config.ts` | Customer-editable, fingerprinted Model Config hydration Helper. |
+| `orizu/helpers/model-config.selfcheck.ts` | Customer-editable, fingerprinted self-check exporting `runModelConfigSelfCheck()`. |
 | `orizu/helpers/provenance.ts` | Customer-editable, fingerprinted provenance Helper. |
 | `orizu/helpers/provenance.selfcheck.ts` | Customer-editable, fingerprinted self-check exporting `runProvenanceSelfCheck()`. |
 | `orizu/helpers/verify.ts` | Customer-editable, fingerprinted integrity Helper. |
@@ -103,7 +105,11 @@ orizu/** -text
 orizu/generated/** linguist-generated=true
 ```
 
-There are exactly six vendored Helpers: load, provenance, and verify, each with one matching self-check. The Lock's `helpers` map stores the pristine byte fingerprint of all six; `verify` group 4 checks those paths and fingerprints.
+There are exactly eight vendored Helpers: load, model-config, provenance, and verify, each with one matching self-check. The Lock's `helpers` map stores the pristine byte fingerprint of all eight; `verify` group 4 checks those paths and fingerprints.
+
+### Model config
+
+`loadModelConfig(specifier)` returns a frozen object with `PROVIDER`, `MODEL`, `CONFIG_IDENTITY`, `THINKING_LEVEL`, `MAX_OUTPUT_TOKENS`, `TEMPERATURE`, `TOP_P`, `PROTOCOL`, `STRICT_JSON_SCHEMA`, and `RAW`. It hydrates these fields from the Version's frozen settings, with `RAW` preserving that complete settings object. In ai-sdk style assembly, the one-line mapping is `model = config.MODEL`.
 
 `sync` refreshes a pristine Helper. If its bytes differ from both its recorded fingerprint and the current template, `sync` preserves it and warns. Use `--force-helpers` only after reviewing the replacement.
 

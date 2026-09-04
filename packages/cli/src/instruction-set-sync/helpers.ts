@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameS
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { serializeLock, type InstructionSetLockV1 } from '../instruction-set-lock/index.js'
+import { MODEL_CONFIG_FIELDS } from '../model-config-fields.js'
 import type { SyncTarget } from './index.js'
 
 const LOAD_HELPER = String.raw`import { lock, versions } from '../generated/index.js'
@@ -12,6 +13,8 @@ interface VersionModule {
   manifest: {
     settings?: Record<string, unknown>
     modelSettings?: Record<string, unknown>
+    modelConfigIdentity: string
+    profileSlug: string
     provenance: { instructionSetId: string; profileVersionId: string; digest: string }
   }
 }
@@ -40,12 +43,12 @@ function parseSpecifier(value: string): ParsedSpecifier {
   }
   const set = value.slice(0, firstSlash)
   const remainder = value.slice(firstSlash + 1)
-  const at = remainder.indexOf('@')
-  const profile = at < 0 ? remainder : remainder.slice(0, at)
-  const version = at < 0 ? undefined : remainder.slice(at + 1)
+  const versionSuffix = /@v([0-9]+)$/.exec(remainder)
+  const profile = versionSuffix ? remainder.slice(0, versionSuffix.index) : remainder
+  const version = versionSuffix ? 'v' + versionSuffix[1] : undefined
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(set) ||
-      !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(profile) ||
-      (version !== undefined && !/^v[1-9][0-9]*$/.test(version))) {
+      profile.length === 0 || /\s/.test(profile) ||
+      (versionSuffix !== null && (!/^v[1-9][0-9]*$/.test(version!) || Number(versionSuffix[1]) > 2147483647))) {
     throw new InstructionSetLoadError('instruction_set_specifier_unknown')
   }
   return { set, profile, ...(version === undefined ? {} : { version }) }
@@ -60,6 +63,7 @@ export function loadInstructions(specifier: string): {
   settings: Record<string, unknown>
   provenance: { instructionSetId: string; profileVersionId: string; digest: string }
   generatedProvenance: { instructionSetId: string; profileVersionId: string; digest: string }
+  modelConfigIdentity: string
 } {
   const parsed = parseSpecifier(specifier)
   const instructionSet = lock.instructionSets[parsed.set as keyof typeof lock.instructionSets]
@@ -70,6 +74,9 @@ export function loadInstructions(specifier: string): {
   const profile = instructionSet.profiles[selectedProfile as keyof typeof instructionSet.profiles]
   const profileVersions = setVersions[selectedProfile as keyof typeof setVersions]
   if (!profile || !profileVersions) throw new InstructionSetLoadError('instruction_set_specifier_unknown')
+  if (parsed.profile !== undefined && parsed.profile !== profile.modelConfigIdentity) {
+    throw new InstructionSetLoadError('instruction_set_specifier_unknown')
+  }
 
   const selectedVersion = parsed.version ?? profile.production
   if (selectedVersion === null) throw new InstructionSetLoadError('instruction_set_pointer_unresolved:production')
@@ -78,6 +85,13 @@ export function loadInstructions(specifier: string): {
 
   const lockedVersion = profile.versions[selectedVersion as keyof typeof profile.versions]
   if (!lockedVersion) throw new InstructionSetLoadError('instruction_set_specifier_unknown')
+
+  // The bound Lock Profile is the identity trust anchor.
+  if (typeof profile.modelConfigIdentity !== 'string'
+    || loaded.manifest.profileSlug !== selectedProfile
+    || profile.modelConfigIdentity !== loaded.manifest.modelConfigIdentity) {
+    throw new InstructionSetLoadError('instruction_set_model_config_identity_mismatch')
+  }
 
   return {
     components: loaded.components,
@@ -88,6 +102,7 @@ export function loadInstructions(specifier: string): {
       digest: lockedVersion.digest,
     },
     generatedProvenance: loaded.manifest.provenance,
+    modelConfigIdentity: loaded.manifest.modelConfigIdentity,
   }
 }
 `
@@ -97,11 +112,19 @@ import { InstructionSetLoadError, loadInstructions } from './load.js'
 
 interface VersionModule {
   components: Record<string, string>
-  manifest: { provenance: { instructionSetId: string; profileVersionId: string; digest: string } }
+  manifest: {
+    modelConfigIdentity: string
+    profileSlug: string
+    provenance: { instructionSetId: string; profileVersionId: string; digest: string }
+  }
 }
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
+}
+
+function slugForIdentity(identity: string): string {
+  return identity.replaceAll('/', '__').replace(/[^A-Za-z0-9._-]/g, '_')
 }
 
 export function runLoadSelfCheck(): void {
@@ -122,6 +145,13 @@ export function runLoadSelfCheck(): void {
           && provenance.profileVersionId === lockedVersion.profileVersionId
           && provenance.digest === lockedVersion.digest,
         'load Helper module Provenance must match the Lock')
+        assert(profile.modelConfigIdentity === versionModule.manifest.modelConfigIdentity
+          && versionModule.manifest.profileSlug === profileSlug
+          && slugForIdentity(versionModule.manifest.modelConfigIdentity) === profileSlug,
+        'load Helper Model Config identity must match the Lock profile')
+        const loaded = loadInstructions(setSlug + '/' + versionModule.manifest.modelConfigIdentity + '@' + versionSlug)
+        assert(loaded.modelConfigIdentity === versionModule.manifest.modelConfigIdentity,
+          'load Helper must return the locked Model Config identity')
         inspected += 1
       }
     }
@@ -443,8 +473,31 @@ export function runVerifySelfCheck(): void {
 }
 `
 
+interface ModelConfigFieldDefinition {
+  readonly field: string
+  readonly settingsKeys: readonly string[]
+  readonly kind: 'string' | 'number' | 'boolean'
+}
+
+export function renderModelConfigHelper(fields: readonly ModelConfigFieldDefinition[]): string {
+  const table = JSON.stringify(fields)
+  const optionalFields = fields.filter(({ field }) => field !== 'MODEL')
+    .map(({ field, kind }) => `  readonly ${field}?: ${kind}`).join('\n')
+  return `import { loadInstructions } from './load.js'\n\nexport const MODEL_CONFIG_FIELDS = ${table} as const\n\nexport class ModelConfigError extends Error {\n  readonly code: string\n\n  constructor(code: string) {\n    super(code)\n    this.name = 'ModelConfigError'\n    this.code = code\n  }\n}\n\nexport interface ModelConfig {\n  readonly PROVIDER: string\n  readonly MODEL: string\n  readonly CONFIG_IDENTITY: string\n${optionalFields}\n  readonly RAW: Readonly<Record<string, unknown>>\n}\n\nfunction setting(settings: Record<string, unknown>, key: string): { present: boolean; value?: unknown } {\n  const dot = key.indexOf('.')\n  if (dot < 0) return Object.hasOwn(settings, key) ? { present: true, value: settings[key] } : { present: false }\n  const parentKey = key.slice(0, dot)\n  if (!Object.hasOwn(settings, parentKey)) return { present: false }\n  const parent = settings[parentKey]\n  if (parent === null) return { present: false }\n  if (typeof parent !== 'object' || Array.isArray(parent)) {\n    throw new ModelConfigError('instruction_set_model_config_setting_invalid:' + parentKey)\n  }\n  const child = key.slice(dot + 1)\n  return Object.hasOwn(parent, child)\n    ? { present: true, value: (parent as Record<string, unknown>)[child] }\n    : { present: false }\n}\n\nfunction deepFreeze(value: unknown): void {\n  if (Array.isArray(value)) {\n    for (const item of value) deepFreeze(item)\n    Object.freeze(value)\n    return\n  }\n  if (value === null || typeof value !== 'object') return\n  const prototype = Object.getPrototypeOf(value)\n  if (prototype !== Object.prototype && prototype !== null) return\n  for (const item of Object.values(value)) deepFreeze(item)\n  Object.freeze(value)\n}\n\nexport function loadModelConfig(specifier: string): ModelConfig {\n  const loaded = loadInstructions(specifier)\n  const identity = loaded.modelConfigIdentity\n  const slash = identity.indexOf('/')\n  const provider = slash < 0 ? identity : identity.slice(0, slash)\n  const identityModel = slash < 0 ? identity : identity.slice(slash + 1)\n  const mapped: Record<string, unknown> = {}\n  for (const definition of MODEL_CONFIG_FIELDS) {\n    const found = definition.settingsKeys.map(key => ({ key, ...setting(loaded.settings, key) })).filter(item => item.present && item.value !== null)\n    for (const item of found) {\n      if (typeof item.value !== definition.kind || (definition.kind === 'number' && !Number.isFinite(item.value))) {\n        throw new ModelConfigError('instruction_set_model_config_setting_invalid:' + item.key)\n      }\n    }\n    if (found.length > 1 && found.some(item => item.value !== found[0]!.value)) {\n      throw new ModelConfigError('instruction_set_model_config_setting_conflict:' + definition.field)\n    }\n    mapped[definition.field] = found[0]?.value\n  }\n  deepFreeze(loaded.settings)\n  return Object.freeze({\n    ...mapped,\n    PROVIDER: provider,\n    MODEL: (mapped.MODEL as string | undefined) ?? identityModel,\n    CONFIG_IDENTITY: identity,\n    RAW: loaded.settings,\n  }) as unknown as ModelConfig\n}\n`
+}
+
+export function renderModelConfigSelfCheck(fields: readonly ModelConfigFieldDefinition[]): string {
+  const table = JSON.stringify(fields)
+  return `import { lock, versions } from '../generated/index.js'\nimport { loadInstructions } from './load.js'\nimport { loadModelConfig } from './model-config.js'\n\nconst FIELDS = ${table} as const\n\nfunction assert(condition: unknown, message: string): asserts condition {\n  if (!condition) throw new Error(message)\n}\n\nfunction setting(settings: Record<string, unknown>, key: string): { present: boolean; value?: unknown } {\n  const dot = key.indexOf('.')\n  if (dot < 0) return Object.hasOwn(settings, key) ? { present: true, value: settings[key] } : { present: false }\n  const parent = settings[key.slice(0, dot)]\n  const child = key.slice(dot + 1)\n  return parent !== null && typeof parent === 'object' && !Array.isArray(parent) && Object.hasOwn(parent, child)\n    ? { present: true, value: (parent as Record<string, unknown>)[child] } : { present: false }\n}\n\nexport function runModelConfigSelfCheck(): void {\n  let failure: unknown\n  try { loadModelConfig('orizu-self-check-missing') } catch (error) { failure = error }\n  assert(failure instanceof Error, 'Model Config Helper must reject an unknown Specifier')\n  const generated = versions as unknown as Record<string, Record<string, Record<string, { manifest: { modelConfigIdentity: string } } | undefined>> | undefined>\n  let inspected = 0\n  for (const [setSlug, instructionSet] of Object.entries(lock.instructionSets)) {\n    for (const [profileSlug, profile] of Object.entries(instructionSet.profiles)) {\n      for (const versionSlug of Object.keys(profile.versions)) {\n        const versionModule = generated[setSlug]?.[profileSlug]?.[versionSlug]\n        assert(versionModule, 'Model Config Helper generated map must contain every locked Version')\n        const specifier = setSlug + '/' + versionModule.manifest.modelConfigIdentity + '@' + versionSlug\n        const loaded = loadInstructions(specifier)\n        const config = loadModelConfig(specifier) as unknown as Record<string, unknown>\n        assert(config.CONFIG_IDENTITY === loaded.modelConfigIdentity, 'Model Config identity must agree with loadInstructions')\n        const slash = loaded.modelConfigIdentity.indexOf('/')\n        const expectedProvider = slash < 0 ? loaded.modelConfigIdentity : loaded.modelConfigIdentity.slice(0, slash)\n        const expectedModel = slash < 0 ? loaded.modelConfigIdentity : loaded.modelConfigIdentity.slice(slash + 1)\n        assert(config.PROVIDER === expectedProvider, 'Model Config provider must match its identity prefix')\n        assert(config.MODEL === expectedModel || config.MODEL === loaded.settings.model, 'Model Config model must match its identity suffix or explicit setting')\n        assert(config.RAW === loaded.settings, 'Model Config RAW must be the loaded frozen settings object')\n        for (const definition of FIELDS) {\n          const found = definition.settingsKeys.map(key => setting(loaded.settings, key)).find(item => item.present && item.value !== null)\n          const expected = definition.field === 'MODEL' && !found ? expectedModel : found?.value\n          assert(config[definition.field] === expected, 'Model Config named field must map its frozen setting: ' + definition.field)\n        }\n        inspected += 1\n      }\n    }\n  }\n  assert(inspected > 0, 'Model Config Helper must inspect at least one locked Version')\n}\n`
+}
+
+const MODEL_CONFIG_HELPER = renderModelConfigHelper(MODEL_CONFIG_FIELDS)
+const MODEL_CONFIG_TEST = renderModelConfigSelfCheck(MODEL_CONFIG_FIELDS)
+
 const HELPER_FILES: Record<string, string> = {
   'helpers/load.ts': LOAD_HELPER,
+  'helpers/model-config.ts': MODEL_CONFIG_HELPER,
+  'helpers/model-config.selfcheck.ts': MODEL_CONFIG_TEST,
   'helpers/load.selfcheck.ts': LOAD_TEST,
   'helpers/provenance.ts': PROVENANCE_HELPER,
   'helpers/provenance.selfcheck.ts': PROVENANCE_TEST,
@@ -522,6 +575,7 @@ export function renderGeneratedIndex(lock: InstructionSetLockV1): string {
     instructionSetId: string
     default: string
     profiles: Record<string, {
+      modelConfigIdentity?: string
       production: string | null
       versions: Record<string, {
         profileVersionId: string

@@ -9,6 +9,7 @@ export interface SyncedVersionLock {
 }
 
 export interface ProfileLock {
+  modelConfigIdentity?: string
   production: string | null
   versions: Record<string, SyncedVersionLock>
 }
@@ -103,13 +104,11 @@ const lockSchema = instructionSetLockSchemaV1
 const rootSchema = lockSchema as unknown as JsonSchema
 export const INSTRUCTION_SET_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 export const INSTRUCTION_SET_PROFILE_SLUG = /^[a-z0-9][a-z0-9._-]*__[a-z0-9][a-z0-9._-]*$/u
-const PROFILE_IDENTITY = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/u
 export const INSTRUCTION_SET_COMPONENT_KEY = /^(?!\.)[A-Za-z0-9._-]+$/u
 const WINDOWS_RESERVED_COMPONENT_KEY = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu
 export const INSTRUCTION_SET_HELPER_PATH = /^helpers\/(?!\.{1,2}(?:\/|$))(?!.*\/\.{1,2}(?:\/|$))[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/u
 export const MAX_VERSION_NUMBER = 2_147_483_647
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
-const VERSION = /^v([1-9][0-9]*)$/u
 
 export function windowsPathIdentity(value: string): string {
   return value.toLowerCase().replace(/[. ]+$/u, '')
@@ -503,6 +502,7 @@ export function serializeLock(lock: InstructionSetLockV1): string {
     ['instructionSetId', instructionSet.instructionSetId],
     ['default', instructionSet.default],
     ['profiles', orderedRecord(instructionSet.profiles, profile => orderedObject([
+      ...(profile.modelConfigIdentity === undefined ? [] : [['modelConfigIdentity', profile.modelConfigIdentity] as [string, OrderedJson]]),
       ['production', profile.production],
       ['versions', orderedObject(Object.entries(profile.versions)
         .sort((left, right) => left[1].versionNumber - right[1].versionNumber)
@@ -543,17 +543,19 @@ export function parseSpecifier(text: string): ParsedSpecifier {
   if (profileAndVersion.length === 0 || profileAndVersion.startsWith('@')) {
     throw new SpecifierParseError('specifier_profile_missing')
   }
-  const at = profileAndVersion.indexOf('@')
-  const profile = at === -1 ? profileAndVersion : profileAndVersion.slice(0, at)
-  if (!PROFILE_IDENTITY.test(profile) || profile.startsWith('/') || profile.endsWith('/')) {
-    throw new SpecifierParseError('specifier_invalid_profile')
+  const versionSuffix = /@v([0-9]+)$/u.exec(profileAndVersion)
+  if (versionSuffix && !/^[1-9][0-9]*$/u.test(versionSuffix[1]!)) {
+    throw new SpecifierParseError('specifier_invalid_version')
   }
-  if (at === -1) return { set, profile }
+  const profile = versionSuffix
+    ? profileAndVersion.slice(0, versionSuffix.index)
+    : profileAndVersion
+  if (profile.length === 0) throw new SpecifierParseError('specifier_profile_missing')
+  if (/\s/u.test(profile)) throw new SpecifierParseError('specifier_invalid_profile')
+  if (!versionSuffix) return { set, profile }
 
-  const versionText = profileAndVersion.slice(at + 1)
-  const match = VERSION.exec(versionText)
-  if (!match) throw new SpecifierParseError('specifier_invalid_version')
-  const versionNumber = Number(match[1])
+  const versionNumber = Number(versionSuffix[1])
+  if (versionNumber < 1) throw new SpecifierParseError('specifier_invalid_version')
   if (versionNumber > MAX_VERSION_NUMBER) throw new SpecifierParseError('specifier_invalid_version')
   return { set, profile, versionNumber }
 }

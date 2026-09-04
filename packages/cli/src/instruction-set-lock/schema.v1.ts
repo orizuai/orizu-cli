@@ -40,7 +40,7 @@ export const instructionSetLockSchemaV1 = {
       "uniqueItems": true,
       "items": {
         "type": "string",
-        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*/[^@\\s]+@v[1-9][0-9]*$"
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*/[^\\s]+@v[1-9][0-9]*$"
       }
     }
   },
@@ -87,6 +87,10 @@ export const instructionSetLockSchemaV1 = {
       ],
       "additionalProperties": false,
       "properties": {
+        "modelConfigIdentity": {
+          "type": "string",
+          "minLength": 1
+        },
         "production": {
           "type": [
             "string",

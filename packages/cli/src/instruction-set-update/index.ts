@@ -36,7 +36,24 @@ export function readUpdateLock(out: string, project?: string): InstructionSetLoc
 export function lockedProfileIdentity(out: string, setSlug: string, profileSlugValue: string): string {
   const profileRoot = join(appRoot(out), 'instruction-sets', setSlug, profileSlugValue)
   const lock = readUpdateLock(out)
-  const versions = lock.instructionSets[setSlug]?.profiles[profileSlugValue]?.versions ?? {}
+  const profile = lock.instructionSets[setSlug]?.profiles[profileSlugValue]
+  const versions = profile?.versions ?? {}
+  if (profile?.modelConfigIdentity !== undefined) {
+    for (const versionSlug of Object.keys(versions).sort()) {
+      let manifest: { modelConfigIdentity?: unknown; profileSlug?: unknown }
+      try {
+        manifest = JSON.parse(readFileSync(join(profileRoot, versionSlug, 'manifest.json'), 'utf8')) as typeof manifest
+      } catch {
+        continue
+      }
+      if (manifest.profileSlug === profileSlugValue
+        && typeof manifest.modelConfigIdentity === 'string'
+        && manifest.modelConfigIdentity !== profile.modelConfigIdentity) {
+        throw new Error(`instruction_set_update_model_config_identity_mismatch:${setSlug}/${profileSlugValue}`)
+      }
+    }
+    return profile.modelConfigIdentity
+  }
   for (const versionSlug of Object.keys(versions).sort()) {
     try {
       const manifest = JSON.parse(readFileSync(join(profileRoot, versionSlug, 'manifest.json'), 'utf8')) as {
@@ -47,7 +64,7 @@ export function lockedProfileIdentity(out: string, setSlug: string, profileSlugV
         return manifest.modelConfigIdentity
       }
     } catch {
-      // A later Version may still carry the Lock Profile identity.
+      // A later Version may still carry the pre-binding Profile identity.
     }
   }
   throw new Error('instruction_set_update_profile_identity_missing')
@@ -86,6 +103,11 @@ export function makeUpdatePlan(
       plannedDefaults.add(set.slug)
     }
     const selectedSlug = set.profile.profileSlug
+    const lockedProfile = lockedSet.profiles[selectedSlug]
+    if (lockedProfile?.modelConfigIdentity !== undefined
+      && lockedProfile.modelConfigIdentity !== set.profile.modelConfigIdentity) {
+      throw new Error(`instruction_set_update_model_config_identity_mismatch:${set.slug}/${selectedSlug}`)
+    }
     const profileKey = `${set.slug}/${selectedSlug}`
     const authoritativeProduction = authoritativeProductions.get(profileKey)
     if (authoritativeProduction !== undefined && authoritativeProduction !== set.profile.production) {

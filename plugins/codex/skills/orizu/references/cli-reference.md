@@ -160,8 +160,11 @@ Lock without calling Orizu. The shipped legacy TypeScript and Python loaders
 fail paved trees with `instruction_set_legacy_loader_retired` and migration
 guidance; do not infer a fallback from another Profile.
 
-Sync vendors fingerprinted `helpers/load.ts` and `verifyIntegrity` support. The
-loader imports Version material only from `generated/index.ts`, whose static
+Sync vendors eight fingerprinted Helper files: `load.ts`, `model-config.ts`,
+`provenance.ts`, `verify.ts`, and one matching `.selfcheck.ts` file for each.
+`loadModelConfig` exposes `PROVIDER`, `MODEL`, `CONFIG_IDENTITY`, `PROTOCOL`,
+`THINKING_LEVEL`, `MAX_OUTPUT_TOKENS`, `TEMPERATURE`, `TOP_P`,
+`STRICT_JSON_SCHEMA`, and the whole settings object as `RAW`. The loader imports Version material only from `generated/index.ts`, whose static
 imports are reconciled by sync and prune; it uses no filesystem or computed
 dynamic imports. Re-sync refreshes an unedited Helper and its pristine
 fingerprint. Customer edits are preserved unless `--force-helpers` is supplied.
@@ -569,16 +572,20 @@ modules and Helpers only and is not recorded in the Lock or Version manifest.
 `--out` names the app root and defaults to `.`. It writes exact Component bytes,
 a Version manifest, and `components.generated.ts` under
 `<out>/orizu/instruction-sets/<set-slug>/<profile-slug>/vN/`. It also writes
-vendored `helpers/load.ts`, `helpers/provenance.ts`, `helpers/verify.ts`,
-runner-agnostic Helper self-tests, a static-only `generated/index.ts` import map,
+eight vendored Helper files (`helpers/load.ts`, `helpers/model-config.ts`,
+`helpers/provenance.ts`, `helpers/verify.ts`, and their runner-agnostic
+`.selfcheck.ts` files), a static-only `generated/index.ts` import map,
 and `<out>/orizu/orizu.lock.json`. For the TypeScript target, only
 `components.generated.ts`, `generated/index.ts`, and `helpers/*.ts` are
 target-specific; Component files, Version manifests, and the Lock remain
 language-neutral. Every relative import the CLI emits carries an explicit `.js`
 extension so the tree compiles under `moduleResolution` `nodenext` and `bundler`
 alike. The loader returns Components and Version-manifest settings
-plus Provenance from the selected Lock entry without calling Orizu or
-re-resolving a Pointer. It also retains the generated module's Provenance claim
+plus Provenance. `loadModelConfig` names the selected Version's `PROVIDER`,
+`MODEL`, `CONFIG_IDENTITY`, `PROTOCOL`, `THINKING_LEVEL`, `MAX_OUTPUT_TOKENS`,
+`TEMPERATURE`, `TOP_P`, and `STRICT_JSON_SCHEMA`, and retains all settings under
+`RAW`. It resolves through the same Specifier and Lock entry. The loader reads
+from the selected Lock entry without calling Orizu or re-resolving a Pointer. It also retains the generated module's Provenance claim
 for offline integrity cross-checking. An existing Lock Version whose immutable
 IDs or hashes disagree refuses with `instruction_set_sync_version_conflict`;
 only its `syncedAt` observation is preserved. `attachProvenance(target, loaded)`

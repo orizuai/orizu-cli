@@ -6,6 +6,7 @@ import { join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import { parseLock, type InstructionSetLockV1, type SyncedVersionLock } from '../instruction-set-lock/index.js'
+import { MODEL_CONFIG_FIELDS } from '../model-config-fields.js'
 import { managedHelperPaths, renderGeneratedIndex } from '../instruction-set-sync/helpers.js'
 import { canonicalVersionDigest, profileSlug, renderGeneratedVersionModule } from '../instruction-set-sync/index.js'
 
@@ -64,12 +65,14 @@ interface HelperRequest {
   expectedInstructionSetId: string
   expectedProfileVersionId: string
   expectedDigest: string
+  expectedModelConfigIdentity: string
 }
 
 interface HelperExecutionResult {
   results: HelperCheckResult[]
   unknownRejection: string | null
   malformedRejection: string | null
+  modelConfigRejection: string | null
 }
 
 interface HelperCheckResult {
@@ -80,7 +83,9 @@ interface HelperCheckResult {
     settings?: Record<string, unknown>
     provenance?: { instructionSetId?: string; profileVersionId?: string; digest?: string }
   }
+  modelConfig?: Record<string, unknown>
   loadError?: string
+  modelConfigError?: string
   validRejection?: string
   corruptBytesRejection?: string
   wrongDigestRejection?: string
@@ -543,12 +548,14 @@ async function runHelperChecks(
   appRoot: string,
   loadPath: string,
   verifyPath: string,
+  modelConfigPath: string,
   lock: InstructionSetLockV1,
   requests: HelperRequest[]
 ): Promise<HelperExecutionResult> {
   const source = `
 import { loadInstructions } from ${JSON.stringify(loadPath)}
 import { verifyIntegrity } from ${JSON.stringify(verifyPath)}
+import { loadModelConfig } from ${JSON.stringify(modelConfigPath)}
 const lock = JSON.parse(${JSON.stringify(JSON.stringify(lock))})
 const requests = JSON.parse(${JSON.stringify(JSON.stringify(requests.map(({ specifier, kind }) => ({ specifier, kind }))))})
 function rejection(run) {
@@ -563,6 +570,8 @@ for (const request of requests) {
     const input = { ...loaded, digest: loaded?.provenance?.digest }
     const result = { ...request, loaded, validRejection: rejection(() => verifyIntegrity(input, lock)) }
     if (request.kind === 'exact') {
+      const modelConfigFailure = rejection(() => { result.modelConfig = loadModelConfig(request.specifier) })
+      if (modelConfigFailure) result.modelConfigError = modelConfigFailure
       const firstName = Object.keys(loaded.components)[0]
       const corruptComponents = { ...loaded.components, [firstName]: loaded.components[firstName] + '\\0' }
       result.corruptBytesRejection = rejection(() => verifyIntegrity({ ...input, components: corruptComponents }, lock))
@@ -580,9 +589,29 @@ for (const request of requests) {
 }
 const unknownRejection = rejection(() => loadInstructions('orizu-verifier-unknown'))
 const malformedRejection = rejection(() => loadInstructions('bad set/'))
-process.stdout.write(JSON.stringify({ results, unknownRejection, malformedRejection }))
+const modelConfigRejection = rejection(() => loadModelConfig('orizu-verifier-unknown'))
+process.stdout.write(JSON.stringify({ results, unknownRejection, malformedRejection, modelConfigRejection }))
 `
   return runCustomerModule<HelperExecutionResult>(source, appRoot, 'helpers/load.ts')
+}
+
+function modelConfigSetting(settings: Record<string, unknown>, key: string): { present: boolean; value?: unknown } {
+  const dot = key.indexOf('.')
+  if (dot < 0) return Object.hasOwn(settings, key) && settings[key] !== null
+    ? { present: true, value: settings[key] }
+    : { present: false }
+  const parent = settings[key.slice(0, dot)]
+  const child = key.slice(dot + 1)
+  return parent !== null && typeof parent === 'object' && !Array.isArray(parent)
+    && Object.hasOwn(parent, child) && (parent as Record<string, unknown>)[child] !== null
+    ? { present: true, value: (parent as Record<string, unknown>)[child] }
+    : { present: false }
+}
+
+function modelConfigFindingValue(field: string, value: unknown): string {
+  if (value === undefined) return `${field}=absent`
+  if (typeof value === 'string') return `${field}=${value}`
+  return `${field}=${JSON.stringify(value)}`
 }
 
 async function checkGroup3(
@@ -598,16 +627,18 @@ async function checkGroup3(
 
   const loadPath = join(appRoot, 'helpers', 'load.ts')
   const verifyPath = join(appRoot, 'helpers', 'verify.ts')
-  const absent = [loadPath, verifyPath].filter(path => !existsSync(path))
+  const modelConfigPath = join(appRoot, 'helpers', 'model-config.ts')
+  const absent = [loadPath, verifyPath, modelConfigPath].filter(path => !existsSync(path))
   if (absent.length > 0) {
-    failures.push(finding('group3', 'helpers_missing', 'helpers', 'load.ts,verify.ts', absent.map(path => relative(appRoot, path)).join(',')))
+    failures.push(finding('group3', 'helpers_missing', 'helpers', 'load.ts,verify.ts,model-config.ts', absent.map(path => relative(appRoot, path)).join(',')))
     return
   }
 
   try {
     const loadValid = await checkHelperExport(loadPath, 'loadInstructions')
     const verifyValid = await checkHelperExport(verifyPath, 'verifyIntegrity')
-    if (!loadValid || !verifyValid) {
+    const modelConfigValid = await checkHelperExport(modelConfigPath, 'loadModelConfig')
+    if (!loadValid || !verifyValid || !modelConfigValid) {
       failures.push(finding('group3', 'helper_exports_invalid', 'helpers'))
       return
     }
@@ -624,6 +655,13 @@ async function checkGroup3(
   }
 
   const requests: HelperRequest[] = []
+  for (const [setSlug, set] of Object.entries(lock.instructionSets)) {
+    for (const [profileSlug, profile] of Object.entries(set.profiles)) {
+      if (profile.modelConfigIdentity === undefined) {
+        failures.push(finding('group3', 'model_config_identity_unbound', `instruction-sets/${setSlug}/${profileSlug}`))
+      }
+    }
+  }
   for (const location of versions) {
     if (!isDirectory(location.absolutePath)) continue
     const manifest = manifests.get(location.relativePath)
@@ -635,6 +673,7 @@ async function checkGroup3(
       expectedInstructionSetId: location.instructionSetId,
       expectedProfileVersionId: location.version.profileVersionId,
       expectedDigest: location.version.digest,
+      expectedModelConfigIdentity: lock.instructionSets[location.setSlug]?.profiles[location.profileSlug]?.modelConfigIdentity ?? manifest.modelConfigIdentity,
     })
   }
   for (const [setSlug, set] of Object.entries(lock.instructionSets)) {
@@ -648,6 +687,9 @@ async function checkGroup3(
         expectedInstructionSetId: set.instructionSetId,
         expectedProfileVersionId: version.profileVersionId,
         expectedDigest: version.digest,
+        expectedModelConfigIdentity: defaultProfile.modelConfigIdentity
+          ?? manifests.get(`instruction-sets/${setSlug}/${set.default}/${defaultProfile.production}`)?.modelConfigIdentity
+          ?? '',
       })
     }
     for (const [profileSlug, profile] of Object.entries(set.profiles)) {
@@ -662,13 +704,14 @@ async function checkGroup3(
         expectedInstructionSetId: set.instructionSetId,
         expectedProfileVersionId: version.profileVersionId,
         expectedDigest: version.digest,
+        expectedModelConfigIdentity: profile.modelConfigIdentity ?? manifest.modelConfigIdentity,
       })
     }
   }
 
   let execution: HelperExecutionResult
   try {
-    execution = await runHelperChecks(appRoot, loadPath, verifyPath, lock, requests)
+    execution = await runHelperChecks(appRoot, loadPath, verifyPath, modelConfigPath, lock, requests)
   } catch (error) {
     const customerError = error instanceof CustomerModuleError ? error : null
     failures.push(finding('group3', customerError?.code ?? 'helper_import_failed', customerError?.modulePath ?? 'helpers', undefined, errorText(error)))
@@ -684,12 +727,55 @@ async function checkGroup3(
       `${execution.unknownRejection ?? 'accepted'},${execution.malformedRejection ?? 'accepted'}`
     ))
   }
+  if (execution.modelConfigRejection !== expectedRejection) {
+    failures.push(finding(
+      'group3',
+      'helper_rejection_inert',
+      'helpers/model-config.ts',
+      expectedRejection,
+      execution.modelConfigRejection ?? 'accepted'
+    ))
+  }
   for (const request of requests) {
     const result = execution.results.find(candidate => candidate.specifier === request.specifier && candidate.kind === request.kind)
     if (!result || result.loadError) {
       failures.push(finding('group3', request.kind === 'exact' ? 'load_failed' : 'pointer_load_failed', request.path, request.specifier, result?.loadError ?? 'missing child result'))
       continue
     }
+    if (request.kind === 'exact' && result.modelConfigError) {
+      failures.push(finding('group3', 'model_config_load_failed', request.path, request.specifier, result.modelConfigError))
+      continue
+    }
+    const identitySlash = request.expectedModelConfigIdentity.indexOf('/')
+    const expectedProvider = identitySlash < 0
+      ? request.expectedModelConfigIdentity
+      : request.expectedModelConfigIdentity.slice(0, identitySlash)
+    const expectedModel = typeof result.loaded?.settings?.model === 'string'
+      ? result.loaded.settings.model
+      : identitySlash < 0
+        ? request.expectedModelConfigIdentity
+        : request.expectedModelConfigIdentity.slice(identitySlash + 1)
+    const settings = result.loaded?.settings ?? {}
+    const hydratedFields = MODEL_CONFIG_FIELDS.map(definition => {
+      const found = definition.settingsKeys.map(key => modelConfigSetting(settings, key)).find(item => item.present)
+      const expected = definition.field === 'MODEL' && !found ? expectedModel : found?.value
+      return [definition.field, expected, result.modelConfig?.[definition.field]] as const
+    })
+    const modelConfigComparisons = [
+      ['CONFIG_IDENTITY', request.expectedModelConfigIdentity, result.modelConfig?.CONFIG_IDENTITY],
+      ['PROVIDER', expectedProvider, result.modelConfig?.PROVIDER],
+      ...hydratedFields,
+      ['RAW', settings, result.modelConfig?.RAW],
+    ] as const
+    const mismatchedModelConfigFields = request.kind === 'exact'
+      ? modelConfigComparisons.filter(([, expected, found]) => !isDeepStrictEqual(found, expected))
+      : []
+    for (const [field, expected, found] of mismatchedModelConfigFields) {
+      failures.push(finding('group3', field === 'CONFIG_IDENTITY' || field === 'PROVIDER' || field === 'MODEL'
+        ? 'model_config_identity_mismatch' : 'model_config_field_mismatch', request.path,
+      modelConfigFindingValue(field, expected), modelConfigFindingValue(field, found)))
+    }
+    if (mismatchedModelConfigFields.length > 0) continue
     if (
       result.loaded?.provenance?.instructionSetId !== request.expectedInstructionSetId ||
       result.loaded?.provenance?.profileVersionId !== request.expectedProfileVersionId ||

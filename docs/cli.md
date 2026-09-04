@@ -561,6 +561,7 @@ compatibility alias, but new workflows should not teach it. The on-disk
 `orizu.lock.json` contract is specified in [Instruction set Lock v1](instruction-set-lock.md).
 For deployment semantics and ownership, read [Orizu in your codebase](https://orizu.ai/docs/references/orizu-in-your-codebase).
 For bespoke snapshots, hashes, verification, or loading, read [Migrate a hand-rolled instruction layout](https://orizu.ai/docs/references/migrate-hand-rolled-instruction-layout).
+Locks written by this CLI require this CLI version or newer.
 
 ```bash
 orizu instructions list --project my-team/quality-eval --status active
@@ -617,7 +618,7 @@ version under:
   manifest.json
   components/<name>.prompt.md
   components.generated.ts
-<out>/orizu/helpers/load.ts, provenance.ts, verify.ts (+ matching .selfcheck.ts files)
+<out>/orizu/helpers/load.ts, model-config.ts, provenance.ts, verify.ts (+ matching .selfcheck.ts files)
 <out>/orizu/generated/index.ts
 <out>/orizu/orizu.lock.json
 <out>/.gitattributes              # orizu/** -text; generated files marked linguist-generated
@@ -638,7 +639,10 @@ returned `generatedProvenance` retains the Version module's claim so
 `verifyIntegrity({ ...loaded, digest: loaded.provenance.digest }, lock)` can
 cross-check it against the Lock before hashing the strings and settings the
 process actually loaded. Identity substitution and whitespace-only changes are
-detected. `settings` is required on verifier input, including when it is `{}`. Non-empty settings
+detected. `loadModelConfig(specifier)` delegates to that same loader and returns
+frozen, named Model Config fields plus the whole settings object under `RAW`.
+See [Instruction Set Helpers](instruction-set-helpers.md#read-the-frozen-model-config)
+for its field and error contracts. `settings` is required on verifier input, including when it is `{}`. Non-empty settings
 use sorted-key, whitespace-free canonical JSON in the whole-Version digest;
 missing or non-finite settings fail closed. The supplied digest must equal the
 Provenance-selected Lock entry's digest: a digest found only on another Version
@@ -646,9 +650,9 @@ fails with `instruction_set_integrity_digest_unselected`, while a digest absent
 from the Lock fails with `instruction_set_integrity_digest_unknown`.
 
 The vendored `*.selfcheck.ts` files use no runner globals and avoid test-runner
-discovery globs. They export `runLoadSelfCheck()` and `runVerifySelfCheck()` so
-a customer's Bun, Vitest, or other runner can invoke them from an ordinary test
-wrapper. Both checks read the customer's generated map and synced bytes and
+discovery globs. They export `runLoadSelfCheck()`, `runModelConfigSelfCheck()`, and
+`runVerifySelfCheck()` so a customer's Bun, Vitest, or other runner can invoke them from an ordinary test
+wrapper. All three checks read the customer's generated map and synced bytes and
 refuse an empty map rather than relying on synthetic fixtures.
 
 `provenanceOf(loaded)` returns the loaded Synced version's exact Provenance.
@@ -658,7 +662,12 @@ refuse an empty map rather than relying on synthetic fixtures.
 into a plain attribution object. See [Instruction Set Helpers](instruction-set-helpers.md)
 for both ingestion paths and read-back commands.
 
-The Lock fingerprints every vendored Helper. On re-sync, a Helper whose bytes no
+The Lock fingerprints every vendored Helper. After upgrading the CLI, run `sync`
+once to vendor newly added Helpers and bind every retained Profile identity from
+its readable Version manifests. If a pre-binding Profile has no readable manifest,
+sync fails without writing and reports `instruction_set_sync_lock_profile_identity_missing:<set>/<profile-slug>` plus the exact sync command that repairs it from the authoritative payload. Before those identities are bound, `verify` fails with
+`model_config_identity_unbound`. Until newly added Helpers are vendored, `verify` fails with a finding such
+as `FAIL group4 helpers/model-config.ts helper_missing expected managed Helper found missing`. On re-sync, a Helper whose bytes no
 longer match its recorded pristine fingerprint is preserved and named in a
 warning. Pass `--force-helpers` to overwrite edited Helpers and refresh their
 fingerprints. Helpers whose bytes already match the current template are also
@@ -787,6 +796,7 @@ Every failure uses one of these named codes:
   `generated_manifest_mismatch:<field>`, `generated_module_drift`.
 - Group 3: `helpers_missing`, `helper_import_failed`, `helper_import_timeout`,
   `helper_exports_invalid`, `load_failed`, `pointer_load_failed`, `integrity_failed`,
+  `model_config_load_failed`, `model_config_identity_mismatch`, `model_config_field_mismatch`,
   `helper_integrity_inert`, `helper_provenance_mismatch`, `helper_rejection_inert`,
   and loaded/Pointer identity mismatch codes.
 - Group 4: `lock_invalid`, `default_pointer_target_missing`, `pointer_target_missing`,
@@ -796,8 +806,7 @@ Every failure uses one of these named codes:
   `generated_lock_stale`, `generated_module_drift`, `import_map_mismatch`,
   `import_map_destination_mismatch:<specifier>`.
 
-Warnings use `helper_modified` or `import_map_missing` and never change the exit
-status. Each finding names a path; hash comparisons also include `expected` and
+Warnings use `helper_modified` or `import_map_missing` and never change the exit status. Each finding names a path; hash comparisons also include `expected` and
 `found`.
 
 ### Migrating the legacy sync layout
