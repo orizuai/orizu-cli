@@ -179,7 +179,8 @@ with `instruction_set_sync_legacy_layout`; follow the migration guide in
 Pointers. It prints every before/after value and is a no-op until `--yes`.
 Approved updates sync newly referenced Versions by default. `--no-sync` records
 the new Pointer values without materializing absent Versions and names every
-absent exact Specifier. When every referenced Version is already materialized and
+absent exact Specifier. `update --no-sync` validates every referenced Version offline against the Lock whenever all are materialized and never executes a generated module; when Versions are missing, it records the Pointers and warns.
+When every referenced Version is already materialized and
 an `orizu/generated/index.ts` already exists, it also rewrites that index so the
 runtime resolves the new Pointers; when either prerequisite is absent it leaves the index alone
 and says so. Follow it with exact sync commands before verify or runtime use. An unset Production refuses with

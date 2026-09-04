@@ -714,6 +714,7 @@ orizu instructions update --out . --project my-team/quality-eval --yes
 Approved updates sync newly referenced Versions by default, so the repository
 is not left pointing at absent material. `--no-sync` opts out: the Lock records
 the fresh Pointers and output names every referenced-but-absent exact Specifier.
+`update --no-sync` validates every referenced Version offline against the Lock whenever all are materialized and never executes a generated module; when Versions are missing, it records the Pointers and warns.
 When every referenced Version is materialized and an `orizu/generated/index.ts` already exists, `--no-sync` also rewrites that index to select the fresh
 Pointers. If either prerequisite is absent, it leaves the index alone and says
 so. Sync absent Specifiers before verify or runtime use. Existing Versions retain

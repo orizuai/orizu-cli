@@ -350,6 +350,9 @@ async function runCustomerModule<T>(source: string, resolveDir: string, modulePa
     if (child.error && (child.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
       throw new CustomerModuleError('helper_import_timeout', modulePath)
     }
+    if (child.error) {
+      throw new CustomerModuleError('helper_import_failed', modulePath, errorText(child.error))
+    }
     if (child.status !== 0) {
       throw new CustomerModuleError('helper_import_failed', modulePath, child.stderr.trim() || `node_exit_${child.status}`)
     }
@@ -428,7 +431,8 @@ function checkGroup1(
 async function checkGroup2(
   versions: ReturnType<typeof lockedVersions>,
   manifests: Map<string, VersionManifest>,
-  failures: VerifyFinding[]
+  failures: VerifyFinding[],
+  importGeneratedModule: boolean
 ): Promise<void> {
   for (const location of versions) {
     if (!isDirectory(location.absolutePath)) continue
@@ -500,6 +504,7 @@ async function checkGroup2(
         failures.push(finding('group2', 'generated_module_drift', generatedPath))
         continue
       }
+      if (!importGeneratedModule) continue
       if (failures.some(failure => failure.group === 'group2' && failure.path.startsWith(location.relativePath))) continue
       const importedModule = await importGeneratedVersion(absoluteGeneratedPath)
       const generated = componentRecord(importedModule.components)
@@ -544,7 +549,24 @@ async function checkGroup2(
   }
 }
 
-export async function verifyInstructionSetVersionIntegrity(
+export class InstructionSetUpdateGateProfileIdentityError extends Error {
+  readonly code: string
+
+  constructor(
+    specifier: string,
+    readonly expected: string,
+    readonly found: string,
+    readonly manifestPath: string
+  ) {
+    const code = `instruction_set_update_gate_profile_identity_mismatch:${specifier}`
+    super(`${code}; expected ${expected}, manifest ${manifestPath} records ${found}`)
+    this.name = 'InstructionSetUpdateGateProfileIdentityError'
+    this.code = code
+  }
+}
+
+// Runs group 1 plus the pure group-2 checks; never executes customer code.
+export async function verifyMaterializedVersionAgainstLock(
   appRoot: string,
   lock: InstructionSetLockV1,
   setSlug: string,
@@ -556,14 +578,25 @@ export async function verifyInstructionSetVersionIntegrity(
     && version.profileSlug === profileSlugValue
     && version.versionSlug === versionSlug
   )
+  if (versions.length === 0) throw new Error('instruction_set_update_gate_no_versions')
   const failures: VerifyFinding[] = []
   const manifests = new Map<string, VersionManifest>()
-  for (const version of versions) {
-    const manifest = readManifest(version)
-    if (manifest) manifests.set(version.relativePath, manifest)
-    else failures.push(finding('group2', 'version_manifest_invalid', `${version.relativePath}/manifest.json`))
+  checkGroup1(versions, lock, manifests, failures)
+  const expectedIdentity = lock.instructionSets[setSlug]?.profiles[profileSlugValue]?.modelConfigIdentity
+  if (expectedIdentity !== undefined) {
+    for (const version of versions) {
+      const foundIdentity = manifests.get(version.relativePath)?.modelConfigIdentity
+      if (foundIdentity !== undefined && foundIdentity !== expectedIdentity) {
+        throw new InstructionSetUpdateGateProfileIdentityError(
+          `${setSlug}/${expectedIdentity}@${version.versionSlug}`,
+          expectedIdentity,
+          foundIdentity,
+          `${version.relativePath}/manifest.json`
+        )
+      }
+    }
   }
-  await checkGroup2(versions, manifests, failures)
+  await checkGroup2(versions, manifests, failures, false)
   return failures
 }
 
@@ -992,7 +1025,7 @@ export async function verifyInstructionSetTree(out: string): Promise<VerifyRepor
   const versions = lockedVersions(lock, appRoot)
   const manifests = new Map<string, VersionManifest>()
   checkGroup1(locations, lock, manifests, failures)
-  await checkGroup2(versions, manifests, failures)
+  await checkGroup2(versions, manifests, failures, true)
   const shadowFailures = compiledShadowFindings(appRoot, versions)
   failures.push(...shadowFailures)
   if (shadowFailures.length === 0) {

@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, sep } from 'node:path'
 
 import { shellQuote } from '../git-recovery-environment.js'
 import {
@@ -10,8 +11,8 @@ import {
   type InstructionSetLockV1,
 } from '../instruction-set-lock/index.js'
 import { assertOutputConfined, reconcileGeneratedIndex } from '../instruction-set-sync/helpers.js'
-import { profileSlug, recordResolvedPayloadInLock, renderGeneratedVersionModule, syncPayloadToDisk, withSyncLock, type SyncPayload } from '../instruction-set-sync/index.js'
-import { verifyInstructionSetTree, verifyInstructionSetVersionIntegrity } from '../instruction-set-verify/index.js'
+import { profileSlug, recordResolvedPayloadInLock, syncPayloadToDisk, withSyncLock, type SyncPayload } from '../instruction-set-sync/index.js'
+import { verifyInstructionSetTree, verifyMaterializedVersionAgainstLock } from '../instruction-set-verify/index.js'
 
 export interface UpdateResolution {
   payload: SyncPayload
@@ -147,10 +148,21 @@ function atomicWrite(path: string, bytes: string): void {
 }
 
 function waitAtUpdateLockPublicationBarrierForProcessTest(): void {
-  const readyPath = process.env.ORIZU_TEST_UPDATE_LOCK_WRITE_READY_PATH
-  const releasePath = process.env.ORIZU_TEST_UPDATE_LOCK_WRITE_RELEASE_PATH
-  if (readyPath === undefined && releasePath === undefined) return
-  if (!readyPath || !releasePath) throw new Error('instruction_set_update_test_barrier_invalid')
+  const barrierDirectory = process.env.ORIZU_TEST_UPDATE_LOCK_WRITE_BARRIER_DIR
+  if (barrierDirectory === undefined) return
+  let resolvedBarrierDirectory: string
+  try {
+    resolvedBarrierDirectory = realpathSync(barrierDirectory)
+    const resolvedTempDirectory = realpathSync(tmpdir())
+    if (!barrierDirectory || !statSync(resolvedBarrierDirectory).isDirectory()
+      || !resolvedBarrierDirectory.startsWith(`${resolvedTempDirectory}${sep}`)) {
+      throw new Error('invalid')
+    }
+  } catch {
+    throw new Error('instruction_set_update_test_barrier_invalid')
+  }
+  const readyPath = join(resolvedBarrierDirectory, 'ready')
+  const releasePath = join(resolvedBarrierDirectory, 'release')
   writeFileSync(readyPath, `${process.pid}\n`, { flag: 'wx' })
   const deadline = Date.now() + 10_000
   while (!existsSync(releasePath)) {
@@ -185,36 +197,20 @@ async function assertGeneratedModulesVerified(appRootPath: string, lock: Instruc
     for (const profileSlugValue of Object.keys(set.profiles).sort()) {
       const profile = set.profiles[profileSlugValue]!
       for (const versionSlug of Object.keys(profile.versions).sort()) {
-        const locked = profile.versions[versionSlug]!
-        let manifest: { digest?: unknown; components?: unknown }
-        let generatedModuleMatches = false
-        try {
-          const versionRoot = join(appRootPath, 'instruction-sets', setSlug, profileSlugValue, versionSlug)
-          manifest = JSON.parse(readFileSync(join(versionRoot, 'manifest.json'), 'utf8')) as { digest?: unknown; components?: unknown }
-          const actualComponents = Object.fromEntries(Object.keys(locked.components).sort().map(key => [
-            key,
-            readFileSync(join(versionRoot, 'components', `${key}.prompt.md`), 'utf8'),
-          ]))
-          generatedModuleMatches = readFileSync(join(versionRoot, 'components.generated.ts'), 'utf8')
-            === renderGeneratedVersionModule(actualComponents, manifest)
-        } catch {
-          manifest = {}
-        }
-        const componentsMatch = manifest.components !== null && typeof manifest.components === 'object'
-          && Object.keys(locked.components).sort().every(key =>
-            (manifest.components as Record<string, unknown>)[key] === locked.components[key]
-          )
-          && Object.keys(manifest.components as Record<string, unknown>).length === Object.keys(locked.components).length
-        const integrityFailures = await verifyInstructionSetVersionIntegrity(
+        const integrityFailures = await verifyMaterializedVersionAgainstLock(
           appRootPath,
           lock,
           setSlug,
           profileSlugValue,
           versionSlug
         )
-        if (manifest.digest !== locked.digest || !componentsMatch || !generatedModuleMatches || integrityFailures.length > 0) {
+        const first = integrityFailures[0]
+        if (first) {
           const identity = profile.modelConfigIdentity ?? profileSlugValue
-          throw new Error(`instruction_set_update_generated_module_unverified:${setSlug}/${identity}@${versionSlug}`)
+          throw new Error(
+            `instruction_set_update_generated_module_unverified:${setSlug}/${identity}@${versionSlug}`
+            + ` (${first.code} at ${first.path})`
+          )
         }
       }
     }
@@ -247,8 +243,8 @@ export async function applyUpdate(
       const missing = missingVersionModules(appRootPath, lock)
       const importMapPath = join(appRootPath, 'generated', 'index.ts')
       const hasImportMap = existsSync(importMapPath)
+      if (missing.length === 0) await assertGeneratedModulesVerified(appRootPath, lock)
       if (missing.length === 0 && hasImportMap) {
-        await assertGeneratedModulesVerified(appRootPath, lock)
         const priorImportMap = readFileSync(importMapPath, 'utf8')
         waitAtUpdateLockPublicationBarrierForProcessTest()
         let wasReconciled = false
