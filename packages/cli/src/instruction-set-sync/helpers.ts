@@ -58,6 +58,12 @@ function profileSlug(identity: string): string {
   return identity.replaceAll('/', '__').replace(/[^A-Za-z0-9._-]/g, '_')
 }
 
+function own<T>(map: unknown, key: string): T | undefined {
+  return typeof map === 'object' && map !== null && Object.hasOwn(map, key)
+    ? (map as Record<string, T>)[key]
+    : undefined
+}
+
 export function loadInstructions(specifier: string): {
   components: Record<string, string>
   settings: Record<string, unknown>
@@ -66,13 +72,13 @@ export function loadInstructions(specifier: string): {
   modelConfigIdentity: string
 } {
   const parsed = parseSpecifier(specifier)
-  const instructionSet = lock.instructionSets[parsed.set as keyof typeof lock.instructionSets]
-  const setVersions = versions[parsed.set as keyof typeof versions]
+  const instructionSet = own<(typeof lock.instructionSets)[keyof typeof lock.instructionSets]>(lock.instructionSets, parsed.set)
+  const setVersions = own<(typeof versions)[keyof typeof versions]>(versions, parsed.set)
   if (!instructionSet || !setVersions) throw new InstructionSetLoadError('instruction_set_specifier_unknown')
 
   const selectedProfile = parsed.profile === undefined ? instructionSet.default : profileSlug(parsed.profile)
-  const profile = instructionSet.profiles[selectedProfile as keyof typeof instructionSet.profiles]
-  const profileVersions = setVersions[selectedProfile as keyof typeof setVersions]
+  const profile = own<(typeof instructionSet.profiles)[keyof typeof instructionSet.profiles]>(instructionSet.profiles, selectedProfile)
+  const profileVersions = own<(typeof setVersions)[keyof typeof setVersions]>(setVersions, selectedProfile)
   if (!profile || !profileVersions) throw new InstructionSetLoadError('instruction_set_specifier_unknown')
   if (parsed.profile !== undefined && parsed.profile !== profile.modelConfigIdentity) {
     throw new InstructionSetLoadError('instruction_set_specifier_unknown')
@@ -80,10 +86,10 @@ export function loadInstructions(specifier: string): {
 
   const selectedVersion = parsed.version ?? profile.production
   if (selectedVersion === null) throw new InstructionSetLoadError('instruction_set_pointer_unresolved:production')
-  const loaded = profileVersions[selectedVersion as keyof typeof profileVersions] as unknown as VersionModule | undefined
+  const loaded = own<VersionModule>(profileVersions, selectedVersion)
   if (!loaded) throw new InstructionSetLoadError('instruction_set_specifier_unknown')
 
-  const lockedVersion = profile.versions[selectedVersion as keyof typeof profile.versions]
+  const lockedVersion = own<(typeof profile.versions)[keyof typeof profile.versions]>(profile.versions, selectedVersion)
   if (!lockedVersion) throw new InstructionSetLoadError('instruction_set_specifier_unknown')
 
   // The bound Lock Profile is the identity trust anchor.

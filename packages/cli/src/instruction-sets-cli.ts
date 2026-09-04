@@ -129,9 +129,9 @@ export interface SyncFileOps {
 }
 
 function writeMaterial(root: string, material: SyncMaterial, shape: string[], manifestRoot: string, platform: NodeJS.Platform, fileOps: SyncFileOps = { writeFileSync }) {
-  const files: Record<string, string> = {}
-  const syncedContentSha256: Record<string, string> = {}
-  const pinnedComponents: Record<string, unknown> = {}
+  const files: Record<string, string> = Object.create(null)
+  const syncedContentSha256: Record<string, string> = Object.create(null)
+  const pinnedComponents: Record<string, unknown> = Object.create(null)
   for (const key of [...shape].sort()) {
     safeComponentKey(key, platform)
     const component = material.components[key]

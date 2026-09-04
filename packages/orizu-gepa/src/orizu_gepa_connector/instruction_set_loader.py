@@ -23,19 +23,27 @@ def _inside(root: Path, candidate: Path) -> bool:
 
 
 def _paved_tree_matches_display_name(directory_root: Path, reference: str) -> bool:
-    sets_root = directory_root / "orizu" / "instruction-sets"
-    try:
-        for manifest_path in sets_root.glob("*/*/v*/manifest.json"):
-            if not _inside(directory_root, manifest_path.resolve()):
-                continue
-            try:
-                manifest = json.loads(manifest_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if manifest.get("instructionSetName") == reference or manifest.get("instructionSetSlug") == reference:
-                return True
-    except OSError:
-        return False
+    sets_roots = (
+        directory_root / "orizu" / "instruction-sets",
+        directory_root / "instruction-sets",
+    )
+    for sets_root in sets_roots:
+        try:
+            for manifest_path in sets_root.glob("*/*/v*/manifest.json"):
+                if re.fullmatch(r"v[1-9][0-9]*", manifest_path.parent.name) is None:
+                    continue
+                if not _inside(directory_root, manifest_path.resolve()):
+                    continue
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(manifest, dict):
+                    continue
+                if manifest.get("instructionSetName") == reference or manifest.get("instructionSetSlug") == reference:
+                    return True
+        except OSError:
+            continue
     return False
 
 

@@ -24,32 +24,37 @@ function manifestMatchesReference(candidate: string, reference: string): boolean
 }
 
 function pavedTreeMatchesDisplayName(directoryRoot: string, reference: string): boolean {
-  const setsRoot = resolve(directoryRoot, 'orizu', 'instruction-sets')
-  try {
-    for (const setEntry of readdirSync(setsRoot, { withFileTypes: true })) {
-      if (!setEntry.isDirectory()) continue
-      const setRoot = realpathSync(resolve(setsRoot, setEntry.name))
-      if (!inside(directoryRoot, setRoot)) continue
-      for (const profileEntry of readdirSync(setRoot, { withFileTypes: true })) {
-        if (!profileEntry.isDirectory()) continue
-        const profileRoot = realpathSync(resolve(setRoot, profileEntry.name))
-        if (!inside(directoryRoot, profileRoot)) continue
-        for (const versionEntry of readdirSync(profileRoot, { withFileTypes: true })) {
-          if (!versionEntry.isDirectory() || !/^v[1-9][0-9]*$/u.test(versionEntry.name)) continue
-          try {
-            const manifest = JSON.parse(readFileSync(resolve(profileRoot, versionEntry.name, 'manifest.json'), 'utf8')) as {
-              instructionSetName?: unknown
-              instructionSetSlug?: unknown
+  const setsRoots = [
+    resolve(directoryRoot, 'orizu', 'instruction-sets'),
+    resolve(directoryRoot, 'instruction-sets'),
+  ]
+  for (const setsRoot of setsRoots) {
+    try {
+      for (const setEntry of readdirSync(setsRoot, { withFileTypes: true })) {
+        if (!setEntry.isDirectory()) continue
+        const setRoot = realpathSync(resolve(setsRoot, setEntry.name))
+        if (!inside(directoryRoot, setRoot)) continue
+        for (const profileEntry of readdirSync(setRoot, { withFileTypes: true })) {
+          if (!profileEntry.isDirectory()) continue
+          const profileRoot = realpathSync(resolve(setRoot, profileEntry.name))
+          if (!inside(directoryRoot, profileRoot)) continue
+          for (const versionEntry of readdirSync(profileRoot, { withFileTypes: true })) {
+            if (!versionEntry.isDirectory() || !/^v[1-9][0-9]*$/u.test(versionEntry.name)) continue
+            try {
+              const manifest = JSON.parse(readFileSync(resolve(profileRoot, versionEntry.name, 'manifest.json'), 'utf8')) as {
+                instructionSetName?: unknown
+                instructionSetSlug?: unknown
+              }
+              if (manifest.instructionSetName === reference || manifest.instructionSetSlug === reference) return true
+            } catch {
+              // Inspect another paved Version.
             }
-            if (manifest.instructionSetName === reference || manifest.instructionSetSlug === reference) return true
-          } catch {
-            // Inspect another paved Version.
           }
         }
       }
+    } catch {
+      // Inspect the other paved root.
     }
-  } catch {
-    return false
   }
   return false
 }
@@ -117,7 +122,7 @@ export function loadInstructionSet(directory: string, name: string, modelConfigI
   if (!profile) throw new InstructionSetLoaderError('instruction_set_profile_not_found')
   if (!profile.production) throw new InstructionSetLoaderError('instruction_set_profile_not_promoted')
   const selected = profile.production
-  const result: Record<string, string> = {}
+  const result: Record<string, string> = Object.create(null)
   for (const key of manifest.shape) {
     if (selected.pinnedComponents?.[key]) throw new InstructionSetLoaderError('instruction_set_component_unavailable')
     const relativePath = selected.files?.[key]

@@ -103,8 +103,13 @@ class InstructionSetLoaderConformanceTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "instruction_set_component_unreadable")
 
     def test_refuses_a_paved_tree_addressed_by_display_name(self):
-        # Mutant killed: inspect paved directories only by slug-shaped paths.
-        version = Path(self.temp_dir.name) / "orizu" / "instruction-sets" / "planner" / "openai__gpt" / "v2"
+        # Mutants killed: inspect paved directories only by slug-shaped paths,
+        # or call dict methods on a non-object sibling manifest.
+        paved_root = Path(self.temp_dir.name) / "orizu" / "instruction-sets"
+        invalid_version = paved_root / "aaa-invalid" / "openai__gpt" / "v1"
+        invalid_version.mkdir(parents=True)
+        (invalid_version / "manifest.json").write_text("[]")
+        version = paved_root / "planner" / "openai__gpt" / "v2"
         version.mkdir(parents=True)
         (version / "manifest.json").write_text(json.dumps({
             "instructionSetName": "Planner Agent",
@@ -112,6 +117,37 @@ class InstructionSetLoaderConformanceTest(unittest.TestCase):
         }))
         with self.assertRaises(InstructionSetLoaderError) as ctx:
             load_instruction_set(self.temp_dir.name, "Planner Agent", "openai/gpt")
+        self.assertEqual(ctx.exception.code, LEGACY_LOADER_RETIRED)
+
+    def test_ignores_noncanonical_paved_version_directories(self):
+        # Mutant killed: restore the bare ``v*`` manifest glob without the
+        # canonical v[1-9][0-9]* directory-name check.
+        paved_root = Path(self.temp_dir.name) / "orizu" / "instruction-sets"
+        for directory_name, display_name in (
+            ("versioned", "Versioned Planner"),
+            ("v01", "Leading Zero Planner"),
+        ):
+            version = paved_root / display_name.replace(" ", "-").lower() / "openai__gpt" / directory_name
+            version.mkdir(parents=True)
+            (version / "manifest.json").write_text(json.dumps({
+                "instructionSetName": display_name,
+                "instructionSetSlug": "planner",
+            }))
+            with self.subTest(directory_name=directory_name):
+                with self.assertRaises(InstructionSetLoaderError) as ctx:
+                    load_instruction_set(self.temp_dir.name, display_name, "openai/gpt")
+                self.assertEqual(ctx.exception.code, "instruction_set_not_synced")
+
+    def test_refuses_an_app_root_paved_tree_addressed_by_display_name(self):
+        # Mutant killed: omit the app-root ``instruction-sets`` display-name scan.
+        version = Path(self.temp_dir.name) / "instruction-sets" / "planner" / "openai__gpt" / "v1"
+        version.mkdir(parents=True)
+        (version / "manifest.json").write_text(json.dumps({
+            "instructionSetName": "My Planner",
+            "instructionSetSlug": "planner",
+        }))
+        with self.assertRaises(InstructionSetLoaderError) as ctx:
+            load_instruction_set(self.temp_dir.name, "My Planner", "openai/gpt")
         self.assertEqual(ctx.exception.code, LEGACY_LOADER_RETIRED)
 
     def test_loads_directory_written_by_the_built_sync_cli(self):
