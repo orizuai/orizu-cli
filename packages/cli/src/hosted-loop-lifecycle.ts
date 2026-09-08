@@ -23,6 +23,7 @@
  */
 
 import type { HarnessEvent } from './hosted-harness.js'
+import type { HostedSessionOrigin } from './hosted-runtime-assets.js'
 
 /**
  * Default provider-qualified hosted model — the SINGLE source of truth
@@ -59,9 +60,20 @@ export interface HostedLoopContext {
   taskFile: string
   /** Directory the agent operates in (the cloned session-branch workspace). */
   workspaceDir: string
+  /** Validated destination branch for the CLI-owned checkpoint push. */
+  sessionBranch: string
+  /** Credential-free repository locator established by bootstrap. */
+  repositoryRemote: string
+  /** Bootstrap-owned helper re-applied command-scoped during checkpoint transport. */
+  repositoryCredentialHelper?: string
   /** Provider-qualified model, e.g. "anthropic/claude-opus-4-8". */
   model: string
   reasoningEffort?: string
+  /**
+   * Session entry surface (ALI-1867). Missing values fail safely to CLI's
+   * unattended behavior; only `hosted-web` enables human question custody.
+   */
+  sessionOrigin?: HostedSessionOrigin
   /** Idempotency / correlation key for the prompt. */
   messageId: string
   /** Git identity for commit attribution during the prompt. */
@@ -162,8 +174,8 @@ export interface EgressProbeResult {
 }
 
 /**
- * Default probe: attempt a bounded HTTPS GET to `host`. A live default-deny
- * firewall makes this THROW for a DENIED host (connection reset / timeout / DNS
+ * Default probe: attempt a bounded GET to a full URL target, or HTTPS when the
+ * target is a bare host. A live default-deny firewall makes this THROW for a DENIED host (connection reset / timeout / DNS
  * failure) → `reachable: false`. Any response at all — even an error status —
  * proves the host was reachable → `reachable: true`. Used for BOTH the allowed
  * (positive-control) and denied probes.
@@ -172,7 +184,8 @@ export async function defaultProbeEgress(host: string): Promise<EgressProbeResul
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), EGRESS_CANARY_TIMEOUT_MS)
   try {
-    const response = await fetch(`https://${host}/`, {
+    const target = URL.canParse(host) ? new URL('/', host).toString() : `https://${host}/`
+    const response = await fetch(target, {
       method: 'GET',
       redirect: 'manual',
       signal: controller.signal,
@@ -185,7 +198,7 @@ export async function defaultProbeEgress(host: string): Promise<EgressProbeResul
   }
 }
 
-/** The two hosts the positive-control canary probes. */
+/** The two host/URL targets the positive-control canary probes. */
 export interface EgressCanaryTargets {
   /** A known-ALLOWED host (the Orizu API base) that MUST be reachable — the
    *  positive control that distinguishes "policy blocking" from "network dead". */
@@ -303,7 +316,8 @@ export async function runEgressCanary(
  */
 export function egressCanaryAllowedHost(apiBaseUrl: string): string {
   try {
-    return new URL(apiBaseUrl).hostname
+    const parsed = new URL(apiBaseUrl)
+    return parsed.port === '' ? parsed.hostname : parsed.origin
   } catch {
     return apiBaseUrl.replace(/^[a-z]+:\/\//i, '').split('/')[0].split(':')[0]
   }

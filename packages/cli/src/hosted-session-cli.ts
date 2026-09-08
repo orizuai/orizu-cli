@@ -37,6 +37,7 @@
 
 import { readFileSync } from 'fs'
 
+import { isValidCloudflareArtifactsGitRemote } from './cloudflare-artifacts-git-remote.js'
 import {
   createLocalSimProvider,
   type SandboxEgressPolicy,
@@ -57,6 +58,7 @@ import { buildEgressPolicy, DEFAULT_EGRESS_CANARY_HOST } from './egress-policy.j
 import { DEFAULT_HOSTED_MODEL, hostedLoopCommand, type HostedLoopContext } from './hosted-loop.js'
 import { hostedBootCommand } from './hosted-boot.js'
 import { mergeJobCommand } from './merge-job.js'
+import { workspaceBootstrapJobCommand } from './workspace-bootstrap-job.js'
 import { hostedOptimizationCommand } from './hosted-optimization.js'
 import { writeChildStderr } from './child-output-tee.js'
 import { skilledProposerBakeCommand } from './skilled-proposer-launch.js'
@@ -99,10 +101,6 @@ const GENERATED_HOSTED_UUID_PLACEHOLDER = '00000000-0000-4000-8000-000000000000'
 /** Non-secret placeholder OpenCode uses to form requests; the firewall proxy
  *  overrides the real Anthropic header (model-key brokering). NEVER a real key. */
 export const ANTHROPIC_DUMMY_KEY = 'sk-ant-orizu-proxy-broker-placeholder'
-const CLOUDFLARE_ARTIFACTS_HOST =
-  /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/
-const CLOUDFLARE_ARTIFACTS_GIT_PATH =
-  /^\/git\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\.git$/
 /** The broker currently drains repository lifecycle work once per minute. A
  * durable provider `waiting` response can therefore cost a full cron period;
  * use the server-advertised cadence and retain a five-minute resume window. */
@@ -508,25 +506,7 @@ export function repositoryResolutionFromMint(
         'repo-token response carried no Artifacts remote'
       )
     }
-    let parsed: URL
-    try {
-      parsed = new URL(artifactsRemote)
-    } catch {
-      throw new Error(
-        'repo-token response carried an invalid Artifacts remote'
-      )
-    }
-    if (
-      parsed.protocol !== 'https:' ||
-      parsed.username ||
-      parsed.password ||
-      parsed.port ||
-      parsed.search ||
-      parsed.hash ||
-      !CLOUDFLARE_ARTIFACTS_HOST.test(parsed.hostname) ||
-      !CLOUDFLARE_ARTIFACTS_GIT_PATH.test(parsed.pathname) ||
-      parsed.toString() !== artifactsRemote
-    ) {
+    if (!isValidCloudflareArtifactsGitRemote(artifactsRemote)) {
       throw new Error(
         'repo-token response carried an invalid Artifacts remote'
       )
@@ -839,6 +819,9 @@ export async function startHostedSession(
     bearerFile: paths.bearerFileAbs,
     taskFile: `${paths.runDirAbs}/task.txt`,
     workspaceDir: paths.repoDirRel,
+    sessionBranch,
+    repositoryRemote: repo.cloneUrl,
+    repositoryCredentialHelper: bootstrap.credentialHelper,
     model,
     reasoningEffort: opts.reasoningEffort,
     messageId: `${runId}:task`,
@@ -1571,12 +1554,15 @@ export async function hostedCommand(
     if (positional[1] === 'merge-job') {
       return mergeJobCommand(io)
     }
+    if (positional[1] === 'workspace-bootstrap-job') {
+      return workspaceBootstrapJobCommand(args, io)
+    }
     if (positional[1] === 'hosted-optimization') {
       return hostedOptimizationCommand({ ...io, printErr: writeChildStderr })
     }
     if (positional[1] === 'bake-skilled-proposer-venv') return skilledProposerBakeCommand(io)
     if (positional[1] === 'verify-skilled-proposer-bake') return skilledProposerBakeCommand(io, true)
-    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot | hosted-optimization | merge-job | bake-skilled-proposer-venv | verify-skilled-proposer-bake>')
+    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot | hosted-optimization | merge-job | workspace-bootstrap-job | bake-skilled-proposer-venv | verify-skilled-proposer-bake>')
     return 1
   }
 

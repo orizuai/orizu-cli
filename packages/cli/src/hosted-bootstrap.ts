@@ -208,6 +208,8 @@ export interface HostedBootstrapResult {
   steps: HostedBootstrapStep[]
   events: readonly AppendedRunEvent[]
   paths: HostedRuntimePaths
+  /** Bootstrap-selected helper, carried out-of-repo to checkpoint transport. */
+  credentialHelper: string
   /** Set on the failure path: the residue sweep result after teardown. */
   sweep: { clean: boolean; findings: HygieneFinding[] } | null
   failure: { step: string; error: string } | null
@@ -478,7 +480,10 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
     if (opts.deferSetupHook) {
       record('setup_hook_deferred', true, 'deferred to loop (runs after egress canary)')
       await sink.append('setup_hook_deferred', { reason: 'egress canary must pass before customer setup.sh runs' })
-      return { ok: true, steps, events: sink.recorded, paths, sweep: null, failure: null }
+      return {
+        ok: true, steps, events: sink.recorded, paths,
+        credentialHelper: helperValue, sweep: null, failure: null,
+      }
     }
     const hookRel = `${workspaceDir}/${SETUP_HOOK_RELATIVE_PATH}`
     if (await session.fileExists(hookRel)) {
@@ -495,14 +500,20 @@ export async function bootstrapHostedSandbox(opts: HostedBootstrapOptions): Prom
       await sink.append('setup_hook_skipped', { reason: 'no .orizu/setup.sh' })
     }
 
-    return { ok: true, steps, events: sink.recorded, paths, sweep: null, failure: null }
+    return {
+      ok: true, steps, events: sink.recorded, paths,
+      credentialHelper: helperValue, sweep: null, failure: null,
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     record(currentStep, false, message)
     // Record the failure (redacted), then tear down + prove no residue remains.
     await safeAppend(sink, 'bootstrap_failed', { step: currentStep, error: message })
     const sweep = await teardownHostedSandbox({ session, paths, bearer: opts.bearer, workspaceDir })
-    return { ok: false, steps, events: sink.recorded, paths, sweep, failure: { step: currentStep, error: message } }
+    return {
+      ok: false, steps, events: sink.recorded, paths, credentialHelper: helperValue,
+      sweep, failure: { step: currentStep, error: message },
+    }
   }
 }
 

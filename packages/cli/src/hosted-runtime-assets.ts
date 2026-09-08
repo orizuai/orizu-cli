@@ -23,6 +23,11 @@
  * git config holds only `credential.helper = !<runtime> <script> <boot.json>`.
  */
 
+import {
+  CLOUDFLARE_ARTIFACTS_GIT_PATH_PATTERN,
+  CLOUDFLARE_ARTIFACTS_HOST_PATTERN,
+} from './cloudflare-artifacts-git-remote.js'
+
 export const HELPER_SCRIPT_BASENAME = 'orizu-git-credential-helper.cjs'
 export const BOOT_CONTEXT_BASENAME = 'boot.json'
 export const BEARER_BASENAME = 'bearer'
@@ -47,20 +52,36 @@ export const AGENT_GIT_IDENTITY = { name: 'Orizu Agent', email: 'agent@orizu.ai'
 // -- Hosted task prompt scaffolding (ALI-1036) -------------------------------
 
 /**
- * Standing preamble wrapped around every hosted task prompt so a NATURAL task
- * ("review X and update the readme") runs unattended with zero magic words. The
- * agent is told to work autonomously (never block on the human), commit as it
- * goes, and treat Orizu — not the repo — as the home for production pointers and
- * run metadata. An end-of-run auto-harvest (ALI-1036, `harvestWorkspace`) is the
- * safety net for anything left uncommitted; the preamble names it so the agent
- * knows partial work is preserved.
+ * Origin-specific standing preambles wrap hosted task prompts. Web sessions get
+ * `HOSTED_TASK_PREAMBLE`, which directs the agent to use the question tool and
+ * wait for the human. CLI-origin sessions get `HOSTED_TASK_PREAMBLE_CLI`, where
+ * questions remain auto-answered for unattended operation. Undefined or unknown
+ * origins fail safely to the CLI preamble. Both variants tell the agent to
+ * commit as it goes; end-of-run auto-harvest (ALI-1036, `harvestWorkspace`)
+ * preserves anything left uncommitted.
  */
 export const HOSTED_TASK_PREAMBLE =
+  'You are in a hosted sandbox. Work autonomously. When blocked on human input, call the built-in ' +
+  'question tool with exactly one clear question and at most eight bounded options, then wait for ' +
+  'the human. Never infer approval from silence or a recommended option. Commit your work to the current ' +
+  'branch in logical units as you go (an automatic ' +
+  'checkpoint will also save anything uncommitted at the end). Never switch branches. ' +
+  'Production/default pointers and run metadata live in Orizu, not this repo.'
+
+/** Pre-ALI-1758 unattended behavior retained for CLI-originated sessions. */
+export const HOSTED_TASK_PREAMBLE_CLI =
   'You are running unattended in a hosted sandbox. Work autonomously: never ask the user ' +
   'questions — when uncertain, choose the most reasonable/reversible option and note the ' +
   'decision. Commit your work to the current branch in logical units as you go (an automatic ' +
   'checkpoint will also save anything uncommitted at the end). Never switch branches. ' +
   'Production/default pointers and run metadata live in Orizu, not this repo.'
+
+export type HostedSessionOrigin = 'hosted-web' | 'cli'
+
+/** Fail safe: only the exact server-stamped web origin enables interactive custody. */
+export function resolveHostedTaskPreamble(origin?: unknown): string {
+  return origin === 'hosted-web' ? HOSTED_TASK_PREAMBLE : HOSTED_TASK_PREAMBLE_CLI
+}
 
 /** Delimiter separating the standing preamble from the verbatim user task. */
 export const HOSTED_TASK_DELIMITER = '--- YOUR TASK ---'
@@ -85,6 +106,16 @@ export function composeHostedTaskPrompt(task: string, preamble: string = HOSTED_
  * otherwise fail under G5 default-deny egress).
  */
 export const PREBAKED_MARKER_PATH = '/opt/orizu/prebaked.json'
+
+/** Controlled runtime/test seam for locating the pre-baked image marker. The
+ * production default remains fixed; setting the override is an explicit opt-in
+ * that lets a production child process prove the real marker-gated paths. */
+export function resolvePrebakedMarkerPath(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): string {
+  const override = env.ORIZU_PREBAKED_MARKER_PATH?.trim()
+  return override || PREBAKED_MARKER_PATH
+}
 
 /**
  * The schema of `/opt/orizu/prebaked.json`. Records the exact versions baked into
@@ -288,6 +319,15 @@ function exactCredentialKey(input) {
     if (parsed.username || parsed.password || parsed.search || parsed.hash) return null
     if (parsed.hostname.toLowerCase() !== host.split(':')[0]) return null
     if (parsed.origin + parsed.pathname !== protocol + '://' + host + path) return null
+    const lfsSuffix = '/info/lfs'
+    if (
+      /${CLOUDFLARE_ARTIFACTS_HOST_PATTERN.source}/.test(parsed.hostname) &&
+      parsed.pathname.endsWith('.git' + lfsSuffix)
+    ) {
+      const repositoryPath = parsed.pathname.slice(0, -lfsSuffix.length)
+      if (!/${CLOUDFLARE_ARTIFACTS_GIT_PATH_PATTERN.source}/.test(repositoryPath)) return null
+      return parsed.origin + repositoryPath
+    }
     return parsed.origin + parsed.pathname
   } catch (_) {
     return null
@@ -303,8 +343,8 @@ function credentialKeyForRemote(remote) {
       parsed.password ||
       parsed.search ||
       parsed.hash ||
-      !/^[0-9a-f]{32}\\.artifacts\\.cloudflare\\.net$/.test(parsed.hostname) ||
-      !/^\\/git\\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\\.git$/.test(parsed.pathname) ||
+      !/${CLOUDFLARE_ARTIFACTS_HOST_PATTERN.source}/.test(parsed.hostname) ||
+      !/${CLOUDFLARE_ARTIFACTS_GIT_PATH_PATTERN.source}/.test(parsed.pathname) ||
       parsed.toString() !== remote
     ) return null
     return parsed.origin + parsed.pathname
@@ -319,8 +359,8 @@ function isArtifactsCredentialKey(credentialKey) {
     return (
       parsed.protocol === 'https:' &&
       !parsed.port &&
-      /^[0-9a-f]{32}\\.artifacts\\.cloudflare\\.net$/.test(parsed.hostname) &&
-      /^\\/git\\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\\.git$/.test(parsed.pathname) &&
+      /${CLOUDFLARE_ARTIFACTS_HOST_PATTERN.source}/.test(parsed.hostname) &&
+      /${CLOUDFLARE_ARTIFACTS_GIT_PATH_PATTERN.source}/.test(parsed.pathname) &&
       parsed.origin + parsed.pathname === credentialKey
     )
   } catch (_) {

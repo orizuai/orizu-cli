@@ -16,7 +16,8 @@
  *      driver; 'claude-agent-sdk': construct the in-process Claude-Agent-SDK
  *      driver — no server to install or spawn), then drive the SINGLE task prompt
  *      (v0: no queue) through `drainHarnessToSink`;
- *   5. the terminal event decides the run's final status via the sink's PATCH.
+ *   5. checkpoint dirty or local-only Git work without replacing the agent's
+ *      terminal result, then deliver that original result through the sink.
  *
  * SWAPPABILITY (ALI-929 / P3.6): harness SELECTION is the ONLY thing that differs
  * between the two drivers — `start()` → `runPrompt()` → `drainHarnessToSink()` →
@@ -29,8 +30,9 @@
  * per-exec fallback — with firewall brokering the real key never reaches here).
  *
  * TESTABILITY: `runHostedLoop` takes injected `fetchImpl`, `spawnOpenCode`,
- * `installOpenCode`, and `createHarness`, so the whole loop runs in-process
- * against a fake broker + fake OpenCode server with no real binary.
+ * `installOpenCode`, `createHarness`, and Git execution, so the whole loop can
+ * run in-process against fake boundaries; separate tests exercise the real
+ * packaged CLI, HTTPS smart-Git transport, and OpenCode process boundary.
  */
 
 import { spawnSync, spawn as nodeSpawn } from 'child_process'
@@ -38,13 +40,13 @@ import { closeSync, existsSync, openSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import type { AgentHarness, HarnessPrompt } from './hosted-harness.js'
+import { isHarnessTerminalKind, type AgentHarness, type HarnessEvent, type HarnessPrompt } from './hosted-harness.js'
 import {
-  HOSTED_TASK_PREAMBLE,
-  PREBAKED_MARKER_PATH,
   SETUP_HOOK_RELATIVE_PATH,
   composeHostedTaskPrompt,
   parsePrebakedMarker,
+  resolveHostedTaskPreamble,
+  resolvePrebakedMarkerPath,
 } from './hosted-runtime-assets.js'
 import { harvestWorkspace, type HarvestExec, type HarvestOutcome } from './hosted-harvest.js'
 import { annotateHeadlessQuestions, withIdleWatchdog } from './hosted-headless.js'
@@ -60,11 +62,13 @@ import {
 } from './hosted-harness-opencode.js'
 import { createClaudeAgentHarness } from './hosted-harness-claude.js'
 import { INJECTED_ENV_VARS_ENV } from './hosted-environment.js'
+import { interceptHostedQuestions } from './hosted-question.js'
 import {
   drainHarnessToSink,
   resumeRunEventSink,
   RunTerminalError,
   TerminalDeliveryError,
+  type BeforeFinishResult,
   type HostedFetch,
   type TerminalStatus,
 } from './hosted-run-event-sink.js'
@@ -123,8 +127,39 @@ export interface InstallResult {
   detail: string
 }
 
+interface HostedLoopSharedRuntime {
+  harness: AgentHarness | null
+  spawned: SpawnedOpenCode | null
+  agentSessionId: string | null
+  installOk: boolean
+  startupComplete: boolean
+  spawnLogPath: string
+  closed: boolean
+}
+
+export interface HostedLoopSessionContext extends Omit<HostedLoopContext, 'runId' | 'bearerFile' | 'taskFile' | 'messageId'> {
+  sessionId: string
+  projectId: string | null
+  sessionDir: string
+}
+
+export interface HostedLoopTurnContext {
+  runId: string
+  ordinal: number
+  taskFile: string
+  messageId: string
+  bearerFile: string
+}
+
+export interface HostedLoopSessionHandle {
+  context: HostedLoopSessionContext
+  runtime: HostedLoopSharedRuntime
+}
+
 export interface RunHostedLoopOptions {
   context: HostedLoopContext
+  /** Internal session runtime used by the public session/turn lifecycle. */
+  sharedRuntime?: HostedLoopSharedRuntime
   /**
    * Agent bearer, as a FIXED string (tests / in-process launcher) OR omitted in
    * favor of `bearerProvider`. In production the loop reads the rotated 0600
@@ -158,6 +193,9 @@ export interface RunHostedLoopOptions {
   validateModel?: (input: { baseUrl: string; model: string }) => Promise<ModelValidationOutcome>
   now?: () => number
   signal?: AbortSignal
+  /** Prompt-only human interrupt. Unlike `signal`, this never controls harness
+   *  provisioning or the session-scoped runtime. */
+  interruptSignal?: AbortSignal
   /** Extra verbatim secrets to redact (the bearer is added by the sink itself). */
   redactSecretsList?: readonly string[]
   /** Egress-canary probe (default: a bounded `fetch` to https://<host>/).
@@ -169,9 +207,9 @@ export interface RunHostedLoopOptions {
    *  with no real filesystem or child process. */
   runSetupHook?: (input: { workspaceDir: string }) => Promise<SetupHookOutcome> | SetupHookOutcome
   /**
-   * Standing preamble wrapped around the user task (ALI-1036). Defaults to
-   * `HOSTED_TASK_PREAMBLE`; pass an override to customize it, or an empty string
-   * to send the task verbatim (tests). The user task is always kept verbatim
+   * Standing preamble wrapped around the user task (ALI-1036/ALI-1867). Defaults
+   * according to `context.sessionOrigin`; pass an override to customize it, or
+   * an empty string to send the task verbatim (tests). The task stays verbatim
    * beneath a delimiter (see `composeHostedTaskPrompt`).
    */
   taskPreamble?: string
@@ -189,6 +227,9 @@ export interface RunHostedLoopOptions {
   /** Injectable sleep for the terminal-delivery retry backoff (ALI-1065
    *  finding 2). Tests pass a no-op to avoid real delays. */
   sleepImpl?: (ms: number) => Promise<void>
+  /** Value-free local diagnostics shared with the event sink. Production routes
+   *  this through hosted-boot's stderr seam; consumer failures are ignored. */
+  onDiagnostic?: (message: string) => void
 }
 
 export interface HostedLoopResult {
@@ -271,13 +312,16 @@ function redactionListFromEnv(): string[] {
  * falls back to a belt read of the `/opt/orizu/prebaked.json` marker (validated
  * via `parsePrebakedMarker`, so a stray file cannot trigger a skip). Either → true.
  */
-function detectLoopPrebaked(flag: boolean | undefined): boolean {
-  if (flag) return true
+function hasValidPrebakedMarker(markerPath: string): boolean {
   try {
-    return parsePrebakedMarker(readFileSync(PREBAKED_MARKER_PATH, 'utf8')) !== null
+    return parsePrebakedMarker(readFileSync(markerPath, 'utf8')) !== null
   } catch {
     return false
   }
+}
+
+function detectLoopPrebaked(flag: boolean | undefined, markerPath: string): boolean {
+  return flag === true || hasValidPrebakedMarker(markerPath)
 }
 
 /** Best-effort global install of the pinned opencode. Non-fatal: a failure is
@@ -331,6 +375,9 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as HostedFetch)
   const signal = opts.signal ?? new AbortController().signal
   const pinnedVersion = context.opencodePinnedVersion ?? OPENCODE_PINNED_VERSION
+  const diagnose = (message: string): void => {
+    try { opts.onDiagnostic?.(message) } catch { /* diagnostics are best-effort */ }
+  }
 
   // Resolve the bearer per request. Precedence: an explicit provider, then a
   // fixed string, else read the rotated 0600 bearer file every time (production
@@ -352,6 +399,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     fetchImpl,
     now: opts.now,
     redactSecretsList: [...(opts.redactSecretsList ?? []), ...redactionListFromEnv()],
+    onDiagnostic: diagnose,
   })
 
   // G5 startup canary (fail-closed, POSITIVE CONTROL): when the host applied an
@@ -362,7 +410,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
   // unreachable → network broken / indistinguishable from a block) emits
   // `egress_allowed` and finishes the run FAILED rather than touch real customer
   // data. A canary whose own event append fails is likewise fail-closed.
-  if (context.egressCanaryHost) {
+  if (context.egressCanaryHost && !opts.sharedRuntime?.startupComplete) {
     const probe = opts.probeEgress ?? defaultProbeEgress
     const targets: EgressCanaryTargets = {
       allowedHost: egressCanaryAllowedHost(context.apiBaseUrl),
@@ -413,7 +461,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
   // firewall is live, BEFORE any harness/network work. bootstrap deferred it (for
   // enforced-egress providers) precisely so its network access could not precede
   // the canary. Non-fatal, single-writer (this loop sink owns the run now).
-  if (context.runSetupHook) {
+  if (context.runSetupHook && !opts.sharedRuntime?.startupComplete) {
     try {
       const runHook = opts.runSetupHook ?? defaultRunSetupHook
       const outcome = await runHook({ workspaceDir: context.workspaceDir })
@@ -442,53 +490,87 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     }
   }
 
+  if (opts.sharedRuntime) opts.sharedRuntime.startupComplete = true
+
   // End-of-run auto-harvest (ALI-1036): commit + push anything the agent left
   // uncommitted/unpushed so a run NEVER loses work — on BOTH the success and
-  // failure paths. Runs at most once (guarded), records exactly one of
-  // work_persisted / work_none / work_persist_failed, and NEVER throws or changes
-  // the run's terminal status: a harvest failure is recorded and the run proceeds.
+  // failure paths. Runs at most once (guarded), records exactly one outcome with
+  // critical-intent delivery, and NEVER throws or changes the run's terminal
+  // status. If the event cannot land, safe outcome metadata rides the already-
+  // critical terminal PATCH instead.
+  const prebakedMarkerPath = resolvePrebakedMarkerPath()
   let harvested = false
-  const runAutoHarvest = async (): Promise<void> => {
-    if (harvested) return
+  let checkpointFinishPatch: BeforeFinishResult | void
+  const runAutoHarvest = async (): Promise<BeforeFinishResult | void> => {
+    if (harvested) return checkpointFinishPatch
     harvested = true
     let outcome: HarvestOutcome
     try {
-      outcome = harvestWorkspace({
-        workspaceDir: context.workspaceDir,
-        runId: context.runId,
-        author: context.author,
-        exec: opts.harvestExec,
-        // Real harvest only inside a genuine hosted sandbox (prebaked marker
-        // present) — never on a host/test working tree (review finding #1).
-        enabled: existsSync(PREBAKED_MARKER_PATH),
-      })
+      const markerValid = hasValidPrebakedMarker(prebakedMarkerPath)
+      outcome = !opts.harvestExec && !markerValid
+        ? { kind: 'work_persist_failed', error: 'prebaked_marker_invalid' }
+        : harvestWorkspace({
+            workspaceDir: context.workspaceDir,
+            runId: context.runId,
+            sessionBranch: context.sessionBranch,
+            repositoryRemote: context.repositoryRemote,
+            credentialHelper: context.repositoryCredentialHelper,
+            author: context.author,
+            exec: opts.harvestExec,
+            // Real harvest requires a parsed marker from the hosted image;
+            // mere path existence must never authorize default Git mutations.
+            enabled: markerValid,
+          })
     } catch (error) {
       outcome = { kind: 'work_persist_failed', error: error instanceof Error ? error.message : String(error) }
     }
     if (sink.sealed) return
     try {
       if (outcome.kind === 'work_persisted') {
-        await sink.append({ kind: 'work_persisted', payload: { sha: outcome.sha, files: outcome.files } })
+        await sink.append({
+          kind: 'work_persisted',
+          payload: { sha: outcome.sha, ...(outcome.files ? { files: outcome.files } : {}) },
+          critical: true,
+        })
       } else if (outcome.kind === 'work_none') {
-        await sink.append({ kind: 'work_none', payload: {} })
+        await sink.append({ kind: 'work_none', payload: {}, critical: true })
+      } else if (outcome.kind === 'work_not_inspected') {
+        await sink.append({ kind: 'work_not_inspected', payload: {}, critical: true })
       } else {
-        await sink.append({ kind: 'work_persist_failed', payload: { error: outcome.error } })
+        await sink.append({ kind: 'work_persist_failed', payload: { error: outcome.error }, critical: true })
       }
     } catch {
-      // Recording harvest is best-effort — never fail the run because the harvest
-      // event append failed.
+      // Value-free by construction: raw Git/provider errors and credentials must
+      // not enter process diagnostics or the terminal summary.
+      diagnose('hosted checkpoint event delivery failed')
+      const checkpointDelivery = outcome.kind === 'work_persisted'
+        ? {
+            outcome: 'saved', sha: outcome.sha,
+            ...(outcome.files ? { fileCount: outcome.files.length } : {}),
+          }
+        : outcome.kind === 'work_none'
+          ? { outcome: 'no_changes' }
+          : outcome.kind === 'work_not_inspected'
+            ? { outcome: 'not_inspected' }
+            : { outcome: 'unsaved' }
+      checkpointFinishPatch = {
+        summary: { checkpoint_delivery_failed: checkpointDelivery },
+      }
     }
+    return checkpointFinishPatch
   }
 
-  let spawned: SpawnedOpenCode | null = null
-  let agentSessionId: string | null = null
-  let installOk = false
+  let spawned: SpawnedOpenCode | null = opts.sharedRuntime?.spawned ?? null
+  let agentSessionId: string | null = opts.sharedRuntime?.agentSessionId ?? null
+  let installOk = opts.sharedRuntime?.installOk ?? false
   const harnessKind = context.harness ?? 'opencode'
   try {
-    // --- Harness PROVISIONING: the ONLY thing that differs between the two
-    // drivers (ALI-929). Everything after `harness` is constructed is identical.
+    // A session runtime provisions and starts its harness exactly once. Later
+    // turns reuse this object and therefore the same native conversation.
     let harness: AgentHarness
-    if (harnessKind === 'claude-agent-sdk') {
+    if (opts.sharedRuntime?.harness) {
+      harness = opts.sharedRuntime.harness
+    } else if (harnessKind === 'claude-agent-sdk') {
       // In-process agent loop: no server to install or spawn. Record an
       // analogous setup artifact so the event stream shape is unchanged.
       installOk = true
@@ -505,7 +587,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
       // PRE-BAKED (ALI-1017): the pinned `opencode` is already on PATH, so SKIP the
       // install (npm is blocked under G5 default-deny egress) and record
       // `opencode_prebaked`. FROM-SCRATCH (local-sim / fallback): install as before.
-      const prebaked = detectLoopPrebaked(context.prebaked)
+      const prebaked = detectLoopPrebaked(context.prebaked, prebakedMarkerPath)
       if (prebaked) {
         installOk = true
         await sink.append({
@@ -534,7 +616,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
         port: context.opencodePort,
         env: buildOpenCodeSpawnEnv(context),
         spawn: nodeChildSpawner,
-        logPath: join(tmpdir(), `opencode-serve-${context.runId}.log`),
+        logPath: opts.sharedRuntime?.spawnLogPath ?? join(tmpdir(), `opencode-serve-${context.runId}.log`),
         signal,
       })
       if (typeof spawned.readyAfterMs === 'number') {
@@ -593,20 +675,28 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
       )(spawned.baseUrl, { promptMaxDurationMs })
     }
 
-    const started = await harness.start({
-      workspaceDir: context.workspaceDir,
-      model: context.model,
-      reasoningEffort: context.reasoningEffort,
-      resumeAgentSessionId: context.resumeAgentSessionId,
-    })
-    agentSessionId = started.agentSessionId
+    if (!opts.sharedRuntime?.harness) {
+      const started = await harness.start({
+        workspaceDir: context.workspaceDir,
+        model: context.model,
+        reasoningEffort: context.reasoningEffort,
+        resumeAgentSessionId: context.resumeAgentSessionId,
+      })
+      agentSessionId = started.agentSessionId
+      if (opts.sharedRuntime) {
+        opts.sharedRuntime.harness = harness
+        opts.sharedRuntime.spawned = spawned
+        opts.sharedRuntime.agentSessionId = agentSessionId
+        opts.sharedRuntime.installOk = installOk
+      }
+    }
 
     // Prompt scaffolding (ALI-1036): wrap the user task with the standing
     // headless preamble, keeping the task verbatim beneath a delimiter.
     const prompt: HarnessPrompt = {
       runId: context.runId,
       messageId: context.messageId,
-      content: composeHostedTaskPrompt(taskPrompt, opts.taskPreamble ?? HOSTED_TASK_PREAMBLE),
+      content: composeHostedTaskPrompt(taskPrompt, opts.taskPreamble ?? resolveHostedTaskPreamble(context.sessionOrigin)),
       author: context.author,
     }
     // Drive the prompt through (a) question auto-handling annotation and (b) the
@@ -620,7 +710,87 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     const promptController = new AbortController()
     if (signal.aborted) promptController.abort()
     else signal.addEventListener('abort', () => promptController.abort(), { once: true })
+
+    // A human interrupt is prompt-scoped: signal the production driver (whose
+    // abort path sends OpenCode POST /session/:id/abort) and invoke stop() as a
+    // best-effort belt. This callback is deliberately total. All callers share
+    // one promise so the question path can await confirmed quiescence. Once this
+    // prompt yields its terminal event, a late marker belongs to the terminal/
+    // harvest window and must not abort the next queued prompt.
+    let hasPromptTerminal = false
+    let quiescencePromise: Promise<void> | null = null
+    const beginQuiescence = (): Promise<void> => {
+      promptController.abort()
+      if (quiescencePromise) return quiescencePromise
+      try {
+        quiescencePromise = Promise.resolve(harness.stop()).catch(() => {
+          diagnose('hosted interrupt stop failed; prompt signal remains authoritative')
+        })
+      } catch {
+        diagnose('hosted interrupt stop failed; prompt signal remains authoritative')
+        quiescencePromise = Promise.resolve()
+      }
+      return quiescencePromise
+    }
+    const handleInterrupt = (): void => {
+      if (hasPromptTerminal) return
+      void beginQuiescence()
+    }
+    const interruptSignal = opts.interruptSignal
+    if (interruptSignal?.aborted) handleInterrupt()
+    else interruptSignal?.addEventListener('abort', handleInterrupt, { once: true })
+
+    const terminalSummary: Record<string, unknown> = { agentSessionId }
+    let hasQuestionOutcome = false
     const annotated = annotateHeadlessQuestions(harness.runPrompt(prompt, promptController.signal))
+    const questionAware = harnessKind === 'opencode' && context.sessionOrigin === 'hosted-web'
+      ? interceptHostedQuestions(annotated, {
+          onDetected: question => {
+            hasQuestionOutcome = true
+            terminalSummary.outcome = 'question_pending'
+            terminalSummary.questionId = question.questionId
+          },
+          onInvalid: reason => {
+            hasQuestionOutcome = true
+            terminalSummary.outcome = 'question_invalid'
+            terminalSummary.reason = reason
+          },
+          // Async-generator resumption occurs only after drain appended the
+          // yielded critical event. Reuse ALI-1760's single abort owner.
+          onPersisted: beginQuiescence,
+          onInvalidPersisted: beginQuiescence,
+        })
+      : annotated
+    const interruptAware = (async function* (): AsyncGenerator<HarnessEvent> {
+      for await (const event of questionAware) {
+        if (isHarnessTerminalKind(event.kind)) {
+          hasPromptTerminal = true
+          if (hasQuestionOutcome || (interruptSignal?.aborted && event.kind !== 'error')) {
+            yield {
+              kind: 'execution_complete',
+              messageId: prompt.messageId,
+              critical: true,
+              payload: { success: false, aborted: true },
+            }
+          } else {
+            yield event
+          }
+          return
+        }
+        yield event
+      }
+      // A signal already durable before prompt startup can make a driver end
+      // without yielding. It is still an intentional cancellation, not a run
+      // failure or a missing-terminal fault.
+      if (interruptSignal?.aborted || hasQuestionOutcome) {
+        yield {
+          kind: 'execution_complete',
+          messageId: prompt.messageId,
+          critical: true,
+          payload: { success: false, aborted: true },
+        }
+      }
+    })()
     if (idleTimeoutMs <= 0) {
       // <= 0 explicitly DISABLES the watchdog (e.g. ORIZU_AGENT_IDLE_TIMEOUT_MS=0):
       // a stalled prompt will hang until the sandbox/prompt hard cap. Record it so
@@ -635,7 +805,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     }
     const drivenStream =
       idleTimeoutMs > 0
-        ? withIdleWatchdog(annotated, {
+        ? withIdleWatchdog(interruptAware, {
             timeoutMs: idleTimeoutMs,
             onTimeout: async () => {
               promptController.abort()
@@ -647,19 +817,26 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
             // instead of resetting the idle timer forever (ALI-1069).
             isProgress: event => event.kind !== 'question_auto_answered',
           })
-        : annotated
-    const status = await drainHarnessToSink(drivenStream, sink, {
-      summary: { agentSessionId },
-      // Auto-harvest runs on EVERY terminal path, before the sink seals.
-      beforeFinish: runAutoHarvest,
-    })
-    await harness.shutdown()
+        : interruptAware
+    let status: TerminalStatus
+    try {
+      status = await drainHarnessToSink(drivenStream, sink, {
+        summary: terminalSummary,
+        // Auto-harvest runs on EVERY terminal path, before the sink seals.
+        beforeFinish: runAutoHarvest,
+      })
+    } finally {
+      interruptSignal?.removeEventListener('abort', handleInterrupt)
+    }
+    if (!opts.sharedRuntime) await harness.shutdown()
+    if (opts.sharedRuntime) opts.sharedRuntime.agentSessionId = agentSessionId
     return { status, agentSessionId, installOk, error: null }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     // Harvest FIRST on every abnormal path (partial work is valuable, incl. an
     // idle-watchdog abort) — before any terminal write seals the sink.
-    await runAutoHarvest()
+    const checkpointPatch = await runAutoHarvest()
+    const checkpointSummary = checkpointPatch?.summary ?? {}
 
     // ALI-1065 finding 2: an undeliverable TERMINAL transition must NEVER be
     // re-recorded as 'failed' — the run's outcome was already decided; only its
@@ -711,14 +888,14 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     // no-ops when the drain already sealed the sink.
     if (!sink.sealed) {
       try {
-        await sink.finish('failed', { summary: { error: message } })
+        await sink.finish('failed', { summary: { error: message, ...checkpointSummary } })
       } catch {
         // best-effort — the terminal write itself may be impossible (bearer gone)
       }
     }
     return { status: 'failed', agentSessionId, installOk, error: message }
   } finally {
-    if (spawned) {
+    if (spawned && (!opts.sharedRuntime || opts.sharedRuntime.spawned !== spawned)) {
       try {
         spawned.stop()
       } catch {
@@ -728,12 +905,94 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
   }
 }
 
+export async function startHostedLoopSession(
+  context: HostedLoopSessionContext
+): Promise<HostedLoopSessionHandle> {
+  return {
+    context,
+    runtime: {
+      harness: null,
+      spawned: null,
+      agentSessionId: null,
+      installOk: false,
+      startupComplete: false,
+      spawnLogPath: join(context.sessionDir, `opencode-serve-${context.sessionId}.log`),
+      closed: false,
+    },
+  }
+}
+
+export async function runHostedLoopTurn(
+  session: HostedLoopSessionHandle,
+  turn: HostedLoopTurnContext,
+  options: Omit<RunHostedLoopOptions, 'context' | 'taskPrompt' | 'sharedRuntime'> & { taskPrompt: string }
+): Promise<HostedLoopResult> {
+  if (session.runtime.closed) throw new Error('hosted loop session is closed')
+  return runHostedLoop({
+    ...options,
+    context: {
+      ...session.context,
+      runId: turn.runId,
+      taskFile: turn.taskFile,
+      messageId: turn.messageId,
+      bearerFile: turn.bearerFile,
+      resumeAgentSessionId: session.runtime.agentSessionId ?? session.context.resumeAgentSessionId,
+    },
+    taskPrompt: options.taskPrompt,
+    sharedRuntime: session.runtime,
+  })
+}
+
+export async function closeHostedLoopSession(session: HostedLoopSessionHandle): Promise<void> {
+  if (session.runtime.closed) return
+  session.runtime.closed = true
+  try {
+    await session.runtime.harness?.shutdown()
+  } finally {
+    session.runtime.spawned?.stop()
+    session.runtime.harness = null
+    session.runtime.spawned = null
+  }
+}
+
 // -- Thin CLI entry (`orizu internal hosted-loop --context <path>`) -----------
 
 export interface HostedLoopCommandIo {
   print: (line: string) => void
   printErr?: (line: string) => void
   json?: boolean
+}
+
+const REQUIRED_CONTEXT_STRINGS = [
+  'apiBaseUrl', 'runId', 'bearerFile', 'taskFile', 'workspaceDir',
+  'sessionBranch', 'repositoryRemote', 'model', 'messageId',
+] as const
+const OPTIONAL_CONTEXT_STRINGS = [
+  'reasoningEffort', 'opencodePinnedVersion', 'anthropicDummyKey',
+  'resumeAgentSessionId', 'egressCanaryHost', 'repositoryCredentialHelper',
+] as const
+
+function isNonemptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function validateHostedLoopContext(value: unknown): { context: HostedLoopContext | null; fields: string[] } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { context: null, fields: ['root'] }
+  const record = value as Record<string, unknown>
+  const fields: string[] = REQUIRED_CONTEXT_STRINGS.filter(name => !isNonemptyString(record[name]))
+  const branch = record.sessionBranch
+  if (typeof branch === 'string' && (branch.length > 255 || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(branch) ||
+      branch.includes('..') || branch.includes('//') || branch.endsWith('/') || branch.includes('@{'))) fields.push('sessionBranch')
+  const author = record.author
+  if (!author || typeof author !== 'object' || Array.isArray(author) ||
+      !isNonemptyString((author as Record<string, unknown>).name) || !isNonemptyString((author as Record<string, unknown>).email)) fields.push('author')
+  if (record.harness !== undefined && record.harness !== 'opencode' && record.harness !== 'claude-agent-sdk') fields.push('harness')
+  if (record.sessionOrigin !== undefined && record.sessionOrigin !== 'hosted-web' && record.sessionOrigin !== 'cli') fields.push('sessionOrigin')
+  if (record.sandboxBudgetMs !== undefined && (typeof record.sandboxBudgetMs !== 'number' || !Number.isFinite(record.sandboxBudgetMs) || record.sandboxBudgetMs <= 0)) fields.push('sandboxBudgetMs')
+  if (record.opencodePort !== undefined && (typeof record.opencodePort !== 'number' || !Number.isInteger(record.opencodePort) || record.opencodePort <= 0 || record.opencodePort > 65_535)) fields.push('opencodePort')
+  for (const name of OPTIONAL_CONTEXT_STRINGS) if (record[name] !== undefined && typeof record[name] !== 'string') fields.push(name)
+  for (const name of ['prebaked', 'runSetupHook'] as const) if (record[name] !== undefined && typeof record[name] !== 'boolean') fields.push(name)
+  return { context: fields.length === 0 ? value as HostedLoopContext : null, fields: [...new Set(fields)] }
 }
 
 function argValue(args: readonly string[], flag: string): string | null {
@@ -757,18 +1016,24 @@ export async function hostedLoopCommand(
     io.printErr?.('Usage: orizu internal hosted-loop --context <path>')
     return 1
   }
-  let context: HostedLoopContext
+  let rawContext: unknown
   try {
-    context = JSON.parse(readFileSync(contextPath, 'utf8')) as HostedLoopContext
+    rawContext = JSON.parse(readFileSync(contextPath, 'utf8'))
   } catch (error) {
     io.printErr?.(`unreadable loop context: ${error instanceof Error ? error.message : String(error)}`)
     return 1
   }
+  const parsedContext = validateHostedLoopContext(rawContext)
+  if (!parsedContext.context) {
+    io.printErr?.(`invalid loop context: ${parsedContext.fields.join(', ')}`)
+    return 1
+  }
+  const context = parsedContext.context
   // Read the bearer per request (via the provider) so a host-side rotation that
   // overwrites the 0600 file is picked up without restarting the loop.
   const bearerProvider = (): string => readFileSync(context.bearerFile, 'utf8').trim()
   const taskPrompt = readFileSync(context.taskFile, 'utf8')
-  const result = await runHostedLoop({ context, bearerProvider, taskPrompt })
+  const result = await runHostedLoop({ context, bearerProvider, taskPrompt, onDiagnostic: io.printErr })
   io.print(
     io.json
       ? JSON.stringify({ status: result.status, agentSessionId: result.agentSessionId, error: result.error })

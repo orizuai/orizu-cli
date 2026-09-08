@@ -38,6 +38,8 @@ const STAGE_MARKER = 'orizu-prebaked.json'
 const STAGE_ASSETS = 'orizu-skilled-proposer-assets.json'
 const BAKE_COMMAND = 'orizu internal bake-skilled-proposer-venv --json'
 const VERIFY_COMMAND = 'orizu internal verify-skilled-proposer-bake --json'
+const WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK =
+  "orizu internal workspace-bootstrap-job --capability-check | grep -qx 'workspace-bootstrap-job:v1'"
 const writeStep = (name, writeFile) => ({ name, timeoutClass: 'write', writeFile })
 const execStep = (name, exec, timeoutClass = 'quick') => ({ name, timeoutClass, exec })
 
@@ -170,6 +172,7 @@ export function buildProvisionSteps({
       execStep('verify bake (orizu version + opencode + hosted-loop + braintrust)',
           `command -v orizu && command -v opencode && orizu --version | grep -F "${cliVersion}" && ` +
           `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
+          `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
           `${claudeSdkImportProbe()} && ` +
           braintrustVerify(braintrustPyVersion)),
       ...skilledProposerSteps(),
@@ -194,6 +197,7 @@ export function buildProvisionSteps({
     execStep('verify git + ssh client present (merge-job runtime requirement)', 'git --version && ssh -V'),
     execStep('verify bake (orizu + opencode + hosted-loop + braintrust)',
         `command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
+        `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
         braintrustVerify(braintrustPyVersion)),
     ...skilledProposerSteps(),
   ]

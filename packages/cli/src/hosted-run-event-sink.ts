@@ -82,8 +82,11 @@ const EVENT_TYPE_BY_KIND: Partial<Record<HarnessEventKind, string>> = {
   // question auto-handling record.
   work_persisted: 'work_persisted',
   work_none: 'work_none',
+  work_not_inspected: 'work_not_inspected',
   work_persist_failed: 'work_persist_failed',
   question_auto_answered: 'agent_question_auto_answered',
+  question_pending: 'agent_question_pending',
+  question_invalid: 'agent_question_invalid',
 }
 
 /** The RunAPI event type a harness kind maps to, or null if it is not appendable
@@ -660,6 +663,11 @@ export async function resumeRunEventSink(
 
 // -- Bridge glue: drive a harness stream into a sink -------------------------
 
+export interface BeforeFinishResult {
+  /** Safe metadata merged into the terminal PATCH after the hook runs. */
+  summary?: Record<string, unknown>
+}
+
 export interface DrainOptions {
   /** Transcript captured by the caller, stored on the terminal transition. */
   transcript?: string
@@ -668,12 +676,13 @@ export interface DrainOptions {
   /**
    * Hook invoked AFTER the stream yields its terminal event but BEFORE `finish()`
    * seals the sink, on EVERY terminal path (success, failure, abnormal end). Used
-   * by the loop's end-of-run auto-harvest (ALI-1036) so `work_persisted` /
-   * `work_none` / `work_persist_failed` can still be appended while the sink is
-   * writable. Its own failure must never change the run's terminal status — the
-   * hook itself is responsible for swallowing errors.
+   * by the loop's end-of-run auto-harvest (ALI-1036) so persisted / none /
+   * not-inspected / failed outcomes can still be appended while the sink is
+   * writable. It may return safe terminal-summary metadata. Its own failure must
+   * never change the run's terminal status — the hook itself is responsible for
+   * swallowing errors.
    */
-  beforeFinish?: () => Promise<void>
+  beforeFinish?: () => Promise<BeforeFinishResult | void>
 }
 
 /**
@@ -691,10 +700,12 @@ export async function drainHarnessToSink(
   // Run the pre-terminal hook (auto-harvest) at most once, right before the first
   // finish() on any terminal path — while the sink is still writable.
   let beforeFinishRan = false
-  const runBeforeFinish = async (): Promise<void> => {
-    if (beforeFinishRan) return
+  let beforeFinishResult: BeforeFinishResult | void
+  const runBeforeFinish = async (): Promise<BeforeFinishResult | void> => {
+    if (beforeFinishRan) return beforeFinishResult
     beforeFinishRan = true
-    if (opts.beforeFinish) await opts.beforeFinish()
+    beforeFinishResult = await opts.beforeFinish?.()
+    return beforeFinishResult
   }
   // ALI-1065 finding 3: the server now rejects appends to a terminal run with
   // 410 (the run was cancelled/finished out from under this writer). The sink
@@ -719,10 +730,13 @@ export async function drainHarnessToSink(
   // so without this check the drain would report the intended status as
   // delivered when in fact the server terminated the run out from under us.
   const finishAccepting = async (status: TerminalStatus, finishOpts: FinishOptions): Promise<TerminalStatus> => {
-    await runBeforeFinish()
+    const hookResult = await runBeforeFinish()
     if (sink.sealed) return 'cancelled'
+    const mergedFinishOpts = hookResult?.summary
+      ? { ...finishOpts, summary: { ...(finishOpts.summary ?? {}), ...hookResult.summary } }
+      : finishOpts
     try {
-      await sink.finish(status, finishOpts)
+      await sink.finish(status, mergedFinishOpts)
       return status
     } catch (error) {
       if (error instanceof RunTerminalError) return 'cancelled'
@@ -765,8 +779,6 @@ export async function drainHarnessToSink(
   }
   // The harness contract guarantees a terminal event; reaching here means the
   // stream ended abnormally. Fail closed so the run never dangles non-terminal.
-  await runBeforeFinish()
-  if (sink.sealed) return 'cancelled'
   return finishAccepting('failed', {
     summary: { ...(opts.summary ?? {}), error: 'harness stream ended without a terminal event' },
     transcript: opts.transcript,

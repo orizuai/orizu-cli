@@ -21,6 +21,7 @@
 import { existsSync } from 'fs'
 import { dirname, join } from 'path'
 
+import { CLOUDFLARE_ARTIFACTS_HOST_PATTERN as ARTIFACTS_HOST } from './cloudflare-artifacts-git-remote.js'
 import { authedFetch } from './http.js'
 import { readJsonManifest } from './workspace.js'
 
@@ -45,8 +46,6 @@ export interface GitCredentialIo {
 }
 
 const GITHUB_HOST = 'github.com'
-const ARTIFACTS_HOST =
-  /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/
 /**
  * ALI-1285: the Artifacts contract declares the credential OPAQUE
  * (`plaintext: string`) with no documented body format. Pinning

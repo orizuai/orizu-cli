@@ -31,8 +31,9 @@
  */
 
 import { spawnSync } from 'child_process'
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'fs'
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'fs'
 
+import { isValidCloudflareArtifactsGitRemote } from './cloudflare-artifacts-git-remote.js'
 import {
   AGENT_GIT_IDENTITY,
   BEARER_BASENAME,
@@ -46,11 +47,16 @@ import {
 } from './hosted-runtime-assets.js'
 import {
   INJECTED_ENV_VARS_ENV,
+  closeHostedLoopSession,
   runHostedLoop,
+  runHostedLoopTurn,
+  startHostedLoopSession,
   type HostedLoopContext,
   type HostedLoopResult,
+  type HostedLoopSessionContext,
 } from './hosted-loop.js'
 import { DEFAULT_EGRESS_CANARY_HOST, DEFAULT_HOSTED_MODEL } from './hosted-loop-lifecycle.js'
+import { composeHostedAnswerPrompt } from './hosted-question.js'
 import { resumeRunEventSink } from './hosted-run-event-sink.js'
 import { stageOrizuSkill } from './hosted-skill-staging.js'
 
@@ -62,10 +68,6 @@ export type BootFetch = (url: string, init?: RequestInit) => Promise<Response>
  *  DO-path `workers/session-coordinator/src/bootstrap.ts`); kept in sync by
  *  grep. Inlined (not imported) to avoid a hosted-session-cli import cycle. */
 const ANTHROPIC_DUMMY_KEY = 'sk-ant-orizu-proxy-broker-placeholder'
-const CLOUDFLARE_ARTIFACTS_HOST =
-  /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/
-const CLOUDFLARE_ARTIFACTS_GIT_PATH =
-  /^\/git\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\.git$/
 
 // -- Frozen env contract ------------------------------------------------------
 
@@ -146,6 +148,24 @@ export function deriveBootStatusUrl(agentTokenUrl: string): string {
  *  is never a place for a secret; this bounds it anyway, and we scrub the boot
  *  secret defensively before sending. */
 const MAX_BOOT_REASON_CHARS = 800
+const TURN_STATUS_ATTEMPT_TIMEOUT_MS = 10_000
+
+function resolveTestPositiveInteger(
+  processEnv: Record<string, string | undefined>,
+  name: string,
+  maximum = Number.MAX_SAFE_INTEGER
+): number | undefined {
+  const configured = processEnv.NODE_ENV === 'test' ? processEnv[name] : undefined
+  if (!configured || !/^\d+$/u.test(configured)) return undefined
+  const value = Number(configured)
+  return value > 0 && value <= maximum ? value : undefined
+}
+
+function resolveTurnStatusAttemptTimeoutMs(
+  processEnv: Record<string, string | undefined>
+): number | undefined {
+  return resolveTestPositiveInteger(processEnv, 'ORIZU_HOSTED_TEST_TURN_STATUS_TIMEOUT_MS')
+}
 
 /** Best-effort scrub + truncate for a reported failure reason: never leak the
  *  boot secret (the one credential the boot always holds), and keep it short. */
@@ -169,7 +189,7 @@ export async function postBootStatus(opts: {
   /** 'ready' | 'failed' are the ALI-1060 liveness signals; 'complete' is the
    *  ALI-1064 terminal signal — the loop finished (after auto-harvest), so the
    *  DO ends the workspace session and stops instead of extending to 24h. */
-  status: 'ready' | 'failed' | 'complete'
+  status: 'ready' | 'failed' | 'complete' | 'turn_failed'
   runId: string | null
   reason?: string | null
   fetchImpl: BootFetch
@@ -189,6 +209,66 @@ export async function postBootStatus(opts: {
   } catch (error) {
     opts.log?.(`boot-status ${opts.status} report failed: ${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+async function postRequiredIdleReady(opts: {
+  bootStatusUrl: string
+  bootSecret: string
+  fetchImpl: BootFetch
+  sleep: (ms: number) => Promise<void>
+  attemptTimeoutMs?: number
+}): Promise<void> {
+  let detail = 'not attempted'
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const response = await opts.fetchImpl(opts.bootStatusUrl, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${opts.bootSecret}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ready' }),
+        signal: AbortSignal.timeout(opts.attemptTimeoutMs ?? TURN_STATUS_ATTEMPT_TIMEOUT_MS),
+      })
+      if (response.ok) return
+      detail = `status ${response.status}`
+    } catch (error) {
+      detail = error instanceof Error ? error.message : String(error)
+    }
+    if (attempt < 4) await opts.sleep(250 * 2 ** attempt)
+  }
+  throw new Error(`ready acknowledgement failed: ${detail}`)
+}
+
+async function postTurnStatus(opts: {
+  bootStatusUrl: string
+  bootSecret: string
+  status: 'turn_started' | 'turn_completed' | 'turn_failed'
+  runId: string
+  reason?: string | null
+  fetchImpl: BootFetch
+  sleep?: (ms: number) => Promise<void>
+  attemptTimeoutMs?: number
+}): Promise<void> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  let detail = 'not attempted'
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const response = await opts.fetchImpl(opts.bootStatusUrl, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${opts.bootSecret}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: opts.status,
+          runId: opts.runId,
+          ...(opts.reason ? { reason: opts.reason } : {}),
+        }),
+        signal: AbortSignal.timeout(opts.attemptTimeoutMs ?? TURN_STATUS_ATTEMPT_TIMEOUT_MS),
+      })
+      if (response.ok) return
+      detail = `status ${response.status}`
+    } catch (error) {
+      detail = error instanceof Error ? error.message : String(error)
+    }
+    if (attempt < 4) await sleep(250 * 2 ** attempt)
+  }
+  throw new Error(`${opts.status} acknowledgement failed: ${detail}`)
 }
 
 // -- Bearer pull (boot secret -> fresh agent bearer, retry/backoff) -----------
@@ -307,6 +387,9 @@ export async function fetchEnvBundle(opts: {
  * values from run events. Returns the merged redaction-var list.
  */
 export function applyEnvBundle(bundle: EnvBundle, env: Record<string, string | undefined>): string[] {
+  if (bundle.connectors.some(connector => connector.envVar.startsWith('ORIZU_'))) {
+    throw new Error('reserved_connector_env: connector env vars must not use ORIZU_*')
+  }
   for (const connector of bundle.connectors) {
     env[connector.envVar] = connector.value
   }
@@ -326,17 +409,39 @@ export function applyEnvBundle(bundle: EnvBundle, env: Record<string, string | u
 
 // -- Session / run / repo resolution (agent-bearer control-plane reads) --------
 
+export interface PendingHostedTurn {
+  turnId: string | null
+  ordinal: number
+  runId: string
+  body: string
+  clientMessageId: string
+  answerToQuestion: { questionId: string; question: string } | null
+}
+
+function promptForPendingHostedTurn(turn: PendingHostedTurn): string {
+  return turn.answerToQuestion
+    ? composeHostedAnswerPrompt(turn.answerToQuestion, turn.body)
+    : turn.body
+}
+
 export interface ResolvedSession {
   workspaceId: string
   repoBranch: string
   task: string
   model: string | null
   reasoningEffort: string | null
+  surface: string | null
+  status: string | null
+  pendingTurn: PendingHostedTurn | null
+  interruptRequestedRunId: string | null
+  agentSessionId: string | null
+  projectId: string | null
   /** Session lifetime in minutes (from client_info), if the coordinator recorded
    *  it — used to derive the per-prompt max-duration cap (ALI-1061). */
   durationMinutes: number | null
-  /** Most recent existing run id, if any (else the boot creates one). */
+  /** Existing run selected by the service response, if any. */
   runId: string | null
+  runStatus: string | null
 }
 
 async function bearerJson(
@@ -370,11 +475,13 @@ export async function resolveSession(opts: {
   sessionId: string
   bearer: string
   fetchImpl: BootFetch
+  signal?: AbortSignal
 }): Promise<ResolvedSession> {
   const body = await bearerJson(
     opts.fetchImpl,
     `${opts.baseUrl}/api/cli/sessions/${encodeURIComponent(opts.sessionId)}`,
-    opts.bearer
+    opts.bearer,
+    opts.signal ? { signal: opts.signal } : {}
   )
   const session = (body.session ?? {}) as Record<string, unknown>
   const workspaceId = asString(session.workspaceId)
@@ -382,18 +489,123 @@ export async function resolveSession(opts: {
   const repoBranch = asString(session.repoBranch)
   if (!repoBranch) throw new Error('session response carried no repoBranch (branch not provisioned)')
   const clientInfo = (session.clientInfo ?? {}) as Record<string, unknown>
-  const task = asString(clientInfo.task)
-  if (!task) throw new Error('session client_info carried no task prompt')
+  const initialTask = asString(clientInfo.task)
+  if (!initialTask) throw new Error('session client_info carried no task prompt')
   const runs = Array.isArray(session.runs) ? (session.runs as Array<Record<string, unknown>>) : []
-  const runId = runs.length > 0 ? asString(runs[0].id) : null
+  const pending = session.pendingTurn && typeof session.pendingTurn === 'object'
+    ? session.pendingTurn as Record<string, unknown> : null
+  const answer = pending?.answerToQuestion && typeof pending.answerToQuestion === 'object'
+    ? pending.answerToQuestion as Record<string, unknown>
+    : null
+  const answerToQuestion = answer && asString(answer.questionId) && asString(answer.question)
+    ? { questionId: answer.questionId as string, question: answer.question as string }
+    : null
+  const hasValidTurnId = pending?.turnId === null || asString(pending?.turnId) !== null
+  const pendingTurn = pending && hasValidTurnId &&
+      Number.isSafeInteger(pending.ordinal) && (pending.ordinal as number) > 0 &&
+      asString(pending.runId) && asString(pending.body) && asString(pending.clientMessageId) &&
+      (pending.answerToQuestion === null || answerToQuestion)
+    ? {
+        turnId: pending.turnId === null ? null : pending.turnId as string,
+        ordinal: pending.ordinal as number,
+        runId: pending.runId as string,
+        body: pending.body as string,
+        clientMessageId: pending.clientMessageId as string,
+        answerToQuestion,
+      }
+    : null
+  if (pending && !pendingTurn) throw new Error('hosted_pending_turn_invalid')
+  const unfinishedRun = pendingTurn
+    ? runs.find(run => asString(run.id) === pendingTurn.runId &&
+        (run.status === 'pending' || run.status === 'running'))
+    : null
+  // The route orders runs newest-first. Resume the service-selected lowest
+  // unfinished turn; only when none exists do we fall back to the initial
+  // (oldest) run and its original task.
+  const selectedRun = unfinishedRun ?? runs.at(-1)
+  const runId = asString(selectedRun?.id)
   return {
     workspaceId,
     repoBranch,
-    task,
+    task: unfinishedRun ? promptForPendingHostedTurn(pendingTurn!) : initialTask,
     model: asString(clientInfo.model),
     reasoningEffort: asString(clientInfo.reasoningEffort),
+    surface: asString(clientInfo.surface),
     durationMinutes: asPositiveNumber(clientInfo.durationMinutes),
     runId,
+    runStatus: asString(selectedRun?.status),
+    status: asString(session.status),
+    pendingTurn: unfinishedRun ? pendingTurn : null,
+    interruptRequestedRunId: asString(session.interruptRequestedRunId),
+    agentSessionId: asString(session.agentSessionId),
+    projectId: asString(session.projectId),
+  }
+}
+
+/** Ride the ALI-1757 session/pending-turn poll while one prompt is active.
+ *  This uses the same additive session GET contract, but deliberately shares
+ *  none of the between-turn credential cleanup or mint-on-401 behavior: the
+ *  session-stable bearer file is live ORIZU_TOKEN_FILE for the prompt. */
+export async function pollHostedSessionDuringTurn(opts: {
+  baseUrl: string
+  sessionId: string
+  runId: string
+  bearerFileAbs: string
+  fetchImpl: BootFetch
+  signal: AbortSignal
+  onInterrupt: () => void
+  onDiagnostic?: (message: string) => void
+  readFile?: (path: string) => string
+  sleep?: (ms: number) => Promise<void>
+}): Promise<void> {
+  const diagnose = (message: string): void => {
+    try { opts.onDiagnostic?.(message) } catch { /* diagnostics are best-effort */ }
+  }
+  const readFile = opts.readFile ?? ((path: string): string => readFileSync(path, 'utf8'))
+  const sleep = opts.sleep ?? ((ms: number): Promise<void> => new Promise(resolve => {
+    if (opts.signal.aborted) { resolve(); return }
+    const timer = setTimeout(finish, ms)
+    const handleAbort = (): void => finish()
+    function finish(): void {
+      clearTimeout(timer)
+      opts.signal.removeEventListener('abort', handleAbort)
+      resolve()
+    }
+    opts.signal.addEventListener('abort', handleAbort, { once: true })
+  }))
+  while (!opts.signal.aborted) {
+    try {
+      const latest = await resolveSession({
+        baseUrl: opts.baseUrl,
+        sessionId: opts.sessionId,
+        bearer: readFile(opts.bearerFileAbs).trim(),
+        signal: AbortSignal.any([
+          opts.signal,
+          AbortSignal.timeout(10_000),
+        ]),
+        fetchImpl: (url, init) => {
+          const headers = new Headers(init?.headers)
+          // Additive, authority-free discriminator: existing session GET
+          // remains the one endpoint, while fixtures/observability can separate
+          // prompt-time health reads from between-turn queue consumption.
+          headers.set('x-orizu-hosted-poll', 'during-turn')
+          return opts.fetchImpl(url, { ...init, headers })
+        },
+      })
+      if (latest.interruptRequestedRunId === opts.runId) {
+        try {
+          opts.onInterrupt()
+        } catch {
+          diagnose('hosted interrupt callback failed; request will not be redelivered')
+        }
+        return
+      }
+    } catch {
+      // Fixed, value-free diagnostic: bearer values and response bodies never
+      // enter logs. A transient read failure cannot fail the running turn.
+      diagnose('hosted interrupt poll failed; retrying')
+    }
+    if (!opts.signal.aborted) await sleep(5_000)
   }
 }
 
@@ -422,6 +634,40 @@ export async function ensureRun(opts: {
   return runId
 }
 
+/** Emit the RunAPI-reserved run_started transition for a pre-created turn.
+ *  Idempotent for the initial run, which may already be running. */
+export async function beginRunExecution(opts: {
+  baseUrl: string
+  runId: string
+  bearer: string
+  fetchImpl: BootFetch
+  sleep?: (ms: number) => Promise<void>
+  attemptTimeoutMs?: number
+}): Promise<void> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  let detail = 'not attempted'
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await bearerJson(
+        opts.fetchImpl,
+        `${opts.baseUrl}/api/cli/workbench-runs/${encodeURIComponent(opts.runId)}`,
+        opts.bearer,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+          signal: AbortSignal.timeout(opts.attemptTimeoutMs ?? TURN_STATUS_ATTEMPT_TIMEOUT_MS),
+        }
+      )
+      return
+    } catch (error) {
+      detail = error instanceof Error ? error.message : String(error)
+    }
+    if (attempt < 4) await sleep(250 * 2 ** attempt)
+  }
+  throw new Error(`run_started transition failed: ${detail}`)
+}
+
 /** Mint a session_read repo token to learn the repo full name, then build the
  *  GitHub clone URL (mirrors the operator path's `defaultResolveRepo`). */
 export async function resolveRepo(opts: {
@@ -445,25 +691,7 @@ export async function resolveRepo(opts: {
         'repo-token response carried no Artifacts remote'
       )
     }
-    let parsed: URL
-    try {
-      parsed = new URL(artifactsRemote)
-    } catch {
-      throw new Error(
-        'repo-token response carried an invalid Artifacts remote'
-      )
-    }
-    if (
-      parsed.protocol !== 'https:' ||
-      parsed.username ||
-      parsed.password ||
-      parsed.port ||
-      parsed.search ||
-      parsed.hash ||
-      !CLOUDFLARE_ARTIFACTS_HOST.test(parsed.hostname) ||
-      !CLOUDFLARE_ARTIFACTS_GIT_PATH.test(parsed.pathname) ||
-      parsed.toString() !== artifactsRemote
-    ) {
+    if (!isValidCloudflareArtifactsGitRemote(artifactsRemote)) {
       throw new Error(
         'repo-token response carried an invalid Artifacts remote'
       )
@@ -571,6 +799,8 @@ export interface RunHostedBootOptions {
   onBootContext?: (ctx: { runId: string; bearer: string }) => void
 }
 
+class HostedTurnFailure extends Error {}
+
 export interface HostedBootResult {
   ok: boolean
   runId: string | null
@@ -610,6 +840,18 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   const readFile = opts.readFile ?? ((path: string): string => readFileSync(path, 'utf8'))
   const log = opts.log ?? ((): void => {})
   const now = opts.now ?? ((): number => Date.now())
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const testRotationMinimum = processEnv.NODE_ENV === 'test'
+    ? processEnv.ORIZU_HOSTED_TEST_BEARER_ROTATION_MIN_DELAY_MS
+    : undefined
+  const bearerRotationMinimumDelayMs = testRotationMinimum && /^\d+$/u.test(testRotationMinimum)
+    ? Number(testRotationMinimum)
+    : undefined
+  const turnStatusAttemptTimeoutMs = resolveTurnStatusAttemptTimeoutMs(processEnv)
+  const idlePollMs = resolveTestPositiveInteger(processEnv, 'ORIZU_HOSTED_TEST_IDLE_POLL_MS') ?? 5_000
+  const idleReadBackoffCapMs = resolveTestPositiveInteger(
+    processEnv, 'ORIZU_HOSTED_TEST_IDLE_READ_BACKOFF_CAP_MS'
+  ) ?? 45_000
 
   // 0 — ENV HYGIENE (ALI-1062): the boot secret is the DO path's only durable
   // credential (it mints agent bearers at the internet-reachable agent-token
@@ -621,9 +863,10 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   // boot-status closures hold `env.bootSecret`, and the git credential helper
   // reads the 0600 run-dir boot-secret FILE (written in step 4).
   delete processEnv.ORIZU_BOOT_SECRET
+  if (env.runId) assertSafeRunId(env.runId)
 
   // 1 — Pull the agent bearer (retry/backoff — the DO may still be arming).
-  const bearer = await pullAgentBearer({
+  let bearer = await pullAgentBearer({
     agentTokenUrl: env.agentTokenUrl,
     bootSecret: env.bootSecret,
     fetchImpl,
@@ -640,14 +883,88 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   log(`env bundle applied (${bundle.connectors.length} connectors, ${redacted.length} redacted vars)`)
 
   // 3 — Resolve the session (workspace/branch/task) + run + repo from the plane.
-  const session = await resolveSession({ baseUrl: env.baseUrl, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
+  let session = await resolveSession({ baseUrl: env.baseUrl, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
+  let currentNonTerminalRunId = session.runStatus === 'pending' || session.runStatus === 'running'
+    ? session.runId
+    : null
+  // Production restarts with no live run are between turns. Prove this boot is
+  // live before waiting so the coordinator's readiness timeout cannot reap an
+  // intentionally idle sandbox before the longer hosted idle policy applies.
+  if (!opts.runLoop && !currentNonTerminalRunId) {
+    await postRequiredIdleReady({
+      bootStatusUrl: env.bootStatusUrl,
+      bootSecret: env.bootSecret,
+      fetchImpl,
+      sleep,
+      attemptTimeoutMs: turnStatusAttemptTimeoutMs,
+    })
+  }
+  let consecutiveIdleSessionReadFailures = 0
+  const recordIdleSessionReadFailure = (detail: string): void => {
+    consecutiveIdleSessionReadFailures += 1
+    if (consecutiveIdleSessionReadFailures >= 10) {
+      throw new Error(`idle session read failed after 10 attempts: ${detail}`)
+    }
+    log(`idle session resolution failed; retrying (${detail})`)
+  }
+  while (!opts.runLoop && !currentNonTerminalRunId) {
+    await sleep(Math.min(
+      idlePollMs * 2 ** consecutiveIdleSessionReadFailures,
+      idleReadBackoffCapMs
+    ))
+    try {
+      if (bearer.expiresAtMs !== null && bearer.expiresAtMs <= now() + 60_000) {
+        bearer = await pullAgentBearer({
+          agentTokenUrl: env.agentTokenUrl, bootSecret: env.bootSecret,
+          fetchImpl, attempts: 3, backoffMs: 250, sleep, log,
+        })
+      }
+      session = await resolveSession({
+        baseUrl: env.baseUrl, sessionId: env.sessionId, bearer: bearer.token, fetchImpl,
+      })
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      if (detail.startsWith('agent-token pull failed after')) {
+        throw new Error(`idle agent-token refresh failed: ${detail}`)
+      }
+      if (!detail.includes('(401)')) {
+        recordIdleSessionReadFailure(detail)
+        continue
+      }
+      try {
+        bearer = await pullAgentBearer({
+          agentTokenUrl: env.agentTokenUrl, bootSecret: env.bootSecret,
+          fetchImpl, attempts: 3, backoffMs: 250, sleep, log,
+        })
+        session = await resolveSession({
+          baseUrl: env.baseUrl, sessionId: env.sessionId, bearer: bearer.token, fetchImpl,
+        })
+      } catch (retryError) {
+        const detail = retryError instanceof Error ? retryError.message : String(retryError)
+        if (detail.startsWith('agent-token pull failed after')) {
+          throw new Error(`idle agent-token refresh failed: ${detail}`)
+        }
+        recordIdleSessionReadFailure(detail)
+        continue
+      }
+    }
+    consecutiveIdleSessionReadFailures = 0
+    if (session.status && session.status !== 'active') {
+      return { ok: true, runId: null, loopStatus: null, error: null }
+    }
+    currentNonTerminalRunId = session.runStatus === 'pending' || session.runStatus === 'running'
+      ? session.runId
+      : null
+  }
   const workspaceId = env.workspaceId ?? session.workspaceId
-  const runId = await ensureRun({
+  // A non-null production run came from current session authority. Only the
+  // injected one-shot test seam may create a missing run.
+  const runId = currentNonTerminalRunId ?? await ensureRun({
     baseUrl: env.baseUrl,
     sessionId: env.sessionId,
     bearer: bearer.token,
     fetchImpl,
-    existingRunId: env.runId ?? session.runId,
+    existingRunId: null,
   })
   // Path-safety BEFORE the run id reaches any `.orizu-run/${runId}` path
   // (ALI-1060): a caller-supplied ORIZU_RUN_ID must not escape the run dir.
@@ -664,22 +981,27 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   // loop's event sink; the boot secret feeds the credential helper's per-op pull.
   const runDirRel = `.orizu-run/${runId}`
   const runDirAbs = `${root}/${runDirRel}`
+  const sessionDirAbs = `${root}/.orizu-session/${env.sessionId}`
   const workspaceDir = `${root}/repo`
   assertSafeGitValue('sessionBranch', session.repoBranch)
   assertSafeGitValue('cloneUrl', repo.cloneUrl)
   mkdirp(runDirAbs)
+  mkdirp(sessionDirAbs)
 
-  const bootSecretFileAbs = `${runDirAbs}/boot-secret`
-  const bearerFileAbs = `${runDirAbs}/${BEARER_BASENAME}`
-  const helperScriptAbs = `${runDirAbs}/${HELPER_SCRIPT_BASENAME}`
-  const bootContextAbs = `${runDirAbs}/${BOOT_CONTEXT_BASENAME}`
-  const cacheFileAbs = `${runDirAbs}/${REPO_CRED_CACHE_BASENAME}`
+  const bootSecretFileAbs = `${sessionDirAbs}/boot-secret`
+  const bearerFileAbs = `${sessionDirAbs}/${BEARER_BASENAME}`
+  const helperScriptAbs = `${sessionDirAbs}/${HELPER_SCRIPT_BASENAME}`
+  const bootContextAbs = `${sessionDirAbs}/${BOOT_CONTEXT_BASENAME}`
+  const cacheFileAbs = `${sessionDirAbs}/${REPO_CRED_CACHE_BASENAME}`
   const taskFileAbs = `${runDirAbs}/task.txt`
 
   writeSecretFile(bootSecretFileAbs, env.bootSecret, writeFile)
   writeSecretFile(bearerFileAbs, bearer.token, writeFile)
   writeFile(taskFileAbs, session.task)
   writeFile(helperScriptAbs, renderCredentialHelperScript())
+  // Keep the session-stable cache inode available across turns without ever
+  // persisting an Artifacts credential (the helper deliberately leaves it empty).
+  writeSecretFile(cacheFileAbs, '', writeFile)
   const bootContext: HostedBootContext = {
     apiBaseUrl: env.baseUrl,
     workspaceId,
@@ -762,15 +1084,28 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   // sandbox always runs the pre-baked image under an enforced egress policy, so
   // the loop's startup egress canary + deferred setup hook are both armed.
   const model = session.model ?? DEFAULT_HOSTED_MODEL
+  const configuredOpenCodePort = resolveTestPositiveInteger(
+    processEnv, 'ORIZU_HOSTED_TEST_OPENCODE_PORT', 65_535
+  ) ?? (processEnv.ORIZU_OPENCODE_PORT
+    ? Number(processEnv.ORIZU_OPENCODE_PORT)
+    : undefined)
+  if (configuredOpenCodePort !== undefined && (!Number.isInteger(configuredOpenCodePort) || configuredOpenCodePort < 1 || configuredOpenCodePort > 65_535)) {
+    throw new Error('ORIZU_OPENCODE_PORT must be a valid TCP port')
+  }
   const loopContext: HostedLoopContext = {
     apiBaseUrl: env.baseUrl,
     runId,
     bearerFile: bearerFileAbs,
     taskFile: taskFileAbs,
     workspaceDir,
+    sessionBranch: session.repoBranch,
+    repositoryRemote: repo.cloneUrl,
+    repositoryCredentialHelper: helperValue,
     model,
     reasoningEffort: session.reasoningEffort ?? undefined,
+    sessionOrigin: session.surface === 'hosted-web' ? 'hosted-web' : 'cli',
     messageId: `${runId}:task`,
+    resumeAgentSessionId: session.agentSessionId ?? undefined,
     author: AGENT_GIT_IDENTITY,
     anthropicDummyKey: env.anthropicDummyKey ?? ANTHROPIC_DUMMY_KEY,
     // Derive the per-prompt max-duration cap from the session duration so a long
@@ -780,74 +1115,231 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
     prebaked: true,
     egressCanaryHost: DEFAULT_EGRESS_CANARY_HOST,
     runSetupHook: true,
+    opencodePort: configuredOpenCodePort,
   }
 
-  const rotation = startBearerRotation({
-    agentTokenUrl: env.agentTokenUrl,
-    bootSecret: env.bootSecret,
-    bearerFileAbs,
-    fetchImpl,
-    writeFile,
-    initialExpiresAtMs: bearer.expiresAtMs,
-    now,
-    log,
-  })
-  try {
-    const runLoop =
-      opts.runLoop ??
-      ((input): Promise<HostedLoopResult> =>
-        runHostedLoop({
-          context: input.context,
-          taskPrompt: input.taskPrompt,
-          bearerProvider: input.bearerProvider,
-          redactSecretsList: input.redactSecretsList,
-        }))
-    const result = await runLoop({
-      context: loopContext,
-      taskPrompt: session.task,
-      // ALI-1062 exact-value redaction: the boot secret is 64 bare hex chars —
-      // no TOKEN_SHAPE_PATTERNS rule can catch it, so it MUST ride the loop's
-      // verbatim redaction list or an echoed env dump would land it in
-      // workbench_run_events.
-      redactSecretsList: [env.bootSecret],
-      // Read the bearer FILE fresh per request (review F1): `startBearerRotation`
-      // rewrites `bearerFileAbs` before the current bearer expires, so a run
-      // exceeding the ~60-min TTL (DO cap is 24h) keeps a valid bearer. A frozen
-      // closure over the boot-time token would silently stop recording events at
-      // ~TTL. The initial token was written to this file at boot (writeSecretFile
-      // above); the write is atomic (F2), so this never reads a torn file.
-      bearerProvider: () => readFile(bearerFileAbs).trim(),
+  const runLoop =
+    opts.runLoop ??
+    ((input): Promise<HostedLoopResult> =>
+      runHostedLoop({
+        context: input.context,
+        taskPrompt: input.taskPrompt,
+        bearerProvider: input.bearerProvider,
+        redactSecretsList: input.redactSecretsList,
+        onDiagnostic: log,
+      }))
+
+  // Preserve the injected one-shot seam for existing unit callers. Production
+  // uses the durable multi-turn branch below (and therefore has no injected
+  // loop or harness boundary).
+  if (opts.runLoop) {
+    const rotation = startBearerRotation({
+      agentTokenUrl: env.agentTokenUrl, bootSecret: env.bootSecret, bearerFileAbs,
+      fetchImpl, writeFile, initialExpiresAtMs: bearer.expiresAtMs, now, log,
+      minimumDelayMs: bearerRotationMinimumDelayMs,
     })
-    log(`hosted-loop finished: ${result.status}`)
-    // ALI-1064: the loop is TERMINAL — the auto-harvest (ALI-1036) and the
-    // run's terminal seal already ran INSIDE runHostedLoop, so it is safe to
-    // hand the session back. Report `complete` so the DO ends the workspace
-    // session server-side and stops/destroys the sandbox NOW instead of
-    // extending it until the 24h cap (live 2026-07-15: zombie boxes burned
-    // 2×CPU/4GiB for hours after their loops finished). This fires for a
-    // failed loop too — the run is terminal either way, and the loop already
-    // owns its own run-level terminal state (never a `failed` boot-status
-    // here; that would misreport a run failure as a bootstrap failure).
-    // Best-effort: the DO's duration/24h caps are the backstop.
-    await postBootStatus({
-      bootStatusUrl: env.bootStatusUrl,
-      bootSecret: env.bootSecret,
-      status: 'complete',
-      runId,
-      reason: result.error ? redactBootReason(result.error, env.bootSecret) : null,
-      fetchImpl,
-      log,
-    })
-    return { ok: !result.error, runId, loopStatus: result.status, error: result.error }
-  } finally {
-    rotation.stop()
+    try {
+      const result = await runLoop({
+        context: loopContext, taskPrompt: session.task,
+        redactSecretsList: [env.bootSecret],
+        bearerProvider: () => readFile(bearerFileAbs).trim(),
+      })
+      // The one-shot compatibility path predates turn callbacks, but its
+      // terminal reason has the same custody rule: scrub the bare boot secret
+      // before it crosses the boot-status boundary.
+      await postBootStatus({
+        bootStatusUrl: env.bootStatusUrl, bootSecret: env.bootSecret,
+        status: 'complete', runId,
+        reason: result.error ? redactBootReason(result.error, env.bootSecret) : null,
+        fetchImpl, log,
+      })
+      return { ok: !result.error, runId, loopStatus: result.status, error: result.error }
+    } finally {
+      await rotation.stop()
+    }
   }
+
+  const {
+    runId: _runId,
+    bearerFile: _bearerFile,
+    taskFile: _taskFile,
+    messageId: _messageId,
+    ...sessionLoopBase
+  } = loopContext
+  const sessionContext: HostedLoopSessionContext = {
+    ...sessionLoopBase,
+    sessionId: env.sessionId,
+    projectId: session.projectId,
+    sessionDir: sessionDirAbs,
+  }
+  const hostedLoopSession = await startHostedLoopSession(sessionContext)
+  let current = session.pendingTurn?.runId === runId
+    ? { runId, ordinal: session.pendingTurn.ordinal, body: promptForPendingHostedTurn(session.pendingTurn) }
+    : { runId, ordinal: 1, body: session.task }
+  let currentBearer = bearer
+  let lastResult: HostedLoopResult = { status: 'succeeded', agentSessionId: session.agentSessionId, installOk: true, error: null }
+
+  let hostedTurnFailure: HostedTurnFailure | null = null
+  try {
+    for (;;) {
+      assertSafeRunId(current.runId)
+      const currentRunDir = `${root}/.orizu-run/${current.runId}`
+      const currentTaskFile = `${currentRunDir}/task.txt`
+      mkdirp(currentRunDir)
+      writeFile(currentTaskFile, current.body)
+      writeSecretFile(bearerFileAbs, currentBearer.token, writeFile)
+      // Keep the failure reporter pinned to the turn that is about to execute;
+      // the boot-time run id becomes stale as soon as a follow-up is admitted.
+      opts.onBootContext?.({ runId: current.runId, bearer: currentBearer.token })
+
+      await postTurnStatus({
+        bootStatusUrl: env.bootStatusUrl, bootSecret: env.bootSecret,
+        status: 'turn_started', runId: current.runId, fetchImpl, sleep,
+        attemptTimeoutMs: turnStatusAttemptTimeoutMs,
+      })
+      await beginRunExecution({
+        baseUrl: env.baseUrl,
+        runId: current.runId,
+        bearer: currentBearer.token,
+        fetchImpl,
+        sleep,
+        attemptTimeoutMs: turnStatusAttemptTimeoutMs,
+      })
+      const rotation = startBearerRotation({
+        agentTokenUrl: env.agentTokenUrl, bootSecret: env.bootSecret, bearerFileAbs,
+        fetchImpl, writeFile, initialExpiresAtMs: currentBearer.expiresAtMs, now, log,
+        minimumDelayMs: bearerRotationMinimumDelayMs,
+      })
+      const promptInterruptController = new AbortController()
+      const interruptPollController = new AbortController()
+      const interruptPoll = pollHostedSessionDuringTurn({
+        baseUrl: env.baseUrl,
+        sessionId: env.sessionId,
+        runId: current.runId,
+        bearerFileAbs,
+        fetchImpl,
+        signal: interruptPollController.signal,
+        onInterrupt: () => promptInterruptController.abort(),
+        onDiagnostic: log,
+        readFile,
+      })
+      try {
+        lastResult = await runHostedLoopTurn(
+          hostedLoopSession,
+          {
+            runId: current.runId,
+            ordinal: current.ordinal,
+            taskFile: currentTaskFile,
+            messageId: `${current.runId}:task`,
+            bearerFile: bearerFileAbs,
+          },
+          {
+            taskPrompt: current.body,
+            redactSecretsList: [env.bootSecret],
+            bearerProvider: () => readFile(bearerFileAbs).trim(),
+            interruptSignal: promptInterruptController.signal,
+            onDiagnostic: log,
+          }
+        )
+      } finally {
+        // Stop and join the during-prompt reader BEFORE removing the live
+        // ORIZU_TOKEN_FILE. Only the existing between-turn path unlinks it.
+        interruptPollController.abort()
+        await interruptPoll
+        // Remove the active-turn credential before waiting for an in-flight
+        // refresh. The post-await stopped check then prevents its recreation.
+        try { unlinkSync(bearerFileAbs) } catch { /* already absent */ }
+        await rotation.stop()
+      }
+      log(`hosted-loop turn ${current.ordinal} finished: ${lastResult.status}`)
+      await postTurnStatus({
+        bootStatusUrl: env.bootStatusUrl, bootSecret: env.bootSecret,
+        status: 'turn_completed', runId: current.runId, fetchImpl, sleep,
+        attemptTimeoutMs: turnStatusAttemptTimeoutMs,
+      })
+      if (lastResult.error) {
+        throw new Error(`fatal hosted turn exit: ${lastResult.error}`)
+      }
+
+      // One boot writer drains the lowest pending ordinal. Idle status reads
+      // reuse the current bearer, staying well below the coordinator's mint
+      // budget. Refresh proactively near expiry and once on a 401. Exhausting
+      // the bounded agent-token pull is fatal and reported for the current run;
+      // other transient status-read failures retain the session and back off.
+      for (;;) {
+        await sleep(5_000)
+        let pendingTurn: PendingHostedTurn | null = null
+        try {
+          if (currentBearer.expiresAtMs !== null && currentBearer.expiresAtMs <= now() + 60_000) {
+            currentBearer = await pullAgentBearer({
+              agentTokenUrl: env.agentTokenUrl, bootSecret: env.bootSecret,
+              fetchImpl, attempts: 3, backoffMs: 250, sleep, log,
+            })
+          }
+          let latest
+          try {
+            latest = await resolveSession({
+              baseUrl: env.baseUrl, sessionId: env.sessionId,
+              bearer: currentBearer.token, fetchImpl,
+            })
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.includes('(401)')) throw error
+            currentBearer = await pullAgentBearer({
+              agentTokenUrl: env.agentTokenUrl, bootSecret: env.bootSecret,
+              fetchImpl, attempts: 3, backoffMs: 250, sleep, log,
+            })
+            latest = await resolveSession({
+              baseUrl: env.baseUrl, sessionId: env.sessionId,
+              bearer: currentBearer.token, fetchImpl,
+            })
+          }
+          if (latest.status && latest.status !== 'active') {
+            return { ok: true, runId: current.runId, loopStatus: lastResult.status, error: null }
+          }
+          pendingTurn = latest.pendingTurn
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error)
+          if (detail.startsWith('agent-token pull failed after')) {
+            throw new Error(`idle agent-token refresh failed: ${detail}`)
+          }
+          log(`turn poll failed; retrying (${detail})`)
+        } finally {
+          try { unlinkSync(bearerFileAbs) } catch { /* idle: no readable bearer */ }
+        }
+        if (pendingTurn) {
+          current = {
+            runId: pendingTurn.runId,
+            ordinal: pendingTurn.ordinal,
+            body: promptForPendingHostedTurn(pendingTurn),
+          }
+          break
+        }
+      }
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    hostedTurnFailure = new HostedTurnFailure(detail)
+  } finally {
+    try {
+      await closeHostedLoopSession(hostedLoopSession)
+    } catch (error) {
+      log(`hosted-loop cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    try { unlinkSync(bearerFileAbs) } catch { /* already absent */ }
+    try {
+      rmSync(sessionDirAbs, { recursive: true, force: true })
+    } catch (error) {
+      log(`hosted-loop session-dir cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  if (hostedTurnFailure) throw hostedTurnFailure
+  throw new HostedTurnFailure('hosted turn drain exited without a terminal result')
 }
 
 // -- Bearer rotation (keeps the loop's 0600 bearer file fresh) -----------------
 
 interface BearerRotationHandle {
-  stop: () => void
+  stop: () => Promise<void>
 }
 
 /**
@@ -859,7 +1351,7 @@ interface BearerRotationHandle {
  * reads this file fresh per request (see runHostedBoot), so a rewritten file is
  * picked up on the next event/request. No-ops when there is no expiry signal.
  */
-function startBearerRotation(opts: {
+export function startBearerRotation(opts: {
   agentTokenUrl: string
   bootSecret: string
   bearerFileAbs: string
@@ -868,6 +1360,8 @@ function startBearerRotation(opts: {
   initialExpiresAtMs: number | null
   now: () => number
   log: (line: string) => void
+  schedule?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
+  minimumDelayMs?: number
 }): BearerRotationHandle {
   // Refresh ~5 min before expiry; if the server gives no expiry, fall back to a
   // conservative fixed cadence just under a typical 60-min TTL.
@@ -878,14 +1372,8 @@ function startBearerRotation(opts: {
   const MAX_SCHEDULE_MS = 6 * 60 * 60 * 1000
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | null = null
+  let refreshInFlight: Promise<void> | null = null
 
-  const scheduleFrom = (expiresAtMs: number | null): void => {
-    if (stopped) return
-    const raw = expiresAtMs ? expiresAtMs - opts.now() - REFRESH_BUFFER_MS : FALLBACK_INTERVAL_MS
-    const delay = Math.min(MAX_SCHEDULE_MS, Math.max(30_000, raw))
-    timer = setTimeout(refresh, delay)
-    if (typeof timer.unref === 'function') timer.unref()
-  }
   const refresh = async (): Promise<void> => {
     if (stopped) return
     try {
@@ -895,20 +1383,39 @@ function startBearerRotation(opts: {
         fetchImpl: opts.fetchImpl,
         attempts: 3,
       })
+      // stop() may have won while the network pull was in flight. Never
+      // recreate the bearer after the turn has entered its credential-free idle.
+      if (stopped) return
       const contents = fresh.token.endsWith('\n') ? fresh.token : `${fresh.token}\n`
       opts.writeFile(opts.bearerFileAbs, contents)
       opts.log('rotated agent bearer (0600 file rewritten)')
       scheduleFrom(fresh.expiresAtMs)
     } catch (error) {
+      if (stopped) return
       opts.log(`agent bearer rotation failed: ${error instanceof Error ? error.message : String(error)}`)
       scheduleFrom(opts.now() + REFRESH_BUFFER_MS) // retry soon
     }
   }
+  const startRefresh = (): void => {
+    const operation = refresh()
+    refreshInFlight = operation
+    void operation.finally(() => {
+      if (refreshInFlight === operation) refreshInFlight = null
+    })
+  }
+  const scheduleFrom = (expiresAtMs: number | null): void => {
+    if (stopped) return
+    const raw = expiresAtMs ? expiresAtMs - opts.now() - REFRESH_BUFFER_MS : FALLBACK_INTERVAL_MS
+    const delay = Math.min(MAX_SCHEDULE_MS, Math.max(opts.minimumDelayMs ?? 30_000, raw))
+    timer = (opts.schedule ?? setTimeout)(startRefresh, delay)
+    if (typeof timer.unref === 'function') timer.unref()
+  }
   scheduleFrom(opts.initialExpiresAtMs)
   return {
-    stop: (): void => {
+    stop: async (): Promise<void> => {
       stopped = true
       if (timer) clearTimeout(timer)
+      await refreshInFlight
     },
   }
 }
@@ -961,7 +1468,11 @@ export async function hostedBootCommand(io: HostedBootCommandIo): Promise<number
     // Report it so the DO stops + destroys the sandbox NOW instead of waiting
     // for the readiness timeout, and mark the run failed so it never stays
     // 'running' forever (the DO also marks it — both are idempotent).
-    await reportBootFailure({ env, ctx: bootCtx, reason: message, log })
+    await reportBootFailure({
+      env, ctx: bootCtx, reason: message, log,
+      status: error instanceof HostedTurnFailure ? 'turn_failed' : 'failed',
+      attemptTimeoutMs: resolveTurnStatusAttemptTimeoutMs(process.env),
+    })
     return 1
   }
 }
@@ -984,8 +1495,11 @@ export async function reportBootFailure(opts: {
   ctx: { runId: string; bearer: string } | null
   reason: string
   log: (line: string) => void
+  status?: 'failed' | 'turn_failed'
   /** Injectable transport (default: global fetch). Exposed for tests. */
   fetchImpl?: BootFetch
+  sleep?: (ms: number) => Promise<void>
+  attemptTimeoutMs?: number
 }): Promise<void> {
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as BootFetch)
   const reason = redactBootReason(opts.reason, opts.env.bootSecret)
@@ -1024,10 +1538,31 @@ export async function reportBootFailure(opts: {
       opts.log(`run-failed mark failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  const status = opts.status ?? 'failed'
+  if (status === 'turn_failed' && runId) {
+    try {
+      await postTurnStatus({
+        bootStatusUrl: opts.env.bootStatusUrl,
+        bootSecret: opts.env.bootSecret,
+        status,
+        runId,
+        reason,
+        fetchImpl,
+        sleep: opts.sleep,
+        attemptTimeoutMs: opts.attemptTimeoutMs,
+      })
+      opts.log('turn_failed acknowledged')
+    } catch (error) {
+      opts.log(
+        `turn_failed acknowledgement exhausted: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+    return
+  }
   await postBootStatus({
     bootStatusUrl: opts.env.bootStatusUrl,
     bootSecret: opts.env.bootSecret,
-    status: 'failed',
+    status,
     runId,
     reason,
     fetchImpl,

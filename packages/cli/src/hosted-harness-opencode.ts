@@ -331,6 +331,12 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
   // Set true by the public stop(); makes the next idle terminal resolve as a
   // cancellation rather than a success (P2-2).
   let stopRequested = false
+  let stopRequest: Promise<void> | null = null
+  let promptSubmissionPending = false
+  let promptSubmissionSettled: Promise<void> | null = null
+  let resolvePromptSubmission: (() => void) | null = null
+  let postAcceptanceAbortGeneration = -1
+  let promptGeneration = 0
   // Last title actually forwarded, deduped across the whole harness lifetime so
   // a repeated identical title is emitted once (P3-6).
   let lastForwardedTitle: string | null = null
@@ -379,14 +385,51 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
     }
   }
 
-  async function requestStop(): Promise<void> {
+  async function requestStop(options: { force?: boolean } = {}): Promise<void> {
     if (!opencodeSessionId) return
+    if (
+      promptSubmissionPending &&
+      promptSubmissionSettled &&
+      postAcceptanceAbortGeneration !== promptGeneration
+    ) {
+      const racedGeneration = promptGeneration
+      const settlement = promptSubmissionSettled
+      postAcceptanceAbortGeneration = racedGeneration
+      // The stream consumer may close this generator as soon as its signal
+      // aborts. Keep the post-acceptance abort independent of generator
+      // continuation so an accepted prompt cannot escape cancellation.
+      void settlement.then(() => requestStop({ force: true }))
+    }
+    // Prompt signal + the hosted-loop stop() belt normally share one successful
+    // request. A failed request is never memoized, and prompt acknowledgement
+    // can force a post-acceptance abort when an earlier abort raced ahead of it.
+    if (stopRequest && !options.force) {
+      const inFlight = stopRequest
+      try {
+        await inFlight
+        return
+      } catch {
+        if (stopRequest === inFlight) stopRequest = null
+        // The owner of the failed request handles its own best-effort result.
+        // This overlapping caller owns the one follow-up acknowledgement try;
+        // it must never inherit the rejected memo as a fatal prompt error.
+        return requestStop(options)
+      }
+    }
+    const request = (async () => {
+      const response = await timedFetch(
+        `${base}/session/${encodeURIComponent(opencodeSessionId!)}/abort`,
+        { method: 'POST' }
+      )
+      if (!response.ok) throw new Error(`OpenCode abort failed (${response.status})`)
+    })()
+    stopRequest = request
     try {
-      await timedFetch(`${base}/session/${encodeURIComponent(opencodeSessionId)}/abort`, {
-        method: 'POST',
-      })
+      await request
     } catch {
-      // best-effort: the stream teardown is the real cancellation
+      if (stopRequest === request) stopRequest = null
+      // best-effort: stream teardown still settles this attempt, while a later
+      // stop can retry because the failed request no longer owns the memo.
     }
   }
 
@@ -454,9 +497,14 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
     async *runPrompt(prompt: HarnessPrompt, signal: AbortSignal): AsyncIterable<HarnessEvent> {
       if (!opencodeSessionId) opencodeSessionId = await createSession()
       const sessionId = opencodeSessionId
+      promptGeneration += 1
 
-      // Per-prompt state: a fresh stop intent and compaction flag each run.
-      stopRequested = false
+      // Per-prompt state: a fresh stop generation unless a human interrupt was
+      // already delivered before this generator began iterating.
+      if (!signal.aborted) {
+        stopRequested = false
+        stopRequest = null
+      }
       let compactionOccurred = false
       const promptStart = now()
 
@@ -467,6 +515,20 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
           messageId: prompt.messageId,
           payload: { agentSessionId: sessionId },
         }
+      }
+
+      // A durable interrupt can predate generator iteration. Do not submit a
+      // prompt merely to abort it; report the prompt-scoped cancellation after
+      // the stop belt has had a chance to settle.
+      if (signal.aborted) {
+        await requestStop()
+        yield {
+          kind: 'execution_complete',
+          messageId: prompt.messageId,
+          critical: true,
+          payload: { success: false, aborted: true },
+        }
+        return
       }
 
       const opencodeMessageId = ascendingId('msg')
@@ -542,6 +604,20 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
         return events
       }
 
+      // The vulnerable submission window begins before /event is opened and
+      // ends only when prompt_async settles. A stop anywhere in this window
+      // schedules an independent post-acceptance abort.
+      promptSubmissionPending = true
+      promptSubmissionSettled = new Promise<void>(resolve => {
+        resolvePromptSubmission = resolve
+      })
+      const settlePromptSubmission = (): void => {
+        promptSubmissionPending = false
+        resolvePromptSubmission?.()
+        resolvePromptSubmission = null
+        promptSubmissionSettled = null
+      }
+
       let sseResponse: Response
       try {
         sseResponse = await fetchImpl(`${base}/event`, {
@@ -549,10 +625,22 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
           signal,
         })
       } catch (error) {
-        yield errorEvent(prompt.messageId, error)
+        settlePromptSubmission()
+        if (signal.aborted) {
+          await requestStop()
+          yield {
+            kind: 'execution_complete',
+            messageId: prompt.messageId,
+            critical: true,
+            payload: { success: false, aborted: true },
+          }
+        } else {
+          yield errorEvent(prompt.messageId, error)
+        }
         return
       }
       if (!sseResponse.ok || !sseResponse.body) {
+        settlePromptSubmission()
         // Cancel the body on the failure path too — a non-2xx response can still
         // carry an (unconsumed) body that would otherwise leak (P3-7).
         await cancelBody(sseResponse.body)
@@ -565,18 +653,22 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
       let errorText: string | null = null
       let terminalYielded = false
       try {
-        const promptRes = await timedFetch(
-          `${base}/session/${encodeURIComponent(sessionId)}/prompt_async`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestBody),
-          }
-        )
+        let promptRes: Response
+        try {
+          promptRes = await timedFetch(
+            `${base}/session/${encodeURIComponent(sessionId)}/prompt_async`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(requestBody),
+            }
+          )
+        } finally {
+          settlePromptSubmission()
+        }
         if (promptRes.status !== 200 && promptRes.status !== 204) {
           throw new Error(`Async prompt failed (${promptRes.status})`)
         }
-
         for await (const event of parseSseEvents(sseBody, signal, inactivityMs)) {
           // Wall-clock max-duration guard (P3-1): a stream that stays busy (or
           // heartbeats) forever never trips the inactivity deadline, so bound it
@@ -747,16 +839,23 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
     },
 
     async stop(): Promise<void> {
-      // Mark intent so the resulting idle terminal is reported as cancelled, not
-      // succeeded (P2-2), then best-effort ask OpenCode to abort.
+      // Mark intent so the resulting idle terminal is reported as cancelled,
+      // not succeeded (P2-2), then best-effort ask OpenCode to abort.
       stopRequested = true
       await requestStop()
     },
 
     async shutdown(): Promise<void> {
+      if (process.env.NODE_ENV === 'test' &&
+          process.env.ORIZU_HOSTED_TEST_HARNESS_SHUTDOWN_THROWS === '1') {
+        throw new Error('fixture harness shutdown failed')
+      }
       opencodeSessionId = null
       readyEmitted = false
       stopRequested = false
+      stopRequest = null
+      promptGeneration = 0
+      postAcceptanceAbortGeneration = -1
     },
   }
 }
