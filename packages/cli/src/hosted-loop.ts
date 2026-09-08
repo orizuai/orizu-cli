@@ -55,6 +55,7 @@ import {
   OPENCODE_PINNED_VERSION,
   awaitOpenCodeModelResolvable,
   createOpenCodeHarness,
+  permissionForOrigin,
   spawnOpenCode,
   type ModelValidationOutcome,
   type SpawnOpenCodeOptions,
@@ -612,6 +613,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
       // connection-refused "fetch failed" (ALI-1034).
       spawned = await spawnImpl({
         model: context.model,
+        permission: permissionForOrigin(context.sessionOrigin),
         cwd: context.workspaceDir,
         port: context.opencodePort,
         env: buildOpenCodeSpawnEnv(context),
@@ -699,8 +701,9 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
       content: composeHostedTaskPrompt(taskPrompt, opts.taskPreamble ?? resolveHostedTaskPreamble(context.sessionOrigin)),
       author: context.author,
     }
-    // Drive the prompt through (a) question auto-handling annotation and (b) the
-    // idle watchdog (ALI-1037): no harness event for `idleTimeoutMs` aborts the
+    // Drive the prompt through question-deny annotation unless hosted-web
+    // OpenCode interception owns the outcome, then through the idle watchdog
+    // (ALI-1037): no harness event for `idleTimeoutMs` aborts the
     // prompt and throws `AgentStalledError` → the catch below harvests, then
     // finishes the run `failed`. The prompt runs under a CHILD AbortController
     // linked to the loop signal so the watchdog can abort the in-flight prompt
@@ -742,9 +745,10 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
 
     const terminalSummary: Record<string, unknown> = { agentSessionId }
     let hasQuestionOutcome = false
-    const annotated = annotateHeadlessQuestions(harness.runPrompt(prompt, promptController.signal))
-    const questionAware = harnessKind === 'opencode' && context.sessionOrigin === 'hosted-web'
-      ? interceptHostedQuestions(annotated, {
+    const promptEvents = harness.runPrompt(prompt, promptController.signal)
+    const hasHostedQuestionInterception = harnessKind === 'opencode' && context.sessionOrigin === 'hosted-web'
+    const intercepted = hasHostedQuestionInterception
+      ? interceptHostedQuestions(promptEvents, {
           onDetected: question => {
             hasQuestionOutcome = true
             terminalSummary.outcome = 'question_pending'
@@ -760,7 +764,10 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
           onPersisted: beginQuiescence,
           onInvalidPersisted: beginQuiescence,
         })
-      : annotated
+      : promptEvents
+    const questionAware = hasHostedQuestionInterception
+      ? intercepted
+      : annotateHeadlessQuestions(intercepted)
     const interruptAware = (async function* (): AsyncGenerator<HarnessEvent> {
       for await (const event of questionAware) {
         if (isHarnessTerminalKind(event.kind)) {
@@ -811,8 +818,8 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
               promptController.abort()
               await harness.stop()
             },
-            // The `question` tool is DENIED headless, so a model stuck retrying it
-            // emits a stream of synthetic `question_auto_answered` events. Those are
+            // Without hosted-web OpenCode interception, a model stuck retrying a
+            // denied question emits synthetic `question_auto_answered` events. Those are
             // NOT progress — excluding them lets a deny/retry loop trip agent_stalled
             // instead of resetting the idle timer forever (ALI-1069).
             isProgress: event => event.kind !== 'question_auto_answered',

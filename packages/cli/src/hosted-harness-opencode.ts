@@ -1070,15 +1070,12 @@ export interface OpenCodeConfigOptions {
 }
 
 /**
- * Tools DENIED in a hosted headless run (ALI-1037). OpenCode exposes a `question`
- * permission key (docs/permissions) that gates the interactive "ask the user a
- * question" tool. In an unattended sandbox there is no human to answer it, and
- * OpenCode's only external reply endpoint — `POST /session/{id}/permissions/{permID}`
- * — takes a BOOLEAN allow/deny, so it cannot select one of the tool's multiple
- * options anyway. Denying the tool makes the model's ask fail fast (surfaced back
- * to it as a tool error) so it proceeds autonomously per the standing preamble
- * (HOSTED_TASK_PREAMBLE), instead of blocking the run forever. This is the
- * documented fallback path in ALI-1037 (answer-externally is not cleanly possible).
+ * Tools denied for CLI-origin headless runs (ALI-1037). OpenCode 1.14.41 removes
+ * a tool from the model toolset when its permission rule is `deny` on `*`; it does
+ * not expose the tool and report a denial result. Hosted-web therefore overrides
+ * `question` to `allow`, intercepts its measured running part, and quiesces the
+ * turn while waiting for the human. CLI-origin runs retain this deny list because
+ * no human reply flow exists there.
  */
 export const HEADLESS_DENIED_TOOLS = ['question'] as const
 
@@ -1088,6 +1085,12 @@ export function defaultHeadlessPermission(): Record<string, unknown> {
   const permission: Record<string, unknown> = { '*': { '*': 'allow' } }
   for (const tool of HEADLESS_DENIED_TOOLS) permission[tool] = 'deny'
   return permission
+}
+
+/** Select the OpenCode permission map for the session's human-input surface. */
+export function permissionForOrigin(origin?: 'hosted-web' | 'cli'): Record<string, unknown> {
+  if (origin === 'hosted-web') return { ...defaultHeadlessPermission(), question: 'allow' }
+  return defaultHeadlessPermission()
 }
 
 /**
