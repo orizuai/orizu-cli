@@ -427,6 +427,25 @@ Task and dataset export support:
 - `json`
 - `jsonl`
 
+Dataset `upload` and `push` create an immutable version after the rows are
+acknowledged. With `--json`, upload prints one result document. A failed snapshot
+reports the uploaded dataset identity so recovery can target the snapshot step.
+If a write's response is lost or times out, inspect the dataset before retrying:
+the last chunk may already have committed.
+
+Dataset downloads retry transient read failures up to three attempts. Each
+transfer request, including its response body, has a two-minute deadline;
+`ORIZU_DATASET_TRANSFER_TIMEOUT_MS` accepts 1–300000 milliseconds. Downloads
+receive the complete response before writing to the destination. Existing files
+keep their inode, ownership, permissions and ACLs; writes follow existing
+symlinks and update hardlinked readers. New files request mode `0600`, subject
+to the filesystem's access rules. A failed network transfer leaves an existing output
+untouched. The final write retains ordinary filesystem behavior: it is not
+atomic, and a disk failure during that write can leave partial output.
+SIGINT/SIGTERM cancels a download. Upload writes
+have no additional transient retries; the existing session refresh behavior is
+unchanged.
+
 ## Interactive And Automated Usage
 
 Many commands can prompt for missing team, project, app, dataset, or task selections in an interactive terminal. In scripts and CI, pass explicit flags instead:

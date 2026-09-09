@@ -422,7 +422,13 @@ export function captureAuthenticatedRequestContext(
   }
 }
 
-export async function authedFetch(path: string, init: RequestInit = {}) {
+// The optional observer runs immediately before a resource fetch, after auth
+// preflight. Authentication refresh requests do not mark the resource as sent.
+export async function authedFetch(path: string, init: RequestInit = {}, onRequestStart?: () => void) {
+  const fetchResource = (url: string, requestInit: RequestInit) => {
+    onRequestStart?.()
+    return fetch(url, requestInit)
+  }
   const baseUrl = resolveBaseUrl()
   assertSecureTokenTransport(baseUrl)
 
@@ -433,7 +439,7 @@ export async function authedFetch(path: string, init: RequestInit = {}) {
   // the file and the next request naturally picks up the new bearer.
   const envBearer = resolveEnvBearerToken()
   if (envBearer) {
-    return await fetch(`${baseUrl}${path}`, {
+    return await fetchResource(`${baseUrl}${path}`, {
       ...init,
       headers: {
         ...(init.headers || {}),
@@ -451,7 +457,7 @@ export async function authedFetch(path: string, init: RequestInit = {}) {
   const resolved = await refreshExpiredStoredCredentials(baseUrl, credentials, init.signal)
   let activeCredentials = resolved.credentials
 
-  let response = await fetch(`${baseUrl}${path}`, {
+  let response = await fetchResource(`${baseUrl}${path}`, {
     ...init,
     headers: {
       ...(init.headers || {}),
@@ -476,7 +482,7 @@ export async function authedFetch(path: string, init: RequestInit = {}) {
       )
     }
     activeCredentials = requireCurrentCredentials(baseUrl, refreshResult.credentials)
-    response = await fetch(`${baseUrl}${path}`, {
+    response = await fetchResource(`${baseUrl}${path}`, {
       ...init,
       headers: {
         ...(init.headers || {}),

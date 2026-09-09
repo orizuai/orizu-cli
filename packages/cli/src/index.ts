@@ -30,7 +30,6 @@ import { parseDatasetFile } from './file-parser.js'
 import { streamJsonlRowChunks } from './jsonl-stream.js'
 import { parseDatasetReference } from './dataset-download.js'
 import { editDatasetRows as runEditDatasetRows } from './dataset-edit-rows.js'
-import { ensureDatasetUploadSnapshot } from './dataset-upload-snapshot.js'
 import { extractErrorMessage } from './error-response.js'
 import {
   describeLogoutHttpFailure,
@@ -301,24 +300,7 @@ interface RunnerExecContext {
   }>
 }
 
-type DatasetUploadSourceType = 'csv' | 'json' | 'jsonl'
-
 const MAX_README_LENGTH = 200_000
-
-interface DatasetUploadResponse {
-  dataset: {
-    id: string
-    name: string
-    rowCount: number
-    sourceType: string
-    url?: string
-  }
-  readmeVersion?: {
-    id: string
-    version_num: number
-    created_at: string
-  } | null
-}
 
 interface DatasetVersionResponse {
   datasetVersion: {
@@ -5099,113 +5081,24 @@ async function changeTeamMemberRole() {
   printLine(`Updated ${sanitizeTerminalText(member.email)} role to ${sanitizeTerminalText(role)}`)
 }
 
-async function createDatasetFromRows(
-  project: string,
-  name: string,
-  sourceType: DatasetUploadSourceType,
-  rows: Array<Record<string, unknown>>,
-  readmeMarkdown: string | null = null
-): Promise<DatasetUploadResponse> {
-  const response = await authedFetch('/api/cli/datasets/upload', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      projectSlug: project,
-      name,
-      rows,
-      sourceType,
-      ...(readmeMarkdown !== null ? { readmeMarkdown } : {}),
-    }),
-  })
-
-  if (!response.ok) {
-    const body = await parseJsonResponse<{ error: string; code?: string }>(response, 'Dataset upload')
-    throw new Error(`Upload failed: ${body.error}`)
-  }
-
-  return parseJsonResponse<DatasetUploadResponse>(response, 'Dataset upload')
-}
-
 async function uploadJsonlDatasetInChunks(
   file: string,
   project: string,
   datasetName: string,
   readmeMarkdown: string | null = null
 ) {
-  let dataset: DatasetUploadResponse['dataset'] | null = null
-  let totalUploaded = 0
-  let chunkIndex = 0
-  const chunks = streamJsonlRowChunks(file)[Symbol.asyncIterator]()
-
-  while (true) {
-    let nextChunk: IteratorResult<Array<Record<string, unknown>>>
-    try {
-      nextChunk = await chunks.next()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!dataset) {
-        throw new Error(message)
-      }
-
-      throw new Error(
-        `Upload stopped while reading the next JSONL chunk: ${message}\n` +
-        `Dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) was created and ${totalUploaded} rows were uploaded. ` +
-        `Fix the file, remove the first ${totalUploaded} rows, and run ` +
-        `orizu datasets append --dataset ${dataset.id} --file <remaining-file>.`
-      )
-    }
-
-    if (nextChunk.done) {
-      break
-    }
-
-    const chunk = nextChunk.value
-    chunkIndex += 1
-    printLine(`Uploading chunk ${chunkIndex} (${chunk.length} rows)...`)
-
-    try {
-      if (!dataset) {
-        const data = await createDatasetFromRows(project, datasetName, 'jsonl', chunk, readmeMarkdown)
-        dataset = data.dataset
-        totalUploaded = data.dataset.rowCount
-        continue
-      }
-
-      const data = await appendChunk(dataset.id, chunk)
-      totalUploaded += data.appendedCount
-      dataset = {
-        ...dataset,
-        rowCount: data.dataset.rowCount,
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!dataset) {
-        throw new Error(message)
-      }
-
-      throw new Error(
-        `Chunk ${chunkIndex} failed: ${message}\n` +
-        `Dataset ${dataset.name} (${dataset.id}) was created and ${totalUploaded} rows were uploaded. ` +
-        `To retry, remove the first ${totalUploaded} rows from your file and run ` +
-        `orizu datasets append --dataset ${dataset.id} --file <remaining-file>.`
-      )
-    }
-  }
-
-  if (!dataset) {
-    throw new Error('Dataset file contains no rows')
-  }
-
-  const version = await ensureDatasetUploadSnapshot(dataset, hasJsonFlag(), requestDatasetVersionSnapshot)
-
+  const { transferDatasetUpload } = await import('./dataset-transfer-upload.js')
+  const { data, version } = await transferDatasetUpload({
+    project, name: datasetName, source: { kind: 'jsonl', file }, readmeMarkdown,
+    json: hasJsonFlag(),
+    // JSON mode reserves stderr for structured recovery failures as well.
+    onChunk: (index, count) => { if (!hasJsonFlag()) printLine(`Uploading chunk ${index} (${count} rows)...`) },
+  })
+  const dataset = data.dataset
   if (hasJsonFlag()) return printJson({ dataset_id: dataset.id, dataset, dataset_version_id: version.datasetVersion.id })
   printLine(`Uploaded dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) with ${dataset.rowCount} rows.`)
   printLine(`Created dataset version ${sanitizeTerminalText(version.datasetVersion.id)}.`)
-  if (dataset.url) {
-    printLine(`View dataset: ${formatTerminalLink(dataset.url)}`)
-  }
+  if (dataset.url) printLine(`View dataset: ${formatTerminalLink(dataset.url)}`)
 }
 
 async function uploadDataset() {
@@ -5229,8 +5122,11 @@ async function uploadDataset() {
   }
 
   const { rows, sourceType } = parseDatasetFile(file)
-  const data = await createDatasetFromRows(project, datasetName, sourceType, rows, readmeMarkdown)
-  const version = await ensureDatasetUploadSnapshot(data.dataset, hasJsonFlag(), requestDatasetVersionSnapshot)
+  const { transferDatasetUpload } = await import('./dataset-transfer-upload.js')
+  const { data, version } = await transferDatasetUpload({
+    project, name: datasetName, source: { kind: 'rows', rows, sourceType }, readmeMarkdown,
+    json: hasJsonFlag(), onChunk: () => {},
+  })
 
   if (hasJsonFlag()) return printJson({ dataset_id: data.dataset.id, dataset: data.dataset, dataset_version_id: version.datasetVersion.id })
   printLine(`Uploaded dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) with ${data.dataset.rowCount} rows.`)
@@ -5255,8 +5151,11 @@ async function pushDataset() {
   const project = await resolveProjectSlug(projectArg)
   const datasetName = name || basename(file)
   const { rows, sourceType } = parseDatasetFile(file)
-  const data = await createDatasetFromRows(project, datasetName, sourceType, rows, readmeMarkdown)
-  const version = await ensureDatasetUploadSnapshot(data.dataset, hasJsonFlag(), requestDatasetVersionSnapshot)
+  const { transferDatasetUpload } = await import('./dataset-transfer-upload.js')
+  const { data, version } = await transferDatasetUpload({
+    project, name: datasetName, source: { kind: 'rows', rows, sourceType }, readmeMarkdown,
+    json: hasJsonFlag(), onChunk: () => {},
+  })
 
   if (hasJsonFlag()) {
     const payload: Record<string, unknown> = {
@@ -5360,19 +5259,12 @@ async function downloadDataset() {
     datasetId = selected.datasetId
   }
 
-  const response = await authedFetch(
-    `/api/cli/datasets/${encodeURIComponent(datasetId)}/download?format=${encodeURIComponent(format)}`
-  )
-  if (!response.ok) {
-    throw new Error(`Download failed: ${await response.text()}`)
-  }
-
   const filename = outPathArg
     ? expandHomePath(outPathArg)
     : `${datasetId}.${format}`
 
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  writeFileSync(filename, bytes)
+  const { transferDatasetDownload } = await import('./dataset-transfer-download.js')
+  await transferDatasetDownload(datasetId, format, filename)
 
   if (hasJsonFlag()) {
     printJson({ datasetId, format, savedTo: filename })

@@ -1042,9 +1042,10 @@ Response:
 
 ## End-to-End Flow
 
-Use a JSON array for `dataset.json` in this piped form. JSONL uploads use the
-chunked uploader, which writes progress lines to stdout before its final JSON
-document even with `--json`, so piping that stdout directly to `jq` is invalid.
+The example uses a JSON array in `dataset.json`. JSONL input also supports this
+pipeline: `datasets upload --json` writes one JSON result after all chunks and
+the dataset version have been acknowledged. If an upload reports an uncertain
+write outcome, inspect the dataset and reconcile row IDs before retrying.
 
 ```bash
 eval "$(orizu --local env --project hip/judge-optimization)"
