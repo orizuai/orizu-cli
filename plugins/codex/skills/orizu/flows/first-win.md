@@ -29,3 +29,5 @@ Optimize only against validated judges. Use `references/optimization-with-gepa.m
 ## Exit criterion
 
 The optimization run is completed with a selected candidate or a recorded no-valid-candidate outcome, and all run artifacts needed by `flows/promote.md` are available. A completed optimization run ends First win; the customer win is realized only through the human promotion decision in Promote.
+
+If an Orizu problem occurred during this flow and was not already reported, follow `references/feedback.md` to file it now; if it was, mention the report id instead.

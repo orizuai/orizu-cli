@@ -35,3 +35,5 @@ Only after the eval gap is resolved and validated, choose the artifact path supp
 ## Exit criterion
 
 The incident's eval-gap branch and its resolution, including an eval correction only when that branch required one, are recorded. A change branch exits when the incident is represented by a validated regression case and the resulting optimization or application fix has a human decision with regression evidence. The expected-behavior branch exits with a recorded no-change closure and its supporting adjudication evidence. If evidence cannot yet be validated, exit with a named evidence gap rather than an unmeasured fix.
+
+If an Orizu problem occurred during this flow and was not already reported, follow `references/feedback.md` to file it now; if it was, mention the report id instead.

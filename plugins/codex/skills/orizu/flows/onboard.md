@@ -29,3 +29,5 @@ Use the survey, decision, conversation, and persistence workflow in `references/
 ## Exit criterion
 
 A human-ratified improvement plan is committed at the location required by `references/assess-and-plan.md`, and it names the quick win that First win will run.
+
+If an Orizu problem occurred during this flow and was not already reported, follow `references/feedback.md` to file it now; if it was, mention the report id instead.

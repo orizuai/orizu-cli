@@ -25,3 +25,5 @@ Run `flows/first-win.md` for the selected surface, then `flows/promote.md` for i
 ## Exit criterion
 
 The selected instruction surface has completed First win and Promote with its own evidence and a recorded human promotion decision. The refreshed inventory remains available for a later Expand choice without implying a forced sequence.
+
+If an Orizu problem occurred during this flow and was not already reported, follow `references/feedback.md` to file it now; if it was, mention the report id instead.

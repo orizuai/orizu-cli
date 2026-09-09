@@ -35,3 +35,5 @@ After the decision, offer Recurse for cadence-driven improvement on this surface
 ## Exit criterion
 
 The human has made and recorded the promotion decision from the report and validation evidence; if shipping, the selected version is live through the authorized human action. The relevant post-win choices have been offered without forcing a sequence.
+
+If an Orizu problem occurred during this flow and was not already reported, follow `references/feedback.md` to file it now; if it was, mention the report id instead.

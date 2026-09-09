@@ -21,3 +21,5 @@ Run `flows/first-win.md` on the same instruction surface using the new evidence,
 ## Exit criterion
 
 The human-agreed cadence, ownership, evidence threshold, and pause condition are recorded, and the first scheduled cycle is complete through Promote with a new dataset version and a recorded promotion decision. Future cycles repeat only while the agreement remains active.
+
+If an Orizu problem occurred during this flow and was not already reported, follow `references/feedback.md` to file it now; if it was, mention the report id instead.
