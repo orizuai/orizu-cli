@@ -36,6 +36,7 @@ const GLOBAL_OPTIONS = [
 
 const GROUPS: CliGroupDoc[] = [
   { name: 'Auth', summary: 'Sign in, sign out, and inspect the active CLI identity.' },
+  { name: 'Product feedback', summary: 'Report friction with Orizu itself without sending customer content.' },
   { name: 'Agent setup', summary: 'Install the bundled Orizu coding-agent skill and inspect the CLI surface.' },
   { name: 'Teams', summary: 'Manage teams and team memberships.' },
   { name: 'Projects', summary: 'Manage projects inside teams.' },
@@ -177,6 +178,28 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     usage: 'orizu whoami',
     summary: 'Print the authenticated user and active server.',
     group: 'Auth',
+  },
+  {
+    path: ['feedback'],
+    usage: 'orizu feedback --category <bug|docs|missing|guidance|friction|other> --severity <blocking|major|minor> --summary <text> [--tried <text>] [--expected <text>] --actual <text> [--impact <text>] [--repro <text>] [--attach <path>]... [--from-file <path>] [--project <team/project>] [--no-last-error] [--json]',
+    summary: 'File scrubbed product feedback; --category, --severity, --summary, and --actual are required via flags or --from-file. Dash-leading values are supported only as --flag=value.',
+    group: 'Product feedback',
+    options: [
+      { name: '--category <category>', help: 'Classify the product feedback.', required: true, choices: ['bug', 'docs', 'missing', 'guidance', 'friction', 'other'] },
+      { name: '--severity <severity>', help: 'Describe the cost to the work.', required: true, choices: ['blocking', 'major', 'minor'] },
+      { name: '--summary <text>', help: 'Summarize the problem in at most 200 UTF-8 bytes.', required: true },
+      { name: '--tried <text>', help: 'Describe attempted workarounds.' },
+      { name: '--expected <text>', help: 'Describe the expected Orizu behavior.' },
+      { name: '--actual <text>', help: 'Describe what Orizu actually did.', required: true },
+      { name: '--impact <text>', help: 'Explain how a fix would help this and other customers.' },
+      { name: '--repro <text>', help: 'Give bounded reproduction steps without customer content.' },
+      { name: '--attach <path>', help: 'Attach a scrubbed text file; repeat up to five times.', repeatable: true },
+      { name: '--from-file <path>', help: 'Read narrative fields from one JSON object; explicit flags win.' },
+      { name: '--project <team/project>', help: 'Set local team and project context without a network lookup.' },
+      { name: '--no-last-error', help: 'Do not attach or print a notice about the last-error record.' },
+      { name: '--json', help: 'Print exactly the server acknowledgement object.' },
+    ],
+    examples: ['orizu feedback --category friction --severity minor --summary "Project setup was confusing" --actual "The next step was unclear"'],
   },
   {
     path: ['env'],

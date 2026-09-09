@@ -3,6 +3,7 @@ import {
   credentialsEqual,
   getActiveBaseUrl,
   getServerCredentials,
+  rememberResolvedBearer,
   resolveEnvBearerToken,
   updateServerCredentialsIfCurrent,
   withCredentialsTransactionLockAsync,
@@ -15,42 +16,53 @@ import {
 import { LoginResponse, ServerCredentials, SessionServerCredentials } from './types.js'
 
 let runtimeFlags: GlobalFlags = { local: false, server: null }
+let lastResolvedBaseUrl: string | null = null
+
+function rememberResolvedBaseUrl(baseUrl: string): string {
+  lastResolvedBaseUrl = baseUrl
+  return baseUrl
+}
+
+export function getLastResolvedBaseUrl(): string | null {
+  return lastResolvedBaseUrl
+}
 
 export function setGlobalFlags(flags: GlobalFlags) {
   runtimeFlags = flags
+  lastResolvedBaseUrl = null
 }
 
 export function resolveBaseUrl(flags: GlobalFlags = runtimeFlags): string {
   const fromFlags = getFlagBaseUrl(flags)
   if (fromFlags) {
-    return fromFlags
+    return rememberResolvedBaseUrl(fromFlags)
   }
 
   const fromEnv = process.env.ORIZU_BASE_URL
   if (fromEnv) {
-    return normalizeBaseUrl(fromEnv)
+    return rememberResolvedBaseUrl(normalizeBaseUrl(fromEnv))
   }
 
   const fromStored = getActiveBaseUrl()
   if (fromStored) {
-    return fromStored
+    return rememberResolvedBaseUrl(fromStored)
   }
 
-  return 'https://orizu.ai'
+  return rememberResolvedBaseUrl('https://orizu.ai')
 }
 
 export function resolveLoginBaseUrl(flags: GlobalFlags = runtimeFlags): string {
   const fromFlags = getFlagBaseUrl(flags)
   if (fromFlags) {
-    return fromFlags
+    return rememberResolvedBaseUrl(fromFlags)
   }
 
   const fromEnv = process.env.ORIZU_BASE_URL
   if (fromEnv) {
-    return normalizeBaseUrl(fromEnv)
+    return rememberResolvedBaseUrl(normalizeBaseUrl(fromEnv))
   }
 
-  return 'https://orizu.ai'
+  return rememberResolvedBaseUrl('https://orizu.ai')
 }
 
 export function getBaseUrl(): string {
@@ -92,7 +104,17 @@ function isSessionCredentials(credentials: ServerCredentials): credentials is Se
 }
 
 function getAuthorizationToken(credentials: ServerCredentials): string {
-  return isSessionCredentials(credentials) ? credentials.accessToken : credentials.apiKey
+  return isSessionCredentials(credentials)
+    ? rememberSessionCredentials(credentials).accessToken
+    : rememberResolvedBearer(credentials.apiKey)
+}
+
+function rememberSessionCredentials(
+  credentials: SessionServerCredentials
+): SessionServerCredentials {
+  rememberResolvedBearer(credentials.accessToken)
+  rememberResolvedBearer(credentials.refreshToken)
+  return credentials
 }
 
 function isExpired(expiresAt: number): boolean {
@@ -184,11 +206,12 @@ async function refreshCredentials(
   }
 
   assertSecureTokenTransport(baseUrl)
+  const refreshToken = rememberResolvedBearer(credentials.refreshToken)
   const data = await withCredentialsRefreshDeadline(async signal => {
     const response = await fetch(`${baseUrl}/api/cli/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: credentials.refreshToken }),
+      body: JSON.stringify({ refreshToken }),
       ...credentialRequestRedirectPolicy(),
       signal,
     })
@@ -202,12 +225,12 @@ async function refreshCredentials(
     throw new Error('Server returned invalid refresh credentials. Run `orizu login` again.')
   }
 
-  const refreshed = {
+  const refreshed = rememberSessionCredentials({
     credentialType: 'session' as const,
     accessToken: data.accessToken,
     refreshToken: data.refreshToken,
     expiresAt: data.expiresAt,
-  }
+  })
   if (isExpired(refreshed.expiresAt)) {
     throw new Error(
       'ORIZU_CREDENTIALS_REFRESH_UNUSABLE: refreshed session expires within the 30-second safety window.'
@@ -286,15 +309,16 @@ export interface LogoutResult {
 
 /**
  * Captures one authenticated server context for a multi-step operation. The
- * returned interface intentionally exposes no credential material: its closure
- * pins the selected origin and bearer/session so later global config changes
- * cannot move an in-flight operation to another account.
+ * returned interface intentionally exposes no credential material. Its closure
+ * pins the selected origin and stored/explicit credential; rotating token-file
+ * contexts stay fresh unless pinEnvBearerValue is requested for one-shot payloads.
  */
 export function captureAuthenticatedRequestContext(
-  options: { allowRefresh?: boolean } = {}
+  options: { allowRefresh?: boolean; pinEnvBearerValue?: boolean } = {}
 ): AuthenticatedRequestContext {
   const baseUrl = resolveBaseUrl()
   const allowRefresh = options.allowRefresh ?? true
+  const pinEnvBearerValue = options.pinEnvBearerValue ?? false
   assertSecureTokenTransport(baseUrl)
 
   const envBearer = resolveEnvBearerToken()
@@ -304,7 +328,7 @@ export function captureAuthenticatedRequestContext(
       ? 'ORIZU_TOKEN'
       : 'ORIZU_TOKEN_FILE'
     const resolveRequestBearer = (): string => {
-      if (explicitBearer) return explicitBearer
+      if (explicitBearer || pinEnvBearerValue) return envBearer
       try {
         const currentBearer = resolveEnvBearerToken()
         if (currentBearer) return currentBearer
@@ -337,6 +361,7 @@ export function captureAuthenticatedRequestContext(
   if (!capturedCredentials) {
     throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
   }
+  void getAuthorizationToken(capturedCredentials)
   let activeCredentials = capturedCredentials
 
   async function refreshCapturedCredentials(callerSignal?: AbortSignal | null): Promise<void> {
@@ -392,10 +417,10 @@ export function captureAuthenticatedRequestContext(
     },
     async logout(callerSignal?: AbortSignal | null) {
       const authorizationToken = getAuthorizationToken(activeCredentials)
-      const secrets = [
-        authorizationToken,
-        ...(isSessionCredentials(activeCredentials) ? [activeCredentials.refreshToken] : []),
-      ]
+      const refreshToken = isSessionCredentials(activeCredentials)
+        ? rememberResolvedBearer(activeCredentials.refreshToken)
+        : null
+      const secrets = [authorizationToken, ...(refreshToken !== null ? [refreshToken] : [])]
       let remoteLogoutReason: string | null = null
       try {
         remoteLogoutReason = await withLogoutDeadline(async signal => {
@@ -405,9 +430,7 @@ export function captureAuthenticatedRequestContext(
               'Content-Type': 'application/json',
               Authorization: `Bearer ${authorizationToken}`,
             },
-            body: isSessionCredentials(activeCredentials)
-              ? JSON.stringify({ refreshToken: activeCredentials.refreshToken })
-              : undefined,
+            body: refreshToken !== null ? JSON.stringify({ refreshToken }) : undefined,
             ...credentialRequestRedirectPolicy(),
             signal,
           })

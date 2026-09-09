@@ -44,10 +44,10 @@ For plugin releases (Codex / Claude Code packages), follow
 1. Merge to `main` (auto-sync mirrors runs).
 2. Create tag:
    ```bash
-   git tag cli-v0.0.4
-   git push origin cli-v0.0.4
+   git tag cli-v0.0.6
+   git push origin cli-v0.0.6
    ```
-3. `publish-cli.yml` publishes npm and pushes `v0.0.4` to CLI mirror.
+3. `publish-cli.yml` publishes npm and pushes `v0.0.6` to CLI mirror.
 4. Verify the published CLI surface:
    ```bash
    npx orizu --help

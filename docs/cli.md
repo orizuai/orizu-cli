@@ -12,6 +12,7 @@ The CLI supports:
 - App management (list/create/update/detail/link dataset)
 - Task management (list/create/assign/status/report/pause/unpause/export)
 - Dataset management (upload/download/append/delete rows: `csv`, `json`, `jsonl`)
+- Product feedback about Orizu itself (`feedback`)
 
 ## Prerequisites
 
@@ -395,6 +396,31 @@ orizu skills path --json
 
 Expected agent bootstrap flow: run `npx orizu --help`, discover
 `skills path`, run `orizu skills path --json`, then read `SKILL.md` directly.
+
+## Product Feedback
+
+Use `orizu feedback` to report bugs, missing documentation, guidance gaps, or
+friction in Orizu itself:
+
+```bash
+orizu feedback --category <bug|docs|missing|guidance|friction|other> --severity <blocking|major|minor> --summary <text> --actual <text> [--tried <text>] [--expected <text>] [--impact <text>] [--repro <text>] [--attach <path>]... [--from-file <path>] [--project <team/project>] [--no-last-error] [--json]
+```
+
+For a value beginning with `-`, use the `--flag=value` form. Product feedback
+must not contain customer content, including dataset rows, traces, model or
+judge inputs, outputs, or instructions.
+
+Attachments require resolved project context from `--project`,
+`ORIZU_PROJECT`, or the workspace. At most five UTF-8 text files are accepted;
+each must be no larger than 256 KiB and use `.log`, `.txt`, `.md`, and `.json`.
+A valid last-error record from the previous 24 hours is attached when its
+recorded server and team match. A record with no recorded origin is attached
+too; use `--no-last-error` unless the report is about that failed command and
+the command handled no customer content.
+
+For stable refusal codes and recovery steps, use the per-code table in the
+[Orizu skill CLI reference](../skills/orizu/references/cli-reference.md#product-feedback)
+rather than retrying blindly.
 
 ## Teams
 

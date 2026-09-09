@@ -1,3 +1,5 @@
+import { rememberProcessSecret } from './credentials.js'
+
 interface HeadlessLoginStartResponse {
   authorizeUrl: string
   requestId: string
@@ -98,6 +100,7 @@ export async function waitForHeadlessAuthorization(
   if (!started.requestId || !started.pollToken || !Number.isFinite(started.expiresInSeconds)) {
     throw new Error('Server returned an invalid headless login response.')
   }
+  rememberProcessSecret(started.pollToken)
 
   dependencies.printProgress(
     `Open this URL to log in: ${dependencies.sanitizeTerminalText(authorizeUrl)}`
@@ -162,7 +165,7 @@ export async function waitForHeadlessAuthorization(
     consecutiveTransportErrors = 0
 
     if (polled.status === 'approved' && polled.code) {
-      return polled.code
+      return rememberProcessSecret(polled.code)
     }
     if (polled.status === 'expired') {
       break

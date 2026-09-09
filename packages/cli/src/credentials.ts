@@ -26,7 +26,7 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error
 }
 
-function getConfigDir(): string {
+export function getConfigDir(): string {
   if (process.env.ORIZU_CONFIG_DIR) {
     return process.env.ORIZU_CONFIG_DIR
   }
@@ -459,6 +459,21 @@ export function getActiveBaseUrl(): string | null {
   return config?.activeBaseUrl || null
 }
 
+const secretsSeenThisProcess = new Set<string>()
+
+export function rememberProcessSecret(secret: string): string {
+  secretsSeenThisProcess.add(secret)
+  return secret
+}
+
+export function rememberResolvedBearer(bearer: string): string {
+  return rememberProcessSecret(bearer)
+}
+
+export function getSecretsSeenThisProcess(): readonly string[] {
+  return [...secretsSeenThisProcess]
+}
+
 /**
  * In-sandbox bearer resolution (ALI-1044). Resolves a bearer supplied out-of-band
  * to the hosted agent, WITHOUT consulting credentials.json:
@@ -480,7 +495,7 @@ export function getActiveBaseUrl(): string | null {
 export function resolveEnvBearerToken(): string | null {
   const explicit = process.env.ORIZU_TOKEN
   if (explicit && explicit.trim()) {
-    return explicit.trim()
+    return rememberResolvedBearer(explicit.trim())
   }
 
   const tokenFile = process.env.ORIZU_TOKEN_FILE
@@ -499,7 +514,7 @@ export function resolveEnvBearerToken(): string | null {
     if (!token) {
       throw new Error(`ORIZU_TOKEN_FILE (${tokenFile}) is empty.`)
     }
-    return token
+    return rememberResolvedBearer(token)
   }
 
   return null
@@ -525,7 +540,9 @@ export function resolveAuthTokenForBaseUrl(baseUrl: string): string {
     throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
   }
 
-  return 'accessToken' in credentials ? credentials.accessToken : credentials.apiKey
+  return rememberResolvedBearer(
+    'accessToken' in credentials ? credentials.accessToken : credentials.apiKey
+  )
 }
 
 /**

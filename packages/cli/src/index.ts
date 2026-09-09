@@ -23,6 +23,7 @@ import {
   clearServerCredentials,
   getServerCredentials,
   hasResolvableAuth,
+  rememberProcessSecret,
   resolveAuthTokenForBaseUrl,
   saveServerCredentials,
 } from './credentials.js'
@@ -36,6 +37,7 @@ import {
   describeLogoutTransportFailure,
 } from './logout-diagnostic.js'
 import { parseGlobalFlags } from './global-flags.js'
+import { writeLastErrorRecord } from './last-error-record.js'
 import { shouldUseHeadlessLogin, waitForHeadlessAuthorization } from './headless-login.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
 import { runLocalAppPreview } from './preview-runtime.js'
@@ -47,6 +49,7 @@ import {
   captureAuthenticatedRequestContext,
   credentialRequestRedirectPolicy,
   getBaseUrl,
+  getLastResolvedBaseUrl,
   resolveLoginBaseUrl,
   setGlobalFlags,
   type AuthenticatedRequestContext,
@@ -94,6 +97,7 @@ import {
   workspaceExists,
 } from './workspace.js'
 import { connectorsCommand } from './connectors-cli.js'
+import { feedbackCommand } from './feedback-cli.js'
 import { modelConfigsCommand } from './model-configs-cli.js'
 import { runnerOptimizerCommand } from './artifact-pull.js'
 import { killSwitchCommand } from './kill-switch-cli.js'
@@ -137,6 +141,7 @@ import {
   verifyGepaRunnerDirsFromArgs,
   verifyRunnerDirRegistered,
 } from './runner-dir-verify.js'
+import { RUNNER_ENV_ALLOWLIST } from './runner-env.js'
 import { runScorersRegister } from './scorer-draft-push.js'
 import { runZipArtifactPush } from './zip-draft-push.js'
 import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
@@ -160,6 +165,7 @@ export const materializeRunnerVersion = (runnerVersionId: string) =>
   materializeRegisteredRunnerVersion(runnerVersionId, false)
 
 export { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
+export { RUNNER_ENV_ALLOWLIST } from './runner-env.js'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -1099,7 +1105,7 @@ async function login(baseUrlOverride?: string) {
     return
   }
 
-  const codeVerifier = createCodeVerifier()
+  const codeVerifier = rememberProcessSecret(createCodeVerifier())
   const codeChallenge = createCodeChallenge(codeVerifier)
   const isHeadlessLogin = shouldUseHeadlessLogin({ isForced: hasArg('--headless') })
   const callbackCode = isHeadlessLogin
@@ -1178,6 +1184,7 @@ async function login(baseUrlOverride?: string) {
     })
   })
 
+  rememberProcessSecret(callbackCode)
   const exchangeResponse = await fetch(`${baseUrl}/api/cli/auth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5717,24 +5724,6 @@ export function readRunnerManifest(runnerDir: string): { command: string[]; supp
 
 export const RUNNER_TIMEOUT_MS = 120_000
 export const RUNNER_OUTPUT_MAX_BYTES = 2 * 1024 * 1024
-export const RUNNER_ENV_ALLOWLIST = new Set([
-  'PATH',
-  'SystemRoot',
-  'WINDIR',
-  'HOME',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'LANG',
-  'LC_ALL',
-  'PYTHONPATH',
-  'NODE_PATH',
-  'ANTHROPIC_API_KEY',
-  'OPENAI_API_KEY',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-])
-
 export function runnerSubprocessEnv(inputPath: string, outputPath: string, instructionSetDir?: string): NodeJS.ProcessEnv {
   const env = {} as NodeJS.ProcessEnv
   for (const key of RUNNER_ENV_ALLOWLIST) {
@@ -6033,6 +6022,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if (command === 'whoami') {
     await whoami()
+    return
+  }
+
+  if (command === 'feedback') {
+    process.exitCode = await feedbackCommand(cliArgs.slice(1), { json: hasJsonFlag(), print: printLine, printErr: printError })
     return
   }
 
@@ -6475,6 +6469,33 @@ export async function main(rawArgs = process.argv.slice(2)) {
   process.exit(1)
 }
 
+function normalizeLastErrorTeamSlug(teamSlug: string): string | null {
+  const normalizedTeamSlug = normalizeSlugInput(teamSlug)
+  return /^[a-z0-9][a-z0-9-]{0,63}$/.test(normalizedTeamSlug)
+    ? normalizedTeamSlug
+    : null
+}
+
+function resolveLastErrorTeamSlug(): string | null {
+  try {
+    const explicitTeam = getOptionalArgValue('--team')
+    if (explicitTeam) return normalizeLastErrorTeamSlug(explicitTeam)
+
+    const projectRef = getOptionalArgValue('--project') ?? process.env.ORIZU_PROJECT
+    const projectSegments = projectRef?.split('/') ?? []
+    if (projectSegments.length === 2 && projectSegments[0] && projectSegments[1]) {
+      return normalizeLastErrorTeamSlug(projectSegments[0])
+    }
+
+    const workspaceTeam = inspectExistingWorkspaceTeam(getWorkspaceRoot())
+    return workspaceTeam.state === 'valid'
+      ? normalizeLastErrorTeamSlug(workspaceTeam.slug)
+      : null
+  } catch {
+    return null
+  }
+}
+
 function isCliEntrypoint(): boolean {
   const entry = process.argv[1]
   if (!entry) {
@@ -6490,5 +6511,18 @@ function isCliEntrypoint(): boolean {
 
 if (isCliEntrypoint()) {
   const rawArgs = process.argv.slice(2)
-  withPassiveUpdateNotice(rawArgs, getCliVersion, printError, main)
+  withPassiveUpdateNotice(rawArgs, getCliVersion, printError, args =>
+    main(args).catch(error => {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      // The reporter email is unknown on the failure path, so the record masks every address.
+      writeLastErrorRecord({
+        argv: args,
+        message,
+        cliVersion: (() => { try { return getCliVersion() } catch { return null } })(),
+        serverBaseUrl: getLastResolvedBaseUrl(),
+        teamSlug: resolveLastErrorTeamSlug(),
+      })
+      throw error
+    })
+  )
 }

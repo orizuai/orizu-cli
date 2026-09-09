@@ -35,6 +35,68 @@ Behavior:
 - PAT authorization follows the owning user's current team/project roles, so demotion or removal takes effect without rotating the token.
 - A hosted session is pre-authenticated via `ORIZU_TOKEN_FILE` (no `orizu login` needed); an explicit `ORIZU_TOKEN` env var overrides both the token file and stored credentials when set.
 
+### Product feedback
+
+```bash
+orizu feedback --category <bug|docs|missing|guidance|friction|other> --severity <blocking|major|minor> --summary <text> [--tried <text>] [--expected <text>] --actual <text> [--impact <text>] [--repro <text>] [--attach <path>]... [--from-file <path>] [--project <team/project>] [--no-last-error] [--json]
+```
+
+Behavior:
+- Category, severity, summary, and actual are required across explicit flags and `--from-file`; explicit flags win over file values. Dash-leading values are supported only as `--flag=value`; the space form is unsupported because global flags are parsed first.
+- `--project <team/project>` sets local feedback context without a network lookup; otherwise the CLI checks `ORIZU_PROJECT`, then the workspace manifest.
+- The CLI scrubs every narrative and attachment before sending. User attachments require resolved team context from `--project`, `ORIZU_PROJECT`, or the workspace manifest. They are UTF-8 `.log`, `.txt`, `.md`, or `.json` files, at most five files and 256 KiB each. `last-error.json` is reserved for the CLI's automatic last-error record.
+- A valid last-error record from the previous 24 hours is attached automatically when its recorded server and team match the report context. A record with no recorded origin—written before locators existed or by a command that never resolved a server—is attached too. Pass `--no-last-error` to keep either kind out; use it unless the report is about the command that failed and that command did not handle customer content.
+
+Refusal recovery:
+
+| Code | When | What to do |
+| --- | --- | --- |
+| `invalid_json` | The request is not one serializable object. | Upgrade or rerun the CLI; email feedback@orizu.ai if it persists. |
+| `invalid_category` | Category is not one of the published choices. | Choose a listed category. |
+| `invalid_severity` | Severity is not one of the published choices. | Choose `blocking`, `major`, or `minor`. |
+| `invalid_summary` | Summary is missing, blank, or not text. | Supply a short text summary. |
+| `invalid_actual` | Actual behavior is missing, blank, or not text. | Supply what Orizu actually did. |
+| `invalid_tried` | Tried is neither text nor null. | Use text or omit the field. |
+| `invalid_expected` | Expected is neither text nor null. | Use text or omit the field. |
+| `invalid_impact` | Impact is neither text nor null. | Use text or omit the field. |
+| `invalid_repro` | Reproduction steps are neither text nor null. | Use text or omit the field. |
+| `invalid_environment` | Generated environment context has an invalid shape. | Upgrade or rerun the CLI; email feedback@orizu.ai if it persists. |
+| `invalid_last_error` | The automatic record is malformed or has no team context. | Retry with `--no-last-error`. |
+| `invalid_attachment_name` | A wire name is invalid, reserved, or duplicated. | Rename or drop the attachment. |
+| `invalid_attachment_count` | More than five attachments were supplied. | Drop attachments until at most five remain. |
+| `invalid_attachment_content` | An attachment is empty, binary, or invalid UTF-8. | Drop it or replace it with non-empty UTF-8 text. |
+| `invalid_attachments` | Attachments were supplied without resolved team context. | Pass `--project <team/project>` or set `ORIZU_PROJECT`. |
+| `too_large_summary` | Summary exceeds 200 UTF-8 bytes. | Shorten summary. |
+| `too_large_actual` | Actual exceeds 1200 UTF-8 bytes. | Shorten actual. |
+| `too_large_tried` | Tried exceeds 800 UTF-8 bytes. | Shorten tried. |
+| `too_large_expected` | Expected exceeds 800 UTF-8 bytes. | Shorten expected. |
+| `too_large_impact` | Impact exceeds 800 UTF-8 bytes. | Shorten impact. |
+| `too_large_repro` | Reproduction steps exceed 1200 UTF-8 bytes. | Shorten repro. |
+| `too_large_narrative` | The narrative fields exceed 4000 UTF-8 bytes together. | Shorten one or more narrative fields. |
+| `too_large_environment` | Generated environment context exceeds its cap. | Upgrade or rerun the CLI; email feedback@orizu.ai if it persists. |
+| `too_large_attachment` | A scrubbed attachment exceeds 256 KiB. | Shorten or drop the named attachment. |
+| `too_large_body` | The complete request exceeds 2 MiB. | Shorten fields or drop attachments. |
+| `invalid_flag_repeated` | A non-repeatable flag appears twice. | Keep one value for that flag. |
+| `invalid_flag_value` | A flag is unknown, malformed, missing its value, or `--project`/`ORIZU_PROJECT` is not two wire-safe slug segments. | Correct the named flag or pass `--project <team-slug>/<project-slug>`. |
+| `invalid_attachment_path` | The path is a link, directory, or inside Orizu config. | Choose a regular text file outside Orizu config. |
+| `invalid_attachment_extension` | The file extension is not supported. | Use `.log`, `.txt`, `.md`, or `.json`, or drop it. |
+| `invalid_attachment_unreadable` | The file cannot be safely opened and read. | Fix access or drop the named attachment. |
+| `invalid_from_file` | The `--from-file` input is a link, non-file, or over 65,536 bytes. | Use one bounded regular JSON file. |
+| `invalid_from_file_unreadable` | The `--from-file` path cannot be read. | Fix the path or permissions. |
+| `invalid_from_file_json` | The file is not the published JSON object shape. | Fix its JSON, keys, and text values. |
+| `invalid_token_file` | The configured token file is missing, unreadable, or empty. | Fix the sandbox token file, or email feedback@orizu.ai. |
+| `unauthenticated` | No usable credential was found. | Run `orizu login`, or email feedback@orizu.ai. |
+| `network_error` | The feedback request failed before a response arrived. | Check the network; email feedback@orizu.ai if it persists. |
+| `feedback_timeout` | No response arrived within 30 seconds. | Check before retrying: the report may exist and retrying can duplicate it. |
+| `unauthorized` | The bearer is absent, expired, or invalid. | Sign in again, then retry once. |
+| `forbidden` | The account cannot use the selected team or project. | Correct the project or ask a team admin for access. |
+| `rate_limited` | The actor reached the hourly filing limit. | Stop filing and wait for `Retry-After`; do not loop. |
+| `storage_failed` | The server confirmed storage failed and kept nothing. | Retry later, or email feedback@orizu.ai. |
+
+For any other 5xx or non-JSON 5xx response, storage is ambiguous: retrying can file the product feedback twice. Check first or email feedback@orizu.ai.
+- Product feedback describes Orizu itself. Instruction-set text, dataset rows, traces, judge inputs and outputs, and model or application outputs stay out of every field and attachment.
+- `--json` writes exactly one acknowledgement object to stdout; notices and refusals go to stderr.
+
 ### Agent Setup
 
 ```bash
