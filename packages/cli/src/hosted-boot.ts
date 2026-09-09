@@ -542,6 +542,17 @@ export async function resolveSession(opts: {
   }
 }
 
+export const HOSTED_SESSION_DEFAULT_POLL_MS = 5_000
+
+/** Wait between hosted-session reads. Exported so the production default can be
+ *  verified without making boundary tests spend five real seconds asleep. */
+export async function waitForNextHostedSessionRead(
+  sleep: (ms: number) => Promise<void>,
+  pollMs = HOSTED_SESSION_DEFAULT_POLL_MS
+): Promise<void> {
+  await sleep(pollMs)
+}
+
 /** Ride the ALI-1757 session/pending-turn poll while one prompt is active.
  *  This uses the same additive session GET contract, but deliberately shares
  *  none of the between-turn credential cleanup or mint-on-401 behavior: the
@@ -557,11 +568,13 @@ export async function pollHostedSessionDuringTurn(opts: {
   onDiagnostic?: (message: string) => void
   readFile?: (path: string) => string
   sleep?: (ms: number) => Promise<void>
+  pollMs?: number
 }): Promise<void> {
   const diagnose = (message: string): void => {
     try { opts.onDiagnostic?.(message) } catch { /* diagnostics are best-effort */ }
   }
   const readFile = opts.readFile ?? ((path: string): string => readFileSync(path, 'utf8'))
+  const pollMs = opts.pollMs ?? HOSTED_SESSION_DEFAULT_POLL_MS
   const sleep = opts.sleep ?? ((ms: number): Promise<void> => new Promise(resolve => {
     if (opts.signal.aborted) { resolve(); return }
     const timer = setTimeout(finish, ms)
@@ -605,7 +618,7 @@ export async function pollHostedSessionDuringTurn(opts: {
       // enter logs. A transient read failure cannot fail the running turn.
       diagnose('hosted interrupt poll failed; retrying')
     }
-    if (!opts.signal.aborted) await sleep(5_000)
+    if (!opts.signal.aborted) await waitForNextHostedSessionRead(sleep, pollMs)
   }
 }
 
@@ -848,7 +861,10 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
     ? Number(testRotationMinimum)
     : undefined
   const turnStatusAttemptTimeoutMs = resolveTurnStatusAttemptTimeoutMs(processEnv)
-  const idlePollMs = resolveTestPositiveInteger(processEnv, 'ORIZU_HOSTED_TEST_IDLE_POLL_MS') ?? 5_000
+  const idlePollMs = resolveTestPositiveInteger(
+    processEnv,
+    'ORIZU_HOSTED_TEST_IDLE_POLL_MS'
+  ) ?? HOSTED_SESSION_DEFAULT_POLL_MS
   const idleReadBackoffCapMs = resolveTestPositiveInteger(
     processEnv, 'ORIZU_HOSTED_TEST_IDLE_READ_BACKOFF_CAP_MS'
   ) ?? 45_000
@@ -1223,6 +1239,7 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
         onInterrupt: () => promptInterruptController.abort(),
         onDiagnostic: log,
         readFile,
+        pollMs: idlePollMs,
       })
       try {
         lastResult = await runHostedLoopTurn(
@@ -1268,7 +1285,7 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
       // the bounded agent-token pull is fatal and reported for the current run;
       // other transient status-read failures retain the session and back off.
       for (;;) {
-        await sleep(5_000)
+        await waitForNextHostedSessionRead(sleep, idlePollMs)
         let pendingTurn: PendingHostedTurn | null = null
         try {
           if (currentBearer.expiresAtMs !== null && currentBearer.expiresAtMs <= now() + 60_000) {
