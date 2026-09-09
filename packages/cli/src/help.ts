@@ -609,7 +609,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['runs', 'submit'],
-    usage: 'orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>] [--instructions <specifier>] [--instructions-root <dir>]',
+    usage: 'orizu runs submit <results.jsonl|results.jsonl.gz> --prompt-version <id> --runner-version <id> --dataset-version <id> --split-set <id> --split <name> [--project <team/project>] [--instructions <specifier>] [--instructions-root <dir>] [--judge-version <id> --judge-runner-version <id>]',
     summary: 'Submit local prompt-run results.',
     group: 'Scorers and runners',
   },
