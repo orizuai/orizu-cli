@@ -14,7 +14,7 @@ import {
 import { assertOutputConfined, createManagedArtifactJournal, emitManagedArtifacts } from './helpers.js'
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
-const SYNC_LOCK_WAIT_MS = 5_000
+export const SYNC_LOCK_WAIT_MS = 5_000
 const SYNC_LOCK_RETRY_MS = 50
 const SYNC_LOCK_STALE_MS = 60_000
 
@@ -513,7 +513,12 @@ export function withSyncLock<T>(appRoot: string, operation: () => T): T {
   mkdirSync(appRoot, { recursive: true })
   const lockPath = join(appRoot, '.orizu.lock.json.lock')
   const metadata = `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`
-  const deadline = Date.now() + SYNC_LOCK_WAIT_MS
+  const lockWaitMs = processTestMilliseconds(
+    'ORIZU_TEST_SYNC_LOCK_WAIT_MS',
+    100,
+    SYNC_LOCK_WAIT_MS
+  ) ?? SYNC_LOCK_WAIT_MS
+  const deadline = Date.now() + lockWaitMs
 
   while (true) {
     try {
@@ -561,14 +566,28 @@ export function withSyncLock<T>(appRoot: string, operation: () => T): T {
 }
 
 // Test-only process boundary hooks. Production behavior is unchanged unless a
-// test child explicitly supplies one of the bounded ORIZU_TEST_SYNC_HOLD_* values.
-function holdForProcessTest(name: string): void {
+// test child explicitly supplies one of the bounded ORIZU_TEST_SYNC_* values.
+function processTestMilliseconds(
+  name: string,
+  minimum: number,
+  maximum: number
+): number | undefined {
   const raw = process.env[name]
-  if (raw === undefined) return
+  if (raw === undefined) return undefined
   const milliseconds = Number(raw)
-  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0 || milliseconds > 10_000) {
+  if (
+    !Number.isSafeInteger(milliseconds) ||
+    milliseconds < minimum ||
+    milliseconds > maximum
+  ) {
     throw new Error(`instruction_set_sync_test_hold_invalid:${name}`)
   }
+  return milliseconds
+}
+
+function holdForProcessTest(name: string): void {
+  const milliseconds = processTestMilliseconds(name, 0, 10_000)
+  if (milliseconds === undefined) return
   sleepSync(milliseconds)
 }
 

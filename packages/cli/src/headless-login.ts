@@ -17,6 +17,7 @@ interface HeadlessLoginDependencies {
   printProgress: (message: string) => void
   sanitizeTerminalText: (text: string) => string
   validateBrowserUrl: (url: string, expectedOrigin?: string) => URL
+  sleep?: (milliseconds: number) => Promise<void>
 }
 
 export function shouldUseHeadlessLogin({
@@ -35,7 +36,7 @@ export function shouldUseHeadlessLogin({
   return platform === 'linux' && !environment.DISPLAY && !environment.WAYLAND_DISPLAY
 }
 
-const POLL_INTERVAL_MS = 2_000
+export const POLL_INTERVAL_MS = 2_000
 const POLL_REQUEST_TIMEOUT_MS = 15_000
 const MAX_RETRY_DELAY_MS = 60_000
 const MAX_CONSECUTIVE_TRANSPORT_ERRORS = 3
@@ -49,16 +50,21 @@ function retryDelayMs(response: Response): number {
     : POLL_INTERVAL_MS
 }
 
-async function sleepWithinDeadline(delayMs: number, expiresAt: number): Promise<void> {
+async function sleepWithinDeadline(
+  delayMs: number,
+  expiresAt: number,
+  sleep: (milliseconds: number) => Promise<void>
+): Promise<void> {
   const remainingMs = expiresAt - Date.now()
   if (remainingMs <= 0) return
-  await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, remainingMs)))
+  await sleep(Math.min(delayMs, remainingMs))
 }
 
 async function retryAfterTransportError(
   error: unknown,
   consecutiveErrors: number,
-  expiresAt: number
+  expiresAt: number,
+  sleep: (milliseconds: number) => Promise<void>
 ): Promise<number> {
   const nextCount = consecutiveErrors + 1
   if (nextCount >= MAX_CONSECUTIVE_TRANSPORT_ERRORS) {
@@ -67,7 +73,7 @@ async function retryAfterTransportError(
       `Headless login could not reach the server after ${nextCount} attempts: ${detail}`
     )
   }
-  await sleepWithinDeadline(POLL_INTERVAL_MS, expiresAt)
+  await sleepWithinDeadline(POLL_INTERVAL_MS, expiresAt, sleep)
   return nextCount
 }
 
@@ -106,6 +112,8 @@ export async function waitForHeadlessAuthorization(
     `Open this URL to log in: ${dependencies.sanitizeTerminalText(authorizeUrl)}`
   )
   const expiresAt = Date.now() + (started.expiresInSeconds * 1000)
+  const sleep = dependencies.sleep ?? (milliseconds =>
+    new Promise(resolve => setTimeout(resolve, milliseconds)))
 
   let consecutiveTransportErrors = 0
   while (Date.now() < expiresAt) {
@@ -125,7 +133,8 @@ export async function waitForHeadlessAuthorization(
       consecutiveTransportErrors = await retryAfterTransportError(
         error,
         consecutiveTransportErrors,
-        expiresAt
+        expiresAt,
+        sleep
       )
       continue
     }
@@ -133,7 +142,7 @@ export async function waitForHeadlessAuthorization(
     if (!pollResponse.ok) {
       if (pollResponse.status === 429) {
         consecutiveTransportErrors = 0
-        await sleepWithinDeadline(retryDelayMs(pollResponse), expiresAt)
+        await sleepWithinDeadline(retryDelayMs(pollResponse), expiresAt, sleep)
         continue
       }
       if (pollResponse.status >= 500) {
@@ -141,7 +150,8 @@ export async function waitForHeadlessAuthorization(
         consecutiveTransportErrors = await retryAfterTransportError(
           new Error(`Server returned ${pollResponse.status}: ${detail}`),
           consecutiveTransportErrors,
-          expiresAt
+          expiresAt,
+          sleep
         )
         continue
       }
@@ -158,7 +168,8 @@ export async function waitForHeadlessAuthorization(
       consecutiveTransportErrors = await retryAfterTransportError(
         error,
         consecutiveTransportErrors,
-        expiresAt
+        expiresAt,
+        sleep
       )
       continue
     }
@@ -174,7 +185,7 @@ export async function waitForHeadlessAuthorization(
       throw new Error('Server returned an invalid headless login status.')
     }
 
-    await sleepWithinDeadline(POLL_INTERVAL_MS, expiresAt)
+    await sleepWithinDeadline(POLL_INTERVAL_MS, expiresAt, sleep)
   }
 
   throw new Error('Headless login expired. Run `orizu login --headless` to try again.')
