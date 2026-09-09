@@ -71,6 +71,42 @@ From source, use:
 node packages/cli/dist/index.js <command> ...
 ```
 
+### Update an npm-global install
+
+```bash
+orizu update [--dry-run] [--json]
+```
+
+`orizu update` supports CLIs installed directly under an npm global prefix. It
+checks npm's `latest` release, compares it with the running version, installs a
+newer release into the same prefix, verifies the version by starting the newly
+installed binary, and then runs `orizu skills update` with that new binary. An
+already-current or newer local version exits successfully without invoking npm.
+Other layouts, including source checkouts, one-shot `npx` caches, and pnpm, Bun,
+or Yarn global installs, are not modified; use the manual npm install command in
+the refusal message.
+For now, Windows installs and custom npm prefixes without their own `bin/node`
+runtime (for example, those configured with `npm config set prefix ~/.npm-global`)
+are refused with `update_unsupported_install`; use the manual npm command in that
+error.
+
+`--dry-run` performs install detection and the registry/version comparison only.
+It never installs the CLI or refreshes skills. `--json` emits a structured update
+result for automation.
+`ORIZU_UPDATE_REGISTRY` overrides the registry used for update checks and
+npm-global installs; it must be an `http:` or `https:` URL without embedded credentials.
+
+For npm-global installs, ordinary human-readable commands may print a one-line
+stderr notice after their own output when a cached npm release is newer. The CLI
+refreshes that cache at most once every 24 hours in a detached process, so normal
+commands do not wait for the registry and do not fail when it is unavailable.
+The notice and refresh are suppressed for `--json` commands, CI,
+`NO_UPDATE_NOTIFIER`, and the update command itself. To disable both explicitly:
+
+```bash
+ORIZU_NO_UPDATE_CHECK=1 orizu --help
+```
+
 ## Authentication
 
 ### Login
@@ -333,6 +369,8 @@ orizu skills update [--dry-run] [--json]
   install mode and content hashes.
 - `skills update` refreshes stale copied installs, re-renders stale `AGENTS.md`
   sections, and repairs broken symlinks. Missing targets are left alone.
+  A successful `orizu update` automatically runs `orizu skills update` with the
+  installed CLI, including when Orizu is already the latest.
 - Symlinked installs track the CLI package automatically; copied installs are
   refreshed by `skills update` after a CLI upgrade. `npx` runs get copies
   because the cache path is ephemeral.

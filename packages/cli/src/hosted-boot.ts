@@ -863,6 +863,7 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   // boot-status closures hold `env.bootSecret`, and the git credential helper
   // reads the 0600 run-dir boot-secret FILE (written in step 4).
   delete processEnv.ORIZU_BOOT_SECRET
+  processEnv.ORIZU_NO_UPDATE_CHECK = '1'
   if (env.runId) assertSafeRunId(env.runId)
 
   // 1 — Pull the agent bearer (retry/backoff — the DO may still be arming).

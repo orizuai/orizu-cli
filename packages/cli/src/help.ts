@@ -377,6 +377,17 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     examples: ['orizu skills update', 'orizu skills update --dry-run'],
   },
   {
+    path: ['update'],
+    usage: 'orizu update [--dry-run] [--json]',
+    summary: 'Update an npm-global Orizu CLI to the latest published version, then refresh installed skills.',
+    group: 'Agent setup',
+    options: [
+      { name: '--dry-run', help: 'Detect the install and compare versions without installing anything.' },
+      { name: '--json', help: 'Emit the machine-readable update result.' },
+    ],
+    examples: ['orizu update', 'orizu update --dry-run', 'orizu update --json'],
+  },
+  {
     path: ['skills', 'path'],
     usage: 'orizu skills path [--skill-md] [--json]',
     summary: 'Print where the bundled Orizu skill lives so agents can read it without installing.',

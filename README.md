@@ -156,6 +156,35 @@ This prints the skill location plus source metadata (`name`, `root`, `skillMd`,
 to reading `SKILL.md` in two commands and verify the guidance matches the CLI
 that supplied it.
 
+### Update the CLI
+
+An npm-global install can update itself to npm's `latest` release:
+
+```bash
+orizu update [--dry-run] [--json]
+```
+
+The command detects the npm prefix, checks and compares versions, installs only
+when `latest` is newer, and verifies the newly installed binary in a fresh
+process. A successful `orizu update` automatically runs `orizu skills update`
+with the installed CLI, including when Orizu is already the latest. `--dry-run`
+stops after the version comparison without installing or refreshing skills. Source checkouts,
+`npx` caches, and pnpm, Bun, or Yarn global layouts are refused without being
+modified.
+For now, Windows installs and custom npm prefixes without their own `bin/node`
+(for example `npm config set prefix ~/.npm-global`) are refused with
+`update_unsupported_install`; use the manual npm command in that error.
+
+On other human-readable commands, an npm-global install may print one stderr
+line when its cached release check finds a newer version. Cache refresh happens
+in a detached process at most once every 24 hours, so commands do not wait for
+the registry. Notices and refreshes are suppressed for `--json`, CI,
+`NO_UPDATE_NOTIFIER`, and `update` itself. Disable them explicitly with:
+
+```bash
+ORIZU_NO_UPDATE_CHECK=1 orizu --help
+```
+
 Agents are first-class users of this CLI: **every command supports `--json`**
 (as a prefix, `orizu --json teams list`, or a trailing flag) and emits a single
 machine-readable JSON document instead of formatted text. Discover the full
@@ -209,6 +238,10 @@ orizu logout
   <tr>
     <td>Locate the bundled skill (read-only)</td>
     <td><code>orizu skills path --json</code></td>
+  </tr>
+  <tr>
+    <td>Update an npm-global CLI and its installed skills</td>
+    <td><code>orizu update</code></td>
   </tr>
   <tr>
     <td>Inspect CLI capabilities as JSON</td>

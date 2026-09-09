@@ -154,6 +154,7 @@ import { getGepaPythonCommand } from './gepa-python-command.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
 import { prepareSkilledProposerLaunch, spawnSkilledProposerChild } from './skilled-proposer-launch.js'
 import { materializeRunnerVersion as materializeRegisteredRunnerVersion } from './runner-version-materialization.js'
+import { runUpdateCommand, withPassiveUpdateNotice } from './self-update.js'
 
 export const materializeRunnerVersion = (runnerVersionId: string) =>
   materializeRegisteredRunnerVersion(runnerVersionId, false)
@@ -5980,6 +5981,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
     return
   }
 
+  if (command === 'update') {
+    process.exitCode = await runUpdateCommand(rawArgs, { getCliVersion, json: hasJsonFlag(), printLine, printError })
+    return
+  }
+
   if (command === 'setup' && subcommand === 'prompt') {
     setupPromptCommand()
     return
@@ -6483,8 +6489,6 @@ function isCliEntrypoint(): boolean {
 }
 
 if (isCliEntrypoint()) {
-  main().catch(error => {
-    printError(error instanceof Error ? error.message : 'Unknown error')
-    process.exit(1)
-  })
+  const rawArgs = process.argv.slice(2)
+  withPassiveUpdateNotice(rawArgs, getCliVersion, printError, main)
 }
