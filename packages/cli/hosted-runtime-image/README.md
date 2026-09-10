@@ -258,3 +258,9 @@ Then re-cut the runtime:
   at the previous tag.
 - **Snapshot (Path B)**: re-run `provision-snapshot.mjs` for a fresh snapshot id, then
   roll `ORIZU_HOSTED_SNAPSHOT` / `--snapshot`. Roll back by pointing at the previous id.
+
+Rolling or rolling back `ORIZU_HOSTED_SNAPSHOT` re-darkens the hosted-optimization
+production-evidence gate until drill evidence is re-recorded. Since ORI-2013,
+any run still in `preparing` when the deployment arrives terminal-fails closed with
+`hosted_optimization_production_evidence_stale`; no sandbox is allocated. ORI-2010
+tracks the policy for re-recording evidence after a roll or rollback.
