@@ -7,11 +7,39 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
-from orizu_gepa.runner import _safe_extract_zip, run_file_contract_runner
+from orizu_gepa.runner import _runner_env, _safe_extract_zip, run_file_contract_runner
 
 
 class RunnerWrapperTests(unittest.TestCase):
+    def test_runner_env_forwards_hosted_sandbox_tls_trust_without_inventing_it(self):
+        trust_environment = {
+            "AWS_CA_BUNDLE": "/sandbox/ca/aws.pem",
+            "CURL_CA_BUNDLE": "/sandbox/ca/curl.pem",
+            "GIT_SSL_CAINFO": "/sandbox/ca/git.pem",
+            "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH": "/sandbox/ca/grpc.pem",
+            "NODE_EXTRA_CA_CERTS": "/sandbox/ca/node.pem",
+            "NODE_USE_SYSTEM_CA": "1",
+            "PIP_CERT": "/sandbox/ca/pip.pem",
+            "REQUESTS_CA_BUNDLE": "/sandbox/ca/requests.pem",
+            "SSL_CERT_FILE": "/sandbox/ca/ssl.pem",
+        }
+
+        with patch.dict(os.environ, trust_environment, clear=True):
+            runner_environment = _runner_env(Path("input.json"), Path("output.json"))
+
+        self.assertEqual(
+            {key: runner_environment[key] for key in trust_environment if key in runner_environment},
+            trust_environment,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            runner_environment_without_trust = _runner_env(Path("input.json"), Path("output.json"))
+
+        for key in trust_environment:
+            self.assertNotIn(key, runner_environment_without_trust)
+
     def test_runner_subprocess_gets_minimal_env_without_orizu_credentials(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             runner_dir = Path(temp_dir)

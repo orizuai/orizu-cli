@@ -10,6 +10,17 @@ export const RUNNER_ENV_ALLOWLIST = new Set([
   'LC_ALL',
   'PYTHONPATH',
   'NODE_PATH',
+  // Hosted-sandbox TLS interception and corporate TLS-inspecting proxies both
+  // deliver trust through these vars; stripping them breaks hosted and enterprise-local runs.
+  'AWS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'GIT_SSL_CAINFO',
+  'GRPC_DEFAULT_SSL_ROOTS_FILE_PATH',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_USE_SYSTEM_CA',
+  'PIP_CERT',
+  'REQUESTS_CA_BUNDLE',
+  'SSL_CERT_FILE',
   'ANTHROPIC_API_KEY',
   'OPENAI_API_KEY',
   'GEMINI_API_KEY',

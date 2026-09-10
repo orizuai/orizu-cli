@@ -146,9 +146,11 @@ class RunnerInstructionSetContractTests(unittest.TestCase):
     def test_runner_subprocess_receives_the_tuple_and_an_isolated_synced_layout(self):
         """Mutants killed: drop route body, share row dirs, invent pins, or widen env."""
         self.assertEqual(ALLOWED_RUNNER_ENV_KEYS, {
-            "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "HOME", "LANG",
-            "LC_ALL", "NODE_PATH", "OPENAI_API_KEY", "PATH", "PYTHONPATH", "SystemRoot",
-            "TEMP", "TMP", "TMPDIR", "WINDIR",
+            "ANTHROPIC_API_KEY", "AWS_CA_BUNDLE", "CURL_CA_BUNDLE", "GEMINI_API_KEY",
+            "GIT_SSL_CAINFO", "GOOGLE_API_KEY", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "HOME",
+            "LANG", "LC_ALL", "NODE_EXTRA_CA_CERTS", "NODE_PATH", "NODE_USE_SYSTEM_CA",
+            "OPENAI_API_KEY", "PATH", "PIP_CERT", "PYTHONPATH", "REQUESTS_CA_BUNDLE",
+            "SSL_CERT_FILE", "SystemRoot", "TEMP", "TMP", "TMPDIR", "WINDIR",
         })
         original_should_not_leak = os.environ.get("ORIZU_SHOULD_NOT_LEAK")
         os.environ["ORIZU_SHOULD_NOT_LEAK"] = "must-not-reach-runner"
