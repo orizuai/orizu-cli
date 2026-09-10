@@ -27,14 +27,17 @@ The snapshot path has **two CLI-bake modes** (ALI-1078):
   pre-publish testing or when a fix has not shipped in a tag yet. (The Docker/VCR
   image path is from-source only.)
 
-The from-source bundle is safe as a single file because `packages/cli` statically
-imports **no npm package** (only Node built-ins + type-only imports); every
-heavyweight dep is reached through a **lazy, non-literal dynamic `import()`**
-resolved at runtime. So the bundle needs no `node_modules` to *start*; only
-`@anthropic-ai/claude-agent-sdk` is installed **as a sibling of the bundle** so its
-lazy import resolves (the published package carries the SDK as a normal
-dependency instead), and `opencode` is a **global bin** the loop *spawns* (never
-imports).
+Before using either from-source path, run `bun install --cwd packages/cli`. The
+bundle guard requires Effect to be installed from the CLI package's own lockfile.
+
+The from-source build bundles ordinary runtime dependencies, including Effect,
+into the single CLI file. Optional preview tooling stays external through explicit
+build flags. Provider SDKs still use **lazy, non-literal dynamic `import()`** calls
+that resolve from the baked sibling `node_modules`. So the bundle needs no
+`node_modules` to *start*; only `@anthropic-ai/claude-agent-sdk` is installed **as
+a sibling of the bundle** so its lazy import resolves (the published package
+carries the SDK as a normal dependency instead), and `opencode` is a **global
+bin** the loop *spawns* (never imports).
 
 ### Canonical flow (automated on every `cli-v*` tag)
 

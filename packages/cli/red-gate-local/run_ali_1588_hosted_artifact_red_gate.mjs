@@ -18,7 +18,7 @@ const vendorScript = resolve(here, '../scripts/vendor-gepa-python.mjs')
 export const PROBE_PREFIX = `orizu-ali-1588-probe-${randomUUID()}`
 export const PROBE_IMAGE = `${PROBE_PREFIX}:local`
 export const PROBE_CONTAINER = PROBE_PREFIX
-export const PROBE_TIMEOUTS = { vendor: 3_000, bundle: 10_000, build: 20 * 60_000, sentinel: 8_000, inspect: 2_000, remove: 4_000, container: 300_000, audit: 1_000, outer: 28 * 60_000 }
+export const PROBE_TIMEOUTS = { vendor: 3_000, bundle: 60_000, build: 20 * 60_000, sentinel: 8_000, inspect: 2_000, remove: 4_000, container: 300_000, audit: 1_000, outer: 28 * 60_000 }
 export const ARTIFACT_CONTAINER_TIMEOUT = PROBE_TIMEOUTS.container
 export const ARTIFACT_GNU_TIMEOUT = 290_000
 let lastDockerEnv

@@ -13,17 +13,15 @@
  * bake a snapshot from the published npm package instead.
  *
  * HOW THE BUNDLE IS BUILT
- * `bun build src/index.ts --target node --packages external` — the CLI's own 39
- * source modules bundle into ONE file; bare-specifier packages stay external. That
- * is safe because the CLI statically imports NO npm package (only Node built-ins +
- * type-only imports); every heavyweight dep (@vercel/sandbox, @daytonaio/sdk,
- * @anthropic-ai/claude-agent-sdk, esbuild) is reached through a LAZY, non-literal
- * dynamic `import()` that resolves at runtime from the baked global/sibling
- * node_modules. So the bundle is self-contained for the hosted-loop path and needs
- * no `node_modules` of its own to START.
+ * `bun build src/index.ts --target node --packages bundle` — ordinary runtime
+ * dependencies bundle into one file. Optional preview tooling stays external via
+ * explicit flags, while provider SDKs remain lazy, non-literal dynamic imports
+ * resolved from the baked global/sibling node_modules. The resulting bundle needs
+ * no `node_modules` of its own to start.
  */
 
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,6 +30,25 @@ const here = dirname(fileURLToPath(import.meta.url))
 export const CLI_ROOT = resolve(here, '..')
 /** The CLI entrypoint that becomes the `orizu` bin. */
 export const CLI_ENTRY = resolve(CLI_ROOT, 'src', 'index.ts')
+
+export function assertEffectDependencyIsInstalled(cliRoot = CLI_ROOT) {
+  const cliPackage = JSON.parse(readFileSync(resolve(cliRoot, 'package.json'), 'utf8'))
+  const declaredVersion = cliPackage.dependencies?.effect
+  if (typeof declaredVersion !== 'string' || !declaredVersion) {
+    throw new Error('HOSTED_CLI_BUNDLE_EFFECT_DECLARATION_MISSING: packages/cli/package.json must declare an exact Effect version')
+  }
+
+  let installedVersion
+  try {
+    const effectPackage = JSON.parse(readFileSync(resolve(cliRoot, 'node_modules', 'effect', 'package.json'), 'utf8'))
+    installedVersion = effectPackage.version
+  } catch {
+    throw new Error(`HOSTED_CLI_BUNDLE_EFFECT_MISSING: expected effect@${declaredVersion} in packages/cli/node_modules; run bun install --cwd packages/cli`)
+  }
+  if (installedVersion !== declaredVersion) {
+    throw new Error(`HOSTED_CLI_BUNDLE_EFFECT_VERSION_MISMATCH: packages/cli declares effect@${declaredVersion} but packages/cli/node_modules has effect@${String(installedVersion)}; run bun install --cwd packages/cli`)
+  }
+}
 
 /**
  * Resolve the git provenance string that labels a built runtime:
@@ -56,10 +73,19 @@ export function resolveGitVersion(cwd = CLI_ROOT) {
  * the build fails — a broken bundle must never be staged into a runtime. Returns
  * the absolute path written.
  */
-export function buildCliBundle(outFile, timeout, executable = 'bun') {
+export function buildCliBundle(outFile, timeout, executable = 'bun', cliRoot = CLI_ROOT) {
+  assertEffectDependencyIsInstalled(cliRoot)
   const out = resolve(outFile)
-  const args = ['build', CLI_ENTRY, '--target', 'node', '--packages', 'external', '--outfile', out]
-  const res = spawnSync(executable, args, { cwd: CLI_ROOT, stdio: 'inherit', timeout })
+  const args = [
+    'build', resolve(cliRoot, 'src', 'index.ts'), '--target', 'node', '--packages', 'bundle',
+    '--external', 'esbuild',
+    '--external', 'postcss',
+    '--external', '@tailwindcss/postcss',
+    '--external', '@playwright/test',
+    '--external', 'playwright',
+    '--outfile', out,
+  ]
+  const res = spawnSync(executable, args, { cwd: cliRoot, stdio: 'inherit', timeout })
   if (res.error) {
     throw new Error(`failed to spawn bun (is it installed?): ${res.error.message}`)
   }
