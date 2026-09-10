@@ -37,7 +37,7 @@ import {
   describeLogoutTransportFailure,
 } from './logout-diagnostic.js'
 import { parseGlobalFlags } from './global-flags.js'
-import { writeLastErrorRecord } from './last-error-record.js'
+import { extractLastErrorCode, writeLastErrorRecord } from './last-error-record.js'
 import { shouldUseHeadlessLogin, waitForHeadlessAuthorization } from './headless-login.js'
 import { getCapabilities, renderHelpForArgs, renderRootHelp } from './help.js'
 import { runLocalAppPreview } from './preview-runtime.js'
@@ -6518,6 +6518,7 @@ if (isCliEntrypoint()) {
       writeLastErrorRecord({
         argv: args,
         message,
+        code: extractLastErrorCode(error),
         cliVersion: (() => { try { return getCliVersion() } catch { return null } })(),
         serverBaseUrl: getLastResolvedBaseUrl(),
         teamSlug: resolveLastErrorTeamSlug(),

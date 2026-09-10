@@ -24,6 +24,7 @@ import { scrubFeedbackText } from './feedback-scrub.js'
 import { getBaseUrl } from './http.js'
 import {
   LAST_ERROR_ARG_MAX_CHARS,
+  LAST_ERROR_CODE_MAX_CHARS,
   LAST_ERROR_FILE_MAX_BYTES,
   LAST_ERROR_MAX_ARGS,
   LAST_ERROR_MESSAGE_MAX_CHARS,
@@ -35,6 +36,7 @@ export interface LastErrorRecord {
   version: 1
   recordedAt: string
   cliVersion: string | null
+  code: string | null
   serverBaseUrl: string | null
   teamSlug: string | null
   command: string | null
@@ -66,6 +68,7 @@ export interface LastErrorRecordInput {
   argv: readonly string[]
   message: string
   cliVersion: string | null
+  code?: string | null
   serverBaseUrl?: string | null
   teamSlug?: string | null
   homeDir?: string | null
@@ -96,23 +99,26 @@ function removeTrailingCredentialResidue(input: string): string {
     : withoutResidue
 }
 
+function scrubWithContext(input: string, context: ScrubContext): string {
+  return scrubFeedbackText(input, {
+    reporterEmail: undefined,
+    homeDir: context.homeDir,
+    secrets: context.secrets,
+  })
+}
+
 function scrubAndCap(
   input: string,
   maximumCharacters: number,
   context: ScrubContext
 ): { value: string; wasTruncated: boolean } {
-  const scrubOptions = {
-    reporterEmail: undefined,
-    homeDir: context.homeDir,
-    secrets: context.secrets,
-  }
-  const scrubbed = scrubFeedbackText(input, scrubOptions)
+  const scrubbed = scrubWithContext(input, context)
   const wasTruncated = scrubbed.length > maximumCharacters
   const capped = wasTruncated
     ? `${scrubbed.slice(0, maximumCharacters)}${LAST_ERROR_TRUNCATION_MARKER}`
     : scrubbed
   const withoutResidue = removeTrailingCredentialResidue(capped)
-  const finalScrubbed = scrubFeedbackText(withoutResidue, scrubOptions)
+  const finalScrubbed = scrubWithContext(withoutResidue, context)
   const finalBody = wasTruncated && finalScrubbed.endsWith(LAST_ERROR_TRUNCATION_MARKER)
     ? finalScrubbed.slice(0, -LAST_ERROR_TRUNCATION_MARKER.length)
     : finalScrubbed
@@ -205,6 +211,22 @@ function resolveActiveProcessSecrets(): readonly string[] {
   }
 }
 
+function propertyValue(value: unknown, key: string, ownOnly = false): unknown {
+  if ((typeof value !== 'object' || value === null) && typeof value !== 'function') return undefined
+  try {
+    return !ownOnly || Object.hasOwn(value, key) ? Reflect.get(value, key) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function extractLastErrorCode(error: unknown): string | null {
+  const ownCode = propertyValue(error, 'code', true)
+  if (typeof ownCode === 'string') return ownCode
+  const causeCode = propertyValue(propertyValue(error, 'cause'), 'code')
+  return typeof causeCode === 'string' ? causeCode : null
+}
+
 function resolveHomeDir(): string | null {
   try {
     return homedir()
@@ -237,6 +259,10 @@ function isLastErrorRecord(value: unknown): value is LastErrorRecord {
   if (record.version !== LAST_ERROR_RECORD_VERSION) return false
   if (typeof record.recordedAt !== 'string' || !Number.isFinite(Date.parse(record.recordedAt))) return false
   if (typeof record.cliVersion !== 'string' && record.cliVersion !== null) return false
+  if (record.code !== undefined && record.code !== null && (
+    typeof record.code !== 'string'
+    || Array.from(record.code).length > LAST_ERROR_CODE_MAX_CHARS
+  )) return false
   if (record.serverBaseUrl !== undefined && typeof record.serverBaseUrl !== 'string' && record.serverBaseUrl !== null) return false
   if (record.teamSlug !== undefined && typeof record.teamSlug !== 'string' && record.teamSlug !== null) return false
   if (typeof record.argvTruncated !== 'boolean') return false
@@ -282,11 +308,17 @@ export function buildLastErrorRecord(input: LastErrorRecordInput): LastErrorReco
   const command = rawCommand === null
     ? null
     : scrubAndCap(rawCommand, LAST_ERROR_ARG_MAX_CHARS, context).value
+  const code = input.code === undefined || input.code === null
+    ? null
+    : Array.from(scrubAndCap(
+      input.code, LAST_ERROR_CODE_MAX_CHARS * 2, context
+    ).value).slice(0, LAST_ERROR_CODE_MAX_CHARS).join('')
 
   const record: LastErrorRecord = {
     version: LAST_ERROR_RECORD_VERSION,
     recordedAt: (input.now ?? new Date()).toISOString(),
     cliVersion: input.cliVersion,
+    code,
     serverBaseUrl: boundedServerBaseUrl(input.serverBaseUrl),
     teamSlug: input.teamSlug ?? null,
     command,
@@ -372,6 +404,7 @@ export function readLastErrorRecord(configDir?: string): LastErrorRecord | null 
     return isLastErrorRecord(record)
       ? {
           ...record,
+          code: record.code ?? null,
           serverBaseUrl: boundedServerBaseUrl(record.serverBaseUrl),
           teamSlug: record.teamSlug ?? null,
         }

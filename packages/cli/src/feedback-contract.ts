@@ -1,5 +1,6 @@
 import {
   LAST_ERROR_ARG_MAX_CHARS,
+  LAST_ERROR_CODE_MAX_CHARS,
   LAST_ERROR_FILE_MAX_BYTES,
   LAST_ERROR_MAX_ARGS,
   LAST_ERROR_MESSAGE_MAX_CHARS,
@@ -168,10 +169,10 @@ const LAST_ERROR_KEYS = [
   'message',
   'messageTruncated',
 ] as const
-const LAST_ERROR_OPTIONAL_LOCATOR_KEYS = ['serverBaseUrl', 'teamSlug'] as const
+const LAST_ERROR_OPTIONAL_KEYS = ['code', 'serverBaseUrl', 'teamSlug'] as const
 const LAST_ERROR_ALLOWED_KEYS = new Set<string>([
   ...LAST_ERROR_KEYS,
-  ...LAST_ERROR_OPTIONAL_LOCATOR_KEYS,
+  ...LAST_ERROR_OPTIONAL_KEYS,
 ])
 const LAST_ERROR_TRUNCATION_MARKER_LENGTH = '[truncated]'.length
 const TEXT_ENCODER = new TextEncoder()
@@ -303,6 +304,10 @@ export function isLastErrorRecordShape(value: unknown): boolean {
       || !Number.isFinite(Date.parse(value.recordedAt))
     ) return false
     if (!(value.cliVersion === null || isEnvironmentText(value.cliVersion))) return false
+    if (!(value.code === undefined || value.code === null || (
+      isNulFreeString(value.code)
+      && Array.from(value.code).length <= LAST_ERROR_CODE_MAX_CHARS
+    ))) return false
     if (!(value.command === null || lastErrorStringWithinCap(value.command, LAST_ERROR_ARG_MAX_CHARS + LAST_ERROR_TRUNCATION_MARKER_LENGTH))) return false
     if (!Array.isArray(value.argv) || value.argv.length > LAST_ERROR_MAX_ARGS) return false
     if (!value.argv.every(argument => lastErrorStringWithinCap(argument, LAST_ERROR_ARG_MAX_CHARS + LAST_ERROR_TRUNCATION_MARKER_LENGTH))) return false

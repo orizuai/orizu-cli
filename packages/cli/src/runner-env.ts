@@ -16,14 +16,19 @@ export const RUNNER_ENV_ALLOWLIST = new Set([
   'GOOGLE_API_KEY',
 ])
 
-const CREDENTIAL_ENV_NAME = /(?:API_KEY|TOKEN|SECRET|PASSWORD)$/i
+const CREDENTIAL_ENV_NAME = /(?:^|_)(?:API_KEY|ACCESS_KEY|TOKEN|SECRET|PASSWORD)(?:_|$)/i
+
+export function isCredentialEnvName(name: string): boolean {
+  return CREDENTIAL_ENV_NAME.test(name)
+}
 
 export function runnerForwardedSecretValues(
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  allowlist: ReadonlySet<string> = RUNNER_ENV_ALLOWLIST
 ): string[] {
   const values: string[] = []
-  for (const key of RUNNER_ENV_ALLOWLIST) {
-    if (!CREDENTIAL_ENV_NAME.test(key)) continue
+  for (const key of allowlist) {
+    if (!isCredentialEnvName(key)) continue
     const value = environment[key]
     if (value !== undefined && value.length >= 8) values.push(value)
   }
