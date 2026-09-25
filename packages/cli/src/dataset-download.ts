@@ -3,7 +3,8 @@ export interface ParsedDatasetReference {
   project?: string
 }
 
-const DATASET_URL_PATH = /^\/d\/([^/]+)\/([^/]+)\/datasets\/([^/?#]+)\/?$/
+// Keep accepting copied legacy /d/ links while new dashboard URLs omit it.
+const DATASET_URL_PATH = /^\/(?:d\/)?([^/]+)\/([^/]+)\/datasets\/([^/?#]+)\/?$/
 
 export function parseDatasetReference(input: string): ParsedDatasetReference {
   const value = input.trim()
@@ -22,12 +23,12 @@ export function parseDatasetReference(input: string): ParsedDatasetReference {
     }
 
     throw new Error(
-      'Dataset URL must be in format https://<host>/d/<teamSlug>/<projectSlug>/datasets/<datasetId>'
+      'Dataset URL must be in format https://<host>/<teamSlug>/<projectSlug>/datasets/<datasetId>'
     )
   } catch {
     if (value.startsWith('http://') || value.startsWith('https://')) {
       throw new Error(
-        'Dataset URL must be in format https://<host>/d/<teamSlug>/<projectSlug>/datasets/<datasetId>'
+        'Dataset URL must be in format https://<host>/<teamSlug>/<projectSlug>/datasets/<datasetId>'
       )
     }
   }

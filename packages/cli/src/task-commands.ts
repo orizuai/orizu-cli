@@ -206,7 +206,7 @@ async function createTask() {
       datasetId,
       versionId: data.task.versionId,
       versionNum: data.task.versionNum,
-      taskUrl: `${getBaseUrl()}/d/${projectSlug}/tasks/${data.task.id}`,
+      taskUrl: `${getBaseUrl()}/${projectSlug}/tasks/${data.task.id}`,
       title: data.task.title,
       status: data.task.status,
       assignmentMode: explicitAssignments ? 'custom' : 'auto',
@@ -228,7 +228,7 @@ async function createTask() {
   }
 
   const baseUrl = getBaseUrl()
-  const taskUrl = `${baseUrl}/d/${projectSlug}/tasks/${data.task.id}`
+  const taskUrl = `${baseUrl}/${projectSlug}/tasks/${data.task.id}`
   const isDraft = data.task.status === 'draft'
   printLine(
     `Created ${isDraft ? 'draft ' : ''}task ${sanitizeTerminalText(data.task.title)} (${sanitizeTerminalText(data.task.id)}) [${sanitizeTerminalText(data.task.status)}]` +

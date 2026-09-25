@@ -1074,7 +1074,7 @@ Supported formats:
 
 Ways to identify the dataset:
 - `--dataset <datasetId>`
-- `--dataset <datasetUrl>` (for example `https://orizu.ai/d/team/project/datasets/<id>`)
+- `--dataset <datasetUrl>` (for example `https://orizu.ai/team/project/datasets/<id>`)
 - positional dataset value: `orizu datasets download <datasetId-or-url>`
 
 Interactive fallback:
