@@ -19,7 +19,7 @@ Read [Orizu in your codebase](orizu-in-your-codebase.md) for Pointer, ownership,
 | Model Config hydration | `helpers/model-config.ts` |
 | Helper self-checks | `helpers/load.selfcheck.ts`, `helpers/model-config.selfcheck.ts`, `helpers/provenance.selfcheck.ts`, and `helpers/verify.selfcheck.ts`, exporting `runLoadSelfCheck()`, `runModelConfigSelfCheck()`, `runProvenanceSelfCheck()`, and `runVerifySelfCheck()` |
 
-The paved Version manifest exports frozen `settings`. Provider and model are represented by the Profile's Model Config identity. Use the identity exactly as Orizu reports it—suffixes such as `-luna` are significant. Find it with `orizu instructions show <set> --project <team/project>` and read `modelConfigIdentity`; an old manifest may call the equivalent field `model.configIdentity`. The paved `loadModelConfig` Helper hydrates provider, model, protocol, strict-schema, and generation fields from those frozen settings. Customer-only identifiers such as an internal model ID have no Orizu mapping and stay in customer code if still needed.
+The paved Version manifest exports frozen `settings`. Provider and model are represented by the Profile's Model Config identity. Use the identity exactly as Orizu reports it, suffixes such as `-luna` are significant. Find it with `orizu instructions show <set> --project <team/project>` and read `modelConfigIdentity`; an old manifest may call the equivalent field `model.configIdentity`. The paved `loadModelConfig` Helper hydrates provider, model, protocol, strict-schema, and generation fields from those frozen settings. Customer-only identifiers such as an internal model ID have no Orizu mapping and stay in customer code if still needed.
 
 A paved `manifest.json` contains this shape (IDs and hashes abbreviated):
 
@@ -56,7 +56,7 @@ serializeLock(parseLock(text)) === text
 
 “Conforming” means both that the serializer round-trip succeeds **and** that every Profile uses the paved slug form. Although such a hand-written Lock can be adopted, the normal migration lets first sync produce it and discourages hand-repair. In practice, early hand-rolled Locks often use a hyphenated Profile key such as `openai-gpt-5.6`; the paved slug is `openai__gpt-5.6`. Such a Lock is refused as `lock_default_slug_invalid`. Do not edit machine-owned identity fields into shape and do not add a lock-repair script.
 
-This guide covers only a hand-rolled layout: the customer's own Lock or hashes file, wherever it lives, and whatever snapshot directories, loader, and verifier its tooling created. An incompatible paved-shaped Lock may fail with `lock_default_slug_invalid`; do not repair its machine-owned fields. Read every deployed or referenced Version from that customer-owned metadata and convert its address to a canonical Specifier—for example, `planner/openai-gpt-5.6-luna@v1` becomes `planner/openai/gpt-5.6-luna@v1`.
+This guide covers only a hand-rolled layout: the customer's own Lock or hashes file, wherever it lives, and whatever snapshot directories, loader, and verifier its tooling created. An incompatible paved-shaped Lock may fail with `lock_default_slug_invalid`; do not repair its machine-owned fields. Read every deployed or referenced Version from that customer-owned metadata and convert its address to a canonical Specifier, for example, `planner/openai-gpt-5.6-luna@v1` becomes `planner/openai/gpt-5.6-luna@v1`.
 
 If your tree came from the retired `orizu instruction-sets sync`, it lives at `<out>/<set-slug>/`; `sync` refuses to write over it (`instruction_set_sync_legacy_layout`), so move each such set directory outside `<out>` first. Its hash and pinned-component formats are not covered here.
 
@@ -168,7 +168,7 @@ orizu/generated/** linguist-generated=true
 
 These lines prevent Git from normalizing CRLF or missing-final-newline Component bytes and mark the generated index. First sync legitimately changes Profile directory slug, manifest fields, digest formula, generated modules, Helpers, the Lock `helpers` map, and `syncedAt`. Those wrapper differences are expected.
 
-The Lock's `helpers` map contains pristine byte fingerprints for exactly eight vendored Helpers—load, model-config, provenance, verify, and their four self-checks. `verify` group 4 checks that every fingerprinted Helper exists and reports customer edits as warnings.
+The Lock's `helpers` map contains pristine byte fingerprints for exactly eight vendored Helpers, load, model-config, provenance, verify, and their four self-checks. `verify` group 4 checks that every fingerprinted Helper exists and reports customer edits as warnings.
 
 The no-op proof has three independent checks:
 
@@ -178,7 +178,7 @@ The no-op proof has three independent checks:
 
 A prefix pair such as `system` and `system-extra`, CRLF text, and a Component without a trailing newline require no exceptions: comparison remains byte-for-byte.
 
-### Choose exact or Pointer-form runtime loading
+### Choose exact or pointer-form runtime loading
 
 The migration's exact `set/profile@vN` sync deliberately leaves that Profile's Production value `null` in the new Lock; exact sync never resolves or writes Production. Choose one valid runtime path:
 

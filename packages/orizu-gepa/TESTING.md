@@ -8,10 +8,17 @@ evaluation seam.
 
 | Hazard prevented | Outer boundary test | Named mutant it must kill |
 | --- | --- | --- |
-| An official-GEPA run loses candidate identity, mean, per-row evidence, or bounded payloads. | `test_real_gepa_callback_translates_validation_components_and_truncation` | Drop envelope/payload candidate IDs, `score_mean`, a required row-result field, the `validation` alias, or replace explicit prefix-and-disclosure truncation with raw/lying content. |
+| An official-GEPA run loses candidate identity, mean, or per-row evidence; a validation candidate is cut by the payload cap; or a sample output over the cap passes through unbounded. | `test_real_gepa_callback_translates_validation_components_and_truncation` | Drop envelope/payload candidate IDs, `score_mean`, a required row-result field, or the `validation` alias; bound `components` (ORI-2027); leave a row-result `output` unbounded or hide its cut from `truncation.fields`. |
+| A candidate longer than `max_payload_chars` reaches the dashboard and the local `events.jsonl`/`reflections.jsonl` as `…[truncated]`, so the prompt that was evaluated can never be read back or promoted. | `test_accepted_candidate_stays_whole_on_the_wire_and_in_the_local_log_under_the_cap` (real `MandatoryEventSink` + real `LocalOptimizationLogger`) | Re-add `_bounded` to `candidate_proposed` components or `body`; bound `reflection_completed.candidate_text`; or stop bounding the reflection `response` (the cap must still bite on provider material). |
+| The translator bounds seed/validation candidate components while the sample outputs the cap exists for pass through whole. | `test_translator_keeps_seed_and_validation_components_whole_and_bounds_row_outputs` | Pass the cap into `_components`; leave `row_results[].output` unbounded; report `components.*` in `truncation.fields`. |
+| Under `--component-selector all`, only one of N reflections survives in `reflections.jsonl` and on the wire, and the surviving prompt is the last component's prompt attributed to another component. | `test_all_selector_reflection_logs_one_row_per_component_with_its_own_prompt` (real GEPA loop, real `GepaReflectionLM`) | Write one `reflections.jsonl` row per iteration; reuse the last provider prompt for every row; take every row's `candidate_text` from the first component; drop the `component` key; drop the `responses` map from `reflection_completed`. |
+| Per-component reflection prompts leak in clear text under the default (redacting) policy. | `test_reflection_completed_redacts_per_component_prompts_unless_row_snapshots_are_logged` | Ship `prompts` without `log_row_snapshots`; drop `responses`. |
+| A component GEPA rewrote gets no reflection row because one of its per-component maps lacks the entry. | `test_reflection_row_is_written_for_a_component_missing_from_raw_lm_outputs` | Take the row component list from `raw_lm_outputs` keys only. |
+| A rejected proposal takes the old bounding path or logs one reflection row because rejection is a second copy of acceptance. | `test_rejected_candidate_stays_whole_and_logs_every_component_reflection` | Bound components on `on_candidate_rejected`; write one row; reuse one prompt; drop the `component` key. |
 | GEPA's seed validation is rendered as a child and the dashboard loses its seed baseline. | `test_real_gepa_seed_valset_callback_uses_the_legacy_seed_wire_event` | Map candidate zero's iteration-zero validation callback to `child_val_set_completed`. |
 | Lower-is-better optimization values leak into the dashboard as if they were raw scorer results. | `test_lower_is_better_callback_restores_raw_scores_for_the_dashboard` | Publish GEPA's inverted scores without converting them at the event boundary. |
 | Reflection is no longer reconstructible in the dashboard. | `test_real_gepa_proposal_callback_preserves_reflection_and_candidate_shape` | Drop `raw_lm_outputs` or the candidate `components` map. |
+| A large candidate is redacted or cut on the wire while the reflection response bypasses the cap. | `test_production_callback_redacts_only_prompt_and_bounds_large_event_fields` | Redact `response`/`candidate_text`; bound `body`, `components` or `candidate_text`; leave `response` unbounded. |
 | A budget stops mid-iteration. | `test_real_gepa_engine_stops_only_after_a_completed_iteration` | Return true before the engine has emitted `on_iteration_end`. |
 | Progress reports an invented unit or wrong counter. | `test_real_gepa_budget_event_translates_in_the_selected_unit` | Always report an iteration budget or alter the GEPA metric-call values. |
 | A malformed scorer or all-worst seed reaches an expensive GEPA run. | `test_real_preflight_refuses_a_degenerate_seed_before_any_budget_is_spent` | Remove the bounded preflight refusal. |
@@ -73,8 +80,10 @@ The complete launcher-facing environment contract is:
   `ORIZU_MAX_CANDIDATE_PROPOSALS`, `ORIZU_MINIBATCH_SIZE`,
   `ORIZU_NUM_THREADS`, `ORIZU_SEED`, `ORIZU_DISABLE_EVALUATION_CACHE`,
   `ORIZU_ALLOW_DEGENERATE_SEED`, `ORIZU_LOG_ROW_SNAPSHOTS`,
-  `ORIZU_NO_LOCAL_LOG`, `ORIZU_LOCAL_LOG_DIR`, `ORIZU_MAX_PAYLOAD_CHARS`,
-  and `ORIZU_METADATA`;
+  `ORIZU_NO_LOCAL_LOG`, `ORIZU_LOCAL_LOG_DIR`, `ORIZU_MAX_PAYLOAD_CHARS`
+  (bounds sample outputs and reflection prompts/responses in streamed
+  events, default 16000 characters; never candidate components), and
+  `ORIZU_METADATA`;
 - reflection/selection: `ORIZU_REFLECTION_MODEL`,
   `ORIZU_REFLECTION_TEMPERATURE`, `ORIZU_REFLECTION_MAX_TOKENS`,
   `ORIZU_REFLECTION_RETRY_ATTEMPTS`,
@@ -123,9 +132,20 @@ with a persisted parent), inclusive `[0, 1]` score values, optimizer-family
 tab unlock, terminal PATCH materialization, and the validation split alias.
 The decided character-cap truncation rule is prefix plus `…[truncated]`, with
 `payload_truncated: true` and original byte lengths in `truncation.fields`.
-For legacy parity, `log_row_snapshots` redacts only the reflection `prompt`;
-the reflection `response` and `candidate_text` remain visible dashboard
-evidence (subject to the same truncation cap).
+The cap applies to sample outputs (row-result `output`) and to reflection
+prompts and responses only. Candidate components (`candidate_proposed`
+`components`/`body`, `run_started` seed components, valset `components`,
+`reflection_completed` `candidate_text`/`components`) are never bounded, on
+the wire or in the local log: a cut candidate could not be read back or
+promoted as evaluated (ORI-2027). `payload_truncated` is therefore false
+unless a bounded field was actually cut.
+For legacy parity, `log_row_snapshots` redacts only the reflection prompts
+(`prompt` and the per-component `prompts` map); the reflection `response`,
+the per-component `responses` map and `candidate_text` remain visible
+dashboard evidence. Under `--component-selector all`, `reflections.jsonl`
+holds one row per reflected component, each with a `component` key and that
+component's own provider prompt, response and new text (ORI-2030); the wire
+`response`/`prompt` keep the legacy first-entry shape beside the full maps.
 Preflight evaluates at most three validation rows solely to reject a broken
 scorer/degenerate seed before creating a run; GEPA performs the single
 authoritative full seed validation after launch, so the preflight does not

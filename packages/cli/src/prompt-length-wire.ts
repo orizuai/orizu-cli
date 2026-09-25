@@ -16,6 +16,7 @@ export const CLI_LENGTH_MEASUREMENT_UNAVAILABLE_REASONS = [
   'measurement_cap_exceeded',
   'enrichment_failed',
   'bodies_unavailable_event_cap',
+  'truncated_record',
 ] as const
 
 export type CliLengthStatsField = typeof CLI_LENGTH_STATS_FIELDS[number]

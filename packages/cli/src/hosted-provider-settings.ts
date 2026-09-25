@@ -1,3 +1,10 @@
+import {
+  requireProvider,
+  providerIds,
+  providerSettingKeys,
+} from './provider-registry.js'
+import { STATIC_PROVIDER_LOOKUP, type ProviderLookup } from './provider-lookup.js'
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
@@ -29,23 +36,23 @@ function containsCredential(value: unknown, root = true): boolean {
   return Object.entries(value).some(([key, nested]) => isCredentialKey(key) || containsCredential(nested, false))
 }
 
-export const HOSTED_MODEL_PROVIDER_PREFIXES = ['anthropic', 'openai'] as const
+/** @deprecated Read `providerIds()` from the provider registry instead. Kept
+ *  as a derived re-export while ORI-2036 retires the last literal lists. */
+export const HOSTED_MODEL_PROVIDER_PREFIXES: readonly string[] = providerIds()
 
-export function hostedProviderFromModel(model: string | null | undefined): string | null {
-  const match = model?.match(/^([a-z]+)\/.*$/)
-  const prefix = match?.[1]
-  return prefix && (HOSTED_MODEL_PROVIDER_PREFIXES as readonly string[]).includes(prefix) ? prefix : null
+export function hostedProviderFromModel(model: string | null | undefined, lookup: ProviderLookup = STATIC_PROVIDER_LOOKUP): string | null {
+  return lookup.fromIdentity(model)?.id ?? null
 }
 
-export function unsupportedHostedProviderMessage(provider: string): string {
-  return `Hosted optimization does not support provider "${provider}". Supported providers: ${HOSTED_MODEL_PROVIDER_PREFIXES.join(', ')}.`
+export function unsupportedHostedProviderMessage(provider: string, ids: readonly string[] = providerIds()): string {
+  return `Hosted optimization does not support provider "${provider}". Supported providers: ${ids.join(', ')}.`
 }
 
-function unsupportedHostedSetting(value: unknown, model: string): string | null {
+function unsupportedHostedSetting(value: unknown, model: string, lookup: ProviderLookup): string | null {
   if (value === undefined) return null
   if (!isRecord(value)) return '<root>'
-  const providerKeys = model.startsWith('openai/') ? ['reasoning']
-    : model.startsWith('anthropic/') ? ['thinking', 'output_config'] : []
+  const protocol = lookup.protocolFor(model)
+  const providerKeys = protocol ? providerSettingKeys(protocol) : []
   const unknown = Object.keys(value).find(key => !['top_p', ...providerKeys].includes(key))
   if (unknown) return unknown
   if (value.top_p !== undefined && (typeof value.top_p !== 'number'
@@ -66,14 +73,15 @@ function unsupportedHostedSetting(value: unknown, model: string): string | null 
 export function hostedSettingsContainCredentials(value: unknown): boolean { return containsCredential(value) }
 
 export function hostedProviderSettingsError(
-  value: unknown, model = 'anthropic/', temperature?: unknown
+  value: unknown, model = 'anthropic/', temperature?: unknown, lookup: ProviderLookup = STATIC_PROVIDER_LOOKUP
 ): string | null {
   if (hostedSettingsContainCredentials(value)) {
     return 'Hosted reflection provider settings must not contain credential-bearing fields.'
   }
-  const unsupported = unsupportedHostedSetting(value, model)
+  const unsupported = unsupportedHostedSetting(value, model, lookup)
   if (unsupported) return `Unsupported hosted setting "${unsupported}".`
-  if (model.startsWith('anthropic/') && temperature !== undefined && temperature !== null
+  if (lookup.protocolFor(model) === requireProvider('anthropic').protocol
+    && temperature !== undefined && temperature !== null
     && isRecord(value) && value.thinking !== undefined) {
     return 'reflection_temperature cannot be combined with Anthropic thinking'
   }

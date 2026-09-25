@@ -1,6 +1,6 @@
 # Migrating an existing GEPA setup into Orizu
 
-For a customer already running official GEPA from a plain script — inline
+For a customer already running official GEPA from a plain script: inline
 `trainset`/`valset`, seed component values in a dict, and their own
 `metric(row, output)`. The dict becomes one instruction-set profile: its keys
 become the set's fixed shape, and its values become that profile's components.
@@ -20,8 +20,8 @@ the Authority map for surface-specific execution and hand-offs.
 
 Note the row shape and which field is the stable id, `trainset`/`valset`
 membership, the seed component map, the metric's `module:function`, and what it
-returns (a float, a dict with `score`, or GEPA's `EvaluationResult` — all three
-are accepted; `objective_scores` is ignored). If rows have no stable id, add
+returns (a float, a dict with `score`, or GEPA's `EvaluationResult`; all three
+are accepted and `objective_scores` is ignored). If rows have no stable id, add
 one now: every step below pairs on it.
 
 ## 1. Set up, then export the rows
@@ -125,12 +125,12 @@ order, and add one component entry per key. `--model-config` selects the
 profile whose seed is created; it must name an existing model config with the
 same settings used by the original script. The JSON result includes the set's
 stable `slug`, its Default Profile, and that Profile's nullable Production
-version. Record the slug — later reads, optimization, archiving, and restoration should use it even if the display
+version. Record the slug: later reads, optimization, archiving, and restoration should use it even if the display
 name changes.
 
 ## 4. Wrap their metric in a scorer runner
 
-Do not rewrite the metric — wrap it, or parity is unachievable by construction.
+Do not rewrite the metric: wrap it, or parity is unachievable by construction.
 `scorer-runner/manifest.json` declares
 `"command": ["python3", "runner.py"]` and `"scorer_input_contract": "flat_row"`.
 Under `flat_row`, `input["row"]` is the dataset row with the candidate output
@@ -154,14 +154,14 @@ shape in step 0 usually defines `metric` inside `optimize.py` next to
 `import gepa`; vendoring that file into the runner drags the `gepa` import into
 the scrubbed runner environment and every row raises `ModuleNotFoundError`. Move
 the function to a `metric.py` with no optimizer imports and have `optimize.py`
-do `from metric import metric` — their script keeps working unchanged, the
+do `from metric import metric`: their script keeps working unchanged, the
 runner copy carries no dependencies, and `--original metric:metric` is valid for
 both. (`docs/requirements/official-gepa/stranger/` ships this two-file shape.)
 
 **Copy the metric module into `./scorer-runner/` before pushing.** The runner
 executes with its working directory set to the *materialized runner version* and
 a scrubbed environment, so the `metric.py` sitting next to their `optimize.py`
-is not importable — a runner that does `import metric` raises
+is not importable: a runner that does `import metric` raises
 `ModuleNotFoundError` on every row, here and again under `run-gepa`. Vendor the
 file (or the whole package) into the runner directory so the registered runner
 bytes contain everything the metric needs:
@@ -171,7 +171,7 @@ cp ./metric.py ./scorer-runner/metric.py     # or: cp -R ./their_package ./score
 ```
 
 `verify-parity` still imports the customer's ORIGINAL metric from the current
-directory, so the two copies must be the same file — re-copy whenever it changes,
+directory, so the two copies must be the same file: re-copy whenever it changes,
 or the parity you prove is against a stale runner.
 
 A DSPy metric is `metric(example, pred)`; the 3-line adapter is:
@@ -270,11 +270,11 @@ orizu --local scorers verify-parity \
   them: flag > runner manifest (`scorer_input_contract`,
   `candidate_output_field`) > defaults (`gepa`, `model_output`). Because a
   `gepa`-contract runner is fed a different payload shape entirely,
-  verify-parity refuses anything that does not resolve to `flat_row` — declare
+  verify-parity refuses anything that does not resolve to `flat_row`: declare
   `"scorer_input_contract": "flat_row"` in the runner manifest (step 4) or pass
   `--scorer-input-contract flat_row`, and pass the SAME value to `run-gepa`.
-- `--scorer-candidate-field <field>` when the judge reads the candidate from a
-  row field other than `model_output` — the same value you pass to `run-gepa`.
+- Use `--scorer-candidate-field <field>` when the judge reads the candidate from a
+  row field other than `model_output`. Pass the same value to `run-gepa`.
   It may not be blank.
 - `--tolerance <float>` defaults to `0` (exact). Raise it only for a genuinely
   non-deterministic metric, and say so in the report.
@@ -283,7 +283,7 @@ orizu --local scorers verify-parity \
   metric still sees its API keys.
 - `--runner-dir <dir>` runs local scorer-runner bytes, but only if they hash to
   the registered runner version; drifted bytes exit 2.
-- `--limit <n>` checks the first N rows of the partition — a smoke check, not
+- `--limit <n>` checks the first N rows of the partition: a smoke check, not
   the proof: it always reports `parity: false` with `scope: {compared, total}`,
   so a limited run can never be mistaken for a full one. The full partition's
   output file works: outputs must cover the limited rows, belong to the split,
@@ -293,7 +293,7 @@ orizu --local scorers verify-parity \
   rather than overwriting a value the original metric reads.
 
 Exit `0` parity proven (>= 1 row compared, no mismatch, no row error); `1` at
-least one mismatch or row error — read `mismatches`/`errors` in the `--json`
+least one mismatch or row error: read `mismatches`/`errors` in the `--json`
 report, fix the runner, repeat; `2` the check could not run (bad arguments, no
 rows, unverified runner dir, original metric not importable).
 
@@ -314,8 +314,8 @@ supplies no scorer-development feedback.
 
 A `parity: true` report means every row of that partition was compared and
 agreed. A limited run reports `parity: false` with
-`scope: {compared, total}` and the line "Smoke check passed on N of M rows"
-— it exits 0, but it is not the proof.
+`scope: {compared, total}` and the line "Smoke check passed on N of M rows."
+It exits 0, but it is not the proof.
 
 ## Router handoff after parity
 

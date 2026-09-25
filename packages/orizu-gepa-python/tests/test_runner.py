@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +15,55 @@ from orizu_gepa.runner import _runner_env, _safe_extract_zip, run_file_contract_
 
 
 class RunnerWrapperTests(unittest.TestCase):
+    def test_real_scorer_children_forward_registered_keys_and_report_stripping_once(self):
+        # ORI-2036: fresh Python process -> production wrapper -> two scorer children.
+        for hosted in (False, True):
+            with self.subTest(hosted=hosted), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "manifest.json").write_text(json.dumps({"command": [sys.executable, "scorer.py"]}))
+                (root / "scorer.py").write_text(
+                    "import json, os\nfrom pathlib import Path\n"
+                    "Path(os.environ['ORIZU_RUNNER_OUTPUT_PATH']).write_text(json.dumps({'model_response': sorted(os.environ), 'error': None}))\n"
+                )
+                quiet_names = ["ORIZU_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_MESSAGING_TOKEN", "ORIZU_RUN_API_KEY",
+                               "GEMINI_API_KEY", "GOOGLE_API_KEY", "ALI_1505_ENDPOINT_OVERRIDE_API_KEY", "BRAINTRUST_API_KEY",
+                               "CF_API_KEY", "CLOUDFLARE_API_KEY", "DAYTONA_API_KEY", "INTERNAL_API_KEY", "LINEAR_API_KEY", "RESEND_API_KEY"]
+                names = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "CUSTOM_GATEWAY_API_KEY", "UNREGISTERED_API_KEY", *quiet_names]
+                values = {name: str(uuid.uuid4()) for name in names}
+                environment = {"PATH": os.environ.get("PATH", ""), "HOME": directory,
+                               "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+                               "REQUESTS_CA_BUNDLE": "/trust/example.pem", **values}
+                if hosted:
+                    environment["ORIZU_PROVIDER_REGISTRY_EXTRA"] = json.dumps([{
+                        "id": "gateway", "protocol": "openai-chat", "baseUrl": "https://gateway.example.test/v1",
+                        "credentialEnv": "CUSTOM_GATEWAY_API_KEY", "authHeader": "Authorization", "authValuePrefix": "Bearer ",
+                    }])
+                program = (
+                    "import json, sys\nfrom orizu_gepa.runner import run_file_contract_runner\n"
+                    "for index in range(2):\n"
+                    " result = run_file_contract_runner(runner_dir=sys.argv[1], row={'id': str(index)}, prompt_body='score', body_kind='text', provider_settings={}, prompt_version_id='p', runner_version_id='r', run_id='run')\n"
+                    " print(json.dumps(result.model_response))\n"
+                )
+                result = subprocess.run([sys.executable, "-c", program, directory], env=environment, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0)
+                rows = [json.loads(line) for line in result.stdout.splitlines()]
+                self.assertEqual(len(rows), 2)
+                for received in rows:
+                    for name in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "REQUESTS_CA_BUNDLE", "ORIZU_RUNNER_INPUT_PATH", "ORIZU_RUNNER_OUTPUT_PATH"]:
+                        self.assertIn(name, received)
+                    self.assertEqual("CUSTOM_GATEWAY_API_KEY" in received, hosted)
+                    for name in [*quiet_names, "UNREGISTERED_API_KEY", "ORIZU_PROVIDER_REGISTRY_EXTRA"]:
+                        self.assertNotIn(name, received)
+                notices = [line for line in result.stderr.splitlines() if "Stripped runner credentials:" in line]
+                self.assertEqual(len(notices), 1)
+                # F2: infrastructure and historical reservations are stripped silently.
+                self.assertIn("UNREGISTERED_API_KEY", notices[0])
+                for name in quiet_names:
+                    self.assertNotIn(name, notices[0])
+                self.assertEqual("CUSTOM_GATEWAY_API_KEY" in notices[0], not hosted)
+                self.assertNotIn("Stripped runner credentials:", result.stdout)
+                self.assertFalse(any(value in result.stdout + result.stderr for value in values.values()))
+
     def test_runner_env_forwards_hosted_sandbox_tls_trust_without_inventing_it(self):
         trust_environment = {
             "AWS_CA_BUNDLE": "/sandbox/ca/aws.pem",

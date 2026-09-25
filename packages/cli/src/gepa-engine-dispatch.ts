@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'fs'
 
+import { providerFromIdentity, protocolRequiresOutputCap } from './provider-registry.js'
 import { normalizedSkilledProposerConfig } from './skilled-proposer-config.js'
 
 export type GepaEngine = 'official' | 'legacy'
@@ -318,9 +319,22 @@ function translateOfficialOptions(args: string[], project: string, environment: 
     throw new Error('--reflection-prompt-template is incompatible with --candidate-proposer skilled-proposer')
   }
 
+  // The cap is a requirement of the WIRE PROTOCOL, not of a provider list:
+  // Anthropic Messages mandates max_tokens, both OpenAI protocols do not, and
+  // an unresolved provider keeps failing closed. One rule per language; the
+  // Python copy is in orizu_gepa_connector/runtime.py (ORI-2032 row 10).
   const reflectionModel = connectorEnvironment.ORIZU_REFLECTION_MODEL ?? 'anthropic/claude-opus-4-7'
-  if (!reflectionModel.startsWith('openai/') && connectorEnvironment.ORIZU_REFLECTION_MAX_TOKENS === undefined) {
-    throw new Error('--reflection-max-tokens is required for Anthropic reflection models')
+  const reflectionProvider = providerFromIdentity(reflectionModel)
+  if (protocolRequiresOutputCap(reflectionProvider?.protocol ?? null)
+      && connectorEnvironment.ORIZU_REFLECTION_MAX_TOKENS === undefined) {
+    if (reflectionProvider === null) {
+      throw new Error(
+        `reflection model identity "${reflectionModel}" is not a registered provider identity; --reflection-max-tokens remains required while it is unresolved`
+      )
+    }
+    throw new Error(
+      `the ${reflectionProvider.protocol} protocol used by provider ${reflectionProvider.id} requires --reflection-max-tokens`
+    )
   }
 
   connectorEnvironment.ORIZU_METADATA = validatedMetadata(metadata)

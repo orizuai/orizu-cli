@@ -9,6 +9,7 @@ import {
   type HostedOptimizationRefusalCode,
 } from './hosted-optimization-refusals.js'
 import { parseJsonResponse } from './json-response.js'
+import { providerLookupFor, type CustomerProviderRow } from './provider-lookup.js'
 import {
   extractFlagValue,
   RunnerVerificationError,
@@ -44,8 +45,8 @@ function dispatchArgs(args: string[]): string[] {
 }
 
 export async function runHostedGepaOptimization(options: HostedGepaOptions): Promise<void> {
-  const refuse = (code: HostedOptimizationRefusalCode, detail?: string): true => {
-    const body = hostedOptimizationRefusalBody(code, { detail })
+  const refuse = (code: HostedOptimizationRefusalCode, detail?: string, providerIds?: readonly string[]): true => {
+    const body = hostedOptimizationRefusalBody(code, { detail, providerIds })
     if (options.json) {
       options.printJson(body)
       process.exitCode = 1
@@ -154,15 +155,44 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
   const providerSettings = JSON.parse(env.ORIZU_REFLECTION_PROVIDER_SETTINGS ?? '{}') as Record<string, unknown>
   const reflectionModel = env.ORIZU_REFLECTION_MODEL ?? 'anthropic/'
   const reflectionProvider = reflectionModel.split('/', 1)[0] || reflectionModel
-  if (!hostedProviderFromModel(reflectionModel)) {
+  let payload: unknown
+  try {
+    const response = await authedFetch(`/api/cli/providers?project=${encodeURIComponent(options.project)}`)
+    if (response.ok) payload = await parseJsonResponse<unknown>(response, 'Hosted providers')
+  } catch {
+    // Network, auth and response parsing errors share a value-free refusal.
+  }
+  if (!payload || typeof payload !== 'object' || !('providers' in payload) || !Array.isArray(payload.providers)) {
+    refuse('hosted_optimization_provider_preflight_unavailable')
+    return
+  }
+  const providers: CustomerProviderRow[] = []
+  const entries: unknown[] = payload.providers
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object'
+      || !('id' in entry) || typeof entry.id !== 'string'
+      || !('baseUrl' in entry) || typeof entry.baseUrl !== 'string'
+      || !('credentialEnv' in entry) || typeof entry.credentialEnv !== 'string'
+      || !('authHeader' in entry) || typeof entry.authHeader !== 'string'
+      || !('authValuePrefix' in entry) || typeof entry.authValuePrefix !== 'string'
+      || !('protocol' in entry) || (entry.protocol !== 'openai-chat'
+        && entry.protocol !== 'openai-responses' && entry.protocol !== 'anthropic-messages')) {
+      refuse('hosted_optimization_provider_preflight_unavailable')
+      return
+    }
+    providers.push({ id: entry.id, baseUrl: entry.baseUrl, credentialEnv: entry.credentialEnv,
+      authHeader: entry.authHeader, authValuePrefix: entry.authValuePrefix, protocol: entry.protocol })
+  }
+  const lookup = providerLookupFor(providers)
+  if (!hostedProviderFromModel(reflectionModel, lookup)) {
     refuse(
       'hosted_optimization_unsupported_provider',
-      unsupportedHostedProviderMessage(reflectionProvider)
+      unsupportedHostedProviderMessage(reflectionProvider, lookup.ids()), lookup.ids()
     )
     return
   }
   const providerSettingsError = hostedProviderSettingsError(providerSettings,
-    reflectionModel, env.ORIZU_REFLECTION_TEMPERATURE)
+    reflectionModel, env.ORIZU_REFLECTION_TEMPERATURE, lookup)
   if (providerSettingsError) throw new Error(providerSettingsError)
   const optional: Record<string, unknown> = {}
   const fields: Array<[string, string, 'number' | 'json' | 'boolean' | 'string']> = [

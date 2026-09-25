@@ -182,6 +182,17 @@ export function getWorkspaceRoot(cwd?: string): string {
   return resolve(cwd || process.cwd())
 }
 
+export function findWorkspaceRoot(cwd: string): string | null {
+  let directory = resolve(cwd)
+
+  while (true) {
+    if (existsSync(join(directory, 'orizu.team.json'))) return directory
+    const parent = dirname(directory)
+    if (parent === directory) return null
+    directory = parent
+  }
+}
+
 export function workspaceExists(cwd?: string): boolean {
   return existsSync(join(getWorkspaceRoot(cwd), 'orizu.team.json'))
 }

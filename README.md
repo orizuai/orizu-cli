@@ -23,7 +23,13 @@ Note: the one task we do _not_ let you perform from your CLI is any reviews assi
 - Access to an Orizu web app/API
 - A valid Orizu account
 
-By default, the CLI talks to `https://orizu.ai`.
+Ordinary `orizu login` defaults to `https://app.orizu.ai`. API commands keep using the selected or stored server, falling back to `https://orizu.ai` when none is configured.
+
+### App-host login
+
+Login accepts browser handoffs between `orizu.ai` and its subdomains over standard HTTPS. Custom and local servers still require an exact origin match. `--server`, `--local` and `ORIZU_BASE_URL` keep their priority; stored credentials and `--no-prompt-if-logged-in` keep their existing behavior.
+
+If login on the default app host fails before credentials are saved, the CLI suggests `orizu --server https://orizu.ai login`. This covers unavailable DNS, an unattached app domain and failures during polling or exchange. It never tries another server automatically. Login to an explicitly selected server does not suggest switching to apex.
 
 ## Updating bundled GEPA
 

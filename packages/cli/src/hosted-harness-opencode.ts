@@ -51,6 +51,8 @@
 
 import { readFileSync } from 'fs'
 
+import { findProvider, parseModelIdentity } from './provider-registry.js'
+
 import type {
   AgentHarness,
   HarnessEvent,
@@ -156,20 +158,25 @@ const ANTHROPIC_ADAPTIVE_THINKING_MODELS = new Set([
 const ANTHROPIC_ADAPTIVE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 
 /**
- * Split a possibly provider-qualified model string into provider + model id.
- * SINGLE-SLASH ids ("anthropic/claude-opus-4-8") are the assumed form; a bare
- * id defaults to provider "anthropic". This is THE shared parse — consumed by
- * BOTH the prompt path (`buildPromptRequestBody`) and the pre-prompt
- * validation (`awaitOpenCodeModelResolvable`), so the two can never drift:
- * parity is exactly what makes the validation meaningful (ALI-1086).
- * KNOWN LIMIT: `split('/', 2)` drops everything after the second slash, so a
- * 3-part id ("openrouter/anthropic/claude-x") misparses to provider
- * "openrouter" + model "anthropic" — identically in both places (today's
- * pre-existing prompt-path behavior, now shared rather than duplicated).
+ * Split a possibly provider-qualified model string into provider + model id,
+ * through THE registry parse (`parseModelIdentity`, ORI-2031): the provider is
+ * everything before the FIRST slash and the model id is everything after it.
+ * A model id is OPAQUE and may itself contain slashes (CONTEXT.md "Model id") —
+ * OpenCode's `openrouter` catalog keys every model with a vendor segment
+ * ("anthropic/claude-opus-4.8", "qwen/qwen3.7-max"; 367 of 367 keys carry one,
+ * measured against the pinned opencode-ai@1.14.41 on 2026-09-12). We assume
+ * that vendor-qualified key is also the `modelID` OpenCode expects in a prompt
+ * body; that prompt-body behavior has not been measured. A bare id (no slash)
+ * still defaults to provider "anthropic".
+ *
+ * This is THE shared parse — consumed by BOTH the prompt path
+ * (`buildPromptRequestBody`) and the pre-prompt validation
+ * (`awaitOpenCodeModelResolvable`), so the two can never drift: parity is
+ * exactly what makes the validation meaningful (ALI-1086).
  */
 export function qualifyHostedModel(model: string): { providerId: string; modelId: string } {
-  const [providerId, modelId] = model.includes('/') ? model.split('/', 2) : ['anthropic', model]
-  return { providerId, modelId }
+  const { provider, modelId } = parseModelIdentity(model)
+  return { providerId: provider ?? 'anthropic', modelId }
 }
 
 export function buildPromptRequestBody(
@@ -189,8 +196,15 @@ export function buildPromptRequestBody(
   const { providerId, modelId } = qualifyHostedModel(model)
   const modelSpec: Record<string, unknown> = { providerID: providerId, modelID: modelId }
 
+  // Reasoning options are a property of the WIRE PROTOCOL, not of a provider
+  // name (ORI-2031 row 7). `openai-chat` gets no options at all — identical to
+  // today's fall-through for any provider the driver does not recognise, and
+  // honest: Orizu has never measured chat-completions reasoning fields
+  // (ORI-2032). A bare model id still resolves through qualifyHostedModel's
+  // 'anthropic' default, so its options are unchanged.
+  const protocol = findProvider(providerId)?.protocol ?? null
   if (reasoningEffort) {
-    if (providerId === 'anthropic') {
+    if (protocol === 'anthropic-messages') {
       if (ANTHROPIC_ADAPTIVE_THINKING_MODELS.has(modelId)) {
         const options: Record<string, unknown> = { thinking: { type: 'adaptive' } }
         if (ANTHROPIC_ADAPTIVE_EFFORTS.has(reasoningEffort)) {
@@ -203,7 +217,7 @@ export function buildPromptRequestBody(
           modelSpec.options = { thinking: { type: 'enabled', budgetTokens: budget } }
         }
       }
-    } else if (providerId === 'openai') {
+    } else if (protocol === 'openai-responses') {
       modelSpec.options = { reasoningEffort, reasoningSummary: 'auto' }
     }
   }

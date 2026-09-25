@@ -51,18 +51,27 @@ export function resolveBaseUrl(flags: GlobalFlags = runtimeFlags): string {
   return rememberResolvedBaseUrl('https://orizu.ai')
 }
 
-export function resolveLoginBaseUrl(flags: GlobalFlags = runtimeFlags): string {
+interface LoginTarget {
+  baseUrl: string
+  isDefault: boolean
+}
+
+export function resolveLoginTarget(flags: GlobalFlags = runtimeFlags): LoginTarget {
   const fromFlags = getFlagBaseUrl(flags)
   if (fromFlags) {
-    return rememberResolvedBaseUrl(fromFlags)
+    return { baseUrl: rememberResolvedBaseUrl(fromFlags), isDefault: false }
   }
 
   const fromEnv = process.env.ORIZU_BASE_URL
   if (fromEnv) {
-    return rememberResolvedBaseUrl(normalizeBaseUrl(fromEnv))
+    return { baseUrl: rememberResolvedBaseUrl(normalizeBaseUrl(fromEnv)), isDefault: false }
   }
 
-  return rememberResolvedBaseUrl('https://orizu.ai')
+  return { baseUrl: rememberResolvedBaseUrl('https://app.orizu.ai'), isDefault: true }
+}
+
+export function resolveLoginBaseUrl(flags: GlobalFlags = runtimeFlags): string {
+  return resolveLoginTarget(flags).baseUrl
 }
 
 export function getBaseUrl(): string {

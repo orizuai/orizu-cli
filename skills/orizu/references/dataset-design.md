@@ -12,9 +12,9 @@ If there is no approved golden data, continue with representative production tra
 
 Use agent glue to move data from each ratified source into Orizu:
 
-1. **Pull from the source.** Use the source provider's own CLI or API to export the approved rows. Follow that source's authentication and pagination contract, and preserve its stable locator and provenance without teaching a provider-specific path here.
-2. **Normalize locally.** Transform the export into CSV, JSON, or JSONL with stable row IDs and the fields required by the ratified plan. Validate row shape and provenance before sending the file to Orizu.
-3. **Load into Orizu.** Use `orizu datasets upload` for an initial dataset, or use `orizu datasets push <path>` as the path-first, automation-friendly alternative for creating an initial dataset from a CSV, JSON, or JSONL file. Use `orizu datasets append` for approved additional rows. Then follow the version and split procedure below; loading rows does not waive its coverage or review gates.
+1. Pull from the source. Use the source provider's own CLI or API to export the approved rows. Follow that source's authentication and pagination contract, and preserve its stable locator and provenance without teaching a provider-specific path here.
+2. Normalize locally. Transform the export into CSV, JSON, or JSONL with stable row IDs and the fields required by the ratified plan. Validate row shape and provenance before sending the file to Orizu.
+3. Load into Orizu. Use `orizu datasets upload` for an initial dataset, or use `orizu datasets push <path>` as the path-first, automation-friendly alternative for creating an initial dataset from a CSV, JSON, or JSONL file. Use `orizu datasets append` for approved additional rows. Then follow the version and split procedure below; loading rows does not waive its coverage or review gates.
 
 We deliberately do not build per-provider connectors while this agent-glue method covers the need. Revisit that decision only when an approved source cannot be reached by an agent-driven pull, such as streaming-only telemetry or push-based webhooks.
 

@@ -1,6 +1,6 @@
-# Evals & Orizu Primer
+# Evals & Orizu primer
 
-> **Core idea:** You can't improve what you can't measure — but measuring the wrong thing is worse than not measuring at all. This doc walks from raw failure logs to a continuously-running evaluation loop, and shows how Orizu operationalizes each step.
+> **Core idea:** You can't improve what you can't measure, but measuring the wrong thing is worse than not measuring at all. This doc walks from raw failure logs to a continuously-running evaluation loop, and shows how Orizu operationalizes each step.
 
 The operational method is organized by the installed skill's flows:
 
@@ -39,37 +39,37 @@ Do not create or mutate standalone prompts. If a legacy identifier leads to a pr
 
 ## Error analysis (before writing any eval)
 
-The most common mistake teams make is jumping straight to evals before they understand what's actually failing. Error analysis is the prerequisite.
+The most common mistake teams make is jumping straight to evals before they understand what's failing. Error analysis is the prerequisite.
 
 **How to do it:**
 
-1. **Collect traces** — Gather a diverse sample of 100+ traces from production or your own real/synthetic usage. Diversity matters more than volume.
-2. **Annotate freely (open coding)** — Review each trace and write brief, unstructured notes about what went wrong. Be specific: *"hallucinated a fact," "misread the user's name," "failed to use the calculator tool."*
-3. **Group & categorize** — Cluster similar notes into named failure modes (tone violation, failed tool call, etc.).
-4. **Prioritize by frequency** — Count how often each category appears.
+1. Collect traces: Gather a diverse sample of 100+ traces from production or your own real/synthetic usage. Diversity matters more than volume.
+2. Annotate freely (open coding): Review each trace and write brief, unstructured notes about what went wrong. Be specific: *"hallucinated a fact," "misread the user's name," "failed to use the calculator tool."*
+3. Group & categorize: Cluster similar notes into named failure modes (tone violation, failed tool call, etc.).
+4. Prioritize by frequency: Count how often each category appears.
 
 **When to stop:** Keep adding traces until you stop discovering new failure modes (theoretical saturation).
 
 **Decision: should you even write a formal eval for this failure?**
-- If you haven't observed it, no — do error analysis first.
-- If the fix is one-shot and obvious, no — just fix it.
-- If fixing it requires repeated iteration (component edits, retries, structural changes), yes — that's where evals shine.
+- If you haven't observed it, no: do error analysis first.
+- If the fix is one-shot and obvious, no: fix it.
+- If fixing it requires repeated iteration (component edits, retries, structural changes), yes: that's where evals shine.
 
 ---
 
-## First win detail: Upload — gather diverse traces
+## First win detail: upload: gather diverse traces
 
 ### Why
 
 - Mix production traces with a **random sample**. Thumbs-down feedback alone is biased toward extreme failures and misses the subtle ones.
 - Aim for **~100+ diverse traces**. Stop adding when you stop discovering new failure modes.
 - **Sampling strategies** (use a mix):
-  - Random — surfaces unexpected issues; always include.
-  - Clustering — semantic groups reveal failure patterns.
-  - Outlier analysis — long latency, many turns, high token counts.
-  - Classification — use existing evals or a small model to surface known-bad traces.
-  - Explicit feedback — high signal but sparse.
-- **Synthetic data** when real traces are scarce: define structured dimensions (Feature × Persona × Scenario), seed from real logs, generate many candidates, filter for difficulty. Don't ask the model "generate 50 test cases" cold — it produces generic, repetitive output. Increase complexity iteratively.
+  - Random: surfaces unexpected issues; always include.
+  - Clustering: semantic groups reveal failure patterns.
+  - Outlier analysis: long latency, many turns, high token counts.
+  - Classification: use existing evals or a small model to surface known-bad traces.
+  - Explicit feedback: high signal but sparse.
+- **Synthetic data** when real traces are scarce: define structured dimensions (Feature × Persona × Scenario), seed from real logs, generate many candidates, filter for difficulty. Don't ask the model "generate 50 test cases" cold: it produces generic, repetitive output. Increase complexity iteratively.
 - For multi-turn agent failures, use the **N-1 method**: collect minimally-reproduced error traces and use the N-1 turns before the error as test cases.
 
 ### In Orizu
@@ -103,21 +103,21 @@ Full surface: `cli-reference.md`.
 
 ---
 
-## Conditional First win detail: Annotate — binary labels per failure mode
+## Conditional first win detail: annotate: binary labels per failure mode
 
 ### Why
 
-- **Binary, not Likert.** Pass/fail forces a ship/no-ship decision; 3/5 doesn't. Annotators on Likert scales default to middle values and you lose signal.
-- **One question per failure mode.** Don't bundle correctness, tone, and helpfulness into one rating — you won't know which is failing.
-- **Annotate failures you've actually observed.** Hypothetical-failure labels are low-value.
-- **Custom UI per task.** Generic annotation interfaces collapse signal. The labeler should be tailored to your data and the specific binary questions you're asking.
+- Binary, not Likert. Pass/fail forces a ship/no-ship decision; 3/5 doesn't. Annotators on Likert scales default to middle values and you lose signal.
+- One question per failure mode. Don't bundle correctness, tone, and helpfulness into one rating: you won't know which is failing.
+- Annotate failures you've actually observed. Hypothetical-failure labels are low-value.
+- Custom UI per task. Generic annotation interfaces collapse signal. The labeler should be tailored to your data and the specific binary questions you're asking.
 
 A good eval metric has these properties:
 - It measures an error you've observed.
 - It relates to a non-trivial issue you'll iterate on.
 - It's scoped to a specific failure (not "overall quality").
 - It has a binary outcome.
-- It's verifiable — humans or an LLM judge can reliably assess it.
+- It's verifiable: humans or an LLM judge can reliably assess it.
 
 ### In Orizu
 
@@ -152,28 +152,28 @@ orizu tasks status --task <taskId>
 orizu tasks export --task <taskId> --format jsonl --out ./labels.jsonl
 ```
 
-Authoring the labeler app — contract, design principles, and common patterns: see `building-apps.md`. Includes an offline smoke test (`scripts/test-app.mjs`, runs on plain `node`).
+Authoring the labeler app: contract, design principles, and common patterns: see `building-apps.md`. Includes an offline smoke test (`scripts/test-app.mjs`, runs on plain `node`).
 
 ---
 
-## First win detail: Judge — turn labels into automated evaluators
+## First win detail: judge: turn labels into automated evaluators
 
 ### Why
 
-- **Code assertions first.** If a failure is a rule (keyword present, tool called, format valid), write a code check. Fast, free, deterministic.
-- **LLM-as-a-judge for nuanced criteria only.** Powerful but slow and expensive — reserve for failures code can't catch.
-- **Validate every judge against human labels.** A judge that doesn't agree with humans is a misaligned metric.
+- Code assertions first. If a failure is a rule (keyword present, tool called, format valid), write a code check. Fast, free, deterministic.
+- LLM-as-a-judge for nuanced criteria only. Powerful but slow and expensive: reserve for failures code can't catch.
+- Validate every judge against human labels. A judge that doesn't agree with humans is a misaligned metric.
 - Track **TPR (True Positive Rate)** and **TNR (True Negative Rate)** separately, not accuracy. Accuracy is misleading on imbalanced data. Each judge must clear its agreed judge trust bar (see `building-judges.md`).
-- **A 100% pass rate is a smell** — your evals are saturated. Add harder cases.
-- **Three common eval mistakes:**
-  1. Skipping the data — using off-the-shelf metrics ("Helpfulness," "Faithfulness") that don't measure your specific failures.
+- A 100% pass rate is a smell: your evals are saturated. Add harder cases.
+- Three common eval mistakes:
+  1. Skipping the data: using off-the-shelf metrics ("Helpfulness," "Faithfulness") that don't measure your specific failures.
   2. Trusting the LLM judge without validating it against human labels.
   3. Celebrating perfect scores instead of pushing harder cases.
 
 There are three **types** of automated evals:
-- **Code-based assertions** — rule-based, deterministic. Use whenever possible.
-- **LLM-as-a-judge** — for subjective/nuanced criteria. Validate before trusting.
-- **Guardrails** — run in the request/response path to block failures before they reach users. Usually code-based or small classifiers, not LLMs.
+- Code-based assertions: rule-based, deterministic. Use whenever possible.
+- LLM-as-a-judge: for subjective/nuanced criteria. Validate before trusting.
+- Guardrails: run in the request/response path to block failures before they reach users. Usually code-based or small classifiers, not LLMs.
 
 ### In Orizu
 
@@ -185,16 +185,16 @@ This work is still authored by the agent in code, but Orizu stores the versioned
 4. Validate against the labels (train/dev/test split, TPR/TNR).
 5. Keep the subject application's instruction material in its instruction set. For an LLM judge, push the judge artifact and runner, register a scorer, then submit score runs for the set's profile versions or optimization candidates.
 
-Control-plane commands: `prompt-control-plane.md`. Detailed alignment-first walkthrough — deterministic versus LLM judge choice, binary output contract, judge trust bar agreement, judge-test evidence, and judge optimization: `building-judges.md`.
+Control-plane commands: `prompt-control-plane.md`. Detailed alignment-first walkthrough: deterministic versus LLM judge choice, binary output contract, judge trust bar agreement, judge-test evidence, and judge optimization: `building-judges.md`.
 
 ---
 
-## First win detail: Optimize — hill-climb against validated judges
+## First win detail: optimize: hill-climb against validated judges
 
 ### Why
 
 - Only optimize against judges you've validated. Otherwise you Goodhart your way to a worse system that scores higher.
-- Compare before/after on the **same eval suite** — don't trust vibes.
+- Compare before/after on the **same eval suite**: don't trust vibes.
 - Improvements compound: new traces from the improved system feed back into Upload and reveal the next layer of failures.
 
 ### In Orizu
@@ -207,13 +207,13 @@ Done locally, reported to Orizu:
 4. Stream optimization events to Orizu and complete the run with a selected candidate or a recorded no-valid-candidate outcome.
 5. Stop First win at that completed run. Route to Promote for the report, supported Final-held-out comparison, validation evidence, and human ship, gather-more-evidence, or do-not-promote decision. After Promote, use Recurse for a human-agreed cadence that turns traces from the currently deployed version into a new immutable dataset version.
 
-Control-plane commands: `prompt-control-plane.md`. Detailed walkthrough — GEPA mechanics, optional DSPy context for customers already using it, and before/after comparison: `optimization-with-gepa.md`.
+Control-plane commands: `prompt-control-plane.md`. Detailed walkthrough: GEPA mechanics, optional DSPy context for customers already using it, and before/after comparison: `optimization-with-gepa.md`.
 
 ---
 
-## Deploying Continuously
+## Deploying continuously
 
-Evals aren't just for development. Deploy them in three modes:
+Evals support development and production. Deploy them in three modes:
 
 |              | **CI/CD**              | **Online Monitoring**             | **Guardrails**                       |
 |--------------|------------------------|-----------------------------------|--------------------------------------|
@@ -227,7 +227,7 @@ Evals aren't just for development. Deploy them in three modes:
 
 ---
 
-## Finding Failure Hotspots in Multi-Step Agents
+## Finding failure hotspots in multi-step agents
 
 When an agent has many steps (Plan → Search → Code → Finalize), build a **Transition Failure Matrix** to spot where it breaks down most often:
 
@@ -239,7 +239,7 @@ Hotspots tell you which transition to fix first. Example: `GenSQL → ExecSQL` c
 
 ---
 
-## Quick Reference: Mental Model
+## Quick reference: mental model
 
 ```
 Production Traffic

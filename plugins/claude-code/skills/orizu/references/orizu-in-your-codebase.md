@@ -157,11 +157,11 @@ A digest belonging to a different locked Version fails with `instruction_set_int
 
 ## Runtime rules
 
-- **Load atomically.** Components, settings, and Provenance are one tested Synced version. Never combine pieces from different Versions.
-- **Fail closed to a whole fallback.** Choose a complete, explicit fallback deployment before constructing messages. Do not interpret an unresolved Orizu Pointer as fallback permission.
-- **Keep rollout policy in customer code.** Feature flags and cohorts select explicit `set/profile@vN` Specifiers. The Lock's `pins` field is reserved and never hand-edited: the generated index embeds the Lock, so an isolated edit causes `generated_module_drift`. When pruning today, pass repeatable `--keep <set/profile@vN>` for every cohort or fallback Version.
-- **Keep consuming seams outside `orizu/`.** Registries, deployment-key adapters, and model-call assembly remain customer-owned code. When replacing an old integration, grep for imports and calls of its loader functions before deleting them, then route those call sites through `helpers/load.ts`.
-- **Attach Provenance to every model call.** Record `orizu.instruction_set.id`, `orizu.profile_version.id`, and `orizu.instruction_set.digest`. See the [public CLI reference](https://orizu.ai/docs/references/cli-reference) for read-back commands.
+- Load atomically. Components, settings, and Provenance are one tested Synced version. Never combine pieces from different Versions.
+- Fail closed to a whole fallback. Choose a complete, explicit fallback deployment before constructing messages. Do not interpret an unresolved Orizu Pointer as fallback permission.
+- Keep rollout policy in customer code. Feature flags and cohorts select explicit `set/profile@vN` Specifiers. The Lock's `pins` field is reserved and never hand-edited: the generated index embeds the Lock, so an isolated edit causes `generated_module_drift`. When pruning today, pass repeatable `--keep <set/profile@vN>` for every cohort or fallback Version.
+- Keep consuming seams outside `orizu/`. Registries, deployment-key adapters, and model-call assembly remain customer-owned code. When replacing an old integration, grep for imports and calls of its loader functions before deleting them, then route those call sites through `helpers/load.ts`.
+- Attach Provenance to every model call. Record `orizu.instruction_set.id`, `orizu.profile_version.id`, and `orizu.instruction_set.digest`. See the [public CLI reference](https://orizu.ai/docs/references/cli-reference) for read-back commands.
 
 ## Shipping a new Version
 
@@ -178,7 +178,7 @@ A digest belonging to a different locked Version fails with `instruction_set_int
 
 Reviewability beats deduplication. A reviewer sees the effective prompt without mentally merging inheritance layers, and runtime has no merge behavior to get wrong.
 
-### Why vendored Helpers?
+### Why vendored helpers?
 
 Runtime remains self-contained and does not acquire an Orizu library dependency. The Helpers are local and editable; fingerprints let `sync` preserve customer changes rather than silently overwrite them.
 
@@ -186,10 +186,10 @@ Runtime remains self-contained and does not acquire an Orizu library dependency.
 
 A movable control-plane Pointer must not change deployed behavior without a repository diff. `update` makes movement explicit and reviewable.
 
-### May I edit a synced Component directly?
+### May I edit a synced component directly?
 
 Not as a durable authoring path. `verify` correctly treats that as drift. Make the change in Orizu, approve a new immutable Version, and sync it so authoring history, eval evidence, and deployed bytes remain connected.
 
-### Can apps in one monorepo use different Versions?
+### Can apps in one monorepo use different versions?
 
 Yes. Give each app its own output root and Lock; each app then reviews, verifies, and traces exactly what it ships.

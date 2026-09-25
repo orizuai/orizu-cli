@@ -5,14 +5,16 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { runPipedChild } from './child-output-tee.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
-import { INJECTED_ENV_VARS_ENV } from './hosted-environment.js'
+import { deliveredProviderLookup, HOSTED_PROVIDER_FAILURE, INJECTED_ENV_VARS_ENV, PROVIDER_REGISTRY_EXTRA_ENV } from './hosted-environment.js'
+import { credentialEnvFor, parseModelIdentity } from './provider-registry.js'
+import type { ProviderLookup } from './provider-lookup.js'
 import { materializeRunnerVersion, cleanupMaterializedRunners } from './runner-version-materialization.js'
 import { prepareSkilledProposerLaunch, spawnSkilledProposerChild } from './skilled-proposer-launch.js'
 import { hostedProviderFromModel } from './hosted-provider-settings.js'
 import { validNormalizedSkilledProposerConfig } from './skilled-proposer-wire.js'
 import { REDACTION_PLACEHOLDER, redactSecrets } from './secret-redaction.js'
 interface HostedOptimizationIo { printErr?: (value: string) => void | Promise<void> }
-interface BootEnvironment { agentTokenUrl: URL; baseUrl: URL; bootSecret: string; coordinatorUrl: URL; runId: string; sessionId: string }
+interface BootEnvironment { agentTokenUrl: URL; baseUrl: URL; bootSecret: string; coordinatorUrl: URL; runId: string; sessionId: string; reflectionModel: string; providers: ProviderLookup }
 interface MintResponse extends Record<string, unknown> { token: string; runId: string; projectRef: string; jobSpec: Record<string, unknown> }
 interface TokenBroker { url: string; stop(): void; token(): string; secrets(): string[] }
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
@@ -21,10 +23,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 const DIAGNOSTIC_TAIL_MAX_BYTES = 1024
 const DIAGNOSTIC_RAW_MAX_BYTES = 64 * 1024
-const INJECTED_SECRET_ENV_NAMES = [
-  'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+// Connector, endpoint-override and control-plane secrets are not provider data.
+const NON_PROVIDER_SECRET_ENV_NAMES = [
   'BRAINTRUST_API_KEY', 'ALI_1505_ENDPOINT_OVERRIDE_API_KEY', 'ORIZU_TOKEN',
-] as const
+]
+// Preserve historical exact-value redaction without granting runner forwarding.
+const LEGACY_REDACTION_ONLY_ENV_NAMES = ['GEMINI_API_KEY', 'GOOGLE_API_KEY']
 const ENVIRONMENT_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u
 
 interface CapturedDiagnosticSource {
@@ -151,9 +155,13 @@ function injectedSecrets(
     .split(',')
     .map(name => name.trim())
     .filter(name => ENVIRONMENT_VARIABLE_NAME.test(name))
+  const providerNames = boot.providers.ids().flatMap(id => {
+    const provider = boot.providers.find(id)
+    return provider ? [provider.credentialEnv] : []
+  })
   return Array.from(new Set([
     boot.bootSecret,
-    ...[...INJECTED_SECRET_ENV_NAMES, ...registeredNames].map(name => process.env[name]),
+    ...[...providerNames, ...NON_PROVIDER_SECRET_ENV_NAMES, ...LEGACY_REDACTION_ONLY_ENV_NAMES, ...registeredNames].map(name => process.env[name]),
     ...(broker?.secrets() ?? []),
   ].filter((value): value is string => typeof value === 'string' && value.length > 0)))
 }
@@ -163,9 +171,18 @@ function secureUrl(value: string): URL {
   if (url.username || url.password || url.hash || (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))) throw new Error()
   return url
 }
+class ProviderCredentialMissing extends Error {}
+
+function requireModelCredential(model: string, lookup: ProviderLookup): void {
+  const provider = parseModelIdentity(model).provider
+  const entry = lookup.fromIdentity(model)
+  if (!entry) throw new ProviderCredentialMissing(`provider ${provider ?? '<unqualified>'} is not registered (${provider ? credentialEnvFor(provider) : 'credential env unknown'})`)
+  if (!process.env[entry.credentialEnv]?.trim()) throw new ProviderCredentialMissing(`provider ${entry.id} requires ${entry.credentialEnv}`)
+}
+
 function bootEnvironment(): BootEnvironment {
   const required = ['ORIZU_RUN_ID', 'ORIZU_SESSION_ID', 'ORIZU_AGENT_TOKEN_URL', 'ORIZU_BASE_URL',
-    'ORIZU_BOOT_SECRET', 'ORIZU_COORDINATOR_URL', 'ANTHROPIC_API_KEY'] as const
+    'ORIZU_BOOT_SECRET', 'ORIZU_COORDINATOR_URL', 'ORIZU_REFLECTION_MODEL']
   const missing = required.find(name => !process.env[name])
   if (missing) throw new Error(`${missing} is required`)
   const runId = process.env.ORIZU_RUN_ID!, sessionId = process.env.ORIZU_SESSION_ID!
@@ -177,9 +194,12 @@ function bootEnvironment(): BootEnvironment {
   if (baseUrl.pathname !== '/' || baseUrl.search || coordinatorUrl.pathname !== '/' || coordinatorUrl.search
     || agentTokenUrl.search || agentTokenUrl.origin !== coordinatorUrl.origin
     || agentTokenUrl.pathname !== `/optimizations/${runId}/agent-token`) throw new Error()
-  return { agentTokenUrl, baseUrl, bootSecret: process.env.ORIZU_BOOT_SECRET!, coordinatorUrl, runId, sessionId }
+  const reflectionModel = process.env.ORIZU_REFLECTION_MODEL!
+  const providers = deliveredProviderLookup(process.env[PROVIDER_REGISTRY_EXTRA_ENV])
+  requireModelCredential(reflectionModel, providers)
+  return { agentTokenUrl, baseUrl, bootSecret: process.env.ORIZU_BOOT_SECRET!, coordinatorUrl, runId, sessionId, reflectionModel, providers }
 }
-function validJobSpec(value: unknown, projectRef: unknown): value is Record<string, unknown> {
+function validJobSpec(value: unknown, projectRef: unknown, lookup: ProviderLookup): value is Record<string, unknown> {
   if (!isRecord(value) || typeof projectRef !== 'string' || !/^[^/\s]+\/[^/\s]+$/u.test(projectRef)
     || value.schemaVersion !== 1 || value.engine !== 'official') return false
   const ids = ['optimizerVersionId', 'runnerVersionId', 'scorerVersionId', 'scorerRunnerVersionId', 'datasetVersionId', 'splitSetId']
@@ -193,7 +213,7 @@ function validJobSpec(value: unknown, projectRef: unknown): value is Record<stri
     'skipPerfectParentReflection']
   if (booleans.some(field => typeof value[field] !== 'boolean') || value.promotionLabel !== null
     || !isRecord(value.reflectionProviderSettings) || typeof value.reflectionModel !== 'string'
-    || !hostedProviderFromModel(value.reflectionModel)) return false
+    || !hostedProviderFromModel(value.reflectionModel, lookup)) return false
   const skilled = value.candidateProposer === 'skilled-proposer'
   if ((value.candidateProposer !== null && !skilled)
     || (skilled && (!validNormalizedSkilledProposerConfig(value.candidateProposerConfig)
@@ -240,7 +260,7 @@ async function mint(boot: BootEnvironment): Promise<{ response: Response; body: 
 function parseMint(body: unknown, boot: BootEnvironment): MintResponse | null {
   if (!isRecord(body) || body.runId !== boot.runId || typeof body.token !== 'string' || !body.token
     || typeof body.expiresAt !== 'string' || !Number.isFinite(Date.parse(body.expiresAt))
-    || !validJobSpec(body.jobSpec, body.projectRef)) return null
+    || !validJobSpec(body.jobSpec, body.projectRef, boot.providers)) return null
   return body as MintResponse
 }
 function childEnvironment(
@@ -403,7 +423,9 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
   let boot: BootEnvironment
   try { boot = bootEnvironment() } catch (error) {
     const message = error instanceof Error && error.message ? `: ${error.message}` : ''
-    await io.printErr?.(`hosted_optimization_invalid_environment${message}`)
+    const reason = error instanceof ProviderCredentialMissing
+      ? HOSTED_PROVIDER_FAILURE.credentialMissing : 'hosted_optimization_invalid_environment'
+    await io.printErr?.(`${reason}${message}`)
     return 1
   }
   delete process.env.ORIZU_BOOT_SECRET
@@ -421,6 +443,12 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
     if (!first.response.ok) {
       throw new Error(failureDetail(first.body) || `mint status ${first.response.status}`)
     }
+    if (isRecord(first.body) && isRecord(first.body.jobSpec)
+      && typeof first.body.jobSpec.reflectionModel === 'string'
+      && first.body.jobSpec.reflectionModel !== boot.reflectionModel) {
+      reason = HOSTED_PROVIDER_FAILURE.selectionMismatch
+      throw new Error('minted reflection selection does not match ORIZU_REFLECTION_MODEL')
+    }
     const minted = parseMint(first.body, boot)
     if (!minted) {
       reason = isRecord(first.body) && first.body.runId !== undefined && first.body.runId !== boot.runId
@@ -429,6 +457,8 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
         failureDetail(first.body) || 'mint response did not contain a valid hosted job specification'
       )
     }
+    reason = HOSTED_PROVIDER_FAILURE.credentialMissing
+    requireModelCredential(String(minted.jobSpec.reflectionModel), boot.providers)
     process.env.ORIZU_BASE_URL = boot.baseUrl.origin
     process.env.ORIZU_TOKEN = minted.token
     reason = 'hosted_optimization_materialization_failed'

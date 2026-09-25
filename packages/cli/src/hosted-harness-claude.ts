@@ -90,9 +90,10 @@
  *      comparison doc's swappability verdict.
  *   7. Provider-qualified model strings (e.g. `anthropic/claude-opus-4-8`) are
  *      reduced to the bare model id the SDK expects (leading `anthropic/` is
- *      stripped; other providers pass through unchanged and would be the SDK's to
- *      reject).
+ *      stripped). Other providers pass through unchanged for the SDK to judge.
  */
+
+import { parseModelIdentity } from './provider-registry.js'
 
 import type {
   AgentHarness,
@@ -241,10 +242,14 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /** Reduce a provider-qualified model ("anthropic/claude-opus-4-8") to the bare id
- *  the Agent SDK expects; other providers pass through for the SDK to judge. */
+ *  the Agent SDK expects; other providers pass through for the SDK to judge.
+ *  Uses the registry parse so there is ONE definition of a provider segment;
+ *  byte-identical to the old `startsWith('anthropic/')` strip, including
+ *  `'anthropic/'` → `''` and `'/claude'` → `'/claude'`. */
 function toSdkModel(model: string | undefined): string | undefined {
   if (!model) return undefined
-  return model.startsWith('anthropic/') ? model.slice('anthropic/'.length) : model
+  const { provider, modelId } = parseModelIdentity(model)
+  return provider === 'anthropic' ? modelId : model
 }
 
 /** Map the seam's structural MCP descriptors to the SDK's config record. */

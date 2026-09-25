@@ -21,6 +21,28 @@ export interface OptimizationExportCliContext {
   sanitizeTerminalText: (value: unknown) => string
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function printTruncatedCandidateFlags(
+  ctx: OptimizationExportCliContext,
+  data: Record<string, unknown>
+): void {
+  if (!Array.isArray(data.candidates)) return
+  const ids = data.candidates.flatMap(candidate => {
+    if (!isRecord(candidate) || candidate.truncated !== true) return []
+    const id = candidate.id
+    return typeof id === 'string' && id.length > 0 ? [id] : []
+  })
+  if (ids.length === 0) return
+  ctx.printLine(
+    `Truncated candidates: ${ids
+      .map(id => `${sanitizeHumanInlineText(ctx.sanitizeTerminalText, id)} (truncated: true)`)
+      .join(', ')}`
+  )
+}
+
 export function printDiffCommentsSuppressionMarker(
   ctx: OptimizationExportCliContext,
   data: Record<string, unknown>
@@ -68,5 +90,6 @@ export async function exportOptimizationRunCommand(
   ctx.printLine(
     `Saved optimization export to ${ctx.sanitizeTerminalText(filename)}`
   )
+  printTruncatedCandidateFlags(ctx, data)
   printDiffCommentsSuppressionMarker(ctx, data)
 }

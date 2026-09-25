@@ -1,3 +1,5 @@
+import { formatProviderList, providerIds } from './provider-registry.js'
+
 export const HOSTED_OPTIMIZATION_REFUSAL_CONTRACTS = {
   hosted_optimization_candidate_runner_not_registered: {
     status: 400,
@@ -27,6 +29,10 @@ export const HOSTED_OPTIMIZATION_REFUSAL_CONTRACTS = {
     status: 400,
     remediation: 'Pass each runner directory and runner version flag exactly once.',
   },
+  hosted_optimization_provider_preflight_unavailable: {
+    status: 503,
+    remediation: 'Run `orizu login`, confirm project access, and retry when the provider list is available.',
+  },
   hosted_optimization_runner_verification_unavailable: {
     status: 503,
     remediation: 'Retry after runner verification is available; do not re-register unchanged runner bytes.',
@@ -49,7 +55,8 @@ export const HOSTED_OPTIMIZATION_REFUSAL_CONTRACTS = {
   },
   hosted_optimization_unsupported_provider: {
     status: 400,
-    remediation: 'Choose a supported reflection provider: anthropic or openai.',
+    remediation: (ids: readonly string[] = providerIds()) =>
+      `Choose a supported reflection provider: ${formatProviderList(ids)}.`,
   },
   hosted_optimization_team_not_enabled: {
     status: 403,
@@ -85,12 +92,13 @@ export interface HostedOptimizationRefusalBody extends Record<string, unknown> {
 
 export function hostedOptimizationRefusalBody(
   code: HostedOptimizationRefusalCode,
-  options: { runningRunUrls?: string[]; detail?: string } = {}
+  options: { runningRunUrls?: string[]; detail?: string; providerIds?: readonly string[] } = {}
 ): HostedOptimizationRefusalBody {
+  const remediation = HOSTED_OPTIMIZATION_REFUSAL_CONTRACTS[code].remediation
   return {
     error: 'Hosted optimization launch refused.',
     code,
-    remediation: HOSTED_OPTIMIZATION_REFUSAL_CONTRACTS[code].remediation,
+    remediation: typeof remediation === 'function' ? remediation(options.providerIds) : remediation,
     ...(options.runningRunUrls ? { runningRunUrls: options.runningRunUrls } : {}),
     ...(options.detail ? { detail: options.detail.slice(0, 300) } : {}),
   }

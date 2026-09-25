@@ -1,22 +1,22 @@
-# Orizu CLI Reference
+# Orizu CLI reference
 
 ## Contents
 
-- [Default Command Strategy](#default-command-strategy)
-- [Command Matrix](#command-matrix)
-- [End-to-End Flows](#end-to-end-flows)
-- [Notes and Limits](#notes-and-limits)
+- [Default command strategy](#default-command-strategy)
+- [Command matrix](#command-matrix)
+- [End-to-end flows](#end-to-end-flows)
+- [Notes and limits](#notes-and-limits)
 
-## Default Command Strategy
+## Default command strategy
 
 1. Verify auth first: `orizu whoami`.
 2. Prefer explicit flags over prompts.
 3. Use interactive fallback only in TTY sessions.
-4. Prefer `--json` for machine-readable output — every command supports it (prefix `orizu --json <cmd>` or trailing flag). Long-running commands emit the JSON summary as the final stdout line.
+4. Prefer `--json` for machine-readable output: every command supports it (prefix `orizu --json <cmd>` or trailing flag). Long-running commands emit the JSON summary as the final stdout line.
 5. Validate command output before proceeding.
 6. On failure, fix flags/identifiers and rerun.
 
-## Command Matrix
+## Command matrix
 
 ### Authentication
 
@@ -97,7 +97,7 @@ For any other 5xx or non-JSON 5xx response, storage is ambiguous: retrying can f
 - Product feedback describes Orizu itself. Instruction-set text, dataset rows, traces, judge inputs and outputs, and model or application outputs stay out of every field and attachment.
 - `--json` writes exactly one acknowledgement object to stdout; notices and refusals go to stderr.
 
-### Agent Setup
+### Agent setup
 
 ```bash
 orizu capabilities --json
@@ -350,7 +350,11 @@ orizu model-configs list --project my-team/quality-eval --json
 orizu model-configs show azure/gpt-5.4-mini --project my-team/quality-eval
 orizu model-configs settings set azure/gpt-5.4-mini --settings '{"temperature":0.3}' --project my-team/quality-eval
 orizu model-configs copy openai/gpt-5.4-mini --to azure/gpt-5.4-mini --project my-team/quality-eval
+orizu model-configs price set azure/gpt-5.4-mini --input-usd-per-mtok 3 --output-usd-per-mtok 15 --project my-team/quality-eval
+orizu model-configs price clear azure/gpt-5.4-mini --project my-team/quality-eval
 ```
+
+`price set` accepts nonnegative USD rates per million tokens; optional `--cache-read-usd-per-mtok` and `--cache-write-usd-per-mtok` set cache rates. Price changes leave invocation settings and profile versions unchanged. Price is not snapshotted: cost follows the model config's current price, including for older runs. After `price clear`, cost uses provider-reported cost or an eligible built-in price, otherwise it is unknown.
 
 Model identities are lowercase `provider/model` values and unique within a project. Creating a config creates settings version 1 (with `{}` when `--settings` is omitted). `settings set` appends a settings version and advances the current pointer; `copy` snapshots the source’s current settings and display name into version 1 for the new identity. `--settings` accepts a JSON object or `@file`; all commands support `--json`.
 
@@ -482,7 +486,7 @@ orizu tasks complete --task <taskId>
 
 Mark an active or paused task completed only after its required response-bearing export has been verified. Completion does not publish the task report; use the Report commands above after completion.
 
-### Instruction Control Plane
+### Instruction control plane
 
 For instruction sets, judges, runners, run submission, optimizer artifacts,
 live event logging, and accepted-candidate promotion, read
@@ -540,9 +544,9 @@ Behavior:
 - The v1 export preserves the run row's `best_candidate_id` in `summary.bestCandidateId` when event derivation rejects it as unknown; candidate detail may be absent, and the field is `null` when neither source names a best candidate.
 - Server optimization events redact row snapshots and reflection prompts by default; export rehydrates row inputs from dataset artifacts when possible and includes bundled `run-gepa` reflection responses.
 
-## End-to-End Flows
+## End-to-end flows
 
-### New Team to Export
+### New team to export
 
 ```bash
 orizu login
@@ -583,7 +587,7 @@ orizu tasks status --task <taskId>
 orizu tasks export --task <taskId> --format csv --out ./support-round1.csv
 ```
 
-### Interactive-First Shortcuts
+### Interactive-first shortcuts
 
 ```bash
 orizu apps list
@@ -594,7 +598,7 @@ orizu tasks export
 
 Use these shortcuts only in TTY environments where prompts can run.
 
-## Notes and Limits
+## Notes and limits
 
 - `--json` may appear before or after a command. Non-streaming commands emit one JSON document, with long-running summaries on the final stdout line; streaming `orizu run tail --json` instead emits JSONL, one event object per line.
 - `tasks create` creates a draft by default, does not require `--assignees`, and pins the app's current version when the task is created.

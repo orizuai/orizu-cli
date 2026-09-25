@@ -19,14 +19,14 @@ When Orizu causes a failure, mismatch, missing capability, unclear next step, or
 
 ### On-ramp
 
-- **Onboard** — reach for it in a repo Orizu hasn't touched, or when no human-ratified improvement plan names the starting surface. Follow `flows/onboard.md`.
+- Onboard: reach for it in a repo Orizu hasn't touched, or when no human-ratified improvement plan names the starting surface. Follow `flows/onboard.md`.
 
 ### Main flow
 
-- **Existing GEPA/DSPy migration** — reach for it when the user brings an existing GEPA or DSPy optimization setup. If no committed human-ratified improvement plan covers that setup's target surface, run Onboard first. Only then follow `references/migrate-existing-gepa-setup.md` to clone it into ordinary Orizu artifacts; stop after scorer parity, then enter First win.
-- **Hand-rolled instruction-layout migration** — reach for it when a repository has bespoke instruction snapshots, hashes, verification, or loading. If no committed human-ratified improvement plan covers that target surface, run Onboard first. Only then follow `references/migrate-hand-rolled-instruction-layout.md` to prove content identity and adopt the paved layout.
-- **First win** — reach for it after Onboard has produced a human-ratified improvement plan and recommended quick win, when Recurse starts a refreshed same-surface cycle, or after Triage validates an eval gap that requires instruction optimization. Follow `flows/first-win.md`.
-- **Promote** — reach for it after a completed optimization run needs a report, validation evidence, and a human promotion decision. Follow `flows/promote.md`.
+- Existing GEPA/DSPy migration: reach for it when the user brings an existing GEPA or DSPy optimization setup. If no committed human-ratified improvement plan covers that setup's target surface, run Onboard first. Only then follow `references/migrate-existing-gepa-setup.md` to clone it into ordinary Orizu artifacts; stop after scorer parity, then enter First win.
+- Hand-rolled instruction-layout migration: reach for it when a repository has bespoke instruction snapshots, hashes, verification, or loading. If no committed human-ratified improvement plan covers that target surface, run Onboard first. Only then follow `references/migrate-hand-rolled-instruction-layout.md` to prove content identity and adopt the paved layout.
+- First win: reach for it after Onboard has produced a human-ratified improvement plan and recommended quick win, when Recurse starts a refreshed same-surface cycle, or after Triage validates an eval gap that requires instruction optimization. Follow `flows/first-win.md`.
+- Promote: reach for it after a completed optimization run needs a report, validation evidence, and a human promotion decision. Follow `flows/promote.md`.
 
 ### After the first win
 
@@ -34,9 +34,9 @@ Active-harm exception: open Triage's bounded-containment step before checking it
 
 Offer these by the user's own interest, never as a forced sequence:
 
-- **Recurse** — reach for it when the user wants a cadence for fresh traces and another cycle on the same surface. Follow `flows/recurse.md`.
-- **Triage** — reach for it when a reported issue needs trace analysis and an eval-gap decision about whether an existing eval catches it, needs fixing, is missing, or the reported behavior is expected and needs a recorded no-change closure before any fix or optimization. Follow `flows/triage.md`.
-- **Expand** — reach for it when the user wants the next instruction surface from Onboard's inventory selected by the same quick-win criterion. Follow `flows/expand.md`.
+- Recurse: reach for it when the user wants a cadence for fresh traces and another cycle on the same surface. Follow `flows/recurse.md`.
+- Triage: reach for it when a reported issue needs trace analysis and an eval-gap decision about whether an existing eval catches it, needs fixing, is missing, or the reported behavior is expected and needs a recorded no-change closure before any fix or optimization. Follow `flows/triage.md`.
+- Expand: reach for it when the user wants the next instruction surface from Onboard's inventory selected by the same quick-win criterion. Follow `flows/expand.md`.
 
 ## Routing rules
 
@@ -59,20 +59,20 @@ Keep datasets, labels, judges, runners, scorers, instruction-set profiles, optim
 
 ## Shared references
 
-- `references/vocabulary.md` — canonical workflow, artifact, quick-win, and flow vocabulary; reuse its wording verbatim.
-- `references/primer.md` — the eval-driven method and why each stage exists.
-- `references/assess-and-plan.md` — repo inventory, quick-win selection, plan conversation, and durable plan artifact.
-- `references/cli-reference.md` — current command surface, setup, output semantics, limits, and execution facts.
-- `references/authority-map.md` — the single source of truth for who executes each action and exact hand-offs.
-- `references/dataset-design.md` — source selection, scenario coverage, splits, versioning, and Final-held-out isolation.
-- `references/eval-strategy.md` — approved-label decision, annotation design, task publication, and completeness.
-- `references/building-apps.md` — labeling-app contract, patterns, preview, and smoke test.
-- `references/building-judges.md` — judge/scorer authoring, trust bars, alignment validation, and acceptance.
-- `references/prompt-control-plane.md` — artifact contracts, scorer inputs, score submission, optimizer behavior, and promotion endpoints.
-- `references/optimization-with-gepa.md` — GEPA configuration, launch, monitoring, retries, and optional DSPy context.
-- `references/optimization-reports.md` — evidence interpretation, Final-held-out comparison, report structure, and recommendations.
-- `references/instructions-after-prompts.md` — prompts-era compatibility and remaining legacy read surfaces.
-- `references/orizu-in-your-codebase.md` — deployment mental model, Specifiers, Pointer semantics, emitted layout ownership, integrity boundaries, and runtime rules.
+- `references/vocabulary.md`: canonical workflow, artifact, quick-win, and flow vocabulary; reuse its wording verbatim.
+- `references/primer.md`: the eval-driven method and why each stage exists.
+- `references/assess-and-plan.md`: repo inventory, quick-win selection, plan conversation, and durable plan artifact.
+- `references/cli-reference.md`: current command surface, setup, output semantics, limits, and execution facts.
+- `references/authority-map.md`: the single source of truth for who executes each action and exact hand-offs.
+- `references/dataset-design.md`: source selection, scenario coverage, splits, versioning, and Final-held-out isolation.
+- `references/eval-strategy.md`: approved-label decision, annotation design, task publication, and completeness.
+- `references/building-apps.md`: labeling-app contract, patterns, preview, and smoke test.
+- `references/building-judges.md`: judge/scorer authoring, trust bars, alignment validation, and acceptance.
+- `references/prompt-control-plane.md`: artifact contracts, scorer inputs, score submission, optimizer behavior, and promotion endpoints.
+- `references/optimization-with-gepa.md`: GEPA configuration, launch, monitoring, retries, and optional DSPy context.
+- `references/optimization-reports.md`: evidence interpretation, Final-held-out comparison, report structure, and recommendations.
+- `references/instructions-after-prompts.md`: prompts-era compatibility and remaining legacy read surfaces.
+- `references/orizu-in-your-codebase.md`: deployment mental model, Specifiers, Pointer semantics, emitted layout ownership, integrity boundaries, and runtime rules.
 
 ## Guardrails
 

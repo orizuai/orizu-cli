@@ -10,14 +10,14 @@ Only after the user ratifies the plan and the ratified plan is committed at its 
 
 ## 2. Survey the codebase
 
-Locate every LLM surface, not only obvious instruction files. Search for model SDK and API calls, agent entry points, RAG or retrieval pipelines, tool definitions, structured-output parsers, instruction and template files, Model Config identity and settings, and fallbacks. For each surface, record:
+Locate every LLM surface, including those outside obvious instruction files. Search for model SDK and API calls, agent entry points, RAG or retrieval pipelines, tool definitions, structured-output parsers, instruction and template files, Model Config identity and settings, and fallbacks. For each surface, record:
 
 - the user-visible job, owner, entry point, and execution flow;
 - its instruction set or candidate seed, using the instructions CLI command surface when it is already registered;
 - Model Config identity and settings, tools, retrieval dependencies, output contracts, and safety boundaries;
 - observed failure reports and other evidence, clearly separated from hypotheses;
 - existing evals, tests, judges, golden labels, and deployment or monitoring gates;
-- where Orizu could add measurement leverage and where it would add no value.
+- where Orizu could add measurement value and where it would add no value.
 
 Do not collapse multiple surfaces into one optimization target. Call out repeated infrastructure and dependencies, but keep each surface's failures and evidence attributable.
 
@@ -53,7 +53,7 @@ Mark each item **decided**, **proposed**, or **open**, with its evidence and own
 Use a pointed, grilling-style conversation to resolve the ledger, not a generic intake questionnaire:
 
 1. Present the codebase assessment first: observed facts, hypotheses, gaps, Orizu opportunities, and the decisions they create.
-2. Ask the highest-leverage open question in context. Explain why it matters, give concrete options and tradeoffs when useful, and state a recommendation separately from the decision.
+2. Ask the most useful open question in context. Explain why it matters, give concrete options and tradeoffs when useful, and state a recommendation separately from the decision.
 3. Probe vague goals. Ask what observable outcome would disprove success, which scenario class matters first, and what regression would block shipping.
 4. Challenge contradictions and hidden assumptions respectfully. For example, a source cannot be both unavailable and the required ground truth; a judge cannot gate promotion before its trust bar is agreed and validated.
 5. Reflect the answer into the ledger and confirm the consequence. Then take the next open decision.
@@ -66,17 +66,17 @@ After the ledger is resolved, present the complete plan and ask the user to revi
 
 Write a specific plan that another agent can execute without reconstructing the conversation. Use this outline, adapting detail rather than deleting unresolved decisions:
 
-1. **Status and ratification** — Proposed or Ratified; Orizu `team/project`; ratifier, date, and the user statement or recorded decision that constitutes approval.
-2. **Desired outcome and success measures** — user-visible goal, current evidence, target measures, constraints, and non-goals.
-3. **Codebase assessment** — every LLM surface, its entry point and flow, instruction set or seed, Model Config, dependencies, owner, existing evals, and Orizu opportunity.
-4. **Failure modes and scenario classes** — observed evidence, priority, coverage boundary, and explicit hypotheses that still need data.
-5. **Source inventory and data-source decision** — all candidate sources, the chosen sources and rejected alternatives, access owner, sampling, privacy, retention, redaction, and spot-check plan.
-6. **Ground truth and annotation** — trusted golden labels or human labeling path, decision owner, and how label quality will be checked.
-7. **Judge plan and trust bars** — code assertion or LLM judge per failure mode, validation evidence required, and the user-owned judge trust bar for each downstream decision.
-8. **Instruction set and optimization target** — target profile and complete component map, other code in scope, exclusions, and the held-constant environment.
-9. **Final-held-out validation and promotion decision** — split strategy, scenario-class measures, regression limits, cost and latency bounds, ship/rollback evidence, and the human promotion owner.
-10. **Phased work and handoffs** — ordered dataset, annotation, judge, optimization, and report work with human gates before irreversible or production-impacting actions.
-11. **Open decisions** — owner, evidence needed, and why each item blocks ratification or a later phase.
+1. Status and ratification: Proposed or Ratified; Orizu `team/project`; ratifier, date, and the user statement or recorded decision that constitutes approval.
+2. Desired outcome and success measures: user-visible goal, current evidence, target measures, constraints, and non-goals.
+3. Codebase assessment: every LLM surface, its entry point and flow, instruction set or seed, Model Config, dependencies, owner, existing evals, and Orizu opportunity.
+4. Failure modes and scenario classes: observed evidence, priority, coverage boundary, and explicit hypotheses that still need data.
+5. Source inventory and data-source decision: all candidate sources, the chosen sources and rejected alternatives, access owner, sampling, privacy, retention, redaction, and spot-check plan.
+6. Ground truth and annotation: trusted golden labels or human labeling path, decision owner, and how label quality will be checked.
+7. Judge plan and trust bars: code assertion or LLM judge per failure mode, validation evidence required, and the user-owned judge trust bar for each downstream decision.
+8. Instruction set and optimization target: target profile and complete component map, other code in scope, exclusions, and the held-constant environment.
+9. Final-held-out validation and promotion decision: split strategy, scenario-class measures, regression limits, cost and latency bounds, ship/rollback evidence, and the human promotion owner.
+10. Phased work and handoffs: ordered dataset, annotation, judge, optimization, and report work with human gates before irreversible or production-impacting actions.
+11. Open decisions: owner, evidence needed, and why each item blocks ratification or a later phase.
 
 Do not disguise open decisions as assumptions. If any ratification-blocking item remains, keep the status Proposed and continue the conversation. Once the user ratifies, update the status and ratification record, remove resolved items from Open decisions, and write `improvement-plan.md` to the canonical path below. Complete its required memory update and commit before accessing any approved data source.
 
@@ -84,8 +84,8 @@ Do not disguise open decisions as assumptions. If any ratification-blocking item
 
 The plan artifact is always named `improvement-plan.md`; its canonical path depends on the workspace:
 
-- **Orizu workbench:** resolve the selected project's `directorySlug` through the same per-project manifest that locates `projects/<directorySlug>/memory.md`: find the `projects/<directorySlug>/orizu.project.json` whose project identity matches the resolved Orizu `team/project`, then use that containing directory. Write `projects/<directorySlug>/improvement-plan.md`. Add a concise decision summary and relative plan link to the sibling `memory.md`; do not duplicate the whole plan there.
-- **Plain repository:** write `improvement-plan.md` at the repository root and record the resolved Orizu `team/project` inside it.
+- Orizu workbench: resolve the selected project's `directorySlug` through the same per-project manifest that locates `projects/<directorySlug>/memory.md`: find the `projects/<directorySlug>/orizu.project.json` whose project identity matches the resolved Orizu `team/project`, then use that containing directory. Write `projects/<directorySlug>/improvement-plan.md`. Add a concise decision summary and relative plan link to the sibling `memory.md`; do not duplicate the whole plan there.
+- Plain repository: write `improvement-plan.md` at the repository root and record the resolved Orizu `team/project` inside it.
 
 If the matching `projects/<directorySlug>/orizu.project.json` is absent, or a resolved project directory lacks its sibling `memory.md` or any required primitive directory, do not guess the directory slug or create missing entries by hand.
 With existing authenticated CLI credentials, run `orizu setup --team <teamSlug> --project <projectSlug> --non-interactive --verbose` from the workbench root; the current directory is the default workspace.

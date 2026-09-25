@@ -1,4 +1,4 @@
-# Building Judges And Scorers
+# Building judges and scorers
 
 Turn human-labeled decisions into automated evaluators whose alignment is good
 enough for the decision they power. Use this reference for authoring, alignment,
@@ -71,9 +71,9 @@ requirements.
 
 | Decision class | Starting-point threshold (agent + user adjust together) |
 | -- | -- |
-| **Gatekeeper** — headline metric; informs ship/promote decisions | kappa ≥ 0.75, TPR ≥ 0.90 and TNR ≥ 0.90, and within 0.10 of human–human kappa |
-| **Optimization signal** — GEPA reflection and candidate selection | kappa ≥ 0.6 (roughly the 70–80% agreement zone on balanced data). Row-level noise averages out across a run — but the winning candidate must be confirmed against a gatekeeper-grade judge before shipping, or we Goodhart on judge noise |
-| **Triage / monitoring** — flags suspect traces for human review | TPR ≥ 0.80 with a tolerable false-positive rate; kappa ≥ 0.4–0.5 usable, because a human reviews every flag |
+| **Gatekeeper**: headline metric; informs ship/promote decisions | kappa ≥ 0.75, TPR ≥ 0.90 and TNR ≥ 0.90, and within 0.10 of human–human kappa |
+| **Optimization signal**: GEPA reflection and candidate selection | kappa ≥ 0.6 (roughly the 70–80% agreement zone on balanced data). Row-level noise averages out across a run; but the winning candidate must be confirmed against a gatekeeper-grade judge before shipping, or we Goodhart on judge noise |
+| **Triage / monitoring**: flags suspect traces for human review | TPR ≥ 0.80 with a tolerable false-positive rate; kappa ≥ 0.4–0.5 usable, because a human reviews every flag |
 
 To clarify the table's rough parenthetical, on balanced data
 `kappa = 2 * agreement - 1`: kappa 0.6 is about 80% raw agreement, and the
@@ -300,7 +300,7 @@ orizu scores submit ./judge-test-results.jsonl --project <team/project> --scorer
 orizu scorers exec --project <team/project> --scorer-version <kappa-scorer-version-id> --subject-version <judge-version-id> --dataset-version <dataset-version-id> --split-set <judge-split-set-id> --split judge-test --dependency-score-run judge=<row-score-run-id> --out ./judge-test-alignment.json --json
 ```
 
-Inspect the submitted set score run, not only the local file. The stored evidence
+Inspect both the submitted set score run and the local file. The stored evidence
 must identify the submitted row-score dependency and contain measured row
 evidence from which kappa, TPR, TNR, and the confusion matrix can be checked.
 Store the separately computed scenario-class slices beside it. Record every
@@ -404,7 +404,7 @@ orizu runners push ./evals/<project>/judges/<failure-mode>/runner --project <tea
 
 The judge runner resolves instruction text from the input
 `instruction_set.components` when present, as GEPA candidate execution requires,
-and otherwise from its bundled instruction files—never from server
+and otherwise from its bundled instruction files, never from server
 `prompt.body`. The parity exec-context therefore carries the superseded server
 `prompt.body` by design; when candidate `instruction_set.components` are absent,
 the runner's bundled, materialized files are what execute.

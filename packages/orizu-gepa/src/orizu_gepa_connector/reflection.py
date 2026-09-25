@@ -38,7 +38,7 @@ class GepaReflectionLM:
         context_supplier: Callable[[], tuple[str | dict[str, str], list[Any]]],
         config: Any,
         failure_reporter: Callable[..., None] | None,
-        success_reporter: Callable[[str], None] | None,
+        success_reporter: Callable[..., None] | None,
     ) -> None:
         self._context_supplier = context_supplier
         self._config = config
@@ -160,7 +160,9 @@ class GepaReflectionLM:
             proposal.prompts[component] = getattr(result, "prompt", provider_prompt)
             proposal.raw_lm_outputs[component] = result.response
             if self._success_reporter is not None:
-                self._success_reporter(str(proposal.prompts[component]))
+                # Keyed by component: under ``all`` every component reflects
+                # in turn, and each needs its own prompt in the reflection log.
+                self._success_reporter(str(proposal.prompts[component]), component=component)
         return proposal, self
 
 
@@ -169,7 +171,7 @@ def make_gepa_reflection_lm(
     context_supplier: Callable[[], tuple[str | dict[str, str], list[Any]]],
     config: Any,
     failure_reporter: Callable[..., None] | None = None,
-    success_reporter: Callable[[str], None] | None = None,
+    success_reporter: Callable[..., None] | None = None,
 ) -> GepaReflectionLM:
     """Adapt GEPA's ``Callable[[rendered_prompt], str]`` contract.
 

@@ -10,19 +10,19 @@ A derived unresolved-rows dataset is a labeling vehicle, not an optimization dat
 
 When ground truth requires human labels, keep the three artifacts and their owners distinct:
 
-1. **Strategy:** ratify the eval strategy in this reference before building a labeler or task.
-2. **App:** author and validate the app through the [app reference](building-apps.md). An app renders one row and returns its structured response; it does not own assignments or the labeling round.
-3. **Task:** create the task draft only after the app feedback gate passes. A task binds the pinned app version to dataset rows and assignments. Follow the [CLI reference](cli-reference.md) for task create, draft-URL approval, publish, assignment, status, export, and completion commands; return here for response-completeness proof and the annotation exit criterion.
+1. Strategy: ratify the eval strategy in this reference before building a labeler or task.
+2. App: author and validate the app through the [app reference](building-apps.md). An app renders one row and returns its structured response; it does not own assignments or the labeling round.
+3. Task: create the task draft only after the app feedback gate passes. A task binds the pinned app version to dataset rows and assignments. Follow the [CLI reference](cli-reference.md) for task create, draft-URL approval, publish, assignment, status, export, and completion commands; return here for response-completeness proof and the annotation exit criterion.
 
 ## Guide the eval-strategy conversation
 
 Start from the ratified improvement plan and dataset coverage table; do not ask the human to restate facts already recorded. Walk through the decisions below with concrete rows, propose a draft answer where the evidence supports one, and ask the human to correct or ratify it.
 
-1. **Experience and decision.** Ask which exact user experience the eval represents and which change or release decision it must inform. Confirm the unit being judged: one response, conversation, agent step, or complete run.
-2. **Good and bad by scenario class.** For every scenario class, show representative rows and draft one binary question per observed failure mode. Ask what visible evidence makes each answer pass, fail, or unlabelable. Do not bundle independent judgments or replace them with a Likert question.
-3. **Eval-set composition.** Confirm which versioned rows need human labels, the intended counts per scenario class, and any rare cases that must be present even when production frequency is low. Keep First win's validation partition for candidate ranking and keep its final-held-out partition under the separate partition doctrine in `references/dataset-design.md`.
-4. **Ground truth.** Ask who is qualified to label each question, what context they need, how ambiguity or disagreement will be adjudicated, and whether user behavior or another approved golden-data field already answers it. Import approved golden data instead of relabeling it.
-5. **Downstream validation.** Explain that these labels will later validate automated judges. Ask which decision class each judge will power and record it for First win's judge-validation stage, where the human sets the numerical judge trust bar from measured agreement, TPR, and TNR rather than accepting a default here.
+1. Experience and decision. Ask which exact user experience the eval represents and which change or release decision it must inform. Confirm the unit being judged: one response, conversation, agent step, or complete run.
+2. Good and bad by scenario class. For every scenario class, show representative rows and draft one binary question per observed failure mode. Ask what visible evidence makes each answer pass, fail, or unlabelable. Do not bundle independent judgments or replace them with a Likert question.
+3. Eval-set composition. Confirm which versioned rows need human labels, the intended counts per scenario class, and any rare cases that must be present even when production frequency is low. Keep First win's validation partition for candidate ranking and keep its final-held-out partition under the separate partition doctrine in `references/dataset-design.md`.
+4. Ground truth. Ask who is qualified to label each question, what context they need, how ambiguity or disagreement will be adjudicated, and whether user behavior or another approved golden-data field already answers it. Import approved golden data instead of relabeling it.
+5. Downstream validation. Explain that these labels will later validate automated judges. Ask which decision class each judge will power and record it for First win's judge-validation stage, where the human sets the numerical judge trust bar from measured agreement, TPR, and TNR rather than accepting a default here.
 
 Persist the ratified eval strategy in project context. It must name the experience and unit, dataset version and split set, scenario classes and row counts, binary questions with pass/fail/unlabelable rules, ground-truth source, labeler qualifications, disagreement path, golden-data decision, and the future decision attached to each judge trust bar. Do not author the labeler until the human ratifies this record.
 

@@ -11,8 +11,8 @@ from pathlib import Path
 from orizu_gepa.optimizer import DatasetRow, PromptContext, RunnerCallResult
 from orizu_gepa.runner import ALLOWED_RUNNER_ENV_KEYS, _slug, _write_instruction_set_layout, make_candidate_runner, make_scorer_runner, run_file_contract_runner
 
-LEGACY_BODY = (Path(__file__).resolve().parents[3] / "test/fixtures/ali1535-set-of-one-prompt-body.txt").read_text(encoding="utf-8")
-PATH_CONTRACT = json.loads((Path(__file__).resolve().parents[3] / "test/fixtures/ali1535-path-contract.json").read_text(encoding="utf-8"))
+LEGACY_BODY = (Path(__file__).resolve().parents[3] / "test/fixtures/set-of-one-prompt-body.txt").read_text(encoding="utf-8")
+PATH_CONTRACT = json.loads((Path(__file__).resolve().parents[3] / "test/fixtures/path-contract.json").read_text(encoding="utf-8"))
 
 MULTI_COMPONENT_SET = {
     "name": "planner",
@@ -146,10 +146,11 @@ class RunnerInstructionSetContractTests(unittest.TestCase):
     def test_runner_subprocess_receives_the_tuple_and_an_isolated_synced_layout(self):
         """Mutants killed: drop route body, share row dirs, invent pins, or widen env."""
         self.assertEqual(ALLOWED_RUNNER_ENV_KEYS, {
-            "ANTHROPIC_API_KEY", "AWS_CA_BUNDLE", "CURL_CA_BUNDLE", "GEMINI_API_KEY",
-            "GIT_SSL_CAINFO", "GOOGLE_API_KEY", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "HOME",
+            # ORI-2036: 20 process essentials plus the three registered built-in credentials.
+            "ANTHROPIC_API_KEY", "AWS_CA_BUNDLE", "CURL_CA_BUNDLE",
+            "GIT_SSL_CAINFO", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "HOME",
             "LANG", "LC_ALL", "NODE_EXTRA_CA_CERTS", "NODE_PATH", "NODE_USE_SYSTEM_CA",
-            "OPENAI_API_KEY", "PATH", "PIP_CERT", "PYTHONPATH", "REQUESTS_CA_BUNDLE",
+            "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PATH", "PIP_CERT", "PYTHONPATH", "REQUESTS_CA_BUNDLE",
             "SSL_CERT_FILE", "SystemRoot", "TEMP", "TMP", "TMPDIR", "WINDIR",
         })
         original_should_not_leak = os.environ.get("ORIZU_SHOULD_NOT_LEAK")

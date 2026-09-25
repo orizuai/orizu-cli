@@ -27,12 +27,16 @@
  * SNI-level) vs. what we generate (blocked-attempt evidence via the canary).
  */
 
+import { providerAuthHeaders, requireProvider } from './provider-registry.js'
 import type { SandboxEgressPolicy, SandboxEgressRule } from './sandbox-provider.js'
 
-/** Default model-provider endpoint (Anthropic) the broker injects a key for. */
-export const ANTHROPIC_API_HOST = 'api.anthropic.com'
-/** Anthropic authenticates with `x-api-key` (not a Bearer Authorization). */
-export const ANTHROPIC_API_KEY_HEADER = 'x-api-key'
+/** Default model-provider endpoint (Anthropic) the broker injects a key for.
+ *  Name and value unchanged; the value now comes from THE provider registry
+ *  (packages/cli/src/provider-registry.ts) instead of a literal. */
+export const ANTHROPIC_API_HOST = new URL(requireProvider('anthropic').baseUrl).hostname
+/** Anthropic authenticates with `x-api-key` (not a Bearer Authorization) —
+ *  the registry entry's own `authHeader`. */
+export const ANTHROPIC_API_KEY_HEADER = requireProvider('anthropic').authHeader
 
 /** GitHub git-over-HTTPS SNIs. `git clone`/`git push` over the smart HTTP
  *  protocol connect to `github.com`; `codeload.github.com` serves repository
@@ -203,8 +207,15 @@ export function buildEgressPolicy(opts: BuildEgressPolicyOptions = {}): SandboxE
   // the sandbox — OpenCode is given a non-secret dummy key and the proxy overrides
   // the real header on matching egress.
   if (opts.modelKeyBroker) {
-    const headerName = opts.modelKeyBroker.headerName ?? ANTHROPIC_API_KEY_HEADER
-    allow[brokerHost] = [{ transform: [{ headers: { [headerName]: opts.modelKeyBroker.apiKey } }] }]
+    // Default header bytes come from ONE registry entry — `anthropic` — whose
+    // name and value prefix (`x-api-key`, no prefix) reproduce today's broker
+    // bytes exactly. The default does NOT follow opts.modelKeyBroker.host: a
+    // caller brokering another provider's host must pass that provider's
+    // headerName. An explicit headerName always overrides.
+    const headers = opts.modelKeyBroker.headerName
+      ? { [opts.modelKeyBroker.headerName]: opts.modelKeyBroker.apiKey }
+      : providerAuthHeaders('anthropic', opts.modelKeyBroker.apiKey)!
+    allow[brokerHost] = [{ transform: [{ headers }] }]
   }
 
   return { allow }

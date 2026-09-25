@@ -9,21 +9,7 @@ from typing import Any
 
 from orizu_gepa.optimizer import RowEvaluation
 
-from .translator import translate_callback
-
-
-def _bounded(value: Any, limit: int) -> tuple[Any, bool]:
-    """Cap disclosure values before they enter the mandatory event transport."""
-    if isinstance(value, str):
-        if len(value) <= limit:
-            return value, False
-        return value[:limit] + "…[truncated]", True
-    if isinstance(value, (dict, list)):
-        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        if len(rendered) <= limit:
-            return value, False
-        return rendered[:limit] + "…[truncated]", True
-    return value, False
+from .translator import bounded, translate_callback
 
 
 def _redacted(name: str, value: Any, *, include_text: bool) -> dict[str, Any]:
@@ -184,7 +170,8 @@ class OrizuCallback:
             external_score = output_info.get("raw_score", self._external_score(score))
             scores.append(external_score)
             actual_output = output_info.get("output", output)
-            bounded_output, output_truncated = _bounded(actual_output, self.max_payload_chars)
+            bounded_output, output_cut = bounded(actual_output, self.max_payload_chars)
+            output_truncated = output_cut is not None
             row = {
                 "row_id": output_info.get("row_id", row_ids[index] if index < len(row_ids) else str(index)),
                 "score": external_score,
@@ -489,11 +476,59 @@ class OrizuCallback:
         self.candidate_proposals += 1
         self._proposals_by_iteration.setdefault(int(event["iteration"]), []).append(event)
 
-    def record_reflection_prompt(self, provider_prompt: str) -> None:
-        """Remember the frozen provider prompt, not GEPA's discarded renderer input."""
+    def record_reflection_prompt(self, provider_prompt: str, *, component: str | None = None) -> None:
+        """Remember the frozen provider prompt, not GEPA's discarded renderer input.
+
+        Keyed by component so that a selector-``all`` proposal keeps every
+        component's own prompt rather than the last one to reflect.
+        """
         latest_iteration = next(reversed(self._reflection_contexts), None)
         if latest_iteration is not None:
-            self._reflection_contexts[latest_iteration]["provider_prompt"] = provider_prompt
+            context = self._reflection_contexts[latest_iteration]
+            context.setdefault("provider_prompts", {})[component] = provider_prompt
+
+    @staticmethod
+    def _reflection_rows(event: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
+        """One row per reflected component: (component, prompt, response, candidate_text).
+
+        Prompts and responses come from the raw GEPA event, never from the
+        bounded translated payload, so the local log is whole.
+        """
+        new_instructions = event.get("new_instructions")
+        new_instructions = new_instructions if isinstance(new_instructions, dict) else {}
+        raw = event.get("raw_lm_outputs")
+        raw_prompts = event.get("prompts")
+        gepa_prompts = raw_prompts if isinstance(raw_prompts, dict) else {}
+        provider_prompts = context.get("provider_prompts") or {}
+        # Ordered union: a component GEPA rewrote must get a row even when
+        # one of its two per-component maps is missing that entry.
+        components: list[str | None] = list(new_instructions.keys())
+        if isinstance(raw, dict):
+            components.extend(key for key in raw.keys() if key not in new_instructions)
+        if not components:
+            components = [None]
+        rows = []
+        for component in components:
+            if isinstance(raw, dict):
+                response = raw.get(component)
+            else:
+                response = raw
+            prompt = provider_prompts.get(component)
+            if prompt is None and len(components) == 1:
+                # Legacy single-callable path reports without a component key.
+                prompt = provider_prompts.get(None)
+            if prompt is None:
+                prompt = gepa_prompts.get(component)
+            if prompt is None and len(components) == 1 and not isinstance(raw_prompts, dict):
+                prompt = raw_prompts
+            candidate_text = new_instructions.get(component) if component is not None else next(iter(new_instructions.values()), None)
+            rows.append({
+                "component": component,
+                "prompt": prompt,
+                "response": response,
+                "candidate_text": candidate_text,
+            })
+        return rows
 
     def _emit_buffered_proposal(self, event: dict[str, Any], candidate_id: str) -> None:
         iteration = int(event["iteration"])
@@ -505,19 +540,15 @@ class OrizuCallback:
             **(parent_candidate if isinstance(parent_candidate, dict) else {}),
             **(new_instructions if isinstance(new_instructions, dict) else {}),
         }
-        bounded_components = {}
-        truncated = False
-        for key, value in components.items():
-            bounded, did_truncate = _bounded(value, self.max_payload_chars)
-            bounded_components[key] = bounded
-            truncated = truncated or did_truncate
+        # The candidate is carried whole (ORI-2027): ``max_payload_chars``
+        # bounds sample outputs and reflection material, never the prompt
+        # that was actually evaluated. Nothing in this event is bounded.
         selected = list(context.get("components_to_update") or [])
-        body, body_truncated = _bounded(next(iter(components.values()), None), self.max_payload_chars)
-        payload = {"components": bounded_components, "components_to_update": selected,
-                   "payload_truncated": truncated or body_truncated}
+        payload = {"components": dict(components), "components_to_update": selected,
+                   "payload_truncated": False}
         if ((isinstance(parent_candidate, dict) and len(parent_candidate) == 1)
                 or (parent_candidate is None and len(components) == 1)):
-            payload["body"] = body
+            payload["body"] = next(iter(components.values()), None)
         self.sink.emit(
             "candidate_proposed",
             payload,
@@ -532,6 +563,9 @@ class OrizuCallback:
         response = payload.pop("response", None)
         candidate_text = payload.pop("candidate_text", None)
         payload.update(_redacted("prompt", prompt, include_text=self.log_row_snapshots))
+        if "prompts" in payload:
+            # Per-component prompts follow the same policy as the legacy prompt.
+            payload.update(_redacted("prompts", payload.pop("prompts"), include_text=self.log_row_snapshots))
         # Frozen legacy behavior deliberately gates only the reflection prompt:
         # the response and extracted candidate are required dashboard evidence.
         payload["response"] = response
@@ -539,16 +573,20 @@ class OrizuCallback:
         local_logger = getattr(self.sink, "local_logger", None)
         if local_logger is not None:
             parent_rows = (self._parent_minibatches.get(iteration) or [{}])[0].get("row_results", [])
-            provider_prompt = self._reflection_contexts.get(iteration, {}).get("provider_prompt", prompt)
-            self._write_local(lambda: local_logger.append_reflection(
-                iteration=iteration,
-                parent_candidate_id=parent_id or "unknown",
-                child_candidate_id=candidate_id,
-                row_ids=[str(row.get("row_id", index)) for index, row in enumerate(parent_rows)],
-                prompt=str(provider_prompt or ""),
-                response=str(response or ""),
-                candidate_text=str(candidate_text or ""),
-            ))
+            row_ids = [str(row.get("row_id", index)) for index, row in enumerate(parent_rows)]
+            # One reflections.jsonl row per reflected component (ORI-2030),
+            # built from the raw event so response and prompt are unbounded.
+            for row in self._reflection_rows(event, context):
+                self._write_local(lambda row=row: local_logger.append_reflection(
+                    iteration=iteration,
+                    parent_candidate_id=parent_id or "unknown",
+                    child_candidate_id=candidate_id,
+                    component=row["component"],
+                    row_ids=row_ids,
+                    prompt=str(row["prompt"] or ""),
+                    response=str(row["response"] or ""),
+                    candidate_text=str(row["candidate_text"] or ""),
+                ))
         self.sink.emit(
             "reflection_completed",
             payload,

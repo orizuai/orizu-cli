@@ -31,6 +31,7 @@ except ModuleNotFoundError as error:
 if TYPE_CHECKING:
     import dspy as dspy_types
 
+from orizu_gepa.providers import parse_model_identity
 from orizu_gepa.reflection import ProviderCompletion, complete_reflection_messages
 from orizu_gepa.optimizer import TextGepaConfig
 
@@ -238,6 +239,18 @@ def _reject(message: str, *, code: str = "proposal_dspy_request_rejected") -> An
     return _require_dspy().LMError(message, code=code)
 
 
+def _failure_event_provider(model: str) -> str:
+    """The provider label on a proposal FAILURE event.
+
+    The success path reads ``completion.provider``, which the transport already
+    resolves from the registry; only the failure path has no completion to
+    read, which is why the label is derived from the identity here.
+    """
+    provider, _ = parse_model_identity(model)
+    # An unqualified identity names no provider; say so rather than invent one.
+    return provider or "unknown"
+
+
 def _provider_messages(request: "dspy_types.LMRequest") -> list[dict[str, str]]:
     if request.tools:
         raise _reject("proposal_dspy_request_rejected: tools are not supported")
@@ -347,7 +360,7 @@ class OrizuSkilledProposerLM(_DspyBaseLM):
                 "status": "failure",
                 "attempt": 1,
                 "correlation_id": correlation_id,
-                "provider": "openai" if self.model.startswith("openai/") else "anthropic",
+                "provider": _failure_event_provider(self.model),
                 "cache_state": "disabled",
                 "failure_code": provider_code or "ALI_1505_PROPOSAL_TRANSPORT_FAILURE",
             }

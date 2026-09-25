@@ -1,4 +1,4 @@
-# Optimization Reports
+# Optimization reports
 
 Use this reference to turn one Orizu optimization run into a decision a human can make. The report must explain what promoting the selected candidate changes, how every candidate traded gains for losses, what each scenario class taught, and what happens next where results stalled or regressed. It is education for a promotion decision, not a dump of optimizer statistics.
 
@@ -60,7 +60,7 @@ If the selected candidate is the seed, do not call `optimizations promote`; use 
 
 `optimizations finish --report-file` uploads the report markdown only. It has no evidence-file upload surface, so record each evidence artifact path inside the report markdown; include a content hash when paths may move or files may change.
 
-## Evidence Boundaries
+## Evidence boundaries
 
 Keep the three data roles separate:
 
@@ -97,7 +97,7 @@ orizu optimizations export <run-id> --out <run-id>.optimization.json
 
 Server events redact row snapshots and reflection prompts by default, so an export may support less detailed diagnosis than complete local logs. State any missing evidence instead of inventing a scenario explanation.
 
-## How To Build The Report
+## How to build the report
 
 1. Confirm the seed, all candidate ids, their parent/child relationships, and their validation results. Include rejected, failed, or incomplete candidates and mark unavailable comparisons plainly; a score from one small training batch is not a substitute for a full validation score. A failed proposal that produced no child candidate id is a run event, not another candidate.
 2. Map every evaluation row to a scenario class named in the improvement plan or dataset. If the logs lack a class, record the classification gap and recommend **Gather more evidence**; do not silently invent a class or leave the in-progress Promote flow. Keep the gap in the decision record and complete Promote's human decision; after Promote exits, route the recorded review incident through `flows/triage.md`.
@@ -132,7 +132,7 @@ Server events redact row snapshots and reflection prompts by default, so an expo
 
 For a rate, report the change in percentage points: 72% to 81% is +9 percentage points, not +9%. If judge alignment is reported, define **Cohen's kappa** as agreement after removing the amount expected by chance. Define a **confusion matrix** as the counts of correct and incorrect decisions for each class. Define any other statistical term in one plain sentence when it first appears.
 
-## Copyable Report Template
+## Copyable report template
 
 Copy the template below and replace every bracketed instruction. Keep the section order. A section with unavailable evidence remains present and says what is missing.
 
@@ -254,7 +254,7 @@ A report is incomplete if any required box below is unchecked.
 - [ ] Run ids, artifact paths, versions, split names, row counts, settings, and commands are recorded well enough to reproduce the comparison; an unrecorded setting is marked “unavailable — not recorded by the run.”
 ```
 
-## Decision Rules
+## Decision rules
 
 Recommend **Promote** when the selected materialized version beats the seed on untouched Final-held-out by more than measured noise, clears the pre-agreed practical threshold, no critical scenario breaches its guardrail, and the prompt or complete profile change is understood. State the post-promotion monitoring and rollback trigger. The plain-prompt path cannot meet that evidence ordering: if a human accepts live-first verification, phrase Promote only as a post-promotion verification plan based on validation-only evidence, disclose that Final-held-out was not obtainable before promotion, and name the watch window plus a confirmed external/manual rollback path. A set-of-one instruction-set run cannot currently receive Promote when complete local execution-runner evidence is unavailable and cannot receive Promote while the supported CLI cannot prove that the target profile settings version matches the optimization run. Legacy optimization promotion is never the set's ship or rollback path. If no practical threshold or rollback path was agreed, do not invent one; recommend Gather more evidence.
 

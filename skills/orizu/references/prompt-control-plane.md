@@ -1,17 +1,17 @@
-# Instruction Control Plane
+# Instruction control plane
 
 Use this reference for the Phase 0 instruction, judge, scorer, runner, score, run, and optimization event control plane. Follow the [Authority map](authority-map.md) before executing its command sequences.
 
 ## Contents
 
-- [Default Command Strategy](#default-command-strategy)
-- [Artifact Contracts](#artifact-contracts)
-- [Command Matrix](#command-matrix)
-- [Optimization Event Logging](#optimization-event-logging)
-- [End-to-End Flow](#end-to-end-flow)
-- [Notes and Limits](#notes-and-limits)
+- [Default command strategy](#default-command-strategy)
+- [Artifact contracts](#artifact-contracts)
+- [Command matrix](#command-matrix)
+- [Optimization event logging](#optimization-event-logging)
+- [End-to-end flow](#end-to-end-flow)
+- [Notes and limits](#notes-and-limits)
 
-## Default Command Strategy
+## Default command strategy
 
 1. Verify auth: `orizu --local whoami`.
 2. Export API context for scripts: `eval "$(orizu --local env --project <team>/<project>)"`.
@@ -119,9 +119,9 @@ Execution/privacy defaults:
 - `run-gepa` still writes complete local traces under `logs/<optimization_run_id>` by default. Treat those logs as sensitive: they include row inputs, model outputs, scores, feedback, scorer responses, reflection prompts, reflection responses, and candidate text.
 - Runner artifacts, runner output, score result uploads, and optimization event payloads are size-capped. If a run needs larger observability payloads, store the large artifact separately and log a pointer.
 
-## Artifact Contracts
+## Artifact contracts
 
-### Runner Directory
+### Runner directory
 
 Required file: `manifest.json`.
 
@@ -187,14 +187,14 @@ Output shape:
 
 Exit non-zero only for infrastructure failures. Row-level model or parsing errors should usually be represented in the output JSON with `error`.
 
-### Scorer-Runner Input Contracts (flat-row vs GEPA)
+### Scorer-runner input contracts (flat-row vs GEPA)
 
 There are TWO distinct input shapes a scorer/judge runner can receive, and
 mixing them up silently zeroes every score (the judge sees an empty output in
 every field it reads and scores 0 without erroring). Know which one your
 runner speaks before wiring it anywhere.
 
-**Flat-row score-run contract** — what `orizu runners exec --scorer-version`
+**Flat-row score-run contract**: what `orizu runners exec --scorer-version`
 sends. `row` is the flat dataset row; the candidate output lives at the
 top-level `model_output` (taken from `row.model_output` / `row.modelOutput` /
 `row.output`) and usually also inside the row itself:
@@ -212,7 +212,7 @@ top-level `model_output` (taken from `row.model_output` / `row.modelOutput` /
 }
 ```
 
-**GEPA scorer-runner contract** — what `orizu optimizations run-gepa` sends by
+**GEPA scorer-runner contract**: what `orizu optimizations run-gepa` sends by
 default. `row` is a wrapper around the dataset row plus the freshly generated
 candidate output:
 
@@ -233,7 +233,7 @@ candidate output:
 ```
 
 **The official adapter:** a judge runner written for the flat-row contract can
-be used by GEPA as-is — pass `--scorer-input-contract flat_row` to `run-gepa`.
+be used by GEPA as-is: pass `--scorer-input-contract flat_row` to `run-gepa`.
 The optimizer then flattens `source_row` into `row`, injects the candidate
 output at `model_output` (or the row field named by
 `--scorer-candidate-field <field>`, e.g. `draft` for a judge that reads the
@@ -244,7 +244,7 @@ generation is inspectable instead of being judged as an empty draft. GEPA
 provenance stays available under a top-level `gepa` key. Specifying a
 candidate field while the active contract is `gepa` is refused at launch
 rather than silently ignored. Because the adapter is applied by the optimizer harness,
-the registered runner bytes are unchanged — this composes with the
+the registered runner bytes are unchanged: this composes with the
 `--scorer-runner-dir` content-sha verification (bytes must match the
 registered runner version). New runners can instead self-describe by declaring
 `"scorer_input_contract": "flat_row"` (and optionally
@@ -260,7 +260,7 @@ candidates. A uniformly-worst seed is almost always a harness bug, not bad
 component values; override with `--allow-degenerate-seed` only when the seed genuinely
 deserves the worst score everywhere.
 
-### Judge Directory
+### Judge directory
 
 Required files: `orizu.prompt.json` plus the body file referenced by `body_file`.
 
@@ -287,7 +287,7 @@ Judge artifact:
 
 Judges are prompts with `role: "judge_per_row"` or `role: "judge_per_run"`.
 
-### Scorer Manifest
+### Scorer manifest
 
 Scorers define metrics. The executable code still lives in a runner version, and LLM judge text still lives in a prompt version.
 
@@ -358,7 +358,7 @@ Set scorer example for judge-vs-gold Cohen's kappa:
 }
 ```
 
-### Optimizer Directory
+### Optimizer directory
 
 Required file: `manifest.json`.
 
@@ -374,7 +374,7 @@ Required file: `manifest.json`.
 
 The CLI stores optimizer zips and metadata. Phase 0 optimizer execution remains local.
 
-## Command Matrix
+## Command matrix
 
 ### Environment
 
@@ -386,7 +386,7 @@ eval "$(orizu --local env --project <team>/<project>)"
 
 `orizu env` exports `ORIZU_API_URL`, `ORIZU_TOKEN`, `ORIZU_PROJECT_ID`, and `ORIZU_PROJECT`.
 
-### Dataset Versions And Splits
+### Dataset versions and splits
 
 ```bash
 orizu --local datasets upload \
@@ -452,7 +452,7 @@ orizu --local runners exec \
 
 Omit `--runner-dir` to download and materialize the pinned runner version from Orizu. `--out` may end in `.jsonl` or `.jsonl.gz`.
 
-### Instructions And Judges
+### Instructions and judges
 
 Prepare the complete instruction-set manifest and follow the Authority map for
 the push; the judge remains a git-canonical artifact.
@@ -540,7 +540,7 @@ orizu --local instructions profiles promote hip-note-judge \
   --json
 ```
 
-### Scorers And Scores
+### Scorers and scores
 
 Register a scorer after its backing prompt and runner versions exist:
 
@@ -818,7 +818,7 @@ Useful GEPA flags:
   instruction-set selector.
 - `--engine official|legacy` defaults to `official`, which runs the bundled official GEPA connector. Use `legacy` only as the frozen recovery hatch; it keeps the historical Python loop and does not support `--max-candidate-proposals` or the skilled proposer.
 - `--scorer-input-contract gepa|flat_row` selects the scorer-runner input shape. Use `flat_row` to reuse a judge runner written for `runners exec --scorer-version` without a hand-written adapter; add `--scorer-candidate-field <row-field>` when that judge reads the candidate output from a specific row field (e.g. `draft`). Passing a candidate field under the `gepa` contract is refused at launch, not silently ignored. See "Scorer-Runner Input Contracts" above.
-- `--allow-degenerate-seed` opts out of the launch-time refusal when the seed scores the worst possible value on every validation row. Leave it off by default — a uniformly-worst seed is almost always a scorer contract mismatch.
+- `--allow-degenerate-seed` opts out of the launch-time refusal when the seed scores the worst possible value on every validation row. Leave it off by default: a uniformly-worst seed is almost always a scorer contract mismatch.
 - Budget controls are mutually exclusive: choose at most one of `--budget auto|light|medium|heavy`, `--max-metric-calls <n>`, `--max-full-evals <n>`, `--max-iterations <n>`, or `--max-candidate-proposals <n>`. With none provided, `run-gepa` defaults to `--budget auto`, the balanced medium preset. `--max-candidate-proposals` is available only with `--engine official`.
 - Hosted optimization (`--hosted`) is launched only by a human/PAT caller on
   an enabled team. It accepts a named `--budget` preset only, does not require
@@ -830,7 +830,7 @@ Useful GEPA flags:
 - `--candidate-selection-strategy pareto|current_best|epsilon_greedy`; default is `pareto`. With `epsilon_greedy`, `--epsilon <n>` controls the random-selection probability (default `0.1`, clamped to `0`–`1`).
 - `--objective <text>` replaces the reflection objective when the optimization goal differs from the default instruction to maximize evaluator score while preserving intended behavior.
 - `--reflection-model <provider/model>`, `--reflection-temperature <n>`, `--reflection-prompt-template <text|@file>`.
-- `--reflection-max-tokens <n>` is explicit provider config, not a global default. It maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI can omit it unless the user wants a cap.
+- `--reflection-max-tokens <n>` is explicit provider config, not a global default. By wire protocol it maps to `max_tokens` for Anthropic Messages, `max_output_tokens` for OpenAI Responses, or `max_completion_tokens` for OpenAI chat completions. Anthropic Messages requires it; both OpenAI protocols can omit it unless the user wants a cap. A bare model id is not identified as invalid by local launch admission today: if it passes the separate fail-closed cap check, the Python transport refuses it by name at the first reflection call and shows the provider-qualified form to use.
 - `--reflection-retry-attempts` and `--reflection-http-timeout-seconds` tune transient reflection-provider retries. Exhausted retryable failures log `reflection_failed`, count against candidate-proposal budget, and continue with the next iteration.
 - `--reflection-provider-settings <json|@file>` passes provider-native reflection settings separately from the component text. Anthropic example: `{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}`. OpenAI example: `{"reasoning":{"effort":"medium","summary":"auto"}}`.
 - `--disable-evaluation-cache` turns off candidate/row/scorer cache reuse.
@@ -870,7 +870,7 @@ Local `run-gepa` logs:
 - `trainset.json` and `valset.json` store the full split row payloads.
 - `events.jsonl` mirrors the optimization event stream, including redacted server payload fields where applicable.
 - `evaluations.jsonl` stores each row evaluation with row input, output, score, feedback, raw/scorer responses, latency, tokens, cost, error, and cache status.
-- `reflections.jsonl` stores each reflection prompt, response, child candidate text, parent/child ids, and minibatch row ids.
+- `reflections.jsonl` stores one row per reflected component: each row carries a `component` key plus that component's own prompt, response, and new component text, alongside iteration, parent/child ids, and minibatch row ids. Under `--component-selector all` an iteration produces one row per component of the instruction set, all sharing the same `child_candidate_id`, so group rows by `child_candidate_id` (or iteration) to count proposals. Rows with `status: "failed"` record a reflection call that raised and carry no `component` and a null `child_candidate_id`; skip them when counting proposals.
 - `result.json` stores best candidate id/text, best score, seed score, promoted prompt version id, and final budget state.
 
 For coding-agent insight generation, prefer reading the local log files in this order:
@@ -944,7 +944,7 @@ orizu --local optimizations cancel <optimization-run-id> --reason "user stopped"
 `finish` marks the run `succeeded` and attaches its report; it does not authorize promotion. The three subject branches above are normative; see `optimization-reports.md` for seed-selected and no-valid-candidate branches. Finish the report first, then obtain the human decision before materialization or a serving-pointer move.
 Use `--report-file <path>` or `--report <markdown|@file>` on `finish`, `fail`, or `cancel` to attach the markdown report shown in the optimization detail Report tab. Prefer generating this from the local GEPA logs (`result.json`, `evaluations.jsonl`, `reflections.jsonl`, and `events.jsonl`) after the run ends. Report structure and interpretation rules: `optimization-reports.md`.
 
-## Optimization Event Logging
+## Optimization event logging
 
 Custom optimizers use bare HTTP. Optimizer scripts should start a run through the CLI and POST each event as it happens:
 
@@ -1005,7 +1005,7 @@ orizu --local log seed_val_set_completed \
 
 `orizu log` creates an `eventId` unless `--event-id` is provided. `event-payload.json` is the payload object only, not the full envelope.
 
-### Candidate Promotion
+### Candidate promotion
 
 Promotion creates a new immutable `prompt_versions` row and appends a system event to the optimization run.
 
@@ -1040,7 +1040,7 @@ Response:
 }
 ```
 
-## End-to-End Flow
+## End-to-end flow
 
 The example uses a JSON array in `dataset.json`. JSONL input also supports this
 pipeline: `datasets upload --json` writes one JSON result after all chunks and
@@ -1098,7 +1098,7 @@ orizu --local optimizations finish "$OPTIMIZATION_RUN_ID" \
   --report-file "./reports/$OPTIMIZATION_RUN_ID.md"
 ```
 
-## Notes And Limits
+## Notes and limits
 
 - All HTTP endpoints require `Authorization: Bearer $ORIZU_TOKEN`.
 - Runner and optimizer zips are content-hashed. Re-uploading the same zip dedupes at the version layer.

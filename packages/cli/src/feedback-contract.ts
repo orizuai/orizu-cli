@@ -154,9 +154,23 @@ export const PRODUCT_FEEDBACK_ROUTE = '/api/cli/feedback'
 export const PRODUCT_FEEDBACK_MESSAGE = 'Thanks, this has been reported. To follow up, email feedback@orizu.ai'
 export const PRODUCT_FEEDBACK_UNAUTHENTICATED_MESSAGE = 'Sign in first (orizu login) or email feedback@orizu.ai'
 
+// MEASURED 2026-09-11: the read-only query `query { issue(id: "<uuid>") { id
+// identifier } }` against https://api.linear.app/graphql returned HTTP 200 and
+// {"data":{"issue":{"id":"3f7c9779-58d3-4135-ac88-51a872a40e93","identifier":"ORI-2025"}}}.
+// A Linear issue identifier is therefore a TEAMKEY-NUMBER string, distinct from
+// the issue uuid. This pattern is the one rule shared by the server-side poster
+// (lib/services/linear-feedback.ts) and the CLI success guard, so both accept
+// exactly the same handles. Tradeoff recorded on purpose: a handle outside
+// [A-Z0-9]{1,10}-[0-9]{1,10} makes the CLI refuse an acknowledgement for a
+// report that was in fact stored, so widen this pattern if a team key ever
+// outgrows it.
+export const PRODUCT_FEEDBACK_ISSUE_IDENTIFIER_PATTERN = /^[A-Z0-9]{1,10}-[0-9]{1,10}$/u
+
 export interface ProductFeedbackSuccess {
   id: string
   message: string
+  // Absent when the report was stored but no Linear issue handle was issued.
+  issueIdentifier?: string
 }
 
 const LAST_ERROR_KEYS = [

@@ -1,6 +1,6 @@
 # Triage
 
-post-win, incident-driven: a reported issue leads to trace analysis and the eval-gap decision — does an existing eval catch it, does an eval need fixing, is an eval missing, or is the reported behavior expected — before any optimizing or fixing. The expected-behavior branch records a false-positive/no-change outcome, and only bounded emergency containment may precede the decision.
+post-win, incident-driven: a reported issue leads to trace analysis and the eval-gap decision (does an existing eval catch it, need fixing, or need adding, or is the reported behavior expected) before any optimizing or fixing. The expected-behavior branch records a false-positive/no-change outcome, and only bounded emergency containment may precede the decision.
 
 ## Contain active harm when necessary
 
@@ -20,10 +20,10 @@ Test the incident against the current accepted evals and their underlying labels
 
 Before any branch adds incident evidence, compare its failure mode, scenario class, and trace source with the committed improvement plan. When any of those inputs is novel, first follow `references/assess-and-plan.md` to amend the plan's source and coverage decisions, obtain explicit human ratification, then write and commit the amended plan. Only the ratified plan can authorize the dataset and eval work below.
 
-- **An existing eval catches it:** preserve the incident as a regression case, confirm the scorer signal and trust bar still fit the decision, then use that validated signal for the targeted improvement.
-- **An existing eval should catch it but does not:** determine whether labels, rubric, judge, runner, scorer, or threshold are wrong. Correct the eval, add the incident as a regression case, and revalidate it using `references/building-judges.md` before improving the application.
-- **No eval covers it:** define the missing failure mode, add representative cases and approved ground truth through `references/dataset-design.md` and `references/eval-strategy.md`, then build and validate the missing eval with `references/building-judges.md`.
-- **Expected behavior / false positive:** when the accepted eval covers the scenario and correctly passes it, record the adjudication, supporting traces, applicable eval and labels, and why no production change is justified; then close with the no-change outcome below.
+- An existing eval catches it: preserve the incident as a regression case, confirm the scorer signal and trust bar still fit the decision, then use that validated signal for the targeted improvement.
+- An existing eval should catch it but does not: determine whether labels, rubric, judge, runner, scorer, or threshold are wrong. Correct the eval, add the incident as a regression case, and revalidate it using `references/building-judges.md` before improving the application.
+- No eval covers it: define the missing failure mode, add representative cases and approved ground truth through `references/dataset-design.md` and `references/eval-strategy.md`, then build and validate the missing eval with `references/building-judges.md`.
+- Expected behavior / false positive: when the accepted eval covers the scenario and correctly passes it, record the adjudication, supporting traces, applicable eval and labels, and why no production change is justified; then close with the no-change outcome below.
 
 ## Improve only after coverage
 

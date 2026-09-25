@@ -17,7 +17,7 @@ The CLI supports:
 ## Prerequisites
 
 - Node.js 20+
-- Running Orizu web app/API (default: `https://orizu.ai`)
+- Running Orizu web app/API (login defaults to `https://app.orizu.ai`; API commands use the server you logged in to, or `https://orizu.ai`)
 - Valid Orizu account
 
 Optional environment variable:
@@ -25,7 +25,7 @@ Optional environment variable:
 - `ORIZU_BASE_URL` (example: `https://your-orizu-domain.com`)
 - `ORIZU_AUTH_PORT` (example: `44123`, used for the localhost login callback)
 
-If not set, CLI uses `https://orizu.ai`.
+Without an override, ordinary `orizu login` uses `https://app.orizu.ai`. API commands keep using the server you logged in to, falling back to `https://orizu.ai` if none is stored. `--no-prompt-if-logged-in` also keeps the existing API server selection. If default app-host login fails before saving credentials, the CLI suggests `orizu --server https://orizu.ai login`; it never switches servers automatically.
 
 Override examples:
 
@@ -191,6 +191,22 @@ Choose one local budget control: a named `--budget` preset,
 `--max-metric-calls`, `--max-full-evals`, `--max-iterations`, or
 `--max-candidate-proposals`.
 `--max-candidate-proposals` is available only with the default official engine.
+
+Streamed run events are bounded to `16000` characters per field. For
+`optimizations run-gepa` this cap is fixed: the CLI launches the connector
+with a controlled environment: it clears the run options it sets itself
+(including `ORIZU_MAX_PAYLOAD_CHARS`) from the connector's environment before
+the run starts, but other `ORIZU_*` variables documented elsewhere as
+operator knobs for this command still reach the connector. It caps sample
+outputs (per-row `output` values) and reflection prompts and responses. A cut
+value ends in the `…[truncated]` marker and the event discloses the cut:
+either as `payload_truncated: true` with the original byte lengths under
+`truncation.fields`, or, on minibatch rows, as a per-row `output_truncated:
+true` flag. Candidate components (the prompt text a candidate was actually
+evaluated with) are never bounded, so a candidate can always be read back and
+promoted exactly as evaluated. `ORIZU_MAX_PAYLOAD_CHARS` only takes effect
+when the connector is launched directly, as described in
+`packages/orizu-gepa/TESTING.md`; there is no CLI flag for this cap.
 
 `--hosted` is the human/PAT launch path for a staff-enabled team. It sends one
 version-ID job specification to Orizu and prints the queued monitor URL; it

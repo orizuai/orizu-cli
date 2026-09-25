@@ -4,14 +4,17 @@ import json
 import hashlib
 import os
 import subprocess
+import sys
 import tempfile
 import zipfile
 import re
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from .client import OrizuClient
 from .optimizer import DatasetRow, PromptContext, RunnerCallResult
+from .providers import effective_provider_registry, load_provider_registry
 
 MAX_RUNNER_ZIP_BYTES = 25 * 1024 * 1024
 MAX_RUNNER_ZIP_ENTRIES = 1000
@@ -19,7 +22,7 @@ MAX_RUNNER_UNCOMPRESSED_BYTES = 75 * 1024 * 1024
 MAX_RUNNER_OUTPUT_BYTES = 2 * 1024 * 1024
 DEFAULT_RUNNER_TIMEOUT_SECONDS = 120
 
-ALLOWED_RUNNER_ENV_KEYS = {
+RUNNER_PROCESS_ENV_KEYS = {
     "PATH",
     "SystemRoot",
     "WINDIR",
@@ -42,11 +45,21 @@ ALLOWED_RUNNER_ENV_KEYS = {
     "PIP_CERT",
     "REQUESTS_CA_BUNDLE",
     "SSL_CERT_FILE",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
 }
+
+# Static compatibility surface; hosted delivery is resolved afresh for each run.
+ALLOWED_RUNNER_ENV_KEYS = RUNNER_PROCESS_ENV_KEYS | {
+    entry.credential_env for entry in load_provider_registry()
+}
+# Notice policy mirrors provider-refusals.ts, not the per-run forwarding set.
+_RESERVED_CREDENTIAL_ENVS = {entry.credential_env for entry in load_provider_registry()} | {
+    "GEMINI_API_KEY", "GOOGLE_API_KEY",  # Historical SQL reservations.
+    "ALI_1505_ENDPOINT_OVERRIDE_API_KEY", "BRAINTRUST_API_KEY",  # Endpoint/connector secrets.
+    "CF_API_KEY", "CLOUDFLARE_API_KEY", "DAYTONA_API_KEY",  # Infrastructure credentials.
+    "INTERNAL_API_KEY", "LINEAR_API_KEY", "RESEND_API_KEY",  # Internal services.
+}
+_has_reported_stripped_credentials = False
+_strip_notice_lock = Lock()
 
 
 def read_manifest(runner_dir: str | Path) -> dict[str, Any]:
@@ -78,10 +91,20 @@ def _safe_extract_zip(zip_path: Path, destination: Path) -> None:
 
 
 def _runner_env(input_path: Path, output_path: Path, instruction_set_dir: Path | None = None) -> dict[str, str]:
+    global _has_reported_stripped_credentials
+    allowed = RUNNER_PROCESS_ENV_KEYS | {entry.credential_env for entry in effective_provider_registry()}
+    with _strip_notice_lock:
+        if not _has_reported_stripped_credentials:
+            stripped = sorted(name for name in os.environ
+                              if name not in allowed and re.fullmatch(r"[A-Z][A-Z0-9_]{0,58}_API_KEY", name)
+                              and not name.startswith("ORIZU_") and name not in _RESERVED_CREDENTIAL_ENVS)
+            if stripped:
+                _has_reported_stripped_credentials = True
+                print(f"Stripped runner credentials: {', '.join(stripped)}", file=sys.stderr)
     env = {
         key: value
         for key, value in os.environ.items()
-        if key in ALLOWED_RUNNER_ENV_KEYS
+        if key in allowed
     }
     env["ORIZU_RUNNER_INPUT_PATH"] = str(input_path)
     env["ORIZU_RUNNER_OUTPUT_PATH"] = str(output_path)

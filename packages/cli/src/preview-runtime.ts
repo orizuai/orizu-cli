@@ -490,15 +490,22 @@ function validatePayload(schema: unknown, payload: unknown, path: string, issues
 }
 
 function findPreviewRepoRoot(cwd: string, appPath: string): string | null {
+  // ORI-1565 move: this detects local development inside the Orizu monorepo
+  // itself (to borrow its real Tailwind setup instead of the packaged
+  // snapshot CSS); components/, app/globals.css and lib/available-
+  // components.ts all moved under apps/web, so the marker files are looked
+  // up there, and the returned root is the apps/web directory itself (the
+  // caller joins 'app'/'components' onto it directly).
   for (const start of [cwd, dirname(appPath), dirname(fileURLPath())]) {
     let current = resolve(start)
     while (true) {
+      const appsWebRoot = join(current, 'apps', 'web')
       if (
-        existsSync(join(current, 'components')) &&
-        existsSync(join(current, 'app', 'globals.css')) &&
-        existsSync(join(current, 'lib', 'available-components.ts'))
+        existsSync(join(appsWebRoot, 'components')) &&
+        existsSync(join(appsWebRoot, 'app', 'globals.css')) &&
+        existsSync(join(appsWebRoot, 'lib', 'available-components.ts'))
       ) {
-        return current
+        return appsWebRoot
       }
       const parent = dirname(current)
       if (parent === current) break

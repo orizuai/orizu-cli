@@ -14,3 +14,10 @@ orizu-gepa = "orizu_gepa.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# providers.generated.json is GENERATED — do not edit it by hand. Regenerate
+# with `bun run generate:provider-registry` (ORI-2031); the TypeScript registry
+# at packages/cli/src/provider-registry.ts is the source of truth and
+# test/provider-registry-json-parity.test.ts fails on drift.
+[tool.setuptools.package-data]
+orizu_gepa = ["providers.generated.json"]

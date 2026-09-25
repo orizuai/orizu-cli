@@ -1,4 +1,4 @@
-# Optimization With GEPA
+# Optimization with GEPA
 
 How to optimize an instruction-set profile against validated judges and scorers. Prepare the complete instruction-set manifest, follow the [Authority map](authority-map.md) for its mutation, and then run the bundled `orizu optimizations run-gepa` flow. Use this reference for GEPA mechanics, custom optimizer implementations, and optional DSPy context for customers already using DSPy.
 
@@ -10,12 +10,12 @@ Select the Profile explicitly with `--instruction-set <slug-or-exact-name> --mod
 
 You should arrive here with:
 - One or more **validated judges** that clear their agreed judge trust bar (see `building-judges.md`).
-- A **dataset** of inputs to optimize against — usually the same exported labels, plus any harder cases you've added since.
+- A **dataset** of inputs to optimize against: usually the same exported labels, plus any harder cases you've added since.
 - An **instruction set** whose selected profile contains the starting component values for the LLM application you want to improve.
 
-If you don't have a validated judge, stop. Optimizing against an unvalidated judge means you'll hill-climb on a noisy or biased signal — Goodhart's law in action.
+If you don't have a validated judge, stop. Optimizing against an unvalidated judge means you'll hill-climb on a noisy or biased signal: Goodhart's law in action.
 
-## Why GEPA-Style Optimization
+## Why GEPA-style optimization
 
 - **GEPA** is a gradient-free text optimizer that uses an LLM to propose component edits, scores candidates against your metric, and keeps the best. It is well-suited to instruction optimization where you cannot backpropagate through the model.
 - In Orizu, runners execute candidates, scorers produce metrics/feedback, and optimization events make the loop inspectable and promotable.
@@ -70,9 +70,9 @@ Budget behavior:
 Reflection output contract:
 - The official engine uses the decoded reflective LM response string as the next value of the selected component without trimming; the legacy engine uses `response.strip()`, removing leading and trailing whitespace. With `round-robin`, other component values are read-only context; with `all`, each component is reflected independently and the results form one complete candidate profile.
 - The default reflection template asks for only the complete updated component value. Do not ask the model to wrap the value in markdown fences or tags; instruction components often contain those characters.
-- Put provider-native reasoning controls in `--reflection-provider-settings <json|@file>`, not in an instruction component. For OpenAI reasoning models, use a shape such as `{"reasoning":{"effort":"medium","summary":"auto"}}`. For Anthropic Claude models with thinking controls, use a shape such as `{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}`.
+- Put provider-native reasoning controls in `--reflection-provider-settings <json|@file>`, not in an instruction component. For OpenAI reasoning models, use a shape such as `{"reasoning":{"effort":"medium","summary":"auto"}}`. For Anthropic Claude models with thinking controls, use a shape such as `{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}`. OpenAI reasoning models over chat completions reject a reflection temperature, so leave `--reflection-temperature` unset.
 - Treat scorer feedback as directional signal: with `higher_is_better: true`, describe lower scores as failures or opportunities, not as a numeric loss; omit fields labeled `informational; not scored` from feedback sent to reflection.
-- Reflection max-token limits are explicit. `--reflection-max-tokens <n>` maps to Anthropic `max_tokens` and OpenAI `max_output_tokens`; Anthropic native Messages reflection requires it, while OpenAI may omit it when no cap is desired.
+- Reflection max-token limits are explicit and follow the provider's wire protocol. `--reflection-max-tokens <n>` maps to `max_tokens` for Anthropic Messages, `max_output_tokens` for OpenAI Responses, and `max_completion_tokens` for OpenAI chat completions. Anthropic Messages requires it; both OpenAI protocols may omit it when no cap is desired.
 - Reflection HTTP calls retry transient failures by default (`--reflection-retry-attempts 3`, `--reflection-http-timeout-seconds 180`). Legacy GEPA logs an exhausted retryable reflection failure, charges proposal and iteration budgets, and continues. The official engine increments proposal usage only after successful `on_proposal_end`; skilled-proposer failures re-raise and stop.
 
 Full command syntax and event contracts: `prompt-control-plane.md`.
@@ -85,7 +85,7 @@ Numeric budget controls are refused because they cannot be compared honestly
 to the named team ceiling. Eligibility also requires a staff-enabled team with
 available concurrency, an optimizer version in the launch project whose
 validated `manifest.optimizer_family` is `gepa`, registered candidate and
-scorer runners, and an Anthropic or OpenAI reflection model. Runner directories
+scorer runners, and a reflection model from a registered provider. Runner directories
 are unnecessary; if supplied, they must byte-match the registered versions,
 contain a confined `manifest.json`, and use each runner identity flag once.
 
@@ -102,22 +102,22 @@ hands it to a human.
 
 ## Migrating from the legacy engine (release cli-v0.5.20+)
 
-Since release `cli-v0.5.20` (`orizu@0.5.20` on npm), `run-gepa` defaults to the official GEPA engine. The flag surface and validation rules match legacy almost everywhere — a valid legacy command runs unchanged, with two exceptions: the reflection-cap requirement below, and stricter `=`-form parsing (`--flag=` with an empty value, or an `=`-attached value that itself starts with `--`, is refused pre-launch; legacy's argparse accepted both — a scripted `--scorer-candidate-field=$FIELD` with `FIELD` unset now fails with the flag named). What actually differs:
+Since release `cli-v0.5.20` (`orizu@0.5.20` on npm), `run-gepa` defaults to the official GEPA engine. The flag surface and validation rules match legacy almost everywhere: a valid legacy command runs unchanged, with two exceptions: the reflection-cap requirement below, and stricter `=`-form parsing. An empty `--flag=` value or an `=`-attached value that itself starts with `--` is refused before launch. Legacy's argparse accepted both. A scripted `--scorer-candidate-field=$FIELD` with `FIELD` unset now fails with the flag named. What differs:
 
-- **Validation happens before launch.** Legacy validated flags inside the python process (an argparse exit); the official dispatcher enforces the flag-shape rules below before anything spawns and names the offending flag in the error (the budget-conflict error lists the exclusive set rather than the flags you passed; value errors — e.g. a non-integer or non-positive budget number — are still reported by the engine and name the underlying setting). The rules carried over from legacy: `--budget` / `--candidate-selection-strategy` / `--scorer-input-contract` validate their choices, boolean flags take no value, abbreviated flag spellings are rejected, and budget controls are mutually exclusive — at most one of `--budget`, `--max-metric-calls`, `--max-full-evals`, `--max-iterations`. The official-only `--max-candidate-proposals` joins that exclusion set. With no budget control, `--budget auto` selects the balanced `medium` preset.
-- **Context and runtime.** Supply `--optimizer-version-id`, `--runner-version-id`, `--candidate-runner-dir`, `--scorer-version-id`, `--scorer-runner-version-id`, `--scorer-runner-dir`, `--dataset-version-id`, `--split-set-id`, `--train-split`, and `--val-split`; use `--python` to select the interpreter and `--json` for structured output.
-- **Search and reproducibility.** Tune `--minibatch-size`, `--candidate-selection-strategy`, `--epsilon`, `--objective`, and `--num-threads`; use `--seed`, `--disable-evaluation-cache`, and optional `--metadata <json>` when reproducibility or run attribution requires them. Automatic row-evaluation concurrency is bounded by the larger of the minibatch and validation workloads, twice the detected CPU count, available memory after its reserve, available file descriptors after headroom, and a configurable ceiling whose default is 64 (`ORIZU_GEPA_AUTO_THREADS_MAX`). An explicit positive thread count bypasses that auto-scaling calculation.
-- **Reflection controls.** Select `--reflection-model` and `--reflection-temperature`; a perfect selected minibatch skips reflection and child creation by default under `--skip-perfect-parent-reflection`, while `--no-skip-perfect-parent-reflection` overrides that behavior.
-- **Promotion flags.** Do not use `--auto-promote` or `--promotion-label` in the report-first workflow: write the report, obtain the human promotion decision, and follow the Authority map.
-- **A reflection cap is required for non-OpenAI reflection models.** `--reflection-max-tokens` is required at launch whenever the reflection model does not start with `openai/` — including the default (`anthropic/claude-opus-4-7`) and bare names like `gpt-4o` — so the run refuses immediately instead of failing every reflection call mid-run.
-- **The skilled proposer is an opt-in proposal path.** Reach for `--candidate-proposer skilled-proposer` when you want to evaluate the upstream proposer's alternative reflection process and can accept its first-use network, CPython, and managed-dependency requirements. It prepares or reuses a managed Python environment. Its aggregate `--proposal-max-calls` and `--proposal-max-tokens` budgets are independent of metric-call limits and per-response reflection limits. Add `--candidate-proposer-config @file` for explicit skills/guidance; do not combine the selection with `--reflection-prompt-template`. Evaluate the shipped empty-skills proposer or a pinned config through the controlled A/B below, and ground quality or generalization claims in that evidence. Config schema, environment setup, and recovery live in `prompt-control-plane.md` ("Skilled proposer").
-- **Seed preflight: same gate, better evidence.** Both engines refuse a degenerate seed (every valid row pinned to the same bound — the worst score, or uniformly `0.0` under a lower-is-better scorer, where the perfect bound is indistinguishable from a scorer silently zeroing on a mismatched input shape) or an all-errored seed at launch, and both accept `--allow-degenerate-seed` to bypass. The bypass covers *both* refusals — including the broken-scorer one — so a bypassed run can spend budget on a scorer that never works; use it only when a weak seed is expected. New on the official engine: the refusal message carries per-row evidence (row ids, scores, scorer output and errors); `<log-dir>/preflight-refused-<uuid>/preflight.json` (not written under `--no-local-log`) instead stores redacted `{row_id, score, error_class}` entries unless `--log-row-snapshots` is passed — a sibling of the run directories, since no run record exists when a launch is refused.
-- **Metric accounting differs.** Official counts include every evaluated row; legacy excluded some cached work. Do not compare raw metric-call totals across engines (details in ADR-019).
-- **Artifacts.** Both engines write `events.jsonl`, `evaluations.jsonl`, `reflections.jsonl`, and `result.json` locally; `lm_stats.json` (reflection usage) is official-only. Dashboard rendering is identical, and run metadata records `engine: official` or `engine: legacy`.
+- Validation happens before launch. Legacy validated flags inside the python process (an argparse exit); the official dispatcher enforces the flag-shape rules below before anything spawns and names the offending flag in the error. The budget-conflict error lists the exclusive set rather than the flags you passed. Value errors, such as a non-integer or non-positive budget number, are still reported by the engine and name the underlying setting. The rules carried over from legacy: `--budget` / `--candidate-selection-strategy` / `--scorer-input-contract` validate their choices, boolean flags take no value, abbreviated flag spellings are rejected, and budget controls are mutually exclusive: at most one of `--budget`, `--max-metric-calls`, `--max-full-evals`, `--max-iterations`. The official-only `--max-candidate-proposals` joins that exclusion set. With no budget control, `--budget auto` selects the balanced `medium` preset.
+- Context and runtime. Supply `--optimizer-version-id`, `--runner-version-id`, `--candidate-runner-dir`, `--scorer-version-id`, `--scorer-runner-version-id`, `--scorer-runner-dir`, `--dataset-version-id`, `--split-set-id`, `--train-split`, and `--val-split`; use `--python` to select the interpreter and `--json` for structured output.
+- Search and reproducibility. Tune `--minibatch-size`, `--candidate-selection-strategy`, `--epsilon`, `--objective`, and `--num-threads`; use `--seed`, `--disable-evaluation-cache`, and optional `--metadata <json>` when reproducibility or run attribution requires them. Automatic row-evaluation concurrency is bounded by the larger of the minibatch and validation workloads, twice the detected CPU count, available memory after its reserve, available file descriptors after headroom, and a configurable ceiling whose default is 64 (`ORIZU_GEPA_AUTO_THREADS_MAX`). An explicit positive thread count bypasses that auto-scaling calculation.
+- Reflection controls. Select `--reflection-model` and `--reflection-temperature`; a perfect selected minibatch skips reflection and child creation by default under `--skip-perfect-parent-reflection`, while `--no-skip-perfect-parent-reflection` overrides that behavior.
+- Promotion flags. Do not use `--auto-promote` or `--promotion-label` in the report-first workflow: write the report, obtain the human promotion decision, and follow the Authority map.
+- The reflection cap follows the registered provider's wire protocol. `--reflection-max-tokens` is required for Anthropic Messages, including the default `anthropic/claude-opus-4-7`; it is optional for OpenAI Responses and OpenAI chat completions. Use a provider-qualified identity. A bare id is not identified as invalid by local launch admission today: if it passes the separate fail-closed cap check, the Python transport refuses it by name at the first reflection call and shows the qualified form to use.
+- The skilled proposer is an opt-in proposal path. Reach for `--candidate-proposer skilled-proposer` when you want to evaluate the upstream proposer's alternative reflection process and can accept its first-use network, CPython, and managed-dependency requirements. It prepares or reuses a managed Python environment. Its aggregate `--proposal-max-calls` and `--proposal-max-tokens` budgets are independent of metric-call limits and per-response reflection limits. Add `--candidate-proposer-config @file` for explicit skills/guidance; do not combine the selection with `--reflection-prompt-template`. Evaluate the shipped empty-skills proposer or a pinned config through the controlled A/B below, and ground quality or generalization claims in that evidence. Config schema, environment setup, and recovery live in `prompt-control-plane.md` ("Skilled proposer").
+- Seed preflight: same gate, better evidence. Both engines refuse a degenerate seed (every valid row pinned to the same bound, either the worst score or uniformly `0.0` under a lower-is-better scorer, where the perfect bound is indistinguishable from a scorer silently zeroing on a mismatched input shape) or an all-errored seed at launch, and both accept `--allow-degenerate-seed` to bypass. The bypass covers *both* refusals, including the broken-scorer one, so a bypassed run can spend budget on a scorer that never works; use it only when a weak seed is expected. New on the official engine: the refusal message carries per-row evidence (row ids, scores, scorer output and errors). `<log-dir>/preflight-refused-<uuid>/preflight.json` (not written under `--no-local-log`) instead stores redacted `{row_id, score, error_class}` entries unless `--log-row-snapshots` is passed. It is a sibling of the run directories because no run record exists when a launch is refused.
+- Metric accounting differs. Official counts include every evaluated row; legacy excluded some cached work. Do not compare raw metric-call totals across engines (details in ADR-019).
+- Artifacts. Both engines write `events.jsonl`, `evaluations.jsonl`, `reflections.jsonl`, and `result.json` locally; `lm_stats.json` (reflection usage) is official-only. Dashboard rendering is identical, and run metadata records `engine: official` or `engine: legacy`.
 
 Terminal semantics are unchanged between engines: exhausting any budget control other than `--max-iterations` ends the run `paused` (`pause_reason: budget_exhausted`), while completing the configured `--max-iterations` is a normal `succeeded` finish. In both cases, keep the report-first path: no auto-promotion; write the report, obtain the human promotion decision, and follow the Authority map for manual promotion. Falling back to `--engine legacy` after a budget-exhausted pause reproduces the same paused outcome; it will not turn the run into a `succeeded` one.
 
-**Fallback:** rerun with `--engine legacy` for the previous engine's exact behavior, dropping `--max-candidate-proposals` first if you used it (it is official-only; the CLI refuses it under legacy before launch). Legacy is frozen (no new features) and will be removed at the M3 milestone (ADR-019) — if you fall back because the official engine misbehaved, capture both run ids and report the pair.
+**Fallback:** rerun with `--engine legacy` for the previous engine's exact behavior, dropping `--max-candidate-proposals` first if you used it (it is official-only; the CLI refuses it under legacy before launch). Legacy is frozen (no new features) and will be removed at the M3 milestone (ADR-019): if you fall back because the official engine misbehaved, capture both run ids and report the pair.
 
 ### Compare the skilled proposer with the default
 
@@ -127,9 +127,15 @@ For the selected arm, each provider-bearing proposal call appends `proposal-obse
 
 With local logging, those paths sit under `<log-dir>/<run-id>/`, and terminal `proposal-observability/lm_stats.json` is a flat object with `total_tokens_in`, `total_tokens_out`, and `total_tokens`. Under `--no-local-log`, per-call and failure records move under `.orizu/proposal-observability/<run-id>/`, and no terminal `lm_stats.json` is written. Finish the comparison after transport-bearing calls that reached provider completion or failure have records, `proposal_observability_event_failed` is absent, and, when local logging is enabled, terminal usage totals reconcile with those records.
 
-## Step 1: Wrap your application as an Orizu runner
+## Runner credentials
 
-For Orizu-tracked optimization, the candidate runner receives one dataset row and the candidate profile through the file contract. A one-component profile is passed as a single body for runner compatibility; a multi-component profile is passed as a complete component map. The scorer runner, by default, receives a GEPA-shaped `row` — `{source_row, candidate_id, candidate_output, candidate_raw_response, candidate_error}` — and returns a score and feedback. See `prompt-control-plane.md` ("Scorer-Runner Input Contracts") for the exact runner I/O shapes.
+Local scorer runners receive the built-in providers' credential environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. `GEMINI_API_KEY` and `GOOGLE_API_KEY` are no longer forwarded; neither is a registered provider credential. Stripped credential names are reported once on stderr, without their values.
+
+Project-provider keys reach scorer runners only inside hosted sandboxes, where delivered provider settings identify the credential names and the firewall replaces dummy values on outgoing requests. Forwarding project-provider keys to local scorers is tracked in ORI-2101.
+
+## Step 1: wrap your application as an Orizu runner
+
+For Orizu-tracked optimization, the candidate runner receives one dataset row and the candidate profile through the file contract. A one-component profile is passed as a single body for runner compatibility; a multi-component profile is passed as a complete component map. The scorer runner, by default, receives a GEPA-shaped `row` with `{source_row, candidate_id, candidate_output, candidate_raw_response, candidate_error}` and returns a score and feedback. See `prompt-control-plane.md` ("Scorer-runner input contracts") for the exact runner I/O shapes.
 
 **Contract warning:** the GEPA scorer contract differs from the flat-row score-run contract used by `orizu runners exec --scorer-version`. A judge runner written for flat-row score runs will find no output to judge in the GEPA shape and silently score every candidate 0. Do not hand-write a wrapper runner: pass `--scorer-input-contract flat_row` (plus `--scorer-candidate-field <row-field>` if the judge reads the candidate output from a named row field such as `draft`) and `run-gepa` adapts the payload for you while keeping the registered runner bytes unchanged. `run-gepa` also validates the contract on the seed at launch and refuses a uniformly-worst-scoring seed with a diagnosis instead of burning budget.
 
@@ -170,7 +176,7 @@ class SupportAgent(dspy.Module):
 
 If your real application is multi-step (retrieval + generation + tool use), build a multi-Module program. GEPA can optimize each module's instructions independently.
 
-## Step 2: Register scorers
+## Step 2: register scorers
 
 For Orizu, register scorers with readable names, directionality, row/set mode, and dataset requirements. Row scorers should return numeric `score` and textual `feedback`; feedback is what GEPA reflection consumes. Set scorers can be selection or tracked scorers, but they should not be used as reflection scorers.
 
@@ -199,7 +205,7 @@ def combined_metric(example, prediction, trace=None) -> float:
 
 **Weighting note:** if one failure mode is much more costly (escalation miss = lost trust; missing case ref = annoyance), weight accordingly. Don't hide critical failures inside an averaged score.
 
-## Step 3: Build the dataset
+## Step 3: build the dataset
 
 Convert your labeled export into `dspy.Example` objects:
 
@@ -225,7 +231,7 @@ examples = load_examples("./labels.jsonl")
 trainset, devset = examples[:int(0.7 * len(examples))], examples[int(0.7 * len(examples)):]
 ```
 
-## Step 4: Run GEPA-Style Optimization
+## Step 4: run GEPA-style optimization
 
 For Orizu, use `orizu optimizations run-gepa` first. It starts the run, fetches candidate/scorer contexts, executes local runners, logs seed validation, minibatches, reflection, child candidates, validation, Pareto updates, and optionally promotes.
 
@@ -289,7 +295,7 @@ GEPA will:
 
 Orizu's bundled optimizer is intentionally narrower than DSPy GEPA today: text candidates only, local runner/scorer directories, and Orizu event logging built in.
 
-## Step 5: Compare before / after on Final-held-out
+## Step 5: compare before / after on Final-held-out
 
 This is the step teams skip and regret.
 
@@ -319,15 +325,15 @@ print(f"Before: {before}")
 print(f"After:  {after}")
 ```
 
-**Read the per-metric numbers, not just the combined score.** A combined improvement of +5 points might hide a regression on one failure mode. If any individual metric drops, investigate before shipping.
+**Read both the per-metric numbers and the combined score.** A combined improvement of +5 points might hide a regression on one failure mode. If any individual metric drops, investigate before shipping.
 
-## Step 6: Ship and feed the loop
+## Step 6: ship and feed the loop
 
 If the optimized profile holds up on Final-held-out:
 - Promote the validated profile version to production; never promote one component by itself.
 - Sample new production traces over the next week.
 - Upload them as a new dataset (`primer.md` Step 1).
-- Annotate failures the optimized system *now* exhibits — they'll be different from the ones the previous version had.
+- Annotate failures the optimized system *now* exhibits: they'll be different from the ones the previous version had.
 - Build judges for the new failure modes if they're frequent enough.
 - Re-optimize.
 
@@ -335,12 +341,12 @@ Each pass through the loop reveals the next layer.
 
 ## Common pitfalls
 
-- **Optimizing against an unvalidated judge.** You'll improve the metric and degrade the system. Always validate first.
-- **No Final-held-out comparison.** "It's better, look at the metric" without Final-held-out is meaningless — GEPA will overfit if you let it.
-- **Hiding regressions in the average.** Track per-failure-mode metrics, not just combined.
-- **Over-budgeting GEPA.** Heavy budgets give diminishing returns and burn LM spend. Start with `auto="light"`, scale up only if needed.
-- **Ignoring temperature.** Run optimization with the same LM config (model, temperature) you use in production. Optimizing against gpt-4o at temp=0 doesn't transfer to gpt-4o-mini at temp=0.7.
-- **Recreating Orizu logging by hand for instruction sets.** Use `orizu optimizations run-gepa` unless the optimizer is genuinely custom.
+- Optimizing against an unvalidated judge. You'll improve the metric and degrade the system. Always validate first.
+- No Final-held-out comparison. "It's better, look at the metric" without Final-held-out is meaningless: GEPA will overfit if you let it.
+- Hiding regressions in the average. Track per-failure-mode metrics alongside the combined score.
+- Over-budgeting GEPA. Heavy budgets give diminishing returns and burn LM spend. Start with `auto="light"`, scale up only if needed.
+- Ignoring temperature. Run optimization with the same LM config (model, temperature) you use in production. Optimizing against gpt-4o at temp=0 doesn't transfer to gpt-4o-mini at temp=0.7.
+- Recreating Orizu logging by hand for instruction sets. Use `orizu optimizations run-gepa` unless the optimizer is genuinely custom.
 
 ## Checklist
 
@@ -348,7 +354,7 @@ Before declaring an optimization run successful:
 
 - [ ] Each metric is backed by a validated judge that clears its agreed judge trust bar (see `building-judges.md`)
 - [ ] Train and validation partitions plus Final-held-out, which stays genuinely untouched during optimization
-- [ ] Per-metric numbers reviewed (not just combined)
+- [ ] Per-metric and combined numbers reviewed
 - [ ] Same LM/temperature in eval as in production
 - [ ] Optimization report written from logs/export and attached with `--report-file` when the run is finished, failed, or cancelled
 - [ ] Optimized program saved/version-controlled before shipping

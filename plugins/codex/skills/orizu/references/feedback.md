@@ -4,18 +4,18 @@ File product feedback when Orizu itself gets in the way while you work on a cust
 
 ## Choose a category
 
-- `bug` — a command failed or did the wrong thing.
-- `docs` — the skill or docs disagree with what the CLI does.
-- `missing` — a capability Orizu does not have blocks or limits the work.
-- `guidance` — the method left you not knowing what to do next.
-- `friction` — it worked but was confusing, slow, or annoying.
-- `other` — an Orizu problem does not fit the categories above.
+- `bug`: a command failed or did the wrong thing.
+- `docs`: the skill or docs disagree with what the CLI does.
+- `missing`: a capability Orizu does not have blocks or limits the work.
+- `guidance`: the method left you not knowing what to do next.
+- `friction`: it worked but was confusing, slow, or annoying.
+- `other`: an Orizu problem does not fit the categories above.
 
 ## Choose a severity
 
-- `blocking` — could not continue.
-- `major` — continued with a workaround that cost real time or a worse result.
-- `minor` — worth fixing; did not slow the work.
+- `blocking`: could not continue.
+- `major`: continued with a workaround that cost real time or a worse result.
+- `minor`: worth fixing; did not slow the work.
 
 Choose severity by what the problem cost this work. It is your claim; the Orizu team can re-rank it during review.
 
@@ -84,9 +84,21 @@ Human-readable success looks like:
 Reported (id <uuid>). Thanks, this has been reported. To follow up, email feedback@orizu.ai
 ```
 
+When the report also has an issue handle, the same line names it:
+
+```text
+Reported (id <uuid>, issue ORI-1234). Thanks, this has been reported. To follow up, email feedback@orizu.ai
+```
+
 With `--json`, expect the same report id and acknowledgement as one JSON object:
 
     {"id":"<uuid>","message":"Thanks, this has been reported. To follow up, email feedback@orizu.ai"}
+
+With a handle, the object carries one more field:
+
+    {"id":"<uuid>","message":"Thanks, this has been reported. To follow up, email feedback@orizu.ai","issueIdentifier":"ORI-1234"}
+
+The handle is a short reference the person can quote when they write to the mailbox; it is plain text, not a link, and it is absent when the report was saved but no reference was issued.
 
 Refusals go to stderr with a non-zero exit status and leave stdout empty; notices are stderr lines that can accompany a success.
 

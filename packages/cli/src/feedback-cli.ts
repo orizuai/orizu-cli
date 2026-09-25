@@ -24,6 +24,7 @@ import {
   hasValidProductFeedbackAttachmentNameSyntax,
   hasValidProductFeedbackSlugSyntax,
   isLastErrorRecordShape,
+  PRODUCT_FEEDBACK_ISSUE_IDENTIFIER_PATTERN,
   PRODUCT_FEEDBACK_ROUTE,
   PRODUCT_FEEDBACK_UNAUTHENTICATED_MESSAGE,
   type ProductFeedbackAttachment,
@@ -51,8 +52,7 @@ import {
 } from './json-response.js'
 import {
   existingWorkspaceTeamSlug,
-  getWorkspaceRoot,
-  workspaceExists,
+  findWorkspaceRoot,
 } from './workspace.js'
 
 export interface FeedbackCliIo {
@@ -403,7 +403,7 @@ function parsedProjectContext(value: string): ProjectContext | null {
 
 function resolveProjectContext(
   explicitProject: string | null,
-  cwd: string
+  workspaceRoot: string | null
 ): ProjectContext | string {
   const invalidProject = clientRefusal(
     'invalid_flag_value',
@@ -413,7 +413,9 @@ function resolveProjectContext(
   if (process.env.ORIZU_PROJECT) {
     return parsedProjectContext(process.env.ORIZU_PROJECT) ?? invalidProject
   }
-  const workspaceTeam = existingWorkspaceTeamSlug(getWorkspaceRoot(cwd))
+  const workspaceTeam = workspaceRoot === null
+    ? null
+    : existingWorkspaceTeamSlug(workspaceRoot)
   return { teamSlug: workspaceTeam, projectSlug: null }
 }
 
@@ -470,6 +472,14 @@ function runtimeDescription(): string {
     : `node ${process.versions.node}`
 }
 
+// The handle is optional, but anything other than a well-formed handle is a
+// broken body: this server is ours, so a null, a number or free provider text
+// here means the acknowledgement cannot be trusted.
+function hasValidIssueIdentifier(value: unknown): boolean {
+  return value === undefined
+    || (typeof value === 'string' && PRODUCT_FEEDBACK_ISSUE_IDENTIFIER_PATTERN.test(value))
+}
+
 function isProductFeedbackSuccess(value: unknown): value is ProductFeedbackSuccess {
   return value !== null
     && typeof value === 'object'
@@ -477,6 +487,7 @@ function isProductFeedbackSuccess(value: unknown): value is ProductFeedbackSucce
     && ((value as Record<string, unknown>).id as string).trim().length > 0
     && typeof (value as Record<string, unknown>).message === 'string'
     && ((value as Record<string, unknown>).message as string).trim().length > 0
+    && hasValidIssueIdentifier((value as Record<string, unknown>).issueIdentifier)
 }
 
 const INVALID_TOKEN_FILE_MESSAGE = 'invalid_token_file: ORIZU_TOKEN_FILE is set but could not be read; fix the sandbox or email feedback@orizu.ai'
@@ -576,7 +587,8 @@ export async function feedbackCommand(args: string[], io: FeedbackCliIo): Promis
       return 1
     }
 
-    const projectContext = resolveProjectContext(parsed.project, cwd)
+    const workspaceRoot = findWorkspaceRoot(cwd)
+    const projectContext = resolveProjectContext(parsed.project, workspaceRoot)
     if (typeof projectContext === 'string') {
       io.printErr(scrubNotice(projectContext))
       return 1
@@ -651,7 +663,7 @@ export async function feedbackCommand(args: string[], io: FeedbackCliIo): Promis
         hosted: isHosted,
         teamSlug: projectContext.teamSlug,
         projectSlug: projectContext.projectSlug,
-        workspaceRootFound: workspaceExists(cwd),
+        workspaceRootFound: workspaceRoot !== null,
       },
     }
     const validation = validateProductFeedbackRequest({ ...requestCandidate, attachments })
@@ -748,9 +760,12 @@ export async function feedbackCommand(args: string[], io: FeedbackCliIo): Promis
     }) as unknown as ProductFeedbackSuccess
     if (io.json) io.print(JSON.stringify(success))
     else {
+      const reference = success.issueIdentifier === undefined
+        ? `id ${success.id}`
+        : `id ${success.id}, issue ${success.issueIdentifier}`
       io.print(sanitizeHumanInlineText(
         sanitizeTerminalText,
-        `Reported (id ${success.id}). ${success.message}`
+        `Reported (${reference}). ${success.message}`
       ))
     }
     return 0

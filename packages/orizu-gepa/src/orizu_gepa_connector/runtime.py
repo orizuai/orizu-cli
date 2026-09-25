@@ -14,6 +14,8 @@ from uuid import uuid4
 from orizu_gepa.client import OrizuClient, OrizuEventSink
 from orizu_gepa.local_log import LocalOptimizationLogger
 from orizu_gepa.optimizer import PromotionResult, TextGepaConfig, TextGepaResult
+from orizu_gepa.providers import parse_model_identity, protocol_for_identity
+from orizu_gepa.reflection import protocol_requires_output_cap
 from orizu_gepa.runner import resolve_scorer_input_contract
 
 from .adapter import RunnerEvaluationAdapter, ScorerContractError
@@ -203,8 +205,20 @@ def build_config_from_environment() -> TextGepaConfig:
     """Parse the ALI-1502 wrapper contract before client creation or spend."""
     reflection_model = os.environ.get("ORIZU_REFLECTION_MODEL", TextGepaConfig.reflection_model)
     reflection_max_tokens = _optional_int("ORIZU_REFLECTION_MAX_TOKENS")
-    if not reflection_model.startswith("openai/") and reflection_max_tokens is None:
-        raise RuntimeError("--reflection-max-tokens is required for Anthropic reflection models")
+    # The cap is a requirement of the WIRE PROTOCOL, not of a provider list:
+    # Anthropic Messages mandates max_tokens, both OpenAI protocols do not, and
+    # an unresolved provider keeps failing closed.
+    protocol = protocol_for_identity(reflection_model)
+    if protocol_requires_output_cap(protocol) and reflection_max_tokens is None:
+        provider_id, _ = parse_model_identity(reflection_model)
+        if protocol is None:
+            raise RuntimeError(
+                f'reflection model identity "{reflection_model}" is not a registered '
+                "provider identity; --reflection-max-tokens remains required while it is unresolved"
+            )
+        raise RuntimeError(
+            f"the {protocol} protocol used by provider {provider_id} requires --reflection-max-tokens"
+        )
     return TextGepaConfig(
         budget=os.environ.get("ORIZU_BUDGET", "auto"),
         max_metric_calls=_optional_int("ORIZU_MAX_METRIC_CALLS"),

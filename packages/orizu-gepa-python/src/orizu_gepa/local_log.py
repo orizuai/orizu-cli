@@ -111,11 +111,14 @@ class LocalOptimizationLogger:
         prompt: str,
         response: str,
         candidate_text: str,
+        component: str | None = None,
     ) -> None:
+        """Append one reflection row: one per reflected component, not per iteration."""
         _append_jsonl(self.directory / "reflections.jsonl", {
             "iteration": iteration,
             "parent_candidate_id": parent_candidate_id,
             "child_candidate_id": child_candidate_id,
+            "component": component,
             "row_ids": row_ids,
             "prompt": prompt,
             "response": response,

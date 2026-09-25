@@ -935,7 +935,7 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         self.assertEqual(proposal["payload"]["components_to_update"], ["system", "tools"])
 
     def test_real_gepa_callback_translates_validation_components_and_truncation(self):
-        """Kills split rewriting, raw candidate text, and silent payload truncation."""
+        """Kills split rewriting, a bounded candidate (ORI-2027), and silent sample-output truncation."""
         event: ValsetEvaluatedEvent = {
             "iteration": 1,
             "candidate_idx": 1,
@@ -946,7 +946,7 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
             "total_valset_size": 1,
             "parent_ids": [],
             "is_best_program": True,
-            "outputs_by_val_id": {"validation-row-1": {"row_id": "canonical-row", "answer": "better"}},
+            "outputs_by_val_id": {"validation-row-1": {"row_id": "canonical-row", "output": "answer " * 40}},
         }
         translated = translate_callback(
             "on_valset_evaluated", event, run_id=RUN_ID, max_payload_chars=64
@@ -962,15 +962,13 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
             "score": 1.0,
             "feedback": None,
             "error": None,
-            "output": {"row_id": "canonical-row", "answer": "better"},
+            "output": ("answer " * 40)[:64] + "…[truncated]",
         }])
-        self.assertEqual(
-            translated["payload"]["components"],
-            {"prompt": ("better" * 40)[:64] + "…[truncated]"},
-        )
+        # The candidate is the thing being optimized: it is never bounded.
+        self.assertEqual(translated["payload"]["components"], {"prompt": "better" * 40})
         self.assertTrue(translated["payload"]["payload_truncated"])
         self.assertEqual(translated["payload"]["truncation"], {
-            "fields": {"components.prompt": 240},
+            "fields": {"row_results.canonical-row.output": 280},
         })
 
     def test_real_gepa_seed_valset_callback_uses_the_legacy_seed_wire_event(self):
@@ -1444,7 +1442,8 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
         self.assertEqual(sink.events[3]["payload"]["response"], "better")
 
     def test_production_callback_redacts_only_prompt_and_bounds_large_event_fields(self):
-        """Kills legacy-incompatible response/candidate redaction and truncation bypass."""
+        """Kills legacy-incompatible response/candidate redaction, a bounded candidate (ORI-2027),
+        and a reflection response that bypasses the cap."""
         sink = RecordingSink()
         callback = OrizuCallback(sink, RUN_ID, max_payload_chars=8)
         callback.on_candidate_selected({"iteration": 1, "candidate_idx": 0})
@@ -1453,11 +1452,13 @@ class OfficialGepaEngineRedContracts(unittest.TestCase):
                                   "raw_lm_outputs": {"prompt": "secret response"}})
         callback.on_candidate_accepted({"iteration": 1, "new_candidate_idx": 1})
         proposed, reflection = sink.events[:2]
-        self.assertTrue(proposed["payload"]["payload_truncated"])
-        self.assertTrue(proposed["payload"]["body"].endswith("…[truncated]"))
+        self.assertNotEqual(proposed["payload"].get("payload_truncated"), True)
+        self.assertEqual(proposed["payload"]["body"], "x" * 40)
+        self.assertEqual(proposed["payload"]["components"], {"prompt": "x" * 40})
         self.assertNotIn("prompt", reflection["payload"])
-        self.assertEqual(reflection["payload"]["response"], "secret response")
-        self.assertEqual(reflection["payload"]["candidate_text"], "xxxxxxxx…[truncated]")
+        self.assertEqual(reflection["payload"]["response"], "secret r…[truncated]")
+        self.assertEqual(reflection["payload"]["candidate_text"], "x" * 40)
+        self.assertTrue(reflection["payload"]["payload_truncated"])
 
     def test_full_valset_evaluation_is_not_published_as_a_parent_minibatch(self):
         """Kills a child full validation published as a train minibatch before its valset event."""

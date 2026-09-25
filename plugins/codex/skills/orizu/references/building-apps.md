@@ -1,6 +1,6 @@
-# Orizu apps — agent reference
+# Orizu apps: agent reference
 
-You are reading the canonical reference for coding agents producing Orizu apps. Orizu apps are React/TSX components that render inside Orizu's task and preview screens to collect feedback from human reviewers: ratings, comments, comparisons, annotations, rankings, corrections, and agent-transcript review. This document covers everything needed to author a working app — runtime contract, conventions, design principles, the import registry, the per-component reference, recipes, and common pitfalls. Read top-to-bottom on first encounter; jump to specific sections by anchor afterwards.
+You are reading the canonical reference for coding agents producing Orizu apps. Orizu apps are React/TSX components that render inside Orizu's task and preview screens to collect feedback from human reviewers: ratings, comments, comparisons, annotations, rankings, corrections, and agent-transcript review. This document covers everything needed to author a working app: runtime contract, conventions, design principles, the import registry, the per-component reference, recipes, and common pitfalls. Read top-to-bottom on first encounter; jump to specific sections by anchor afterwards.
 
 If you are an external coding agent that found this via `orizu.ai/docs/references/building-apps`, treat this document as the source of truth for both the runtime contract and the available primitives.
 
@@ -67,7 +67,7 @@ The validator rejects:
 - **Default exports that destructure `data`** instead of `inputData`, or `onSubmit` instead of `onComplete`. The deprecated names fail validation at the app boundary.
 - **Components that don't accept these props at all.**
 
-You may use any other props internally (`useState`, `useReducer`, and so on); just keep the default export's signature exact.
+You may use any other props internally (`useState`, `useReducer`, and so on); keep the default export's signature exact.
 
 ### Output schema
 
@@ -79,7 +79,7 @@ You may use any other props internally (`useState`, `useReducer`, and so on); ju
 - `items`
 - `enum`
 
-Anything else (`pattern`, `format`, `oneOf`, `anyOf`, `minLength`, …) is ignored or rejected. Keep schemas in this subset and have the component construct the payload literally — don't compute it at submit time from scattered state.
+Anything else (`pattern`, `format`, `oneOf`, `anyOf`, `minLength`, …) is ignored or rejected. Keep schemas in this subset and have the component construct the payload literally: don't compute it at submit time from scattered state.
 
 Both `input.json` and `output.json` are JSON Schema objects:
 
@@ -113,7 +113,7 @@ The app component renders **one row at a time**. It does not navigate between ro
 | Draft persistence across sessions                              | Container (via `initialValues`) |
 | Auth, layout chrome, top/side bars                             | Container               |
 
-Keep the app's job tight: show the row, collect the response, hand it back. Do not reimplement queue UI, custom saved toasts, or session state. In-row progress hints such as "3 of 5 questions answered" *are* fine — those describe the current row's state, not the container's.
+Keep the app's job tight: show the row, collect the response, hand it back. Do not reimplement queue UI, custom saved toasts, or session state. In-row progress hints such as "3 of 5 questions answered" *are* fine: those describe the current row's state, not the container's.
 
 ---
 
@@ -122,7 +122,7 @@ Keep the app's job tight: show the row, collect the response, hand it back. Do n
 - Your TSX is compiled server-side with **esbuild** to a CommonJS bundle. JSX is transformed to the automatic React runtime.
 - Imports are resolved at runtime via a **fixed registry** (see Imports below). There is no `npm install`, no third-party packages, no deep paths beyond what is listed.
 - An import path that isn't in the registry throws `Module not found: Cannot find module '<path>'` at render time. Always copy paths verbatim from the Imports section.
-- React itself is auto-injected — `import React from 'react'` is allowed but not required. Hook imports like `import { useState } from 'react'` are fine.
+- React itself is auto-injected: `import React from 'react'` is allowed but not required. Hook imports like `import { useState } from 'react'` are fine.
 
 ---
 
@@ -130,21 +130,21 @@ Keep the app's job tight: show the row, collect the response, hand it back. Do n
 
 When you reach for a component, you have exactly two paths. Make this decision deliberately for every primitive you use.
 
-1. **Use as-is.** Import the registered component by name and pass the documented props. This is the default and the right answer for the vast majority of tasks. Wrapping the component in your own layout `div` for spacing, headings, or surrounding logic is still "use as-is" — the component itself is unchanged.
+1. Use as-is. Import the registered component by name and pass the documented props. This is the default and the right answer for the vast majority of tasks. Wrapping the component in your own layout `div` for spacing, headings, or surrounding logic is still "use as-is": the component itself is unchanged.
 
-2. **Inline a private fork.** If the registered component's prop set or internal behaviour genuinely doesn't fit your task, fetch its source from the URL in the Component reference (every section has a `**Source:**` link), copy the implementation into your TSX file as a private component (e.g. `MyStarRating`), and adapt it. The runtime resolves imports against a fixed registry — you **cannot import a forked version** from any path the registry doesn't already expose, so any fork must live inline in the same file alongside your default export.
+2. Inline a private fork. If the registered component's prop set or internal behaviour genuinely doesn't fit your task, fetch its source from the URL in the Component reference (every section has a `**Source:**` link), copy the implementation into your TSX file as a private component (e.g. `MyStarRating`), and adapt it. The runtime resolves imports against a fixed registry: you **cannot import a forked version** from any path the registry doesn't already expose, so any fork must live inline in the same file alongside your default export.
 
-Read the source whenever a primitive almost-but-not-quite fits — it shows you the structure, the styling tokens, and the accessibility hooks already worked out, so your fork stays faithful to the design language. Inlining is a real, supported option, not a fallback to apologise for; just don't reach for it before checking whether composition or wrapping covers the case.
+Read the source whenever a primitive almost-but-not-quite fits: it shows you the structure, the styling tokens, and the accessibility hooks already worked out, so your fork stays faithful to the design language. Inlining is a real, supported option, not a fallback to apologise for; do not reach for it before checking whether composition or wrapping covers the case.
 
 ---
 
 ## Custom components
 
-You aren't limited to the registered primitives. The TSX file can also declare any number of helper or composite components inline — standard React, no special framework requirements. Useful when the listed components don't cover your task or when you want a small, named abstraction for repeated structure.
+You aren't limited to the registered primitives. The TSX file can also declare any number of helper or composite components inline: standard React, no special framework requirements. Useful when the listed components don't cover your task or when you want a small, named abstraction for repeated structure.
 
 ### The default export contract is the only contract
 
-Only one component in the file is bound by Orizu's contract: the default export. It must be a **named** function and accept exactly `{ inputData, onComplete, initialValues }`. Helper components defined alongside it have **no contract** — name them whatever you want, give them any prop shape, and call them from your default export like normal React.
+Only one component in the file is bound by Orizu's contract: the default export. It must be a **named** function and accept exactly `{ inputData, onComplete, initialValues }`. Helper components defined alongside it have **no contract**: name them whatever you want, give them any prop shape, and call them from your default export like normal React.
 
 ```tsx
 function QuestionRow({ id, label, value, onChange }) {
@@ -166,17 +166,17 @@ export default function Component({ inputData, onComplete, initialValues }) {
 
 Two paths, both supported:
 
-- **From scratch.** Write standard React, style with Tailwind utilities, keep imports inside the registry. No `npm install`, no third-party packages, no global CSS. Hooks like `useState`, `useReducer`, `useEffect` are available; pull them from `'react'`.
-- **Forking a primitive.** Open the relevant component in the **Component reference** below, follow the `**Source:**` link to read the underlying TSX, copy the implementation into your file as a private component (e.g. `MyStarRating`), rename it, and adapt the internals. The runtime can't resolve a forked import path — any fork must live inline in the same file.
+- From scratch. Write standard React, style with Tailwind utilities, keep imports inside the registry. No `npm install`, no third-party packages, no global CSS. Hooks like `useState`, `useReducer`, `useEffect` are available; pull them from `'react'`.
+- Forking a primitive. Open the relevant component in the **Component reference** below, follow the `**Source:**` link to read the underlying TSX, copy the implementation into your file as a private component (e.g. `MyStarRating`), rename it, and adapt the internals. The runtime can't resolve a forked import path: any fork must live inline in the same file.
 
 Either way, the rules below apply.
 
 ### What custom components must respect
 
-- **Imports come from the registry only.** No deep paths beyond what is listed in the **Imports** section.
+- Imports come from the registry only. No deep paths beyond what is listed in the **Imports** section.
 - **Style with Tailwind utilities and design tokens** (`text-foreground`, `text-muted-foreground`, `text-primary`, `text-destructive`). Don't override `app/globals.css` or rely on arbitrary Tailwind colors (`text-red-500`).
-- **Stay accessible**: visible focus, semantic elements, labels above inputs, color isn't the only state signal.
-- **The whole app ships in one TSX file** — no multi-file imports, no separate CSS modules, no asset imports.
+- Stay accessible: visible focus, semantic elements, labels above inputs, color isn't the only state signal.
+- The whole app ships in one TSX file: no multi-file imports, no separate CSS modules, no asset imports.
 
 If a helper grows large enough that you'd reach for a separate file, that's a signal to either (a) compose existing primitives differently, (b) inline-fork a primitive that's closer to what you want, or (c) request a new platform-level primitive rather than smuggling a multi-file pattern into a single file.
 
@@ -194,18 +194,18 @@ If a helper grows large enough that you'd reach for a separate file, that's a si
 Every input component is fully controlled. There are no `defaultValue` props. Always pass `value` and `onChange`. `readOnly` flattens visuals AND disables pointer/keyboard interaction.
 
 ### Reserved props
-- `id` — required where listed; must be unique per render. Used by analytics and a11y helpers.
-- `readOnly` — boolean. Used by interaction-disable helpers.
+- `id`: required where listed; must be unique per render. Used by analytics and a11y helpers.
+- `readOnly`: boolean. Used by interaction-disable helpers.
 
 Do not repurpose these names for unrelated values.
 
 ### Styling
-- Components are token-driven via Tailwind + CSS variables. Do not re-style components themselves — wrap them in a layout div if you need spacing or alignment.
+- Components are token-driven via Tailwind + CSS variables. Do not re-style components themselves: wrap them in a layout div if you need spacing or alignment.
 - Use the standard Tailwind utility set inside your component. Custom CSS modules are not supported.
 - Use design tokens (`text-foreground`, `text-muted-foreground`, `text-primary`, `text-destructive`) rather than arbitrary Tailwind colors (`text-red-500`).
 
 ### Never invent imports
-Never invent a new import path; never rely on third-party packages. If a registered component doesn't fit, your two real options are spelled out under **Use as-is, or inline a fork** above — wrap, or copy the source inline.
+Never invent a new import path; never rely on third-party packages. If a registered component doesn't fit, your two real options are spelled out under **Use as-is, or inline a fork** above: wrap, or copy the source inline.
 
 ---
 
@@ -218,22 +218,22 @@ Pick a content component, pick a behavior, fill the slot. Examples:
 
 The four roles:
 
-- **Typography (`Prose`, `Prose.Body`, `Prose.H1`, etc.)** — what *you* write to frame the task: instructions, headings, helper copy. Lives outside the box.
-- **Content (`TextContent`, `CodeBlock`, `ConversationView`, `ContentRenderer`)** — what the model produced or what's under review. Lives inside a box.
-- **Behaviors (`Annotatable`, `Reactable`)** — wrap any content component to make it reviewable. They don't render content; they add affordances and slot in your input surface.
-- **Input (`CommentBox`, `TagPicker`, `StarRating`, etc.)** — the surfaces you slot inside a behavior, or use directly to capture feedback.
+- Typography (`Prose`, `Prose.Body`, `Prose.H1`, etc.): what *you* write to frame the task: instructions, headings, helper copy. Lives outside the box.
+- Content (`TextContent`, `CodeBlock`, `ConversationView`, `ContentRenderer`): what the model produced or what's under review. Lives inside a box.
+- Behaviors (`Annotatable`, `Reactable`): wrap any content component to make it reviewable. They don't render content; they add affordances and slot in your input surface.
+- Input (`CommentBox`, `TagPicker`, `StarRating`, etc.): the surfaces you slot inside a behavior, or use directly to capture feedback.
 
 ---
 
 ## Design principles
 
-A labeler is an interface annotators stare at for hours. It should feel like an app they want to use, not a form they tolerate. Treat the basics — type, color, spacing, hierarchy — as load-bearing, not decoration.
+A labeler is an interface annotators stare at for hours. It should feel like an app they want to use, not a form they tolerate. Treat the basics (type, color, spacing, hierarchy) as load-bearing, not decoration.
 
 ### Layout & visual hierarchy
 
-- The data is the UI. Push the annotator's attention to the trace they're judging — minimize chrome around it.
+- The data is the UI. Push the annotator's attention to the trace they're judging: minimize chrome around it.
 - One container per logical region. Don't stack cards-inside-cards. Rely on whitespace and typography to separate sections, not nested borders.
-- Visual hierarchy through size, weight, and position — not boxes, shadows, or gradients.
+- Visual hierarchy through size, weight, and position: not boxes, shadows, or gradients.
 - Heavy shadows, tinted backgrounds, and busy gradients add visual noise without adding information. Stay flat or near-flat.
 - Establish one focal point per screen. The annotator should always know where to look first.
 
@@ -241,80 +241,80 @@ A labeler is an interface annotators stare at for hours. It should feel like an 
 
 Legibility over personality. Annotators read for hours; the type system is doing the heavy lifting whether you notice it or not.
 
-- **Two typefaces, max.** A proportional sans-serif for UI and prose; a monospace for code, JSON, tool calls, IDs. System font stacks (`-apple-system, ui-sans-serif, ...` and `ui-monospace`) are a perfectly good default — they're optimized for OS rendering and ship at zero weight cost. If you want a custom face, Inter, IBM Plex Sans, or Geist are reliable choices.
-- **Keep the type scale small.** ~5 sizes total: 12 / 14 / 16 / 20 / 24 px. 16px is your prose default; 14px for dense UI; 12px reserved for metadata and footnotes.
-- **Weight contrast > size contrast.** Use 500 / 600 weights for headers at the *same* size as body, rather than scaling up to 28–32px. Feels modern, saves vertical space, keeps the page calm.
-- **Line height.** 1.5 for prose, 1.3 for UI labels and dense lists, 1.5–1.6 for code blocks. Tight code is hard to scan.
-- **Line length.** Cap prose at 70–90 characters per line. Full-width text on a 27" display is unreadable.
-- **Color contrast in type.** Body at full text color; secondary metadata at ~60% opacity (or a muted gray); never below ~4.5:1 contrast.
-- Don't mix monospace and proportional inside a single inline run — it reads broken.
+- Two typefaces, max. A proportional sans-serif for UI and prose; a monospace for code, JSON, tool calls, IDs. System font stacks (`-apple-system, ui-sans-serif, ...` and `ui-monospace`) are a perfectly good default: they're optimized for OS rendering and ship at zero weight cost. If you want a custom face, Inter, IBM Plex Sans, or Geist are reliable choices.
+- Keep the type scale small. ~5 sizes total: 12 / 14 / 16 / 20 / 24 px. 16px is your prose default; 14px for dense UI; 12px reserved for metadata and footnotes.
+- Weight contrast > size contrast. Use 500 / 600 weights for headers at the *same* size as body, rather than scaling up to 28–32px. Feels modern, saves vertical space, keeps the page calm.
+- Line height. 1.5 for prose, 1.3 for UI labels and dense lists, 1.5–1.6 for code blocks. Tight code is hard to scan.
+- Line length. Cap prose at 70–90 characters per line. Full-width text on a 27" display is unreadable.
+- Color contrast in type. Body at full text color; secondary metadata at ~60% opacity (or a muted gray); never below ~4.5:1 contrast.
+- Don't mix monospace and proportional inside a single inline run: it reads broken.
 
 ### Color
 
 A muted, restrained palette beats a vibrant one for any tool people use professionally.
 
-- **Neutrals carry the design.** 80–90% of the UI should be neutrals: a near-white background (or near-black in dark mode), one slightly off-tone surface for cards/panels, three or four gray text tones (primary, secondary, tertiary, disabled).
-- **One accent color.** Pick one and use it for selection, focus rings, primary actions, and links. Resist the urge to introduce more.
-- **Semantic colors only for state.** Green = pass / success. Red = fail / destructive. Amber = warn (use sparingly — most things are pass or fail). Don't use these as decoration or as the accent.
-- **No category palettes.** If you need to distinguish many tags, roles, or types, use one color with text labels — not 8 distinct hues. Color is for state, not categorization.
-- **Test in light and dark mode.** A design that only works on one is fragile.
-- **Avoid opacity-as-color.** `text-black/40` for disabled or muted is fine; building a whole palette out of opacities falls apart on tinted backgrounds.
+- Neutrals carry the design. 80–90% of the UI should be neutrals: a near-white background (or near-black in dark mode), one slightly off-tone surface for cards/panels, three or four gray text tones (primary, secondary, tertiary, disabled).
+- One accent color. Pick one and use it for selection, focus rings, primary actions, and links. Resist the urge to introduce more.
+- Semantic colors only for state. Green = pass / success. Red = fail / destructive. Amber = warn (use sparingly: most things are pass or fail). Don't use these as decoration or as the accent.
+- No category palettes. If you need to distinguish many tags, roles, or types, use one color with text labels: not 8 distinct hues. Color is for state, not categorization.
+- Test in light and dark mode. A design that only works on one is fragile.
+- Avoid opacity-as-color. `text-black/40` for disabled or muted is fine; building a whole palette out of opacities falls apart on tinted backgrounds.
 
 ### Buttons & action hierarchy
 
-- **One primary button per screen** (ideally per region). Filled, accent color, the single most-likely action — usually "Submit & next" or "Save."
-- **Secondary actions are outlined or ghost.** "Skip," "back," "open notes." Visually quieter than primary; same height, different weight.
-- **Tertiary actions are plain text or icon-only.** "Copy," "expand," "edit." No fill, no border.
-- **Destructive actions are explicitly red**, never primary by default. Require a deliberate path — confirm modal for "delete row," hold-to-delete for inline destructive actions.
-- **Buttons that are usually disabled are a smell.** Either the enabling condition is unclear, or the button shouldn't appear until the action is ready.
-- **Size by importance, not whim.** Comfortable hit area for primary; slightly smaller secondary; inline-sized tertiary. Pick a small set of heights (e.g. 28 / 32 / 40 px) and stick to them.
-- **Show the keyboard shortcut on the button itself** — `Submit ⏎`, `Skip (s)`. Tooltips are too easy to miss.
+- **One primary button per screen** (ideally per region). Filled, accent color, the single most-likely action: usually "Submit & next" or "Save."
+- Secondary actions are outlined or ghost. "Skip," "back," "open notes." Visually quieter than primary; same height, different weight.
+- Tertiary actions are plain text or icon-only. "Copy," "expand," "edit." No fill, no border.
+- **Destructive actions are explicitly red**, never primary by default. Require a deliberate path: confirm modal for "delete row," hold-to-delete for inline destructive actions.
+- Buttons that are usually disabled are a smell. Either the enabling condition is unclear, or the button shouldn't appear until the action is ready.
+- Size by importance, not whim. Comfortable hit area for primary; slightly smaller secondary; inline-sized tertiary. Pick a small set of heights (e.g. 28 / 32 / 40 px) and stick to them.
+- Show the keyboard shortcut on the button itself: `Submit ⏎`, `Skip (s)`. Tooltips are too easy to miss.
 
 ### Spacing & rhythm
 
-- **Use a consistent scale.** 4 / 8 / 12 / 16 / 24 / 32 / 48 px (or equivalent). Don't pad with arbitrary values like 13px or 27px.
+- Use a consistent scale. 4 / 8 / 12 / 16 / 24 / 32 / 48 px (or equivalent). Don't pad with arbitrary values like 13px or 27px.
 - **Whitespace where it aids parsing**, not as decoration. Tight clusters when things relate; gaps between unrelated regions.
-- **Vertical rhythm.** Equal vertical spacing between siblings keeps the eye moving smoothly. Inconsistent spacing reads sloppy even when nothing else is wrong.
-- **Border radius.** Pick one (4px or 6px reads modern; 8px is slightly softer; 12+ feels playful and is usually too much for a labeler) and use it everywhere.
-- **Borders, not shadows.** A 1px subtle border separates regions cleanly. Shadows imply elevation, which a labeler rarely needs.
+- Vertical rhythm. Equal vertical spacing between siblings keeps the eye moving smoothly. Inconsistent spacing reads sloppy even when nothing else is wrong.
+- Border radius. Pick one (4px or 6px reads modern; 8px is slightly softer; 12+ feels playful and is usually too much for a labeler) and use it everywhere.
+- Borders, not shadows. A 1px subtle border separates regions cleanly. Shadows imply elevation, which a labeler rarely needs.
 
 ### Forms & inputs
 
 - **Labels above inputs**, not beside. Easier to scan, works on every screen size, accessible by default.
-- **Tap/click targets ≥ 32px tall.** Smaller feels cramped and hurts on touch.
+- Tap/click targets ≥ 32px tall. Smaller feels cramped and hurts on touch.
 - **Inline error states**, near the field. Don't summarize errors at the top of the form.
-- **Placeholder is not a label.** Placeholder disappears when typing — use it for examples ("e.g. CASE-123456"), not for the field's name.
+- Placeholder is not a label. Placeholder disappears when typing: use it for examples ("e.g. CASE-123456"), not for the field's name.
 - **Auto-focus the primary field** on mount. Annotators shouldn't have to click to start.
 - **Show character/token counts** only when there's a real limit; otherwise it's noise.
-- **Inputs match button heights.** A 32px input next to a 40px button looks broken.
+- Inputs match button heights. A 32px input next to a 40px button looks broken.
 
 ### Focus, hover, active states
 
-- **Visible focus ring on every interactive element.** Keyboard users need to know what's focused. Don't suppress browser focus rings without replacing them — and replace them with something at least 2px and high-contrast.
-- **Hover states are clear but subtle.** Slight background shift or border darken; not a wholesale color change.
-- **Active states should feel tactile.** A 1–2px translate-y or a slight color darkening when pressed.
-- **Disabled states must be obviously inert** — reduced opacity *and* no hover response.
+- Visible focus ring on every interactive element. Keyboard users need to know what's focused. Don't suppress browser focus rings without replacing them; make replacements at least 2px and high-contrast.
+- Hover states are clear but subtle. Slight background shift or border darken; not a wholesale color change.
+- Active states should feel tactile. A 1–2px translate-y or a slight color darkening when pressed.
+- Disabled states must be obviously inert: reduced opacity *and* no hover response.
 - Design all four states (default, hover, focus, active) plus disabled for every interactive element. Missing states feel cheap.
 
 ### Iconography
 
-- **One icon set.** Lucide, Phosphor, Heroicons — pick one and stay there. Mixing icon styles is jarring even when individuals look fine.
+- One icon set. Lucide, Phosphor, Heroicons: pick one and stay there. Mixing icon styles is jarring even when individuals look fine.
 - **Consistent stroke weight** across the set. Most modern icon libraries get this right by default; don't break it by importing a stray icon from somewhere else.
 - **Icons paired with text labels** for primary actions. Icons-only is fine for tertiary actions where space is tight and meaning is obvious (close, copy, expand, settings).
 - **Same icon, same meaning** throughout the app. Don't reuse a checkmark for both "saved" and "selected."
 
 ### Motion & feedback
 
-- **Animate state changes briefly** — 100–200ms with ease-out. Cross-fades between turns, slide-in for newly added notes.
-- **Never animate purely for delight.** Each animation should communicate something — what changed, what's loading, what got selected.
+- Animate state changes briefly: 100–200ms with ease-out. Cross-fades between turns, slide-in for newly added notes.
+- Never animate purely for delight. Each animation should communicate something: what changed, what's loading, what got selected.
 - **Skeletons over spinners** for content loading. Spinners imply "wait"; skeletons imply "this is the shape of what's coming."
 - **Immediate UI feedback** for in-row actions. A toggle should look "on" the instant the annotator clicks it; don't wait on any async work before showing the change.
-- **Submission confirmation lives in the container**, not the app. The app's job ends at `onComplete` — don't render your own "saved!" toast.
-- **Respect `prefers-reduced-motion`.** Cut transitions to instant for users who've opted out.
+- **Submission confirmation lives in the container**, not the app. The app's job ends at `onComplete`: don't render your own "saved!" toast.
+- Respect `prefers-reduced-motion`. Cut transitions to instant for users who've opted out.
 
 ### Keyboard-first
 
-Annotators move fast. Mouse-only flows cap throughput at maybe 1 label per 30 seconds; keyboard-driven flows hit 1 per 5 seconds.
+Annotators move fast. Mouse-only flows cap throughput at about 1 label per 30 seconds; keyboard-driven flows hit 1 per 5 seconds.
 
 - **Number keys** for quick choices (1/2/3 for pass/fail/skip; 1/2 for left/right in side-by-side).
 - **j / k** for next / previous (or arrow keys).
@@ -331,18 +331,18 @@ Annotators move fast. Mouse-only flows cap throughput at maybe 1 label per 30 se
 ### Responsive without afterthought
 
 - Wide screens get side-by-side or multi-column layouts; narrow screens stack. Same component, different breakpoint.
-- Text columns shouldn't span the full width on a 27" display — cap line length around 70–90 characters for prose.
+- Text columns shouldn't span the full width on a 27" display: cap line length around 70–90 characters for prose.
 - Buttons and tap targets stay reachable on smaller laptops and tablets.
 
 ### State within the row
 
-The container shows queue position and submission status — don't duplicate them in the app. What the app *should* communicate clearly is the state of the current row:
+The container shows queue position and submission status: don't duplicate them in the app. What the app *should* communicate clearly is the state of the current row:
 
-- **What's selected.** Active choices look obviously different from inactive ones — filled vs outlined, accent color vs neutral.
-- **What's answered vs unanswered.** For multi-question forms, the difference between a deliberate "false" and "not answered yet" must be visible. A tristate (yes / no / unanswered) is fine; an undifferentiated toggle that defaults to "no" is not.
-- **What's a draft.** If the annotator typed something but hasn't submitted, that text should look distinct from saved or pre-filled content (dashed border, subtle background, or a "draft" tag).
-- **What just changed.** Animate the immediate consequence of an action briefly (100–200ms, ease-out). When a choice is selected, when an option appears, when validation flips. Never longer than 200ms — the annotator's next action shouldn't wait on motion.
-- **What's required to submit.** If `onComplete` will be rejected (missing fields), make that obvious *before* submit — disable the action with an inline reason, or highlight the missing fields. Don't surface a server error after the fact.
+- What's selected. Active choices look obviously different from inactive ones: filled vs outlined, accent color vs neutral.
+- What's answered vs unanswered. For multi-question forms, the difference between a deliberate "false" and "not answered yet" must be visible. A tristate (yes / no / unanswered) is fine; an undifferentiated toggle that defaults to "no" is not.
+- What's a draft. If the annotator typed something but hasn't submitted, that text should look distinct from saved or pre-filled content (dashed border, subtle background, or a "draft" tag).
+- What just changed. Animate the immediate consequence of an action briefly (100–200ms, ease-out). When a choice is selected, when an option appears, when validation flips. Never longer than 200ms: the annotator's next action shouldn't wait on motion.
+- What's required to submit. If `onComplete` will be rejected (missing fields), make that obvious *before* submit: disable the action with an inline reason, or highlight the missing fields. Don't surface a server error after the fact.
 
 ### Avoid dead controls
 
@@ -354,14 +354,14 @@ The container shows queue position and submission status — don't duplicate the
 
 - Every interactive element reachable by keyboard, with visible focus.
 - Form controls have associated labels.
-- Color is never the only signal — state is also indicated by icon, text, or position.
+- Color is never the only signal: state is also indicated by icon, text, or position.
 - Sufficient contrast for people labeling at 11pm with tired eyes (≥ 4.5:1 for body text, ≥ 3:1 for UI elements).
 
 ### What to leave out
 
 - Tooltips that explain things the UI should already make obvious.
 - Confirmation dialogs for reversible actions.
-- Anything that duplicates container chrome — queue position, "saved" toasts, navigation arrows between rows.
+- Anything that duplicates container chrome: queue position, "saved" toasts, navigation arrows between rows.
 - Decorative illustrations, mascots, or empty-state cartoons. Functional UIs don't need them.
 - Multiple typefaces beyond your sans + mono pair. Don't add a "display" face for headings.
 - Gradient text, glassmorphism, neon glows, animated backgrounds. They date instantly and add nothing.
@@ -381,7 +381,7 @@ The annotator needs to understand what the agent did, in order, before judging i
 - **Role-coded by subtle left border or label**, not heavy colored backgrounds. User / Assistant / Tool / System are distinct enough with a 2px border + a small label.
 - Tool calls and JSON in **monospace** with syntax-aware coloring; prose in proportional type.
 - **Inline copy buttons** on tool args, IDs, and full turns.
-- **Keyboard navigation:** `j` / `k` to jump between turns; `space` to expand/collapse the focused turn; `e` to expand all, `c` to collapse all.
+- Keyboard navigation: `j` / `k` to jump between turns; `space` to expand/collapse the focused turn; `e` to expand all, `c` to collapse all.
 - Per-turn metadata (latency, tokens) in a muted footer, not in the main body.
 - If the annotator is judging a specific failure, **anchor the view** to the turn where it happens; don't make them scroll to find it.
 
@@ -390,10 +390,10 @@ The annotator needs to understand what the agent did, in order, before judging i
 Two outputs from different prompts/models, annotator picks one (or ties).
 
 - Two columns of equal width on wide screens; stacked on narrow.
-- **Synced scrolling** — when the annotator scrolls one side, the other follows.
+- Synced scrolling: when the annotator scrolls one side, the other follows.
 - **Hide identity until decision** (don't label which is "Model A" or "current prod"; reveal after the choice is locked). Removes anchoring bias.
 - Three keys: `1` left wins, `2` right wins, `3` tie / both bad / neither.
-- Optional **"why?" textarea** below the choice, only for ambiguous cases — don't force it on every label.
+- Optional **"why?" textarea** below the choice, only for ambiguous cases: don't force it on every label.
 - For long outputs, **pin a one-line summary** of each side at the top; let the body scroll.
 - **Diff highlighting** only when the comparison is small variation (same response, edited). For genuinely different responses, diff highlighting is noise.
 
@@ -406,7 +406,7 @@ Annotator marks regions of a passage and attaches notes.
 - **Hover-to-add** on selection; click-to-edit on existing notes.
 - Distinct visual states for **draft vs. saved** notes (e.g. dashed outline vs. solid).
 - Alternative panel: a **flat list of all notes** for quick triage / bulk-edit.
-- **Keyboard:** `n` adds a note to the current selection; `↑` / `↓` cycles through notes; `enter` opens the focused note for edit.
+- Keyboard: `n` adds a note to the current selection; `↑` / `↓` cycles through notes; `enter` opens the focused note for edit.
 
 ### Multi-question binary form (most common labeler shape)
 
@@ -415,19 +415,19 @@ A trace + several pass/fail questions about it.
 - Stack of toggles, **one question per row**, each a clear yes/no/unanswered.
 - Numeric keys (`1`–`9`) **focus and toggle** the corresponding question.
 - Per-question **optional notes**, hidden by default; expand on demand (don't show 8 empty textareas).
-- **Per-row progress hint** ("3 of 5 answered" within this row's questions) is fine — this is in-row state, distinct from the container's queue position.
+- **Per-row progress hint** ("3 of 5 answered" within this row's questions) is fine: this is in-row state, distinct from the container's queue position.
 - Footer **submit** calls `onComplete` with the structured response; shortcut `enter`.
-- `s` triggers an `onComplete` payload that marks the row unlabelable (e.g. `{ "skipped": true }`) — the container handles advancing.
+- `s` triggers an `onComplete` payload that marks the row unlabelable (e.g. `{ "skipped": true }`): the container handles advancing.
 
 ### Free-form feedback (open-coding / error analysis)
 
 Used early in the loop, before failure modes are formalized.
 
-- **Hide rating widgets entirely.** This phase is qualitative.
+- Hide rating widgets entirely. This phase is qualitative.
 - A single markdown-capable textarea per row.
-- Below the textarea, optional **preset failure-mode tags** the annotator can attach — but never required.
+- Below the textarea, optional **preset failure-mode tags** the annotator can attach, but never require them.
 - Show **previously-used tags** as quick-add chips so categorization emerges naturally.
-- Don't force a category — trust the annotator to write.
+- Don't force a category: trust the annotator to write.
 
 ### Multi-step agent step labeling
 
@@ -445,7 +445,7 @@ Annotator orders N candidates by quality.
 
 - Drag-and-drop with keyboard equivalent (focus item, `↑` / `↓` to move).
 - Numeric badges that update live as order changes.
-- For N > 5, prefer **pairwise comparisons** over full ranking — annotators are unreliable at ordering long lists, and pairwise data composes via Bradley-Terry.
+- For N > 5, prefer **pairwise comparisons** over full ranking: annotators are unreliable at ordering long lists, and pairwise data composes via Bradley-Terry.
 
 ### Tool/function call audit
 
@@ -460,7 +460,7 @@ Annotator verifies an agent called the right tool with valid args.
 
 ## Imports
 
-The complete set of allowed imports. Paths and exports are auto-generated from the runtime registry — every entry below resolves; nothing else does.
+The complete set of allowed imports. Paths and exports are auto-generated from the runtime registry: every entry below resolves; nothing else does.
 
 <!-- BEGIN ORIZU_AUTO_IMPORT_MAP -->
 ```tsx
@@ -533,7 +533,7 @@ Use **named imports** for everything. Some registry entries support default impo
 
 ## Component reference
 
-Each component below lists its source URL, import path, props, and a minimal usage example. Components flagged with a "**Source:**" link expose the underlying TSX at a stable URL — fetch that URL if you need to inline a private variant.
+Each component below lists its source URL, import path, props, and a minimal usage example. Components flagged with a "**Source:**" link expose the underlying TSX at a stable URL: fetch that URL if you need to inline a private variant.
 
 <!-- BEGIN ORIZU_AUTO_COMPONENT_REFERENCE -->
 ### Typography
@@ -1523,18 +1523,18 @@ interface Tag {
 
 ## Common pitfalls (do NOT do these)
 
-- ❌ `import StarRating from '@/components/base/input/StarRating'` — default imports are not consistently available. Use `{ StarRating }`.
-- ❌ `import { Heart } from 'lucide-react'` — third-party packages aren't in the registry. If you need an icon, use one already imported by a component you're rendering, or use Unicode (★, ✓, ↗).
-- ❌ `import { Foo } from '@/components/base/content/Foo'` for any `Foo` not in the Imports section — runtime throws `Module not found`.
-- ❌ Using `data` or `onSubmit` as the root component prop names — must be `inputData` and `onComplete`.
+- ❌ `import StarRating from '@/components/base/input/StarRating'`: default imports are not consistently available. Use `{ StarRating }`.
+- ❌ `import { Heart } from 'lucide-react'`: third-party packages aren't in the registry. If you need an icon, use one already imported by a component you're rendering, or use Unicode (★, ✓, ↗).
+- ❌ `import { Foo } from '@/components/base/content/Foo'` for any `Foo` not in the Imports section: runtime throws `Module not found`.
+- ❌ Using `data` or `onSubmit` as the root component prop names: must be `inputData` and `onComplete`.
 - ❌ Anonymous default exports (`export default () => …`, `export default memo(…)`). Use a named function.
 - ❌ Calling `onComplete` more than once per row, or never calling it.
 - ❌ Mutating `inputData` or `initialValues`. Treat them as immutable.
 - ❌ Adding global CSS or modifying `app/globals.css`. Style with Tailwind utilities inside your component only.
-- ❌ `<TextContent>{children}</TextContent>` — TextContent takes a `content` string prop, not children.
+- ❌ `<TextContent>{children}</TextContent>`: TextContent takes a `content` string prop, not children.
 - ❌ Re-styling primitives' colors with arbitrary Tailwind values (`text-red-500`). Use the design tokens (`text-foreground`, `text-muted-foreground`, `text-primary`, `text-destructive`).
 - ❌ Schema features beyond the supported subset (`pattern`, `format`, `oneOf`, `anyOf`, `minLength`). They will be ignored or rejected.
-- ❌ Multi-point Likert scales for binary judgments — annotators on Likert collapse to the middle. Use multiple binary fields.
+- ❌ Multi-point Likert scales for binary judgments: annotators on Likert collapse to the middle. Use multiple binary fields.
 
 ---
 
@@ -1578,7 +1578,7 @@ orizu apps preview \
 
 The command validates the same app contract and allowed import registry as upload, validates the sample row against `input.json`, serves a temporary static preview page, passes `inputData`, `initialValues`, and `onComplete`, then uses Playwright to render it. Add `--headed` for visible Chromium review, and `--keep-open` when you want to inspect the local page manually. In the Orizu web checkout, preview uses the live component tree and global Tailwind CSS; in the mirrored/published CLI package, it uses the bundled preview runtime snapshot so the workflow remains available without the site source tree.
 
-The published CLI itself does not install the preview tooling (`esbuild`, `react`, `react-dom`, `@playwright/test`, Tailwind) — run preview inside a project that provides them or from an Orizu checkout. When they are missing the command exits with an actionable error; the plain-`node` smoke test (`scripts/test-app.mjs`) still works everywhere in the meantime.
+The published CLI itself does not install the preview tooling (`esbuild`, `react`, `react-dom`, `@playwright/test`, Tailwind): run preview inside a project that provides them or from an Orizu checkout. When they are missing the command exits with an actionable error; the plain-`node` smoke test (`scripts/test-app.mjs`) still works everywhere in the meantime.
 
 For coding agents: do not treat a passing contract check as enough. After generating or editing an app, run `orizu apps preview` with a representative row, inspect the screenshot, and compare the rendered workflow to the user's likely intent: are the right fields visible, is the primary judgment obvious, do controls fit, and would a human reviewer know what to do? If the screenshot looks wrong, revise the app and preview again before publishing.
 
