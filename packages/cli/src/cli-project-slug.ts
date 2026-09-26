@@ -1,5 +1,5 @@
 export const RESERVED_ROUTING_SLUGS: readonly string[] = [
-  'account', 'teams', 'task', 'preview', 'api', 'auth', 'login', 'logout', 'signup', 'signin',
+  'account', 'teams', 'projects', 'task', 'preview', 'api', 'auth', 'login', 'logout', 'signup', 'signin',
   'settings', 'new', 'admin', 'docs', 'learn', 'd', 'agents', 'subprocessors', 'llms.txt',
   '_next', 'robots.txt', 'sitemap.xml', 'favicon.ico',
 ]
