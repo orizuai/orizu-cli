@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'fs'
 
+import { gepaSeedSelector } from './instruction-set-gepa-launch.js'
 import { providerFromIdentity, protocolRequiresOutputCap } from './provider-registry.js'
 import { normalizedSkilledProposerConfig } from './skilled-proposer-config.js'
 
@@ -58,6 +59,7 @@ const VALUE_OPTIONS: EnvironmentOption[] = [
   { flag: '--log-dir', environment: 'ORIZU_LOCAL_LOG_DIR' },
   { flag: '--instruction-set', environment: 'ORIZU_INSTRUCTION_SET_NAME' },
   { flag: '--model-config', environment: 'ORIZU_MODEL_CONFIG_IDENTITY' },
+  { flag: '--profile-version', environment: 'ORIZU_INSTRUCTION_SET_PROFILE_VERSION_NUMBER' },
 ]
 
 const BOOLEAN_OPTIONS = [
@@ -301,6 +303,21 @@ function translateOfficialOptions(args: string[], project: string, environment: 
     throw new Error('Budget options are mutually exclusive; choose at most one of --budget, --max-metric-calls, --max-full-evals, --max-iterations, --max-candidate-proposals')
   }
   if (hasInstructionSet && hasCandidateVersion) throw new Error('--instruction-set and --candidate-version-id are mutually exclusive')
+  if (!hasInstructionSet && connectorEnvironment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_NUMBER !== undefined) {
+    throw new Error('--profile-version requires --instruction-set')
+  }
+  if (hasInstructionSet) {
+    // ORI-2128: the Seed may be named by a full specifier, by flags, or both;
+    // normalise to the set reference, the profile, and the version number.
+    const seed = gepaSeedSelector(
+      connectorEnvironment.ORIZU_INSTRUCTION_SET_NAME!,
+      connectorEnvironment.ORIZU_MODEL_CONFIG_IDENTITY,
+      connectorEnvironment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_NUMBER,
+    )
+    connectorEnvironment.ORIZU_INSTRUCTION_SET_NAME = seed.instructionSetName
+    if (seed.modelConfigIdentity !== undefined) connectorEnvironment.ORIZU_MODEL_CONFIG_IDENTITY = seed.modelConfigIdentity
+    if (seed.versionNumber !== undefined) connectorEnvironment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_NUMBER = String(seed.versionNumber)
+  }
   if (hasInstructionSet && connectorEnvironment.ORIZU_MODEL_CONFIG_IDENTITY === undefined) throw new Error('--instruction-set requires --model-config')
   if (hasInstructionSet && connectorEnvironment.ORIZU_COMPONENT_SELECTOR === undefined) connectorEnvironment.ORIZU_COMPONENT_SELECTOR = 'round_robin'
   if ((connectorEnvironment.ORIZU_PROPOSAL_MAX_CALLS !== undefined
@@ -355,7 +372,7 @@ function validatedMetadata(raw: string | undefined): string {
 export function dispatchGepaEngine(args: string[], project: string, environment: NodeJS.ProcessEnv): GepaEngineDispatch {
   const selected = removeEngine(args)
   if (selected.engine === 'legacy') {
-    for (const flag of ['--instruction-set', '--model-config', '--component-selector', '--max-candidate-proposals', '--candidate-proposer', '--candidate-proposer-config', '--proposal-max-calls', '--proposal-max-tokens']) {
+    for (const flag of ['--instruction-set', '--model-config', '--profile-version', '--component-selector', '--max-candidate-proposals', '--candidate-proposer', '--candidate-proposer-config', '--proposal-max-calls', '--proposal-max-tokens']) {
       if (selected.args.some(argument => argument === flag || argument.startsWith(`${flag}=`))) {
         throw new Error(`${flag} is supported by the official GEPA engine only`)
       }

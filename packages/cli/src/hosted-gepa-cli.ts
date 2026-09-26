@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { dispatchGepaEngine } from './gepa-engine-dispatch.js'
+import { resolveGepaSeedFromEnvironment } from './instruction-set-gepa-launch.js'
 import { parseHostedGepaNumericValue } from './hosted-gepa-numeric-values.js'
 import { authedFetch } from './http.js'
 import { hostedProviderFromModel, hostedProviderSettingsError, unsupportedHostedProviderMessage } from './hosted-provider-settings.js'
@@ -216,11 +217,16 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
       : kind === 'json' ? JSON.parse(env[name]!) : kind === 'boolean' ? env[name] === '1' : env[name]
   }
   const launchIntentId = explicitLaunchIntent || randomUUID()
+  // ORI-2128: a named Seed version is resolved here exactly as a local run
+  // resolves it, and pinned in the body; without one the server keeps its
+  // one-call production lookup.
+  const seedProfileVersionId = await resolveGepaSeedFromEnvironment(env, options.project, 'server')
   const body = {
     hosted: true, launchIntentId, optimizerVersionId: env.ORIZU_OPTIMIZER_VERSION_ID,
     promptVersionIds: env.ORIZU_PROMPT_VERSION_ID ? [env.ORIZU_PROMPT_VERSION_ID] : [],
     ...(env.ORIZU_INSTRUCTION_SET_NAME ? { instructionSetName: env.ORIZU_INSTRUCTION_SET_NAME,
-      modelConfigIdentity: env.ORIZU_MODEL_CONFIG_IDENTITY, componentSelector: env.ORIZU_COMPONENT_SELECTOR } : {}),
+      modelConfigIdentity: env.ORIZU_MODEL_CONFIG_IDENTITY, componentSelector: env.ORIZU_COMPONENT_SELECTOR,
+      ...(seedProfileVersionId ? { instructionSetProfileVersionId: seedProfileVersionId } : {}) } : {}),
     runnerVersionId: env.ORIZU_RUNNER_VERSION_ID,
     scorers: [{ scorerVersionId: env.ORIZU_SCORER_VERSION_ID,
       scorerRunnerVersionId: env.ORIZU_SCORER_RUNNER_VERSION_ID, role: 'selection', scorerConfig: {} }],

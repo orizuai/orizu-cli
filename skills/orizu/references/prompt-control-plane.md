@@ -811,7 +811,12 @@ orizu --local optimizations run-gepa \
 Useful GEPA flags:
 
 - `--instruction-set <slug-or-exact-name> --model-config <identity>` selects a
-  resolving instruction-set profile. `--component-selector round-robin|all`
+  resolving instruction-set profile. A specifier `set/profile` or
+  `set/profile@vN` names the profile without `--model-config`;
+  `@vN` or `--profile-version <N>` starts the run from that version (the
+  *seed*) instead of production. The seed must match the set's current shape
+  exactly (no missing or removed components); launch refuses one that does not
+  and names the newest version that matches. `--component-selector round-robin|all`
   controls which components GEPA proposes changing; `all` lets it optimize the
   complete component map. `--candidate-version-id` remains a compatibility
   input for a single legacy prompt version and is mutually exclusive with the

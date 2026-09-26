@@ -353,8 +353,7 @@ reflection model is refused at launch without it
 `packages/orizu-gepa/src/orizu_gepa_connector/runtime.py:193-196`). Drop it only
 if you also pass an `openai/...` `--reflection-model`.
 
-`--instruction-set` and `--model-config` select exactly one Profile. The CLI
-uses only that Profile's Production Version. A missing Profile refuses with `instruction_set_profile_not_found`, and an unpromoted Profile refuses with `instruction_set_profile_not_promoted`, instead of using Default; the CLI also refuses the
+`--instruction-set` and `--model-config` (or one `set/profile` specifier) select exactly one Profile. A plain `set/profile` starts the run from that Profile's Production Version. To start from any other version, promoted or not, name it with `set/profile@vN` or `--profile-version <N>`; its components must match the set's current shape exactly, or launch refuses and names the newest matching version. Production must match the shape too. A missing Profile refuses with `instruction_set_profile_not_found`, and an unpromoted Profile with no version named refuses with `instruction_set_profile_not_promoted`, instead of using Default; the CLI also refuses the
 legacy `--candidate-version-id` selector when the instruction-set selectors are present. `round-robin` updates one component per
 round; use `--component-selector all` only when every component should be
 reflected on each round.

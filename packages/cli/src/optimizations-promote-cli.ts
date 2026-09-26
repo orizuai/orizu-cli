@@ -1,6 +1,7 @@
 import { extractErrorMessage } from './error-response.js'
 import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 import type { GlobalFlags } from './global-flags.js'
+import type { SeedAgainstProduction } from './seed-against-production.js'
 
 export interface OptimizationsPromoteIo {
   json: boolean
@@ -67,6 +68,17 @@ function productionPromotionReplay(
   return `Promote this profile with: orizu${originArguments} optimizations promote ${shellArgument(runId)} --candidate ${shellArgument(candidateId)} --label production --project ${shellArgument(project)}`
 }
 
+/**
+ * ORI-2128: a candidate grown from a Seed older than Production does not
+ * contain the changes made since that Seed. Warn; never refuse (ORI-2132).
+ */
+function staleSeedWarningFor(data: Partial<SeedAgainstProduction>): string | null {
+  const seed = data.runSeedVersionNumber
+  const production = data.productionVersionNumber
+  if (typeof seed !== 'number' || typeof production !== 'number' || seed >= production) return null
+  return `Warning: this run started from v${seed}; production is v${production}. Changes made since v${seed} are not in this candidate.`
+}
+
 export async function promoteOptimizationCommand(args: string[], io: OptimizationsPromoteIo): Promise<void> {
   const runId = args.find(arg => !arg.startsWith('--') && arg !== option(args, '--candidate') && arg !== option(args, '--label') && arg !== option(args, '--project'))
   const candidateId = option(args, '--candidate')
@@ -81,25 +93,30 @@ export async function promoteOptimizationCommand(args: string[], io: Optimizatio
   if (!response.ok) throw new Error(`Failed to promote optimization candidate: ${await extractErrorMessage(response)}`)
   const data = await response.json() as
     | { promptVersionId: string }
-    | {
+    | ({
       profileVersionId: string
       versionNumber: number
       appliedLabel?: string | null
       components: Array<{ key: string; status: string }>
-    }
+    } & Partial<SeedAgainstProduction>)
   const isProfilePromotion = 'profileVersionId' in data
   const replay = isProfilePromotion && data.appliedLabel !== 'production'
     ? productionPromotionReplay(runId, candidateId, project, io.origin)
     : null
+  const staleSeedWarning = isProfilePromotion ? staleSeedWarningFor(data) : null
   if (io.json) {
     io.print(JSON.stringify(isProfilePromotion
       ? {
           profileVersionId: data.profileVersionId,
           versionNumber: data.versionNumber,
           appliedLabel: data.appliedLabel,
+          // JSON.stringify omits these when an older server did not send them.
+          runSeedVersionNumber: data.runSeedVersionNumber,
+          productionVersionNumber: data.productionVersionNumber,
           components: data.components,
         }
       : { promptVersionId: data.promptVersionId }))
+    if (staleSeedWarning) io.printErr(staleSeedWarning)
     if (isProfilePromotion && data.appliedLabel === undefined) {
       io.printErr(APPLIED_LABEL_VERSION_SKEW_NOTE)
       io.printErr(replay!)
@@ -107,6 +124,7 @@ export async function promoteOptimizationCommand(args: string[], io: Optimizatio
     return
   }
   if (isProfilePromotion) {
+    if (staleSeedWarning) io.printErr(staleSeedWarning)
     io.print(`Promoted profile version ${sanitizeTerminalText(data.profileVersionId)}`)
     if (data.appliedLabel === undefined) {
       io.printErr(APPLIED_LABEL_VERSION_SKEW_NOTE)

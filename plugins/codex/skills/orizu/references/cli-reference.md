@@ -523,7 +523,7 @@ exist.
 Optimization trace commands:
 
 ```bash
-orizu optimizations run-gepa ... [--scorer-input-contract gepa|flat_row] [--scorer-candidate-field <row-field>] [--allow-degenerate-seed] [--candidate-selection-strategy pareto|current_best|epsilon_greedy] [--epsilon N] [--objective <text>] [--candidate-proposer skilled-proposer] [--candidate-proposer-config @file] [--proposal-max-calls N] [--proposal-max-tokens N] [--python <command>] [--num-threads auto|N] [--reflection-retry-attempts 3] [--reflection-http-timeout-seconds 180] [--log-dir logs] [--no-local-log]
+orizu optimizations run-gepa ... (--candidate-version-id <id> | --instruction-set <set[/profile[@vN]]> [--model-config <identity>] [--profile-version <N>]) [--scorer-input-contract gepa|flat_row] [--scorer-candidate-field <row-field>] [--allow-degenerate-seed] [--candidate-selection-strategy pareto|current_best|epsilon_greedy] [--epsilon N] [--objective <text>] [--candidate-proposer skilled-proposer] [--candidate-proposer-config @file] [--proposal-max-calls N] [--proposal-max-tokens N] [--python <command>] [--num-threads auto|N] [--reflection-retry-attempts 3] [--reflection-http-timeout-seconds 180] [--log-dir logs] [--no-local-log]
 orizu optimizations run-gepa --hosted ... --budget auto|light|medium|heavy [--launch-intent-id <uuid>]
 orizu optimizations export <optimization-run-id> --out ./optimization.json
 orizu optimizations export <optimization-run-id> --json

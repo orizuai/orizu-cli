@@ -112,7 +112,7 @@ import { resolveAuthTokenForBaseUrl } from './credentials.js'
 import { applyHostedInstructionSetProfileOverride, dispatchHostedCommands } from './hosted-commands.js'
 import { dispatchGepaEngine } from './gepa-engine-dispatch.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
-import { resolveGepaInstructionSetProfileVersion } from './instruction-set-gepa-launch.js'
+import { resolveGepaSeedFromEnvironment } from './instruction-set-gepa-launch.js'
 import { prepareSkilledProposerLaunch, spawnSkilledProposerChild } from './skilled-proposer-launch.js'
 import { reportCommentsCommand, throwDeprecatedPromptCommentsCommand } from './report-comments-cli.js'
 import { getCapabilities, renderHelpForArgs } from './help.js'
@@ -1365,10 +1365,7 @@ async function runGepaOptimization() {
       PYTHONPATH: getGepaPythonPathEntries(process.env.PYTHONPATH).join(delimiter),
       PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
     }))
-    const instructionSetName = dispatch.environment.ORIZU_INSTRUCTION_SET_NAME
-    const modelConfigIdentity = dispatch.environment.ORIZU_MODEL_CONFIG_IDENTITY
-    const instructionSetProfileVersionId = instructionSetName && modelConfigIdentity
-      ? await resolveGepaInstructionSetProfileVersion(instructionSetName, modelConfigIdentity, project) : undefined
+    const instructionSetProfileVersionId = await resolveGepaSeedFromEnvironment(dispatch.environment, project, 'production')
     if (instructionSetProfileVersionId) dispatch.environment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID = instructionSetProfileVersionId
     selectedEngine = dispatch.engine
     const launch = prepareSkilledProposerLaunch(python, dispatch.engine, dispatch.environment)
