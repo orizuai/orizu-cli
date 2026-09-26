@@ -17,7 +17,7 @@ The CLI supports:
 ## Prerequisites
 
 - Node.js 20+
-- Running Orizu web app/API (login defaults to `https://app.orizu.ai`; API commands use the server you logged in to, or `https://orizu.ai`)
+- Running Orizu web app/API (login and API commands default to `https://app.orizu.ai`; custom/local server overrides are supported)
 - Valid Orizu account
 
 Optional environment variable:
@@ -25,7 +25,7 @@ Optional environment variable:
 - `ORIZU_BASE_URL` (example: `https://your-orizu-domain.com`)
 - `ORIZU_AUTH_PORT` (example: `44123`, used for the localhost login callback)
 
-Without an override, ordinary `orizu login` uses `https://app.orizu.ai`. API commands keep using the server you logged in to, falling back to `https://orizu.ai` if none is stored. `--no-prompt-if-logged-in` also keeps the existing API server selection. If default app-host login fails before saving credentials, the CLI suggests `orizu --server https://orizu.ai login`; it never switches servers automatically.
+The CLI talks to https://app.orizu.ai. If you previously signed in against orizu.ai, the CLI moves that sign-in over automatically the next time it runs. This also applies to www.orizu.ai and to commands that explicitly select either old address. If a different sign-in is already saved for app.orizu.ai, the CLI stops without changing either one. Run `orizu --server https://app.orizu.ai logout` to remove the app sign-in, or `orizu --server https://app.orizu.ai login` to sign in again. Plain `orizu logout` removes the selected old sign-in instead. Custom, preview and local servers keep their behavior. If login fails, check your connection to app.orizu.ai and retry; the CLI never tries the old address instead.
 
 Override examples:
 
@@ -1074,7 +1074,7 @@ Supported formats:
 
 Ways to identify the dataset:
 - `--dataset <datasetId>`
-- `--dataset <datasetUrl>` (for example `https://orizu.ai/team/project/datasets/<id>`)
+- `--dataset <datasetUrl>` (for example `https://app.orizu.ai/team/project/datasets/<id>`)
 - positional dataset value: `orizu datasets download <datasetId-or-url>`
 
 Interactive fallback:

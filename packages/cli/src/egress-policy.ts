@@ -50,7 +50,7 @@ export const GIT_HOST_DOMAINS = ['github.com', 'codeload.github.com'] as const
 export const DEFAULT_EGRESS_CANARY_HOST = 'example.com'
 
 /** Default Orizu control-plane base when none is configured. */
-const DEFAULT_ORIZU_BASE_URL = 'https://orizu.ai'
+const DEFAULT_ORIZU_BASE_URL = 'https://app.orizu.ai'
 
 /**
  * Resolve the Orizu control-plane host from a base URL and CONSERVATIVELY
@@ -120,7 +120,7 @@ export interface EgressModelKeyBroker {
 }
 
 export interface BuildEgressPolicyOptions {
-  /** Orizu control-plane base URL (default env ORIZU_BASE_URL / orizu.ai). */
+  /** Orizu control-plane base URL (default env ORIZU_BASE_URL / app.orizu.ai). */
   orizuBaseUrl?: string
   /** Additional model-provider hosts to allow WITHOUT a key transform. The broker
    *  host (below) is added automatically; list only extra providers here. */

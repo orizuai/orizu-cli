@@ -8,6 +8,7 @@ import { isInteractiveTerminal, hasArg, hasJsonFlag, getArg } from './command-li
 import {
   getBaseUrl,
   resolveLoginTarget,
+  resolveLogoutTarget,
   assertSecureTokenTransport,
   authedFetch,
   credentialRequestRedirectPolicy,
@@ -162,7 +163,7 @@ async function login(baseUrlOverride?: string) {
     if (target.isDefault) {
       const detail = error instanceof Error ? error.message : String(error)
       throw new Error(
-        `${detail} To try the apex server explicitly, run \`orizu --server https://orizu.ai login\`.`,
+        `${detail} Check connectivity to https://app.orizu.ai, then retry \`orizu login\`.`,
         { cause: error }
       )
     }
@@ -198,6 +199,8 @@ async function authenticateAtBaseUrl(baseUrl: string): Promise<AuthenticatedLogi
   const codeVerifier = rememberProcessSecret(createCodeVerifier())
   const codeChallenge = createCodeChallenge(codeVerifier)
   const isHeadlessLogin = shouldUseHeadlessLogin({ isForced: hasArg('--headless') })
+  const callbackPort = isHeadlessLogin ? undefined : resolveAuthCallbackPort()
+  const redirectUri = callbackPort === undefined ? undefined : `http://127.0.0.1:${callbackPort}/callback`
   const callbackCode = isHeadlessLogin
     ? await waitForHeadlessAuthorization(
       { baseUrl, codeChallenge },
@@ -209,7 +212,6 @@ async function authenticateAtBaseUrl(baseUrl: string): Promise<AuthenticatedLogi
       }
     )
     : await new Promise<string>((resolve, reject) => {
-    const callbackPort = resolveAuthCallbackPort()
     const server = createServer((request, response) => {
       try {
         const url = new URL(request.url || '/', `http://127.0.0.1:${callbackPort}`)
@@ -246,7 +248,6 @@ async function authenticateAtBaseUrl(baseUrl: string): Promise<AuthenticatedLogi
 
     server.listen(callbackPort, '127.0.0.1', async () => {
       try {
-        const redirectUri = `http://127.0.0.1:${callbackPort}/callback`
         const response = await fetch(`${baseUrl}/api/cli/auth/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -278,7 +279,7 @@ async function authenticateAtBaseUrl(baseUrl: string): Promise<AuthenticatedLogi
   const exchangeResponse = await fetch(`${baseUrl}/api/cli/auth/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code: callbackCode, codeVerifier }),
+    body: JSON.stringify({ code: callbackCode, codeVerifier, redirectUri }),
   })
 
   if (!exchangeResponse.ok) {
@@ -308,8 +309,8 @@ async function whoami() {
 }
 
 async function logout(baseUrlOverride?: string) {
-  const baseUrl = baseUrlOverride || getBaseUrl()
-  const credentials = getServerCredentials(baseUrl)
+  const { baseUrl, credentialBaseUrl } = resolveLogoutTarget(baseUrlOverride)
+  const credentials = getServerCredentials(credentialBaseUrl)
   if (!credentials) {
     if (hasJsonFlag()) {
       printJson({ status: 'already-logged-out', server: baseUrl })
@@ -345,7 +346,7 @@ async function logout(baseUrlOverride?: string) {
   } catch (error) {
     remoteLogoutError = describeLogoutTransportFailure(error, logoutSecrets)
   }
-  clearServerCredentials(baseUrl)
+  clearServerCredentials(credentialBaseUrl)
   if (hasJsonFlag()) {
     printJson({ status: 'logged-out', server: baseUrl, remoteLogoutError })
     return

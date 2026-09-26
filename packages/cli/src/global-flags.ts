@@ -33,6 +33,14 @@ export function normalizeBaseUrl(url: string): string {
   return parsed.origin
 }
 
+// Only exact production origins are aliases. Custom servers keep their identity.
+export function canonicalServerUrl(url: string): string {
+  const origin = normalizeBaseUrl(url)
+  return origin === 'https://orizu.ai' || origin === 'https://www.orizu.ai'
+    ? 'https://app.orizu.ai'
+    : origin
+}
+
 export function parseGlobalFlags(argv: string[]): ParsedGlobalFlags {
   const args: string[] = []
   const flags: GlobalFlags = {

@@ -1,6 +1,7 @@
 import {
   clearServerCredentialsIfCurrent,
   credentialsEqual,
+  resolveCredentialServer,
   getActiveBaseUrl,
   getServerCredentials,
   rememberResolvedBearer,
@@ -8,7 +9,7 @@ import {
   updateServerCredentialsIfCurrent,
   withCredentialsTransactionLockAsync,
 } from './credentials.js'
-import { getFlagBaseUrl, GlobalFlags, normalizeBaseUrl } from './global-flags.js'
+import { canonicalServerUrl, getFlagBaseUrl, GlobalFlags, normalizeBaseUrl } from './global-flags.js'
 import {
   describeLogoutHttpFailure,
   describeLogoutTransportFailure,
@@ -35,20 +36,35 @@ export function setGlobalFlags(flags: GlobalFlags) {
 export function resolveBaseUrl(flags: GlobalFlags = runtimeFlags): string {
   const fromFlags = getFlagBaseUrl(flags)
   if (fromFlags) {
-    return rememberResolvedBaseUrl(fromFlags)
+    return rememberResolvedBaseUrl(resolveCredentialServer(fromFlags)!)
   }
 
   const fromEnv = process.env.ORIZU_BASE_URL
   if (fromEnv) {
-    return rememberResolvedBaseUrl(normalizeBaseUrl(fromEnv))
+    return rememberResolvedBaseUrl(resolveCredentialServer(normalizeBaseUrl(fromEnv))!)
   }
 
-  const fromStored = getActiveBaseUrl()
+  const fromStored = resolveCredentialServer()
   if (fromStored) {
     return rememberResolvedBaseUrl(fromStored)
   }
 
-  return rememberResolvedBaseUrl('https://orizu.ai')
+  return rememberResolvedBaseUrl('https://app.orizu.ai')
+}
+
+interface LogoutTarget {
+  baseUrl: string
+  credentialBaseUrl: string
+}
+
+// Logout is the recovery path for conflicting saved sign-ins. Revoke the
+// selected credential on app without moving it over another saved credential.
+export function resolveLogoutTarget(override?: string): LogoutTarget {
+  const selected = override ?? getFlagBaseUrl(runtimeFlags)
+    ?? (process.env.ORIZU_BASE_URL ? normalizeBaseUrl(process.env.ORIZU_BASE_URL) : null)
+    ?? getActiveBaseUrl() ?? 'https://app.orizu.ai'
+  const baseUrl = rememberResolvedBaseUrl(canonicalServerUrl(selected))
+  return { baseUrl, credentialBaseUrl: getServerCredentials(selected) ? selected : baseUrl }
 }
 
 interface LoginTarget {
@@ -59,14 +75,15 @@ interface LoginTarget {
 export function resolveLoginTarget(flags: GlobalFlags = runtimeFlags): LoginTarget {
   const fromFlags = getFlagBaseUrl(flags)
   if (fromFlags) {
-    return { baseUrl: rememberResolvedBaseUrl(fromFlags), isDefault: false }
+    return { baseUrl: rememberResolvedBaseUrl(resolveCredentialServer(fromFlags)!), isDefault: false }
   }
 
   const fromEnv = process.env.ORIZU_BASE_URL
   if (fromEnv) {
-    return { baseUrl: rememberResolvedBaseUrl(normalizeBaseUrl(fromEnv)), isDefault: false }
+    return { baseUrl: rememberResolvedBaseUrl(resolveCredentialServer(normalizeBaseUrl(fromEnv))!), isDefault: false }
   }
 
+  resolveCredentialServer()
   return { baseUrl: rememberResolvedBaseUrl('https://app.orizu.ai'), isDefault: true }
 }
 

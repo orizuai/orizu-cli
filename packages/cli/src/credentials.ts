@@ -15,6 +15,7 @@ import { join } from 'path'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { AsyncLocalStorage } from 'async_hooks'
+import { canonicalServerUrl, normalizeBaseUrl } from './global-flags.js'
 import {
   ServerCredentials,
   StoredCredentialsV1,
@@ -457,6 +458,46 @@ export function updateServerCredentialsIfCurrent(
 export function getActiveBaseUrl(): string | null {
   const config = loadCredentialsConfig()
   return config?.activeBaseUrl || null
+}
+
+/** Resolve the selected server and move a retired production credential atomically. */
+export function resolveCredentialServer(selected?: string): string | null {
+  const source = selected ?? getActiveBaseUrl()
+  if (!source) return null
+  const target = canonicalServerUrl(source)
+  if (normalizeBaseUrl(source) === target) return target
+  const snapshot = loadCredentialsConfig()
+  // Explicit legacy env/flags are common in hosted processes. Once migrated,
+  // resolution is read-only: do not create a config directory or contend on a lock.
+  if (!snapshot?.servers[source] && snapshot?.activeBaseUrl !== source) return target
+
+  return withCredentialsTransactionLock(() => {
+    const config = loadCredentialsConfig()
+    // Another process may have selected a different server while we waited.
+    const currentSource = selected ?? config?.activeBaseUrl
+    if (!currentSource) return null
+    const currentTarget = canonicalServerUrl(currentSource)
+    if (!config || normalizeBaseUrl(currentSource) === currentTarget) return currentTarget
+    const credential = config.servers[currentSource]
+    const destination = config.servers[currentTarget]
+    if (credential && destination && !credentialsEqual(credential, destination)) {
+      throw new Error(
+        'A different sign-in is already saved for app.orizu.ai. Run `orizu --server https://app.orizu.ai logout` to remove it, or `orizu --server https://app.orizu.ai login` to sign in again. Plain `orizu logout` removes the selected old sign-in instead. No saved sign-ins were changed.'
+      )
+    }
+    let changed = false
+    if (credential) {
+      config.servers[currentTarget] = credential
+      delete config.servers[currentSource]
+      changed = true
+    }
+    if (config.activeBaseUrl === currentSource) {
+      config.activeBaseUrl = currentTarget
+      changed = true
+    }
+    if (changed) writeCredentials(config)
+    return currentTarget
+  })
 }
 
 const secretsSeenThisProcess = new Set<string>()

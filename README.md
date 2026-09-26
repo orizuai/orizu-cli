@@ -23,13 +23,13 @@ Note: the one task we do _not_ let you perform from your CLI is any reviews assi
 - Access to an Orizu web app/API
 - A valid Orizu account
 
-Ordinary `orizu login` defaults to `https://app.orizu.ai`. API commands keep using the selected or stored server, falling back to `https://orizu.ai` when none is configured.
+The CLI talks to https://app.orizu.ai. If you previously signed in against orizu.ai, the CLI moves that sign-in over automatically the next time it runs. This also applies to www.orizu.ai and commands that explicitly select either old address. If a different sign-in is already saved for app.orizu.ai, the CLI stops without changing either one. Run `orizu --server https://app.orizu.ai logout` to remove the app sign-in, or `orizu --server https://app.orizu.ai login` to sign in again. Plain `orizu logout` removes the selected old sign-in instead.
 
 ### App-host login
 
-Login accepts browser handoffs between `orizu.ai` and its subdomains over standard HTTPS. Custom and local servers still require an exact origin match. `--server`, `--local` and `ORIZU_BASE_URL` keep their priority; stored credentials and `--no-prompt-if-logged-in` keep their existing behavior.
+Login accepts browser handoffs between `orizu.ai` and its subdomains over standard HTTPS. Custom and local servers still require an exact origin match. `--server`, `--local` and `ORIZU_BASE_URL` keep their priority. Custom, preview and local servers stay unchanged; `--no-prompt-if-logged-in` uses the migrated server.
 
-If login on the default app host fails before credentials are saved, the CLI suggests `orizu --server https://orizu.ai login`. This covers unavailable DNS, an unattached app domain and failures during polling or exchange. It never tries another server automatically. Login to an explicitly selected server does not suggest switching to apex.
+If default app-host login fails, the CLI advises checking connectivity to app.orizu.ai and retrying login. It never tries the old address instead.
 
 ## Updating bundled GEPA
 
@@ -206,7 +206,7 @@ In a hosted session, a human curator using the local CLI must run create/push, a
 orizu login
 ```
 
-This will open a browser tab for you to login with. You must either have an account on the [Orizu platform](https://orizu.ai) or it will help you create one.
+This will open a browser tab for you to login with. You must either have an account on the [Orizu platform](https://app.orizu.ai) or it will help you create one.
 Approving the login creates a personal access token for the CLI and stores it in your local Orizu credentials file. You can revoke CLI tokens from the Personal Tokens page in Orizu.
 
 In an SSH or display-less Linux session, the CLI automatically prints an approval URL and polls for completion instead of opening a local browser. Force this mode when needed with:
