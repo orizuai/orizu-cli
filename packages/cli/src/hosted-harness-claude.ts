@@ -95,6 +95,7 @@
 
 import { parseModelIdentity } from './provider-registry.js'
 
+import { HARNESS_NAMES } from './hosted-harness.js'
 import type {
   AgentHarness,
   HarnessEvent,
@@ -323,7 +324,7 @@ export function createClaudeAgentHarness(
   }
 
   return {
-    name: 'claude-agent-sdk',
+    name: HARNESS_NAMES.claudeAgentSdk,
 
     async start(opts: HarnessStartOptions): Promise<{ agentSessionId: string }> {
       startModel = opts.model
@@ -471,6 +472,7 @@ export function createClaudeAgentHarness(
                   args: asRecord(block.input),
                   callId,
                   status: 'running',
+                  harness: HARNESS_NAMES.claudeAgentSdk,
                 },
               }
             }
@@ -495,6 +497,7 @@ export function createClaudeAgentHarness(
                   callId,
                   status: block.is_error === true ? 'error' : 'completed',
                   output: toolResultOutput(block.content),
+                  harness: HARNESS_NAMES.claudeAgentSdk,
                 },
               }
             }

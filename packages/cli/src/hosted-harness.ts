@@ -117,8 +117,39 @@ export interface HarnessEvent {
   critical?: boolean
 }
 
+/** The drivers' stable names. A tool event's `harness` field is one of these. */
+export const HARNESS_NAMES = {
+  opencode: 'opencode',
+  claudeAgentSdk: 'claude-agent-sdk',
+} as const
+
+type HarnessName = (typeof HARNESS_NAMES)[keyof typeof HARNESS_NAMES]
+
+/**
+ * Payload of a `tool_call` / `tool_result` event (ORI-2160). One chat renderer
+ * shows every tool call whatever harness produced it, so the payload carries:
+ *   • `title`    — the harness's one-line summary of the call (OpenCode's
+ *                  `state.title`). Absent when the harness has none.
+ *   • `metadata` — structured extras such as a diff, an exit code or match
+ *                  counts (OpenCode's `state.metadata`). Absent when none.
+ *   • `harness`  — which driver produced the event.
+ * All three are optional: an event without them is still a valid tool event.
+ * The sink and the digest pass them through unchanged.
+ */
+export interface HarnessToolPayload {
+  [key: string]: unknown
+  tool?: string
+  args?: Record<string, unknown>
+  callId: string
+  status: string
+  output?: string
+  title?: string
+  metadata?: Record<string, unknown>
+  harness?: HarnessName
+}
+
 export interface AgentHarness {
-  /** Stable driver name — "opencode" | "claude-agent-sdk". */
+  /** Stable driver name — one of HARNESS_NAMES. */
   readonly name: string
   /** Boot the agent process/session; returns the resumable agent session id. */
   start(opts: HarnessStartOptions): Promise<{ agentSessionId: string }>

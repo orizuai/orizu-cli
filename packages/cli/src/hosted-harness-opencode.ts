@@ -53,11 +53,13 @@ import { readFileSync } from 'fs'
 
 import { findProvider, parseModelIdentity } from './provider-registry.js'
 
+import { HARNESS_NAMES } from './hosted-harness.js'
 import type {
   AgentHarness,
   HarnessEvent,
   HarnessPrompt,
   HarnessStartOptions,
+  HarnessToolPayload,
 } from './hosted-harness.js'
 
 // OpenCode is HARD-PINNED to this version everywhere it is installed/launched.
@@ -121,7 +123,9 @@ class PromptAbortedError extends Error {
 // -- OpenCode ascending id generator (port of OpenCode's id.ts) --------------
 // Monotonic so our user-message id always sorts AFTER any prior assistant
 // message id — this is what prevents OpenCode's prompt loop from early-exiting
-// on `lastUser.id < lastAssistant.id`.
+// on `lastUser.id < lastAssistant.id`. Shape (opencode-ai@1.14.41): prefix, `_`,
+// 12 hex digits holding the low 48 bits of `ms * 4096 + counter`, then 14
+// base62 characters. `nowMs` is a parameter only so tests can pin the clock.
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 let idLastTimestamp = 0
 let idCounter = 0
@@ -134,14 +138,15 @@ function randomBase62(length: number): string {
   return out
 }
 
-function ascendingId(prefix: 'ses' | 'msg' | 'prt'): string {
-  const nowMs = Date.now()
+export function ascendingId(prefix: 'ses' | 'msg' | 'prt', nowMs: number = Date.now()): string {
   if (nowMs !== idLastTimestamp) {
     idLastTimestamp = nowMs
     idCounter = 0
   }
   idCounter += 1
-  const encoded = (nowMs * 0x1000 + idCounter) & 0xffffffffffff
+  // BigInt, as OpenCode does: the JS `&` operator works on 32 bits, which made
+  // short, sometimes negative ids that sorted before OpenCode's own (ORI-2116).
+  const encoded = (BigInt(nowMs) * BigInt(0x1000) + BigInt(idCounter)) & BigInt(0xffffffffffff)
   const hex = encoded.toString(16).padStart(12, '0')
   return `${prefix}_${hex}${randomBase62(14)}`
 }
@@ -495,7 +500,7 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
   }
 
   return {
-    name: 'opencode',
+    name: HARNESS_NAMES.opencode,
 
     async start(opts: HarnessStartOptions): Promise<{ agentSessionId: string }> {
       startModel = opts.model
@@ -598,13 +603,25 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
           if (emittedToolStates.has(toolKey)) return events
           emittedToolStates.add(toolKey)
           const terminal = status === 'completed' || status === 'error'
-          const payload: Record<string, unknown> = {
+          const payload: HarnessToolPayload = {
             tool: typeof part.tool === 'string' ? part.tool : '',
             args: input,
             callId,
             status,
+            harness: HARNESS_NAMES.opencode,
           }
-          if (terminal) payload.output = typeof state.output === 'string' ? state.output : ''
+          // A failed call keeps its message in `state.error`, not `state.output`
+          // (opencode-ai@1.14.41 ToolStateError); it is that call's output.
+          if (terminal) {
+            payload.output = typeof state.output === 'string' ? state.output
+              : typeof state.error === 'string' ? state.error : ''
+          }
+          // OpenCode's own one-line title and structured extras (ORI-2160),
+          // passed through as given; absent when the state has none.
+          if (typeof state.title === 'string' && state.title.length > 0) payload.title = state.title
+          if (state.metadata && typeof state.metadata === 'object' && !Array.isArray(state.metadata)) {
+            payload.metadata = state.metadata as Record<string, unknown>
+          }
           events.push({ kind: terminal ? 'tool_result' : 'tool_call', messageId: msgId, payload })
         } else if (partType === 'step-start') {
           events.push({ kind: 'step_start', messageId: msgId, payload: {} })
