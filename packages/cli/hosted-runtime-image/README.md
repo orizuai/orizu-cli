@@ -48,7 +48,9 @@ The project-wide **git-tag** versioning scheme drives the runtime:
 3. The same workflow's **`bake-hosted-snapshot` job** then bakes a fresh snapshot
    **from that published version** (`provision-snapshot.mjs --cli-version X.Y.Z`),
    deploys `workers/session-coordinator` with the new `ORIZU_HOSTED_SNAPSHOT`, and
-   opens a PR recording the wrangler.toml bump on main (**a human merges it**).
+   opens a PR recording both pins on main: `ORIZU_HOSTED_SNAPSHOT` in
+   `wrangler.toml` and `VERCEL_HOSTED_OPTIMIZATION_PRODUCTION_EVIDENCE.snapshotId`
+   in `workers/session-coordinator/src/vercel-rest-adapter.ts` (**a human merges it**).
    Required repo secrets are documented in the workflow header.
 
 From-source runtimes are **labelled by git** — the image `--tag` and the snapshot
@@ -259,8 +261,13 @@ Then re-cut the runtime:
 - **Snapshot (Path B)**: re-run `provision-snapshot.mjs` for a fresh snapshot id, then
   roll `ORIZU_HOSTED_SNAPSHOT` / `--snapshot`. Roll back by pointing at the previous id.
 
-Rolling or rolling back `ORIZU_HOSTED_SNAPSHOT` re-darkens the hosted-optimization
-production-evidence gate until drill evidence is re-recorded. Since ORI-2013,
-any run still in `preparing` when the deployment arrives terminal-fails closed with
-`hosted_optimization_production_evidence_stale`; no sandbox is allocated. ORI-2010
-tracks the policy for re-recording evidence after a roll or rollback.
+Under the September 29 rule, the snapshot is a per-build pin. Rolling or rolling
+back must update both `ORIZU_HOSTED_SNAPSHOT` in `wrangler.toml` and
+`VERCEL_HOSTED_OPTIMIZATION_PRODUCTION_EVIDENCE.snapshotId` in
+`workers/session-coordinator/src/vercel-rest-adapter.ts` together. The September 9
+drill facts (including the drill hash) are one-time evidence and stay unchanged;
+a new build does not require a new drill. The release workflow updates both pins
+and runs the production-evidence test before deploying and opening the bump PR.
+Since ORI-2013, any run still in `preparing` with stale evidence when the deployment
+arrives terminal-fails closed with `hosted_optimization_production_evidence_stale`;
+no sandbox is allocated.
