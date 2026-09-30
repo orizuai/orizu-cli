@@ -51,6 +51,7 @@
 
 import { readFileSync } from 'fs'
 
+import { HOSTED_AGENT_NAME, HOSTED_AGENT_PROMPT } from './hosted-agent-prompt.js'
 import { findProvider, parseModelIdentity } from './provider-registry.js'
 
 import { HARNESS_NAMES } from './hosted-harness.js'
@@ -193,6 +194,7 @@ export function buildPromptRequestBody(
   const body: Record<string, unknown> = {
     parts: [{ type: 'text', text: content }],
     messageID: opencodeMessageId,
+    agent: HOSTED_AGENT_NAME,
   }
   if (!model) return body
 
@@ -1133,6 +1135,8 @@ export function buildOpenCodeConfigContent(opts: OpenCodeConfigOptions): string 
   return JSON.stringify({
     model: opts.model,
     permission: opts.permission ?? defaultHeadlessPermission(),
+    // Replaces OpenCode's built-in "You are opencode…" prompt (ORI-2207).
+    agent: { [HOSTED_AGENT_NAME]: { mode: 'primary', prompt: HOSTED_AGENT_PROMPT } },
   })
 }
 
