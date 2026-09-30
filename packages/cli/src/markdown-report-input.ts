@@ -88,7 +88,9 @@ export function readMarkdownReportInput(
   }
 
   if (!hasCanonicalReportMarkdownContent(markdown)) {
-    throw new Error(`${reportLabel} report markdown must not be blank`)
+    throw new Error(
+      `${reportLabel} report has no visible content: it is empty or contains only whitespace`
+    )
   }
   if (Buffer.byteLength(markdown, 'utf8') > MARKDOWN_REPORT_MAX_BYTES) {
     throw new Error(`${reportLabel} report exceeds ${MARKDOWN_REPORT_MAX_BYTES} bytes`)
