@@ -18,7 +18,7 @@ export const RESERVED_CREDENTIAL_ENVS = new Set([
   'CF_API_KEY', // test/with-cloudflare-env.test.ts: Cloudflare spelling.
   'CLOUDFLARE_API_KEY', // test/with-cloudflare-env.test.ts: Cloudflare spelling.
   'DAYTONA_API_KEY', // scripts/daytona-workbench-slice.mjs: hosted sandbox.
-  'INTERNAL_API_KEY', // app/api/compile/route.ts: internal compilation.
+  'INTERNAL_API_KEY', // Historical SQL reservation; the internal compile route is gone (ORI-2305).
   'LINEAR_API_KEY', // lib/services/linear-feedback.ts: issue service.
   'RESEND_API_KEY', // lib/services/email.ts: email delivery.
 ])
