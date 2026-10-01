@@ -9,6 +9,7 @@
  *   1. App.tsx has a single named default export (function or class).
  *   2. Default export's first parameter destructures inputData, onComplete,
  *      initialValues (and not the deprecated data, onSubmit).
+ *      The default export must not be async.
  *   3. Imports resolve against the platform-provided component registry.
  *   4. input.json and output.json use only the supported JSON Schema subset:
  *      type, required, properties, items, enum.
@@ -121,6 +122,48 @@ function warn(message) {
   issues.push({ level: "warn", message });
 }
 
+/**
+ * Removes line and block comments, walking left to right so a `//` or `/*`
+ * inside a quoted string or template literal is left alone. A block comment
+ * keeps its newlines, so line numbers in later messages stay true.
+ * Regex literals are not tracked; a quote inside one can hide a comment.
+ */
+function stripComments(code) {
+  let out = "";
+  let quote = "";
+  let i = 0;
+  while (i < code.length) {
+    const char = code[i];
+    const next = code[i + 1];
+    if (quote) {
+      out += char;
+      if (char === "\\" && next !== undefined) {
+        out += next;
+        i += 2;
+        continue;
+      }
+      // Single and double quoted strings end at the line's end; templates may span lines.
+      if (char === quote || (char === "\n" && quote !== "`")) quote = "";
+      i++;
+    } else if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      out += char;
+      i++;
+    } else if (char === "/" && next === "/" && code[i - 1] !== ":") {
+      while (i < code.length && code[i] !== "\n") i++;
+    } else if (char === "/" && next === "*") {
+      const close = code.indexOf("*/", i + 2);
+      const end = close === -1 ? code.length : close + 2;
+      out += code.slice(i, end).replace(/[^\n]/g, " ");
+      i = end;
+    } else {
+      out += char;
+      i++;
+    }
+  }
+  return out;
+}
+
 function checkAppFile(path) {
   if (!existsSync(path)) {
     err(`App file not found: ${path}`);
@@ -129,9 +172,7 @@ function checkAppFile(path) {
   const src = readFileSync(path, "utf8");
 
   // Strip line comments and block comments to avoid false matches.
-  const stripped = src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  const stripped = stripComments(src);
 
   // App code renders as a client component; React 19 cannot render an async one.
   if (/export\s+default\s+async\s+function\b/.test(stripped)) {

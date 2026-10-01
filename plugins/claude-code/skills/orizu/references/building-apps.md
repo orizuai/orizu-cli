@@ -66,6 +66,7 @@ The validator rejects:
 - **Anonymous default exports** such as `export default () => ...` or `export default memo(...)`. The default export must be a named function or class.
 - **Default exports that destructure `data`** instead of `inputData`, or `onSubmit` instead of `onComplete`. The deprecated names fail validation at the app boundary.
 - **Components that don't accept these props at all.**
+- **An `async` default export** such as `export default async function App()`. App code renders in the browser, which cannot render an async component. Return the element directly and load data in an effect.
 
 You may use any other props internally (`useState`, `useReducer`, and so on); keep the default export's signature exact.
 
@@ -1557,6 +1558,7 @@ node /path/to/orizu-skill/scripts/test-app.mjs \
 What it checks:
 - File parses, has a single named default export.
 - Default export's signature destructures `inputData`, `onComplete`, `initialValues` (and not the deprecated names).
+- The default export is not `async`.
 - `input.json` and `output.json` use only the supported validation surface (`type`, `required`, `properties`, `items`, `enum`).
 - If a `sample-payload.json` is provided, it validates against `output.json`.
 

@@ -122,9 +122,51 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 
 const SUPPORTED_SCHEMA_KEYS = new Set(['type', 'required', 'properties', 'items', 'enum'])
 
+/**
+ * Removes line and block comments, walking left to right so a `//` or `/*`
+ * inside a quoted string or template literal is left alone. A block comment
+ * keeps its newlines, so line numbers in later messages stay true.
+ * Regex literals are not tracked; a quote inside one can hide a comment.
+ */
+export function stripComments(code: string): string {
+  let out = ''
+  let quote = ''
+  let i = 0
+  while (i < code.length) {
+    const char = code[i]
+    const next = code[i + 1]
+    if (quote) {
+      out += char
+      if (char === '\\' && next !== undefined) {
+        out += next
+        i += 2
+        continue
+      }
+      // Single and double quoted strings end at the line's end; templates may span lines.
+      if (char === quote || (char === '\n' && quote !== '`')) quote = ''
+      i++
+    } else if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      out += char
+      i++
+    } else if (char === '/' && next === '/' && code[i - 1] !== ':') {
+      while (i < code.length && code[i] !== '\n') i++
+    } else if (char === '/' && next === '*') {
+      const close = code.indexOf('*/', i + 2)
+      const end = close === -1 ? code.length : close + 2
+      out += code.slice(i, end).replace(/[^\n]/g, ' ')
+      i = end
+    } else {
+      out += char
+      i++
+    }
+  }
+  return out
+}
+
 export function validatePreviewInputs(options: AppPreviewOptions): Issue[] {
   const issues: Issue[] = []
-  const source = readFileSync(options.filePath, 'utf8')
+  const source = stripComments(readFileSync(options.filePath, 'utf8'))
   validateImports(source, issues)
   validateDefaultExport(source, options.componentName, issues)
   validateSchema(options.inputSchema, 'input schema', issues)
@@ -391,10 +433,7 @@ function resolveDefaultExport(source: string): { name: string; params: string | 
 }
 
 function unwrapDefaultExportExpression(expression: string): string | null {
-  const trimmed = expression
-    .replace(/\/\*[\s\S]*?\*\/\s*$/, '')
-    .replace(/\/\/.*$/, '')
-    .trim()
+  const trimmed = expression.trim()
   if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(trimmed)) {
     return trimmed
   }
