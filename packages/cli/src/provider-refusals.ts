@@ -14,7 +14,7 @@ export const RESERVED_CREDENTIAL_ENVS = new Set([
   'GEMINI_API_KEY', // Historical SQL reservation; removing local forwarding does not release this name.
   'GOOGLE_API_KEY', // Historical SQL reservation for the Google alias, independent of run providers.
   'ALI_1505_ENDPOINT_OVERRIDE_API_KEY', // hosted-optimization.ts: runner-injected secret.
-  'BRAINTRUST_API_KEY', // app/api/chat/route.ts: workbench connector.
+  'BRAINTRUST_API_KEY', // lib/hosted-connectors.ts: workbench connector.
   'CF_API_KEY', // test/with-cloudflare-env.test.ts: Cloudflare spelling.
   'CLOUDFLARE_API_KEY', // test/with-cloudflare-env.test.ts: Cloudflare spelling.
   'DAYTONA_API_KEY', // scripts/daytona-workbench-slice.mjs: hosted sandbox.
