@@ -133,9 +133,17 @@ function checkAppFile(path) {
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
+  // App code renders as a client component; React 19 cannot render an async one.
+  if (/export\s+default\s+async\s+function\b/.test(stripped)) {
+    err(
+      "App components cannot be async; return the element synchronously and load data in an effect."
+    );
+    return;
+  }
+
   // 1. Find a named default export.
   const fnMatch = stripped.match(
-    /export\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/
+    /export\s+default\s+function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/
   );
   const classMatch = stripped.match(
     /export\s+default\s+class\s+([A-Za-z_$][\w$]*)/

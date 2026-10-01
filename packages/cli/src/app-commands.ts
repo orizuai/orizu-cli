@@ -2,6 +2,7 @@
 
 import {
   readFileSync,
+  statSync,
   mkdirSync,
   writeFileSync,
   realpathSync,
@@ -446,6 +447,14 @@ async function appDetail() {
   printLine(`  Updated: ${sanitizeTerminalText(detail.updatedAt)}`)
 }
 
+/** `--out` may be a file path or a directory; a directory gets the default file name. */
+export function resolveAppExportPath(outPathArg: string | null | undefined, defaultFilename: string): string {
+  if (!outPathArg) return defaultFilename
+  const expanded = expandHomePath(outPathArg)
+  const isDirectory = /[\\/]$/.test(outPathArg) || statSync(expanded, { throwIfNoEntry: false })?.isDirectory() === true
+  return isDirectory ? join(expanded, defaultFilename) : expanded
+}
+
 async function exportAppSource() {
   const project = getArg('--project')
   const versionArg = getArg('--version')
@@ -480,9 +489,10 @@ async function exportAppSource() {
   }
 
   const data = await parseJsonResponse<AppExportPayload>(response, 'App export')
-  const filename = outPathArg
-    ? expandHomePath(outPathArg)
-    : defaultAppExportFilename(data.app.name, data.version.versionNum)
+  const filename = resolveAppExportPath(
+    outPathArg,
+    defaultAppExportFilename(data.app.name, data.version.versionNum)
+  )
 
   writeTextFileEnsuringDir(filename, data.version.code)
   if (hasJsonFlag()) {

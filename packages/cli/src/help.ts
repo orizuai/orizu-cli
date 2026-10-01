@@ -775,8 +775,8 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['apps', 'export'],
-    usage: 'orizu apps export [--app <appId>] [--project <team/project>] [--version <n>] [--out <path>]',
-    summary: 'Export app source for the selected app version.',
+    usage: 'orizu apps export [--app <appId>] [--project <team/project>] [--version <n>] [--out <file-or-directory>]',
+    summary: 'Export app source for the selected app version. --out is a file path, or a directory (the file is named <app>.v<version>.tsx inside it).',
     group: 'Apps',
   },
   {
