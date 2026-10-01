@@ -63,7 +63,8 @@ The project-wide **git-tag** versioning scheme drives the runtime:
       snapshot is never made current, and cleanup deletes it once three
       snapshots created after it exist;
    2. refuses an id that isn't `snap_` followed by letters and digits, before
-      touching anything;
+      touching anything. Steps 2 to 5 are `scripts/switch-current-snapshot.sh`,
+      which the rollback workflow (below) also runs;
    3. reads the current id from the coordinator (`scripts/read-current-snapshot.mjs`,
       three reads 6 s apart that must agree);
    4. sets the new id with `wrangler secret put ORIZU_HOSTED_SNAPSHOT`, which takes
@@ -93,7 +94,7 @@ The project-wide **git-tag** versioning scheme drives the runtime:
    but still runs the armed check. If the check passes, it writes the release
    notes with "Replaced: unknown (re-run)" and skips cleanup, because the id it
    replaced is no longer known. If the check fails, the job fails without
-   restoring anything or writing notes: roll back by hand (below).
+   restoring anything or writing notes: roll back (below).
 
    The production evidence names no snapshot, so a release never changes it.
    Required repo secrets are documented in the workflow header.
@@ -423,19 +424,49 @@ created. Just before that, the coordinator checks the environment:
    recorded on ORI-2238 in Linear when the switch-over ran.
    Check the id still exists: cleanup keeps the newest 3 snapshots, the current
    one, and the one the last switch replaced.
-2. Check in GitHub Actions that no `publish-cli.yml` "Make the new snapshot
-   current" job is running or waiting: it would put its own id over yours. Don't
-   start a release until step 4 confirms the rollback. (ORI-2239 tracks a
-   one-click rollback workflow in the same concurrency group, which would make
-   this check unnecessary.)
-3. From `workers/session-coordinator` on main, with a Cloudflare token for the
+2. Check in GitHub Actions whether a `publish-cli.yml` run is still baking a
+   snapshot. When its bake finishes, that release makes its own snapshot current,
+   over your rollback. Cancel that run if you don't want its snapshot.
+3. Run the **Roll back hosted snapshot** workflow
+   (`rollback-hosted-snapshot.yml`): Actions > Roll back hosted snapshot > Run
+   workflow, with the id from step 1 and, optionally, a reason. It:
+   - refuses the id before changing anything, unless Vercel has it with status
+     `created`;
+   - puts it, waits for the coordinator to report it armed (the same check a
+     release runs), and puts the previous id back if it isn't. If the summary
+     says the restore FAILED, the failed id may still be live: follow
+     [If the workflow can't run](#if-the-workflow-cant-run) now. If it says
+     the switch stopped and the target MAY be live, check what is live with
+     [Checking by hand](#checking-by-hand) before anything else. A passing
+     armed check proves only that the coordinator accepts the id, not that a
+     sandbox boots from it, so after a rollback still start one synthetic hosted
+     run by hand ([Checking by hand](#checking-by-hand));
+   - writes the result, who ran it and why into the job summary. The run list is
+     the record of rollbacks: each run is named after the id it rolled back to.
+     Release notes are not changed, and the next release's "Replaced" line shows
+     the id the rollback left live;
+   - dispatches `deploy-coordinator.yml` on main, as a release does.
+
+   It shares the coordinator's concurrency group, so it never runs at the same
+   time as a deploy from main or a release's switch, and you don't need to check
+   for one. GitHub keeps only one waiting run per group, so a rollback that is
+   waiting its turn can be cancelled by a newer deploy or switch. It then shows
+   as cancelled and nothing changed: run it again.
+
+#### If the workflow can't run
+
+1. Check in GitHub Actions that no `publish-cli.yml` "Make the new snapshot
+   current" job, and no "Roll back hosted snapshot" run, is running or waiting:
+   it would put its own id over yours. Don't start a release until step 3
+   confirms the rollback.
+2. From `workers/session-coordinator` on main, with a Cloudflare token for the
    account:
 
    ```bash
    printf '%s' '<previous snapshot id>' | bunx wrangler secret put ORIZU_HOSTED_SNAPSHOT
    ```
 
-4. Confirm it from the repo root with the armed check (see
+3. Confirm it from the repo root with the armed check (see
    [Checking by hand](#checking-by-hand)), expecting `<previous snapshot id>`.
 
 Never add `ORIZU_HOSTED_SNAPSHOT` back to `wrangler.toml`: Cloudflare refuses a var
