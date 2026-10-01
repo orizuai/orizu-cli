@@ -126,6 +126,18 @@ export function claudeSdkImportProbe(cliDir = CLI_DIR) {
   return `cd ${shellQuote(cliDir)} && node --input-type=module -e "const m=await import('@anthropic-ai/claude-agent-sdk');if(typeof m.query!=='function')process.exit(1)"`
 }
 
+/** The boot proof for a published-package runtime: run before capture here, and
+ *  again in a sandbox started from the captured snapshot (check-snapshot-starts.mjs). */
+export function publishedBootProof(braintrustPyVersion = DEFAULT_BRAINTRUST_PY_VERSION) {
+  return (
+    `command -v orizu && command -v opencode && ` +
+    `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
+    `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
+    `${claudeSdkImportProbe()} && ` +
+    braintrustVerify(braintrustPyVersion)
+  )
+}
+
 /** Presence check that never echoes the values (no secret in logs/errors). */
 export function resolveCredsOrFail(env, fail) {
   const token = env.VERCEL_TOKEN ?? env.VERCEL_OIDC_TOKEN
@@ -170,11 +182,7 @@ export function buildProvisionSteps({
       execStep('install prebaked marker', `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}`),
       execStep('verify git + ssh client present (merge-job runtime requirement)', 'command -v ssh >/dev/null 2>&1 || sudo dnf -y install openssh-clients; git --version && ssh -V', 'install'),
       execStep('verify bake (orizu version + opencode + hosted-loop + braintrust)',
-          `command -v orizu && command -v opencode && orizu --version | grep -F "${cliVersion}" && ` +
-          `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
-          `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
-          `${claudeSdkImportProbe()} && ` +
-          braintrustVerify(braintrustPyVersion)),
+          `orizu --version | grep -F "${cliVersion}" && ${publishedBootProof(braintrustPyVersion)}`),
       ...skilledProposerSteps(),
     ]
   }
@@ -234,7 +242,7 @@ async function defaultCreateProvider() {
   return mod.createVercelProvider()
 }
 
-async function withDeadline(operation, label, timeout, onLateSuccess, lateTimeout = 0, onLateTimeout) {
+export async function withDeadline(operation, label, timeout, onLateSuccess, lateTimeout = 0, onLateTimeout) {
   let timer, timedOut = false
   const pending = Promise.resolve().then(operation)
   return await new Promise((resolveResult, rejectResult) => {
