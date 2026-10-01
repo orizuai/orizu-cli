@@ -42,6 +42,11 @@ import {
   resolveSkillSource,
   getSkillTargetStatus,
   computeSkillContentHash,
+  findLegacySkillInstalls,
+  replaceLegacySkillInstalls,
+  LegacySkillInstall,
+  LegacySkillProblem,
+  LegacySkillReplacement,
 } from './skill-installer.js'
 import {
   createTeamOnServer,
@@ -560,9 +565,95 @@ async function installSkillCommand() {
   }
 
   const outcomes = await applySkillInstallTargets(targets, { mode, skipConfirm, dryRun })
+  const legacy = replaceLegacySkillInstalls({
+    ...legacyScopeAfterInstall(targets, outcomes, dryRun),
+    mode,
+    dryRun,
+    cliVersion: getCliVersion(),
+  })
   if (hasJsonFlag()) {
-    printJson({ dryRun, installs: outcomes })
+    printJson({ dryRun, installs: outcomes, legacy: legacy.replacements, legacyProblems: legacy.problems })
+    return
   }
+  printLegacyReport(legacy)
+}
+
+// install-skill and setup only touch old installs in the targets the user
+// chose. A chosen target whose own install was skipped or failed keeps its
+// old install, with that reason.
+function legacyScopeAfterInstall(
+  targets: SkillInstallTarget[],
+  outcomes: SkillInstallOutcome[],
+  dryRun: boolean
+): { targets: SkillInstallTarget[], heldBack: Partial<Record<SkillInstallTarget, string>> } {
+  const heldBack: Partial<Record<SkillInstallTarget, string>> = {}
+  if (!dryRun) {
+    for (const outcome of outcomes) {
+      if (outcome.action === 'skipped') {
+        heldBack[outcome.target] = 'you chose not to replace the current skill there'
+      } else if (outcome.action === 'failed') {
+        heldBack[outcome.target] = `the current skill could not be installed there: ${outcome.error}`
+      }
+    }
+  }
+  return { targets, heldBack }
+}
+
+function printLegacyReport(report: {
+  replacements: LegacySkillReplacement[]
+  problems: LegacySkillProblem[]
+}): void {
+  for (const line of describeLegacyReport(report)) {
+    printLine(sanitizeSetupHumanInlineText(line))
+  }
+}
+
+function describeLegacyReplacement(replacement: LegacySkillReplacement): string {
+  const moved = replacement.backupPath
+  if (replacement.action === 'replaced') {
+    return `Replaced old Orizu skill ${replacement.path} with ${replacement.installedPath}`
+      + (moved ? `; moved the old copy to ${moved}` : '')
+  }
+  if (replacement.action === 'removed') {
+    return `Removed old Orizu skill ${replacement.path}` + (moved ? `; moved it to ${moved}` : '')
+  }
+  if (replacement.action === 'would-replace') {
+    return `Would replace old Orizu skill ${replacement.path} with ${replacement.installedPath}`
+  }
+  if (replacement.action === 'would-remove') {
+    return `Would remove old Orizu skill ${replacement.path}`
+  }
+  if (replacement.action === 'left-in-place') {
+    return `Left old Orizu skill ${replacement.path} in place (${replacement.reason}). Run \`orizu skills update\` to replace it.`
+  }
+  if (replacement.installedPath) {
+    return `Installed the current skill at ${replacement.installedPath}, but could not move old Orizu skill ${replacement.path}: ${replacement.error}. The old copy is still in place.`
+  }
+  return `Could not replace old Orizu skill ${replacement.path}: ${replacement.error}`
+}
+
+function describeLegacyProblem(problem: LegacySkillProblem): string {
+  return `Could not check ${problem.path}: ${problem.error}`
+}
+
+function describeLegacyReport(report: {
+  replacements: LegacySkillReplacement[]
+  problems: LegacySkillProblem[]
+}): string[] {
+  return [
+    ...report.replacements.map(describeLegacyReplacement),
+    ...report.problems.map(describeLegacyProblem),
+  ]
+}
+
+function describeLegacyInstall(install: LegacySkillInstall): string {
+  if (install.kind === 'broken-link') {
+    return `outdated link to ${install.linkTarget}, which no longer exists`
+  }
+  if (install.kind === 'link') {
+    return `outdated link to ${install.linkTarget}`
+  }
+  return 'outdated copy'
 }
 
 function describeSkillTargetState(status: SkillTargetStatus): string {
@@ -576,6 +667,7 @@ function describeSkillTargetState(status: SkillTargetStatus): string {
 function skillsStatusCommand() {
   const source = resolveSkillSource()
   const statuses = SKILL_INSTALL_TARGETS.map(target => getSkillTargetStatus(target))
+  const { installs: legacyInstalls, problems: legacyProblems } = findLegacySkillInstalls()
 
   if (hasJsonFlag()) {
     printJson({
@@ -593,6 +685,8 @@ function skillsStatusCommand() {
         installedHash: status.installedHash,
         meta: status.meta,
       })),
+      legacyInstalls,
+      legacyProblems,
     })
     return
   }
@@ -604,12 +698,30 @@ function skillsStatusCommand() {
     printLine(`  ${status.target.padEnd(16)} ${describeSkillTargetState(status)}${mode}`)
     printLine(`  ${''.padEnd(16)} ${status.path}`)
   }
+
+  if (legacyInstalls.length > 0) {
+    printLine('')
+    printLine('Old Orizu skill installs (outdated; agents may still load these):')
+    for (const install of legacyInstalls) {
+      printLine(sanitizeSetupHumanInlineText(`  ${install.name.padEnd(16)} ${describeLegacyInstall(install)}`))
+      printLine(sanitizeSetupHumanInlineText(`  ${''.padEnd(16)} ${install.path}`))
+    }
+    printLine('Run `orizu skills update` to replace them.')
+  }
+
+  if (legacyProblems.length > 0) {
+    printLine('')
+    for (const problem of legacyProblems) {
+      printLine(sanitizeSetupHumanInlineText(describeLegacyProblem(problem)))
+    }
+  }
 }
 
 async function skillsUpdateCommand() {
   const dryRun = hasArg('--dry-run')
   const cliVersion = getCliVersion()
   const updates: Array<{ target: SkillInstallTarget, path: string, action: string }> = []
+  const legacy = replaceLegacySkillInstalls({ dryRun, cliVersion })
 
   for (const target of SKILL_INSTALL_TARGETS) {
     const status = getSkillTargetStatus(target)
@@ -641,11 +753,13 @@ async function skillsUpdateCommand() {
   }
 
   if (hasJsonFlag()) {
-    printJson({ updates })
+    printJson({ updates, legacy: legacy.replacements, legacyProblems: legacy.problems })
     return
   }
 
-  if (updates.length === 0) {
+  printLegacyReport(legacy)
+
+  if (updates.length === 0 && legacy.replacements.length === 0 && legacy.problems.length === 0) {
     printLine('No Orizu skill installs found. Run `orizu install-skill` first.')
     return
   }
@@ -1080,6 +1194,15 @@ async function setupCommand() {
       if (dryRun) {
         printLine('Dry run: no skill files were changed.')
       }
+      const legacy = replaceLegacySkillInstalls({
+        ...legacyScopeAfterInstall(targets, installOutcomes, dryRun),
+        mode: installMode,
+        dryRun,
+        cwd: workspaceRoot,
+        homeDir: setupSkillHome,
+        cliVersion: getCliVersion(),
+      })
+      printLegacyReport(legacy)
       for (const outcome of installOutcomes) {
         const label = setupSkillLabel(outcome.target)
         if (outcome.action === 'failed') {

@@ -383,9 +383,16 @@ orizu skills update [--dry-run] [--json]
 
 - `skills status` reports every known target: missing, current, stale, broken
   symlink, or unmanaged (an `AGENTS.md` without the managed section), plus the
-  install mode and content hashes.
+  install mode and content hashes. It also lists old installs under the
+  previous skill name, `orizu-cli`, as outdated.
 - `skills update` refreshes stale copied installs, re-renders stale `AGENTS.md`
-  sections, and repairs broken symlinks. Missing targets are left alone.
+  sections, and repairs broken symlinks. Where an old `orizu-cli` install is
+  found, it installs the current `orizu` skill in that place and takes the old
+  one away: an old folder is moved to `~/.orizu/skill-backups/`, and an old
+  symlink is removed. Missing targets with no old install are left alone.
+- `install-skill` and `setup` do the same for old installs, but only in the
+  destinations you chose. Old installs elsewhere are reported with a hint to
+  run `orizu skills update`. `--dry-run` lists what would be replaced.
   A successful `orizu update` automatically runs `orizu skills update` with the
   installed CLI, including when Orizu is already the latest.
 - Symlinked installs track the CLI package automatically; copied installs are

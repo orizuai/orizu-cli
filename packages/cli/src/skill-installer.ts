@@ -7,8 +7,11 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'path'
@@ -18,6 +21,9 @@ import { createHash } from 'crypto'
 import { workspaceExists } from './workspace.js'
 
 export const SKILL_NAME = 'orizu'
+// The name earlier releases installed the skill under. Agents still load
+// these old copies, so status, update, install and setup find and replace them.
+const LEGACY_SKILL_NAME = 'orizu-cli'
 export const AGENTS_START_MARKER = '<!-- orizu-cli:start -->'
 export const AGENTS_END_MARKER = '<!-- orizu-cli:end -->'
 
@@ -648,4 +654,313 @@ export function getSkillTargetStatus(
 
 export function isSkillInstallTarget(value: string): value is SkillInstallTarget {
   return (SKILL_INSTALL_TARGETS as readonly string[]).includes(value)
+}
+
+export interface LegacySkillInstall {
+  target: SkillInstallTarget
+  name: string
+  path: string
+  kind: 'directory' | 'link' | 'broken-link'
+  linkTarget: string | null
+  // For a link, the real folder it points to.
+  resolvedPath: string | null
+}
+
+export interface LegacySkillProblem {
+  path: string
+  error: string
+}
+
+export interface LegacySkillScan {
+  installs: LegacySkillInstall[]
+  problems: LegacySkillProblem[]
+}
+
+export interface LegacySkillReplacement extends LegacySkillInstall {
+  action:
+    | 'replaced'
+    | 'removed'
+    | 'would-replace'
+    | 'would-remove'
+    | 'left-in-place'
+    | 'failed'
+  installedPath: string | null
+  backupPath: string | null
+  // Why an entry was left in place.
+  reason: string | null
+  error: string | null
+}
+
+export interface LegacySkillReplaceOptions extends SkillInstallOptions {
+  // Only these targets are changed; old installs elsewhere are reported as
+  // left in place. Leave unset to act on every target.
+  targets?: readonly SkillInstallTarget[]
+  // Chosen targets whose own install did not go through, with the reason to
+  // show. Their old installs are left in place.
+  heldBack?: Partial<Record<SkillInstallTarget, string>>
+}
+
+function getLegacySkillInstallPath(
+  target: SkillInstallTarget,
+  options?: SkillInstallOptions
+): string {
+  return resolve(dirname(getSkillInstallPath(target, options)), LEGACY_SKILL_NAME)
+}
+
+// The closing delimiter must be a whole `---` line.
+const FRONTMATTER_BLOCK = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/
+
+function readFrontmatterName(markdown: string): string | null {
+  const frontmatter = markdown.match(FRONTMATTER_BLOCK)
+  if (!frontmatter) {
+    return null
+  }
+  const name = frontmatter[1].match(/^name:\s*['"]?([^'"\r\n]*?)['"]?\s*$/m)
+  return name ? name[1] : null
+}
+
+function stripFrontmatterName(markdown: string): string {
+  return markdown.replace(FRONTMATTER_BLOCK, frontmatter =>
+    frontmatter.replace(/^name:.*$/m, '')
+  )
+}
+
+// Only a folder that is positively an old Orizu skill counts: its SKILL.md
+// header carries the old name and the rest of the file names Orizu. Every
+// past install, ours or a hand copy, has that SKILL.md. A user's own folder
+// that happens to share the name is never reported or touched.
+function isOrizuLegacySkillDir(dir: string): boolean {
+  const skillMd = join(dir, 'SKILL.md')
+  if (!existsSync(skillMd)) {
+    return false
+  }
+  const markdown = readFileSync(skillMd, 'utf8')
+  return readFrontmatterName(markdown) === LEGACY_SKILL_NAME
+    && /orizu/i.test(stripFrontmatterName(markdown))
+}
+
+function inspectLegacySkillPath(
+  target: SkillInstallTarget,
+  path: string
+): LegacySkillInstall | null {
+  let stats
+  try {
+    stats = lstatSync(path)
+  } catch {
+    return null
+  }
+
+  const base = { target, name: LEGACY_SKILL_NAME, path }
+  if (stats.isSymbolicLink()) {
+    const linkTarget = readlinkSync(path)
+    if (!existsSync(path)) {
+      // The folder behind it is gone, so there is no SKILL.md to read. Every
+      // past installer linked to a folder called skills/<old name>.
+      return linkTarget.replace(/\\/g, '/').replace(/\/+$/, '').endsWith(`skills/${LEGACY_SKILL_NAME}`)
+        ? { ...base, kind: 'broken-link', linkTarget, resolvedPath: null }
+        : null
+    }
+    const resolvedPath = realpathSync(path)
+    return isOrizuLegacySkillDir(resolvedPath)
+      ? { ...base, kind: 'link', linkTarget, resolvedPath }
+      : null
+  }
+
+  return stats.isDirectory() && isOrizuLegacySkillDir(path)
+    ? { ...base, kind: 'directory', linkTarget: null, resolvedPath: null }
+    : null
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function errorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error ? String(error.code) : undefined
+}
+
+export function findLegacySkillInstalls(options?: SkillInstallOptions): LegacySkillScan {
+  const installs: LegacySkillInstall[] = []
+  const problems: LegacySkillProblem[] = []
+  const seenPaths = new Set<string>()
+  for (const target of SKILL_INSTALL_TARGETS) {
+    if (target === 'agents-md') {
+      continue
+    }
+    const path = getLegacySkillInstallPath(target, options)
+    if (seenPaths.has(path)) {
+      continue
+    }
+    seenPaths.add(path)
+    try {
+      const install = inspectLegacySkillPath(target, path)
+      if (install) {
+        installs.push(install)
+      }
+    } catch (error: unknown) {
+      problems.push({ path, error: errorMessage(error) })
+    }
+  }
+  return { installs, problems }
+}
+
+function backupDirectoryFor(options?: SkillInstallOptions): string {
+  return resolve(resolveHome(options), '.orizu', 'skill-backups')
+}
+
+function uniqueBackupPath(install: LegacySkillInstall, options?: SkillInstallOptions): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
+  const base = join(backupDirectoryFor(options), `${LEGACY_SKILL_NAME}-${stamp}-${install.target}`)
+  let candidate = base
+  for (let attempt = 2; pathEntryExists(candidate); attempt += 1) {
+    candidate = `${base}-${attempt}`
+  }
+  return candidate
+}
+
+// A user may have edited their old copy, so a folder is moved to a backup
+// folder that no agent scans, never deleted.
+function moveToBackup(path: string, backupPath: string): void {
+  mkdirSync(dirname(backupPath), { recursive: true })
+  try {
+    renameSync(path, backupPath)
+  } catch (error: unknown) {
+    if (errorCode(error) !== 'EXDEV') {
+      throw error
+    }
+    // A project on another disk cannot be renamed into the home folder.
+    cpSync(path, backupPath, { recursive: true, verbatimSymlinks: true })
+    rmSync(path, { recursive: true })
+  }
+}
+
+// Links are removed as links, never by following them. Windows refuses
+// unlink on a directory link, and rmdir removes only the link there.
+function removeLink(path: string): void {
+  try {
+    unlinkSync(path)
+  } catch (error: unknown) {
+    const code = errorCode(error)
+    if (code !== 'EPERM' && code !== 'EISDIR') {
+      throw error
+    }
+    rmdirSync(path)
+  }
+}
+
+// Returns where a folder was moved to, or null for a link. A folder is checked
+// again right before it is moved, in case it changed since it was found.
+function removeLegacySkillInstall(
+  install: LegacySkillInstall,
+  options?: SkillInstallOptions
+): string | null {
+  const current = inspectLegacySkillPath(install.target, install.path)
+  if (!current || (current.kind === 'directory') !== (install.kind === 'directory')) {
+    throw new Error(`${install.path} changed while Orizu was replacing it; it was left in place.`)
+  }
+  if (current.kind !== 'directory') {
+    removeLink(install.path)
+    return null
+  }
+  const backupPath = uniqueBackupPath(install, options)
+  moveToBackup(install.path, backupPath)
+  return backupPath
+}
+
+function replaceOneLegacySkillInstall(
+  install: LegacySkillInstall,
+  options: LegacySkillReplaceOptions | undefined,
+  heldBackReason: string | null
+): LegacySkillReplacement {
+  const installedPath = getSkillInstallPath(install.target, options)
+  const needsInstall = !pathEntryExists(installedPath)
+  const result = {
+    ...install,
+    installedPath: needsInstall ? installedPath : null,
+    backupPath: null,
+    reason: null,
+    error: null,
+  }
+
+  if (heldBackReason) {
+    return { ...result, action: 'left-in-place', installedPath: null, reason: heldBackReason }
+  }
+  if (options?.dryRun) {
+    return { ...result, action: needsInstall ? 'would-replace' : 'would-remove' }
+  }
+
+  let didInstall = false
+  try {
+    if (needsInstall) {
+      installSkillTarget(install.target, {
+        ...options,
+        overwrite: false,
+        dryRun: false,
+        mode: options?.mode ?? (install.kind === 'directory' ? 'copy' : 'auto'),
+      })
+      didInstall = true
+    }
+    const backupPath = removeLegacySkillInstall(install, options)
+    return { ...result, action: needsInstall ? 'replaced' : 'removed', backupPath }
+  } catch (error: unknown) {
+    // Keep the new path when the install worked, so both facts are reported.
+    return {
+      ...result,
+      action: 'failed',
+      installedPath: didInstall ? installedPath : null,
+      error: errorMessage(error),
+    }
+  }
+}
+
+// Why an old install must be left alone, or null when it may be replaced.
+function heldBackReasonFor(
+  install: LegacySkillInstall,
+  installs: LegacySkillInstall[],
+  options?: LegacySkillReplaceOptions
+): string | null {
+  const isSelected = (target: SkillInstallTarget) =>
+    !options?.targets || options.targets.includes(target)
+  const heldBack = options?.heldBack?.[install.target]
+  if (heldBack) {
+    return heldBack
+  }
+  if (!isSelected(install.target)) {
+    return 'not a selected target'
+  }
+  if (install.kind !== 'directory') {
+    return null
+  }
+  // Moving a folder would leave a link from an unselected target pointing
+  // nowhere, so the folder stays until that link can go too.
+  let folder: string
+  try {
+    folder = realpathSync(install.path)
+  } catch (error: unknown) {
+    return `it could not be checked: ${errorMessage(error)}`
+  }
+  const blockingLink = installs.find(other =>
+    other.kind === 'link'
+    && other.resolvedPath === folder
+    && (!isSelected(other.target) || Boolean(options?.heldBack?.[other.target]))
+  )
+  return blockingLink ? `${blockingLink.path} links to it and is left in place` : null
+}
+
+export function replaceLegacySkillInstalls(
+  options?: LegacySkillReplaceOptions
+): { replacements: LegacySkillReplacement[], problems: LegacySkillProblem[] } {
+  const { installs, problems } = findLegacySkillInstalls(options)
+  // Remove links before folders, so no link is left pointing at a moved folder.
+  const ordered = [
+    ...installs.filter(install => install.kind !== 'directory'),
+    ...installs.filter(install => install.kind === 'directory'),
+  ]
+  const reasons = new Map(ordered.map(install => [install, heldBackReasonFor(install, installs, options)]))
+  return {
+    replacements: ordered.map(install =>
+      replaceOneLegacySkillInstall(install, options, reasons.get(install) ?? null)
+    ),
+    problems,
+  }
 }
