@@ -154,11 +154,19 @@ async function waitForAnyKeyOrEscape(message: string): Promise<boolean> {
   })
 }
 
+interface MultiSelectOptions {
+  /** Replaces the standard key-help line. */
+  hint?: string
+  /** Esc returns the starting selection instead of nothing. */
+  escapeKeepsDefaults?: boolean
+}
+
 async function promptKeyboardMultiSelect<T>(
   title: string,
   items: T[],
   label: (item: T, index: number) => string,
-  defaultSelected: (item: T, index: number) => boolean
+  defaultSelected: (item: T, index: number) => boolean,
+  options: MultiSelectOptions = {}
 ): Promise<T[]> {
   if (items.length === 0) {
     return []
@@ -168,7 +176,7 @@ async function promptKeyboardMultiSelect<T>(
   }
 
   printLine(`\n${sanitizeTerminalText(title)}`)
-  printLine('Use ↑/↓ to move, Space to toggle, Enter to confirm, or Esc to skip.')
+  printLine(options.hint ?? 'Use ↑/↓ to move, Space to toggle, Enter to confirm, or Esc to skip.')
 
   let selected = 0
   let rendered = false
@@ -217,7 +225,7 @@ async function promptKeyboardMultiSelect<T>(
       }
       if (key.name === 'escape') {
         cleanup()
-        resolvePromise([])
+        resolvePromise(options.escapeKeepsDefaults ? items.filter((item, index) => defaultSelected(item, index)) : [])
         return
       }
       if (key.name === 'up') {
@@ -892,7 +900,7 @@ async function resolveSetupProjects(
     if (!name) throw new Error('--create-project requires a non-empty project name.')
     const selected = await createProjectOnServer(team.slug, name, request)
     printLine(`Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
-    return { selected, projects: [...projects, selected] }
+    return { selected, projects: [selected] }
   }
   const normalizedProjectSlug = projectSlugArg ? normalizeSlugInput(projectSlugArg) : null
   if (normalizedProjectSlug) {
@@ -900,7 +908,7 @@ async function resolveSetupProjects(
     if (!selected) {
       throw new Error(`Project '${team.slug}/${normalizedProjectSlug}' was not found.`)
     }
-    return { selected, projects }
+    return { selected, projects: [selected] }
   }
   if (projects.length === 0) {
     if (!canCreateProject) throw new Error(`Team '${team.slug}' has no accessible projects, and only team admins can create one.`)
@@ -930,6 +938,24 @@ async function resolveSetupProjects(
   const selected = await createProjectOnServer(team.slug, name, request)
   printLine(`Created project ${sanitizeTerminalText(`${selected.teamSlug}/${selected.slug}`)}`)
   return { selected, projects: [...projects, selected] }
+}
+
+// Every project starts checked and Esc keeps them all. The active project is
+// always set up, so Enter with nothing checked sets up only that one.
+async function chooseProjectsToScaffold(projects: Project[], active: Project): Promise<Project[]> {
+  const checked = await promptKeyboardMultiSelect(
+    'Choose the team projects to set up in this workspace',
+    projects,
+    project => project.slug === active.slug
+      ? `${project.name} (${project.slug}) — active project, always set up`
+      : `${project.name} (${project.slug})`,
+    () => true,
+    {
+      hint: 'Use ↑/↓ to move, Space to toggle, Enter to confirm, or Esc to keep them all. With nothing checked, only the active project is set up.',
+      escapeKeepsDefaults: true,
+    }
+  )
+  return projects.filter(project => project.slug === active.slug || checked.includes(project))
 }
 
 function projectSeedsFromProjects(projects: Project[]): WorkspaceProjectSeed[] {
@@ -1082,6 +1108,9 @@ async function setupCommand() {
       setupProjects = selection.projects
       printLine(`Selected project ${sanitizeTerminalText(`${setupTeam.slug}/${selectedProject.slug}`)}`)
       printLine('')
+      if (!noInput && setupProjects.length > 1 && !hasArg('--no-workspace')) {
+        setupProjects = await chooseProjectsToScaffold(setupProjects, selectedProject)
+      }
     }
   }
 

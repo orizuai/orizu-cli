@@ -267,9 +267,14 @@ orizu setup --workspace ./workbench --validate
 ```
 
 - Interactive runs open login directly, ask which team to use or create, then
-  ask which project the user intends to work in or create. Authenticated setup
-  still materializes stubs for every project in the selected team: root
-  `AGENTS.md`, `CLAUDE.md`, `Memory.md`,
+  ask which project the user intends to work in or create. When the project
+  is picked in that prompt and the team has more than one project, a checklist
+  of its projects follows, all checked; setup materializes stubs for the
+  checked projects and always for the active one (Esc keeps them all).
+  Naming the project with `--project` or `--create-project`, interactive or
+  not, skips the checklist and materializes only that project. `--fix`
+  restores every team project. The workspace contract is
+  root `AGENTS.md`, `CLAUDE.md`, `Memory.md`,
   `orizu.team.json`, project manifests under `projects/`, source repo/session
   folders, primitive directories, and gitignore policy.
 - Non-interactive runs (`--no-input`, CI, or no TTY) require existing
