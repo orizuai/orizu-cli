@@ -18,13 +18,17 @@ The downstream judge-building steps are identical for all three forms. Also
 arrive with:
 
 - one or more specific binary **failure modes**, such as
-  `correctly_identified_issue` or `escalated_when_required`;
+  `correctly_identified_issue` or `escalated_when_required`, or one pairwise or
+  multi-class decision (see “Multi-class and pairwise judges”);
 - the original dataset row for every label; and
 - multiply labeled rows for measuring human–human agreement.
 
 If the labels are Likert scores or an “overall quality” bundle, return to the
 First win's conditional ground-truth annotation stage and rewrite the rubric as one binary question
 per failure mode before building a judge.
+Pairwise labels (`a`, `b`, or `tie`) and other fixed-category labels are
+already decision-shaped: keep them and follow “Multi-class and pairwise
+judges” below.
 
 - A **judge** is the evaluator, often an LLM instruction set plus a runner.
 - A **scorer** is the metric contract stored in Orizu. It names the score,
@@ -42,6 +46,8 @@ positive rate)** is the fraction of human-labeled failures the judge catches.
 correctly leaves unflagged.
 
 Measure kappa, TPR, and TNR separately for every failure mode on judge-test rows.
+For a pairwise or multi-class judge, TPR and TNR are undefined; use kappa plus
+each label's recall and precision (see “Multi-class and pairwise judges”).
 Always show the confusion matrix, sample count, class balance, and scenario-class
 breakdown beside them. A judge that flags everything can have perfect TPR and
 useless TNR; a judge that passes everything has the inverse failure. If a
@@ -128,7 +134,8 @@ def has_case_reference(input: dict, output: dict) -> bool:
 ```
 
 For a nuanced failure mode, make the LLM judge return one binary decision and a
-short reason. Its instructions should contain:
+short reason (for pairwise or multi-class labels, one label from the fixed set;
+see “Multi-class and pairwise judges”). Its instructions should contain:
 
 1. the binary question;
 2. specific pass and fail criteria;
@@ -154,6 +161,114 @@ Frame every scorer output so higher means better; for the binary row score,
 declaring `higher_is_better: true`, because that gives optimization and
 reflection mixed directional signals.
 
+### Multi-class and pairwise judges
+
+When reviewers compared two outputs and picked `a`, `b`, or `tie`, or chose one
+of a fixed set of categories, the judge predicts that same label. Its strict
+JSON result is `{"label": "a", "reason": "…"}` with `label` exactly one of the
+allowed values. Orizu does not check judge labels: the runner passes
+`model_response` through unchanged and `cohens_kappa` accepts any label as a new
+class. Your judge runner must validate the label and turn anything else into a
+row error.
+
+For pairwise judges, the same runner controls position bias; GEPA changes the
+instructions, not the runner, so no other component can. The default is to
+pick a random-looking but fixed order for each row, map the verdict back to the
+dataset's own `a` and `b` before writing `model_response`, and record the order
+shown, so the scorer compares labels directly. Derive the order from a hash of
+the row's own content, not from `random.random()`: GEPA calls the runner
+separately for the seed and for every candidate, so a fresh draw each call
+would show the same row in different orders to different candidates, and
+position bias would then decide part of which candidate wins. The candidate
+runner receives the dataset row's fields, not Orizu's row id, and Python's
+built-in `hash()` changes between processes, so use a stable digest. Showing each pair in both orders instead doubles
+judge calls against the run budget; if you do it, fold the two verdicts into
+the single per-row output: the same verdict in both orders keeps that verdict,
+and different verdicts become `tie`. The core of the default runner, which reads the candidate-runner contract
+(`payload["row"]` is the flat dataset row):
+
+```python
+import hashlib, json, os
+
+ALLOWED = {"a", "b", "tie"}
+payload = json.load(open(os.environ["ORIZU_RUNNER_INPUT_PATH"]))
+row = payload["row"]  # flat dataset row: {"reply_a": ..., "reply_b": ..., ...}
+digest = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).digest()
+swapped = digest[0] % 2 == 1  # same order for this row in every call
+first, second = (row["reply_b"], row["reply_a"]) if swapped else (row["reply_a"], row["reply_b"])
+verdict = call_judge(instructions, first, second)  # parsed JSON, any value
+if not isinstance(verdict, dict) or verdict.get("label") not in ALLOWED:
+    output = {"model_response": None,
+              "error": f"Judge label must be one of {sorted(ALLOWED)}; got {verdict!r}"}
+else:
+    if swapped and verdict["label"] != "tie":
+        verdict["label"] = "b" if verdict["label"] == "a" else "a"
+    verdict["shown_order"] = "b_first" if swapped else "a_first"
+    output = {"model_response": verdict, "error": None}
+json.dump(output, open(os.environ["ORIZU_RUNNER_OUTPUT_PATH"], "w"))
+```
+
+The GEPA alignment row scorer compares the candidate judge's label with the
+human label and explains every miss, because reflection learns from that
+feedback. A match scores 1 and anything else scores 0. Under the default GEPA
+scorer contract, the scorer's `payload["row"]` is not the flat dataset row but
+a wrapper (`prompt-control-plane.md`, “GEPA scorer-runner contract”): the
+dataset row is under `source_row`, and `candidate_output` is exactly what the
+judge runner wrote as `model_response`, passed through unchanged. With the
+runner above that is the validated verdict object, or `None` when the runner
+reported an error:
+
+```python
+import json, os
+
+ALLOWED = {"a", "b", "tie"}
+payload = json.load(open(os.environ["ORIZU_RUNNER_INPUT_PATH"]))
+wrapper = payload["row"]  # GEPA wrapper, not the flat dataset row
+row = wrapper["source_row"]  # the same flat dataset row the judge runner saw
+human = row["preferred"]  # the dataset's human-label field
+verdict = wrapper.get("candidate_output")
+judge = verdict.get("label") if isinstance(verdict, dict) else None
+error = None
+if human not in ALLOWED:
+    score = 0.0
+    feedback = "Row not scored: the human label is outside the allowed set (a data problem, not a judge problem)."
+    error = f"Human label {human!r} is not one of {sorted(ALLOWED)}; fix the label field or ALLOWED"
+elif wrapper.get("candidate_error"):
+    score = 0.0
+    feedback = "Row not scored: the judge runner reported an error (provider failure or invalid label), so there is no verdict to compare."
+    error = f"Judge produced no usable output: {wrapper['candidate_error']}"
+elif judge not in ALLOWED:
+    score, feedback = 0.0, f"Judge output must be JSON with label one of {sorted(ALLOWED)}; got {verdict!r}"
+elif judge == human:
+    score, feedback = 1.0, f"Matched reviewers ({human})."
+else:
+    score, feedback = 0.0, f"Reviewers chose {human}; judge chose {judge}. Judge reason: {verdict.get('reason', '')}"
+json.dump({"score": score, "feedback": feedback, "error": error},
+          open(os.environ["ORIZU_RUNNER_OUTPUT_PATH"], "w"))
+```
+
+Every row still needs a numeric `score`. A row the scorer cannot judge (a
+human label outside the allowed set, or a judge row the runner reported as an error) carries its
+reason in `error`, and the run marks the row as errored. Its `feedback` must
+still be a short, non-empty, factual note: reflection refuses a row with empty
+feedback and stops the run. Keep that note about the missing verdict, not about
+the judge's instructions, so reflection does not try to fix a provider failure
+by rewriting the judge. A seed on which every row errors is refused
+at launch.
+
+Register it with `higher_is_better: true` and run GEPA exactly as in
+“Optimize the judge instructions with GEPA” below. Compared with the binary
+case, the label field and the allowed labels differ, and so does the kappa set
+scorer: reuse the `cohens_kappa` builtin from `prompt-control-plane.md` with
+`predicted_label` mapped to the judge's `label`, drop `positive_class`, and
+replace the binary `diagnostics_schema` keys (`confusion_matrix`,
+`flag_recall`, `ok_recall`, and the rest) with `labels` and `per_class`.
+Without a positive class the scorer computes multi-class kappa and accuracy
+over every label it sees and reports per-label precision and recall under
+`per_class` only; it emits no `confusion_matrix` or `<label>_precision` keys.
+Agree the trust bar on that kappa plus the per-label recall in `per_class`,
+especially for `tie`, which is usually the rarest label.
+
 ## Split, iterate, and validate
 
 Build the labeled judge pool only from the application's train and validation
@@ -166,6 +281,9 @@ judge-test split is yours to define:
 | Judge train (`train`) | ~20% | Few-shot examples or judge-instruction optimization |
 | Judge dev / validation (`validation`) | ~40% | Iterate and compare candidates |
 | Judge test (`judge-test`) | ~40% | One alignment validation after the judge candidate is frozen |
+
+A small judge-train partition is normal for GEPA: tens of rows are common. Do
+not shrink validation or judge-test to enlarge it.
 
 Author `judge-split.json` with explicit row membership for all three judge
 partitions. Every `row_ids` entry must come from the application's train or
@@ -319,7 +437,9 @@ agreed judge trust bar, the scorer versions are registered, `runners exec`, `sco
 and the measured `scorers exec` run have all succeeded, and the human curator has
 accepted that score run. Gate decisions only on accepted evidence. A locally
 computed alignment report with no accepted Orizu score run does not clear the
-trust bar.
+trust bar. Judge GEPA (“Optimize the judge instructions with GEPA” below) runs
+inside this stage, before the bar is cleared; the accepted judge-test evidence
+for the selected judge is what completes it.
 
 Re-run this evidence path after labels, judge instructions, runners, or scorer
 definitions change. Builtin set scorers, their dependency mapping, and aggregate
@@ -329,14 +449,21 @@ submission behavior are specified in `prompt-control-plane.md`.
 
 Judge building is itself an optimization problem. Optimize the LLM judge's own
 instructions against human labels; do not optimize it against its own previous
-decisions.
+decisions. This run happens before the judge clears its trust bar, so the
+“validated judges only” rule for application optimization does not gate it:
+here the gate is the human labels plus the alignment scorer that compares the
+candidate judge with them. Judge-test still decides, once, after the run,
+whether the selected judge clears its bar. For an LLM judge built from human labels, this
+run is the default way to reach the trust bar, not an optional extra; the data
+guidance in “Run it” in `optimization-with-gepa.md` applies here too.
 
 Manage a composite judge as one `orizu instructions` instruction set. Components
 can separate the rubric, boundary examples, output contract, and failure-mode
 rules, while the complete component map remains the candidate. The candidate
 runner executes those candidate judge instructions on human-labeled train and
-validation rows. The row-mode alignment scorer compares the binary candidate
-decision with the human label and returns per-row feedback for reflection.
+validation rows. The row-mode alignment scorer compares the candidate's
+decision (binary, pairwise, or multi-class) with the human label and returns
+per-row feedback for reflection.
 
 Materialize those components in `orizu.instruction-set.json` before GEPA. Create
 the stable instruction set once, or push a revised seed for a later optimization
@@ -476,11 +603,14 @@ in `prompt-control-plane.md` before choosing either contract.
 
 ## Exit criterion checklist
 
-- [ ] Each failure mode is binary and has adequate positive and negative rows.
+- [ ] Each judge decision is either binary with adequate positive and negative
+      rows, or pairwise or multi-class with adequate rows for every label.
 - [ ] Human–human kappa is computed from multiply labeled rows; low agreement
       routes back to rubric and label repair.
 - [ ] Kappa, TPR, TNR, confusion matrix, sample size, class balance, and
-      scenario-class results are reported per failure mode.
+      scenario-class results are reported per failure mode; for a pairwise or
+      multi-class judge, kappa, accuracy, and `per_class` precision and recall
+      stand in for TPR, TNR, and the confusion matrix.
 - [ ] The agent taught the decision-class tradeoffs, the user chose each
       judge trust bar, and the agreed value is recorded in the output.
 - [ ] Development rows were used for iteration and judge-test was used only

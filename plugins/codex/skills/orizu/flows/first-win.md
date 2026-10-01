@@ -26,8 +26,10 @@ Use `references/prompt-control-plane.md` for artifact contracts and `references/
 
 Optimize only against validated judges. Use `references/optimization-with-gepa.md` and `references/cli-reference.md` rather than remembered commands. Target one model-config profile and treat its complete component map as the candidate. Select on validation evidence and preserve Final-held-out for Promote's seed-versus-selected-candidate decision evidence.
 
+Launch the run: it is the default end of First win. Dataset size, a seed that already looks good, or a hand-written rewrite are not reasons to skip it (see "Run it" in `references/optimization-with-gepa.md`). To skip, write the reason in the improvement plan's open decisions and get a human to approve it before leaving First win. Approval is a human-only decision: an agent, including a hosted session, never approves its own skip, and a plan's named owner is not an approval. Promote then records the approved skip as its decision.
+
 ## Exit criterion
 
-The optimization run is completed with a selected candidate or a recorded no-valid-candidate outcome, and all run artifacts needed by `flows/promote.md` are available. A completed optimization run ends First win; the customer win is realized only through the human promotion decision in Promote.
+The optimization run is completed with a selected candidate or a recorded no-valid-candidate outcome, and all run artifacts needed by `flows/promote.md` are available, or, only with recorded human approval, a documented reason the run was skipped. A hand-written rewrite outside `orizu optimizations run-gepa` does not meet this criterion. A completed optimization run ends First win; the customer win is realized only through the human promotion decision in Promote.
 
 If an Orizu problem occurred during this flow and was not already reported, follow `references/feedback.md` to file it now; if it was, mention the report id instead.

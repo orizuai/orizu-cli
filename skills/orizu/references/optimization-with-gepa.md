@@ -2,7 +2,24 @@
 
 How to optimize an instruction-set profile against validated judges and scorers. Prepare the complete instruction-set manifest, follow the [Authority map](authority-map.md) for its mutation, and then run the bundled `orizu optimizations run-gepa` flow. Use this reference for GEPA mechanics, custom optimizer implementations, and optional DSPy context for customers already using DSPy.
 
+## Run it
+
+Once a validated judge or scorer exists, launch `orizu optimizations run-gepa`. That run is the default end of First win, not an optional extra.
+
+How much data is enough: tens to a few hundred labelled rows is normal; under 100 is common. GEPA learns from per-row scorer feedback, not from gradients, so data size alone is not a reason to skip the run. Neither is a seed that already looks close to the human ceiling, nor a hand-written "GEPA-style" rewrite. Run it and let the validation split choose. When a non-seed candidate is selected, the untouched Final-held-out comparison in Promote decides whether it helped. When GEPA keeps the seed, record the seed-selected outcome; when search produces no valid candidate, record the no-valid-candidate outcome. Both are valid results, not wasted runs, and Promote reports each through its own branch. If you still believe a run is not worth it, record the reason and get the human's approval before skipping, as `flows/first-win.md` describes.
+
+Shortest path to a first run (each item matches "Orizu-tracked optimization" step 1–6 below):
+
+1. Create or push the instruction set from its manifest, and keep the profile version it reports. A new set's first version (v1) has no Production pointer, so name it at launch with `@v1` or `--profile-version 1`; never promote it just to make the run start, because moving Production is a human decision.
+2. Push the candidate runner (and, for an LLM evaluator, the judge rubric).
+3. Register a row scorer whose feedback explains each score.
+4. Snapshot a dataset version, then create one split set with train, validation, and a reserved Final-held-out partition. Pass only train and validation to `run-gepa`, and never pass Final-held-out as `--train-split` or `--val-split`: the CLI does not enforce that boundary.
+5. Push the optimizer with `orizu optimizers push`.
+6. Launch `orizu optimizations run-gepa` on the train and validation partitions with `--budget light`. Pass `--reflection-max-tokens <n>`: the default reflection model, `anthropic/claude-opus-4-7`, uses the Anthropic Messages protocol, and launch refuses without a cap. Scale the budget up only if the run is still finding better candidates.
+
 When First win loads this reference, stop after the optimization run records a selected candidate or no-valid-candidate outcome. Do not write the decision report or run a promotion command until `flows/promote.md` is active. Steps 8–9 below describe Promote-owned continuation mechanics, not First win work.
+
+## Selecting the profile and seed
 
 Select the Profile explicitly with `--instruction-set <slug-or-exact-name> --model-config <identity>`, or with one specifier such as `--instruction-set planner/openai/gpt-5.4`. These selectors replace the legacy `--candidate-version-id` path and cannot be combined with it. The run starts from its *seed*: that Profile's Production component map unless you name another version with `planner/openai/gpt-5.4@v3` or `--profile-version 3` (a version number only; `v3` also works). Any version of the Profile can be the seed, promoted or not, and the seed brings its own components and model settings. When the specifier and the flags both name the profile or the version, they must agree or launch refuses with `instruction_set_seed_conflict`. A named version that does not exist refuses with `instruction_set_profile_version_not_found` and names the newest version. The seed's components must match the set's current shape exactly, with none missing and none the set has since removed. Launch refuses a named version that does not with `instruction_set_profile_version_incomplete` and names the newest matching version, and refuses a Production that does not (locally with `instruction_set_profile_production_incomplete`; a hosted launch names the production version). If the Profile is missing or its model config is archived, launch refuses with `instruction_set_profile_not_found`; if no version is named and it is unpromoted, launch refuses with `instruction_set_profile_not_promoted`. It never substitutes the Default Profile. When you promote a candidate whose seed is older than the Profile's current Production, `optimizations promote` warns that the changes made since the seed are not in the candidate; tell the human before they decide. `--component-selector round-robin` is the default and updates one component per round; `--component-selector all` updates every component per round. The runner receives a multi-component candidate as a component map, while a one-component set keeps the existing single-body runner contract. Git-pinned components and malformed component maps are refused before a run starts. Automatic promotion is refused for multi-component sets; write the report, obtain the human promotion decision, and follow the Authority map. Manifest create/push is how a profile's first version is created before a run, not a second accepted-candidate materialization; after a run, use the human one-shot or equivalent idempotent two-stage path in step 9.
 
@@ -13,7 +30,7 @@ You should arrive here with:
 - A **dataset** of inputs to optimize against: usually the same exported labels, plus any harder cases you've added since.
 - An **instruction set** whose selected profile contains the starting component values for the LLM application you want to improve.
 
-If you don't have a validated judge, stop. Optimizing against an unvalidated judge means you'll hill-climb on a noisy or biased signal: Goodhart's law in action.
+Validate the judge first (see `building-judges.md`): optimizing against an unvalidated judge hill-climbs a noisy or biased signal. Once it clears its trust bar, run GEPA. The validated judge, not the size of the dataset, is the gate. When the thing being optimized is the judge itself, there is no earlier judge to validate: the gate is the human labels plus the alignment scorer that compares the judge with them (see “Optimize the judge instructions with GEPA” in `building-judges.md`).
 
 ## Why GEPA-style optimization
 
@@ -342,9 +359,10 @@ Each pass through the loop reveals the next layer.
 ## Common pitfalls
 
 - Optimizing against an unvalidated judge. You'll improve the metric and degrade the system. Always validate first.
-- No Final-held-out comparison. "It's better, look at the metric" without Final-held-out is meaningless: GEPA will overfit if you let it.
+- Skipping the Final-held-out comparison. "It's better, look at the metric" without Final-held-out is meaningless. The validation split selects the candidate and Final-held-out decides whether it helped; with both in place, a small dataset is not an overfitting reason to skip the run.
+- Skipping the run, or replacing it with a hand-written "GEPA-style" rewrite. Neither produces a recorded run, candidates, or the evidence Promote needs.
 - Hiding regressions in the average. Track per-failure-mode metrics alongside the combined score.
-- Over-budgeting GEPA. Heavy budgets give diminishing returns and burn LM spend. Start with `auto="light"`, scale up only if needed.
+- Over-budgeting GEPA. Heavy budgets give diminishing returns and burn LM spend. Start with `auto="light"` (`--budget light` for `run-gepa`) and scale up only if needed; a light budget on a small dataset is a normal first run.
 - Ignoring temperature. Run optimization with the same LM config (model, temperature) you use in production. Optimizing against gpt-4o at temp=0 doesn't transfer to gpt-4o-mini at temp=0.7.
 - Recreating Orizu logging by hand for instruction sets. Use `orizu optimizations run-gepa` unless the optimizer is genuinely custom.
 

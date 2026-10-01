@@ -2,12 +2,13 @@
 
 the actual customer win: report the run, support the human's promotion decision (learnings, tradeoffs, regressions), and guide validation (blind side-by-sides, replay on past traffic, staged rollout).
 
-Reach for Promote when First win or a later optimization cycle has completed and the human needs evidence for a ship, gather-more-evidence, or do-not-promote decision.
+Reach for Promote when First win or a later optimization cycle has completed and the human needs evidence for a ship, gather-more-evidence, or do-not-promote decision, or when First win ended with a human-approved, recorded skip of the optimization run.
 
 ## Build the decision record
 
 Follow `references/optimization-reports.md` for the run's recorded outcome:
 
+- When First win ended with a human-approved skip and no run exists, record the approved reason, who approved it, and the seed's validated judge evidence. There is no candidate, Final-held-out comparison, or result version to report; recommend **Do not promote** (keep the current version) and name what would justify a run later.
 - When the run has no valid candidate, take its no-valid-candidate report branch: omit candidate comparison and Final-held-out candidate evaluation, attach the reproducible report, explain why search produced no valid option, and recommend **Do not promote** without a promotion or result version.
 - When GEPA selects the seed (`0` for the official engine or `seed` for legacy), take the seed-selected report branch: omit promotion and a result version, explain why optimization did not beat the seed, attach the reproducible report, and recommend **Do not promote**. Do not request a seed-versus-itself comparison or candidate Final-held-out evidence.
 - When a non-seed candidate is selected, compare it with the seed, evaluate Final-held-out evidence when supported, explain learnings and tradeoffs in the user's terms, call out regressions, and attach the reproducible markdown report.

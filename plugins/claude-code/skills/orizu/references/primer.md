@@ -13,7 +13,7 @@ Onboard → First win ───────────────→ Promote
                                                    └─ after Promote: Recurse, Triage, or Expand by user interest
 ```
 
-First win builds the evidence and ends at a completed optimization run. Promote owns reporting, validation, and the human promotion decision. Recurse turns newly deployed traces into a later same-surface cycle; Triage starts from an incident and closes its eval gap before a fix; Expand chooses and plans another surface. Onboard owns pre-data inventory and plan ratification.
+First win builds the evidence and ends at a completed optimization run, or at a skip the human approved and recorded. Promote owns reporting, validation, and the human promotion decision. Recurse turns newly deployed traces into a later same-surface cycle; Triage starts from an incident and closes its eval gap before a fix; Expand chooses and plans another surface. Onboard owns pre-data inventory and plan ratification.
 
 The CLI covers this operational loop. Start instruction sets with `orizu instructions`: one instruction set per agent or LLM experience, one profile per model config, and components owned by that profile. Human annotation happens through apps/tasks only for required ground truth, while judge/scorer logic and optimization execution run locally and report back through the instruction control plane. The active flow file owns ordering and its exit criterion; this primer explains why the stages exist rather than replacing that procedure.
 
@@ -205,7 +205,7 @@ Done locally, reported to Orizu:
 2. Register validated scorers.
 3. Run the bundled Orizu GEPA-style text optimizer, or a custom optimizer against the scorer set.
 4. Stream optimization events to Orizu and complete the run with a selected candidate or a recorded no-valid-candidate outcome.
-5. Stop First win at that completed run. Route to Promote for the report, supported Final-held-out comparison, validation evidence, and human ship, gather-more-evidence, or do-not-promote decision. After Promote, use Recurse for a human-agreed cadence that turns traces from the currently deployed version into a new immutable dataset version.
+5. Stop First win at that completed run, or at a skip the human approved and recorded. Route to Promote for the report, supported Final-held-out comparison, validation evidence, and human ship, gather-more-evidence, or do-not-promote decision. After Promote, use Recurse for a human-agreed cadence that turns traces from the currently deployed version into a new immutable dataset version.
 
 Control-plane commands: `prompt-control-plane.md`. Detailed walkthrough: GEPA mechanics, optional DSPy context for customers already using it, and before/after comparison: `optimization-with-gepa.md`.
 
