@@ -860,7 +860,10 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
         await sleep(delayMs)
         try {
           await sink.finish(error.intendedStatus, error.finishOptions)
-          return { status: error.intendedStatus, agentSessionId, installOk, error: null }
+          // A timer flush may have met the server's 404/410 during the sleep,
+          // making finish() a no-op: honour the server, as the drain does.
+          const status = sink.terminatedServerSide ? 'cancelled' : error.intendedStatus
+          return { status, agentSessionId, installOk, error: null }
         } catch (retryError) {
           // The run went terminal server-side while we were retrying: accept
           // the server record (Orizu records win) instead of retrying further.
@@ -873,8 +876,10 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
       }
       if (sink.sealed) {
         // A concurrent/preceding delivery landed after all — the record is
-        // terminal server-side with our intended status semantics preserved.
-        return { status: error.intendedStatus, agentSessionId, installOk, error: null }
+        // terminal server-side with our intended status semantics preserved —
+        // unless a timer flush met the server's 404/410 instead.
+        const status = sink.terminatedServerSide ? 'cancelled' : error.intendedStatus
+        return { status, agentSessionId, installOk, error: null }
       }
       return {
         status: error.intendedStatus,

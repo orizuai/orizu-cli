@@ -128,12 +128,15 @@ export interface RunEventSink {
    *  Terminal kinds are rejected (they must go through `finish`). */
   append(event: HarnessEvent): Promise<void>
   /** Force-flush any coalesced token snapshots (also runs on every structural
-   *  event and on `finish`). Exposed so callers can flush on a timer if desired. */
+   *  event, on `finish`, and every `tokenFlushMs` while new tokens arrive). */
   flushTokens(): Promise<void>
   /** Terminal transition via PATCH; records the transcript tail first, then CAS. */
   finish(status: TerminalStatus, opts?: FinishOptions): Promise<void>
   /** True once a terminal transition has landed and the sink is sealed. */
   readonly sealed: boolean
+  /** True when an append met 404/410, i.e. the server ended the run, not this
+   *  writer's PATCH. A timer flush can learn this with no caller awaiting it. */
+  readonly terminatedServerSide: boolean
   /** The next sequence the sink will attempt to allocate (test/resume aid). */
   readonly nextSequence: number
   /** Events the sink has confirmed appended, in order (redacted payloads). */
@@ -251,7 +254,14 @@ export interface CreateRunEventSinkOptions {
   sleepImpl?: (ms: number) => Promise<void>
   /** Local diagnostic sink for disagreement-rule logs (never throws). */
   onDiagnostic?: (message: string) => void
+  /** How often buffered token snapshots are flushed while a reply is being
+   *  written (ORI-2340). Default TOKEN_FLUSH_MS. */
+  tokenFlushMs?: number
 }
+
+/** A text-only reply reaches the browser as growing snapshots at this cadence
+ *  instead of whole at the end of the turn (ORI-2340). */
+export const TOKEN_FLUSH_MS = 250 // held equal to SESSION_TIMERS.agentTokenFlushMs by test
 
 const DEFAULT_MAX_CRITICAL_ATTEMPTS = 4
 // Non-critical appends get a SMALL bounded retry so a single transient blip
@@ -312,6 +322,50 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
 
   let nextSequence = options.startSequence ?? 1
   let sealed = false
+  let terminatedServerSide = false
+
+  // One promise chain for every buffer-touching operation: append, flushTokens,
+  // finish and the timer flush below. This is how the timer honours the
+  // reentrancy contract on flushTokens — it queues behind an in-flight append
+  // or flush instead of running beside it. A rejected step reaches its own
+  // caller and never breaks the chain.
+  let queue: Promise<unknown> = Promise.resolve()
+  function serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const run = queue.then(fn)
+    queue = run.catch(() => {})
+    return run
+  }
+
+  // ORI-2340 timer flush: started by the first token, unref'd so it never keeps
+  // the process alive, stopped for good once the sink seals or the bearer is
+  // refused. `tokensDirty` keeps a quiet tick (or a dropped snapshot with no
+  // newer text) from posting again.
+  let flushTimer: ReturnType<typeof setInterval> | null = null
+  let flushTimerStopped = false
+  let tokensDirty = false
+  let timerFlushQueued = false
+  function stopFlushTimer(): void {
+    flushTimerStopped = true
+    if (flushTimer) clearInterval(flushTimer)
+    flushTimer = null
+  }
+  function onFlushTick(): void {
+    if (sealed) return stopFlushTimer()
+    if (!tokensDirty || timerFlushQueued) return
+    timerFlushQueued = true
+    serialize(async () => {
+      timerFlushQueued = false
+      // Queued behind finish(), the sink may have sealed since the tick fired.
+      if (sealed) return
+      tokensDirty = false
+      await flushTokens()
+    }).catch(error => {
+      // A refused bearer would be refused again every tick; the loop learns of
+      // it at its next structural event or finish.
+      if (error instanceof RunAuthError) stopFlushTimer()
+      diag(`timer token flush failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
 
   function assertWritable(): void {
     if (sealed) {
@@ -389,6 +443,7 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
       // Run gone/terminal server-side: seal and stop (Orizu records win).
       if (response.status === 404 || response.status === 410) {
         sealed = true
+        terminatedServerSide = true
         diag(`append rejected (${response.status}) for ${eventType} — sealing sink (run terminal)`)
         throw new RunTerminalError(`append rejected (${response.status}) — run is terminal server-side`)
       }
@@ -434,10 +489,10 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
   // REENTRANCY CONTRACT: flushTokens MUST run to completion before the next
   // append()/flushTokens() begins — it is NOT safe to run concurrently with a
   // token append. Coalescing correctness (and the `===` re-check below) relies on
-  // the caller awaiting each append/flush strictly sequentially, so no newer
-  // delta can mutate `tokenBuffer` mid-flush. If a timer-based flush is ever added
-  // (see the interface note above), it MUST serialize against append — e.g. share
-  // a mutex/queue — or the drop-preserving guarantee breaks.
+  // every append/flush running strictly sequentially, so no newer delta can
+  // mutate `tokenBuffer` mid-flush. The public methods and the ORI-2340 timer
+  // flush all go through `serialize` to keep that true; any new caller of this
+  // inner function MUST too, or the drop-preserving guarantee breaks.
   async function flushTokens(): Promise<void> {
     if (tokenBuffer.size === 0) return
     // Snapshot the pending entries but DO NOT clear the buffer up front: only drop
@@ -467,6 +522,11 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
       const messageId = event.messageId ?? '_'
       const text = typeof event.payload.text === 'string' ? event.payload.text : ''
       tokenBuffer.set(messageId, text)
+      tokensDirty = true
+      if (!flushTimer && !flushTimerStopped) {
+        flushTimer = setInterval(onFlushTick, options.tokenFlushMs ?? TOKEN_FLUSH_MS)
+        flushTimer.unref?.()
+      }
       return
     }
     const eventType = eventTypeForKind(event.kind)
@@ -586,11 +646,14 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
   }
 
   return {
-    append,
-    flushTokens,
-    finish,
+    append: event => serialize(() => append(event)),
+    flushTokens: () => serialize(flushTokens),
+    finish: (status, opts) => serialize(() => finish(status, opts)),
     get sealed() {
       return sealed
+    },
+    get terminatedServerSide() {
+      return terminatedServerSide
     },
     get nextSequence() {
       return nextSequence
@@ -737,7 +800,9 @@ export async function drainHarnessToSink(
       : finishOpts
     try {
       await sink.finish(status, mergedFinishOpts)
-      return status
+      // A timer flush queued ahead of finish() can meet the server's 404/410
+      // after the check above; finish() then no-ops, so honour the server.
+      return sink.terminatedServerSide ? 'cancelled' : status
     } catch (error) {
       if (error instanceof RunTerminalError) return 'cancelled'
       throw error
