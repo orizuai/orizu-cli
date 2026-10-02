@@ -22,6 +22,11 @@ RUN curl -fsSL "https://rpm.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
   && rm -rf /var/cache/dnf \
   && node --version && npm --version
 
+# ORI-2258 / ORI-2261: ripgrep and the `orizu apps preview` tooling; the same
+# installer provision-snapshot.mjs runs.
+COPY packages/cli/hosted-runtime-image/install-sandbox-tools.sh /tmp/install-sandbox-tools.sh
+RUN bash /tmp/install-sandbox-tools.sh && rm -f /tmp/install-sandbox-tools.sh
+
 ENV BUN_INSTALL=/usr/local
 ARG BUN_VERSION=1.3.13
 ARG BUN_LINUX_X64_BASELINE_SHA256=9d8a24292a7068090205daac0a5a223f5f69736f5287e37bf88d3b4031edc750
@@ -69,6 +74,9 @@ RUN chmod +x /opt/orizu/cli/dist/index.js \
   && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' \
   && printf "const m=await import('@anthropic-ai/claude-agent-sdk');if(typeof m.query!=='function')process.exit(1);\n" > /opt/orizu/cli/dist/_sdk_probe.mjs \
   && node /opt/orizu/cli/dist/_sdk_probe.mjs && rm -f /opt/orizu/cli/dist/_sdk_probe.mjs
+
+COPY packages/cli/hosted-runtime-image/check-sandbox-tools.sh /tmp/check-sandbox-tools.sh
+RUN bash /tmp/check-sandbox-tools.sh && rm -f /tmp/check-sandbox-tools.sh
 
 RUN mkdir -p /opt/orizu \
   && printf '{\n  "cliVersion": "%s",\n  "cliSource": "from-source",\n  "cliGitVersion": "%s",\n  "opencodeVersion": "%s",\n  "claudeSdkVersion": "%s",\n  "braintrustPyVersion": "%s",\n  "braintrustNpmVersion": "%s",\n  "builtFor": "vercel-sandbox"\n}\n' \

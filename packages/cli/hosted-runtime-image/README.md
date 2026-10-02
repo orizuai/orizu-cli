@@ -132,7 +132,9 @@ The project-wide **git-tag** versioning scheme drives the runtime:
 
 Right after capture, and before any step makes the new id current, the bake runs
 `check-snapshot-starts.mjs --snapshot <id> --cli-version X.Y.Z`. It starts a
-sandbox from the new snapshot through the CLI's own Vercel provider, then checks:
+sandbox from the new snapshot through the CLI's own Vercel provider, under the
+same default-deny network policy a hosted session gets (`buildEgressPolicy`), then
+checks:
 
 - `orizu --version` prints **exactly** `orizu X.Y.Z` (the CLI's real output
   shape; the test captures it from the real CLI);
@@ -151,11 +153,17 @@ sandbox from the new snapshot through the CLI's own Vercel provider, then checks
 - `git --version && ssh -V`: the merge job runs git over ssh in this snapshot
   (`docs/requirements/merge-sandbox-job/plan.md`, D10). Git must print
   `git version …` and ssh must print `OpenSSH_…` (to stderr, where `ssh -V`
-  writes it). Both versions are logged.
+  writes it). Both versions are logged;
+- `check-sandbox-tools.sh` (ORI-2258, ORI-2261): `rg --version`, then a real
+  `orizu apps preview --screenshot` on a tiny app with a Tailwind class. It
+  fails if no screenshot is written or the preview fell back to unstyled CSS.
+  Failing it means the snapshot is missing ripgrep, the preview packages in
+  `/opt/orizu/node_modules`, Chromium at `/usr/bin/chromium`, or a library.
 
 It always stops the sandbox, whether the check passes or fails, and logs
 `sandbox <id> stopped` when the stop completes. Each call has a deadline
-(start 3 min, each of the five checks 3 min, stop 1 min), and the sandbox is
+(start 3 min, a late sandbox's stop 1 min, each of the six checks 3 min, stop
+1 min: 23 minutes at worst, under the step's 24), and the sandbox is
 created with a 30-minute lifetime, so Vercel stops it even if the runner dies.
 If only the stop fails after a passing check, the job shows a warning and
 carries on.
@@ -289,7 +297,7 @@ bun packages/cli/hosted-runtime-image/provision-snapshot.mjs --dry-run
 
 # PUBLISHED-PACKAGE mode (what CI runs): bake the released orizu@X.Y.Z from npm.
 bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
-  --cli-version X.Y.Z --duration 195 --expiration 0 [--id-file /tmp/snapshot-id]
+  --cli-version X.Y.Z --duration 216 --expiration 0 [--id-file /tmp/snapshot-id]
 
 # FROM-SOURCE mode (manual escape hatch; label DEFAULTS to git-describe):
 bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
@@ -298,7 +306,7 @@ bun packages/cli/hosted-runtime-image/provision-snapshot.mjs \
 
 `--expiration 0` = never expire (omit for the SDK default). `--id-file` also
 writes the snapshot id to a file (CI handoff). Omitting `--duration` selects the
-derived safe minimum (195 minutes published, 207 from source); smaller explicit
+derived safe minimum (216 minutes published, 227 from source); smaller explicit
 values are rejected. Pin overrides:
 `--opencode-version`, `--claude-sdk-version` (in published mode the Claude SDK
 ships inside the package; the flag only annotates the marker), and

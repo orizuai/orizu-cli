@@ -14,13 +14,15 @@
 
 import { parseArgs } from 'node:util'
 
+import { buildEgressPolicy } from '../src/egress-policy.ts'
 import { isHostedOptimizationPrebakedMarker } from '../src/hosted-optimization-prebaked-marker.ts'
-import { BRAINTRUST_PY_VERSION_RE, publishedBootProof, resolveCredsOrFail, withDeadline } from './provision-snapshot.mjs'
+import { BRAINTRUST_PY_VERSION_RE, publishedBootProof, resolveCredsOrFail, sandboxToolsCheck, withDeadline } from './provision-snapshot.mjs'
 
 /** The workflow passes none of the timeout flags, so these are the release contract. */
 export const DEFAULTS = Object.freeze({ createTimeoutMs: 180_000, checkTimeoutMs: 180_000, stopTimeoutMs: 60_000, sandboxLifetimeMs: 1_800_000 })
-/** Version, marker, boot proof, skilled-proposer venv verify, merge-job tools. */
-const CHECK_COUNT = 5
+/** Version, marker, boot proof, skilled-proposer venv verify, merge-job tools,
+ *  sandbox tools (ripgrep + an app preview, ORI-2258 / ORI-2261). */
+const CHECK_COUNT = 6
 /** Read-only on a good snapshot: it fails, rather than installs, when the baked
  *  venv cannot be reused (skilled-proposer-launch.ts skilledProposerBakeCommand). */
 const SKILLED_PROPOSER_VERIFY = 'orizu internal verify-skilled-proposer-bake --json'
@@ -122,6 +124,10 @@ async function runCheck(session, options, out) {
     throw new Error(`merge-job tools check failed (exit ${tools.exitCode}): ${[git, ssh].filter(Boolean).join('; ').slice(0, 300)}`)
   }
   out(`  ${git}; ${ssh}\n`)
+  // Runs under the default-deny network policy, so nothing it needs is fetched.
+  out('- ripgrep + orizu apps preview on a fixture app\n')
+  const sandboxTools = await withDeadline(() => session.exec(sandboxToolsCheck()), 'START_CHECK_SANDBOX_TOOLS', checkTimeoutMs)
+  if (sandboxTools.exitCode !== 0) throw new Error(`sandbox tools check failed: ${(sandboxTools.stderr || sandboxTools.stdout || `exit ${sandboxTools.exitCode}`).trim().slice(-500)}`)
 }
 
 export async function checkSnapshotStarts(argv = process.argv.slice(2), env = process.env, out = s => process.stdout.write(s), errOut = s => process.stderr.write(s)) {
@@ -142,8 +148,9 @@ export async function checkSnapshotStarts(argv = process.argv.slice(2), env = pr
   let session
   try {
     const provider = await createProvider(options.creds)
-    // A sandbox that appears after the create deadline is stopped, not leaked.
-    session = await withDeadline(() => provider.createSandbox({ snapshot: options.snapshot, timeoutMs: DEFAULTS.sandboxLifetimeMs }), 'START_CHECK_CREATE', options.createTimeoutMs,
+    // Default-deny network, as a hosted session gets (hosted-session-cli.ts), so
+    // the checks prove the snapshot needs no download. A late sandbox is stopped.
+    session = await withDeadline(() => provider.createSandbox({ snapshot: options.snapshot, timeoutMs: DEFAULTS.sandboxLifetimeMs, egressPolicy: buildEgressPolicy() }), 'START_CHECK_CREATE', options.createTimeoutMs,
       async late => { try { await stop(late) } catch (error) { errOut(`::warning title=Start-check sandbox not stopped::${message(error)}\n`) } }, options.stopTimeoutMs)
   } catch (error) {
     errOut(`error: no sandbox started from ${options.snapshot}: ${message(error)}\n`)

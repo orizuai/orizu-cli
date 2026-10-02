@@ -40,6 +40,9 @@ const BAKE_COMMAND = 'orizu internal bake-skilled-proposer-venv --json'
 const VERIFY_COMMAND = 'orizu internal verify-skilled-proposer-bake --json'
 const WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK =
   "orizu internal workspace-bootstrap-job --capability-check | grep -qx 'workspace-bootstrap-job:v1'"
+const STAGE_SANDBOX_TOOLS = 'orizu-install-sandbox-tools.sh'
+const SANDBOX_TOOLS_INSTALLER = readFileSync(resolve(HERE, 'install-sandbox-tools.sh'), 'utf8')
+const SANDBOX_TOOLS_CHECK = readFileSync(resolve(HERE, 'check-sandbox-tools.sh'), 'utf8')
 const writeStep = (name, writeFile) => ({ name, timeoutClass: 'write', writeFile })
 const execStep = (name, exec, timeoutClass = 'quick') => ({ name, timeoutClass, exec })
 
@@ -58,6 +61,20 @@ export function sourceAssetPayload(runGit = spawnSync) {
   }
   return JSON.stringify(entries)
 }
+
+/** ORI-2258 / ORI-2261: ripgrep and the `orizu apps preview` tooling, from the
+ *  same installer the Dockerfile runs. */
+function sandboxToolsSteps() {
+  return [
+    writeStep('stage sandbox tools installer', [STAGE_SANDBOX_TOOLS, SANDBOX_TOOLS_INSTALLER]),
+    execStep('install sandbox tools (ripgrep, app preview packages, Chromium)', `sudo bash ${STAGE_SANDBOX_TOOLS} && rm -f ${STAGE_SANDBOX_TOOLS}`, 'install'),
+  ]
+}
+
+/** Runs check-sandbox-tools.sh; the bake runs it before capture and
+ *  check-snapshot-starts.mjs in a sandbox started from the snapshot. */
+export function sandboxToolsCheck() { return `bash -c ${shellQuote(SANDBOX_TOOLS_CHECK)}` }
+const sandboxToolsCheckStep = () => execStep('verify sandbox tools (ripgrep + a real app preview)', sandboxToolsCheck())
 
 function skilledProposerSteps() {
   return [
@@ -174,6 +191,7 @@ export function buildProvisionSteps({
     return [
       execStep(`install published orizu@${cliVersion} at canonical root`, `sudo sh -c 'npm install -g "orizu@${cliVersion}" && mkdir -p /opt/orizu && cp -a "$(npm root -g)/orizu" ${CLI_DIR} && cd ${CLI_DIR} && npm install --no-save --package-lock=false --omit=dev "@anthropic-ai/claude-agent-sdk@${claudeSdkVersion}" && npm cache clean --force && ln -sf ${CLI_INDEX} /usr/local/bin/orizu'`, 'install'),
       execStep('install opencode-ai (global bin)', `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force`, 'install'),
+      ...sandboxToolsSteps(),
       ...braintrustSteps({ braintrustPyVersion, braintrustNpmVersion }),
       writeStep('stage prebaked marker', [
           STAGE_MARKER,
@@ -183,6 +201,7 @@ export function buildProvisionSteps({
       execStep('verify git + ssh client present (merge-job runtime requirement)', 'command -v ssh >/dev/null 2>&1 || sudo dnf -y install openssh-clients; git --version && ssh -V', 'install'),
       execStep('verify bake (orizu version + opencode + hosted-loop + braintrust)',
           `orizu --version | grep -F "${cliVersion}" && ${publishedBootProof(braintrustPyVersion)}`),
+      sandboxToolsCheckStep(),
       ...skilledProposerSteps(),
     ]
   }
@@ -196,6 +215,7 @@ export function buildProvisionSteps({
     execStep('symlink orizu onto PATH', `sudo ln -sf ${CLI_INDEX} /usr/local/bin/orizu`),
     execStep('install @anthropic-ai/claude-agent-sdk (sibling of bundle)', `cd ${CLI_DIR} && sudo npm install --no-save --omit=dev "@anthropic-ai/claude-agent-sdk@${claudeSdkVersion}" && sudo npm cache clean --force`, 'install'),
     execStep('install opencode-ai (global bin)', `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force`, 'install'),
+    ...sandboxToolsSteps(),
     ...braintrustSteps({ braintrustPyVersion, braintrustNpmVersion }),
     writeStep('stage prebaked marker', [
         STAGE_MARKER,
@@ -207,6 +227,7 @@ export function buildProvisionSteps({
         `command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
         `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
         braintrustVerify(braintrustPyVersion)),
+    sandboxToolsCheckStep(),
     ...skilledProposerSteps(),
   ]
 }

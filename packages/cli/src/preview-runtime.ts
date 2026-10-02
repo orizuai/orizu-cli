@@ -193,7 +193,6 @@ export async function runLocalAppPreview(options: AppPreviewOptions): Promise<Ap
   const htmlPath = join(tempDir, 'index.html')
   const outDir = join(tempDir, 'dist')
 
-  writeFileSync(cssPath, await buildPreviewCss(repoRoot, appPath), 'utf8')
   writeFileSync(entryPath, buildEntrySource(appPath, options.sampleRow), 'utf8')
   writeFileSync(htmlPath, buildPreviewHtml(), 'utf8')
 
@@ -219,6 +218,8 @@ export async function runLocalAppPreview(options: AppPreviewOptions): Promise<Ap
       )
     }
 
+    // After the dependency checks, so their actionable errors come before a Tailwind warning.
+    writeFileSync(cssPath, await buildPreviewCss(repoRoot, appPath), 'utf8')
     await esbuild.build({
       entryPoints: [entryPath],
       bundle: true,
@@ -656,12 +657,18 @@ function buildPreviewHtml() {
 `
 }
 
-export async function buildPreviewCss(repoRoot: string | null, appPath: string) {
+const PREVIEW_TAILWIND_FALLBACK_WARNING = 'Tailwind CSS could not be built; the preview uses fallback styles'
+
+async function loadPreviewCssModules() {
+  return { postcss: (await import('postcss')).default, tailwind: (await import('@tailwindcss/postcss')).default }
+}
+
+/** `loadModules` is for tests: one that fails stands in for a broken install. */
+export async function buildPreviewCss(repoRoot: string | null, appPath: string, loadModules: typeof loadPreviewCssModules = loadPreviewCssModules) {
   const fallbackCss = buildPreviewChromeCss()
 
   try {
-    const postcss = (await import('postcss')).default
-    const tailwind = (await import('@tailwindcss/postcss')).default
+    const { postcss, tailwind } = await loadModules()
     const cliPackageRoot = findCliPackageRoot()
     const globalsPath = repoRoot
       ? join(repoRoot, 'app', 'globals.css')
@@ -682,7 +689,10 @@ export async function buildPreviewCss(repoRoot: string | null, appPath: string) 
     ].join('\n')
     const result = await postcss([tailwind()]).process(sourceCss, { from: globalsPath })
     return result.css
-  } catch {
+  } catch (error) {
+    // Without Tailwind the screenshot loses the app's utility styling, so say so
+    // instead of looking right (ORI-2261: the sandbox tools check fails on it).
+    process.stderr.write(`warning: ${PREVIEW_TAILWIND_FALLBACK_WARNING} (${error instanceof Error ? error.message : String(error)})\n`)
     return fallbackCss
   }
 }
