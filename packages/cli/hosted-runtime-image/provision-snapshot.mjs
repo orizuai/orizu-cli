@@ -153,7 +153,7 @@ export function cliOnPathCheck(cliIndex = CLI_INDEX) {
  *  again in a sandbox started from the captured snapshot (check-snapshot-starts.mjs). */
 export function publishedBootProof(braintrustPyVersion = DEFAULT_BRAINTRUST_PY_VERSION) {
   return (
-    `command -v orizu && ${cliOnPathCheck()} && command -v opencode && ` +
+    `${cliOnPathCheck()} && command -v opencode && ` +
     `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
     `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
     `${claudeSdkImportProbe()} && ` +
@@ -197,10 +197,11 @@ export function buildProvisionSteps({
     return [
       // ORI-2261: `npm install -g` also puts an orizu command in the runtime's bin folder,
       // ahead of /usr/local/bin on PATH. Remove that command (under sudo, whose npm prefix
-      // is the one installed to) unless it is already the canonical link, then fail here
-      // if orizu on PATH is still not the canonical copy. The global package stays: it is
-      // harmless, and removing it is not this step's job.
-      execStep(`install published orizu@${cliVersion} at canonical root`, `sudo sh -c 'npm install -g "orizu@${cliVersion}" && mkdir -p /opt/orizu && cp -a "$(npm root -g)/orizu" ${CLI_DIR} && g="$(npm prefix -g)/bin/orizu" && { [ ! -e "$g" ] || [ "$(readlink -f "$g")" = "$(readlink -f ${CLI_INDEX})" ] || rm -f "$g"; } && cd ${CLI_DIR} && npm install --no-save --package-lock=false --omit=dev "@anthropic-ai/claude-agent-sdk@${claudeSdkVersion}" && npm cache clean --force && ln -sf ${CLI_INDEX} /usr/local/bin/orizu' && ${cliOnPathCheck()}`, 'install'),
+      // is the one installed to) BEFORE the canonical link is made, so even a /usr/local
+      // prefix ends with the canonical link; then fail here if orizu on PATH is still not
+      // the canonical copy. The global package stays: it is harmless, and removing it is
+      // not this step's job.
+      execStep(`install published orizu@${cliVersion} at canonical root`, `sudo sh -c 'npm install -g "orizu@${cliVersion}" && mkdir -p /opt/orizu && cp -a "$(npm root -g)/orizu" ${CLI_DIR} && rm -f "$(npm prefix -g)/bin/orizu" && cd ${CLI_DIR} && npm install --no-save --package-lock=false --omit=dev "@anthropic-ai/claude-agent-sdk@${claudeSdkVersion}" && npm cache clean --force && ln -sf ${CLI_INDEX} /usr/local/bin/orizu' && ${cliOnPathCheck()}`, 'install'),
       execStep('install opencode-ai (global bin)', `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force`, 'install'),
       ...sandboxToolsSteps(),
       ...braintrustSteps({ braintrustPyVersion, braintrustNpmVersion }),
