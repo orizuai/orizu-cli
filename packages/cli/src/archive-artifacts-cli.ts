@@ -8,7 +8,7 @@
 
 import { authedFetch } from './http.js'
 import { extractErrorMessage } from './error-response.js'
-import { sanitizeTerminalText } from './json-response.js'
+import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 
 type ArchiveStatus = 'active' | 'archived' | 'all'
 type ArchiveAction = 'archive' | 'restore'
@@ -148,7 +148,7 @@ export function printAppSummaries(items: AppSummary[], print: PrintLine) {
     ['APP ID', 'APP NAME', 'VERSION', 'ARCHIVE'],
     items.map(item => [
       sanitizeTerminalText(item.id),
-      sanitizeTerminalText(item.name || '-'),
+      sanitizeHumanInlineText(sanitizeTerminalText, item.name || '-'),
       `v${item.currentVersionNum || 1}`,
       sanitizeTerminalText(item.status || 'active'),
     ]),

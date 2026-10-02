@@ -272,6 +272,8 @@ orizu apps archive <app-id> --project my-team/quality-eval
 orizu apps restore <app-id> --project my-team/quality-eval
 ```
 
+An app's page link is `<server>/preview/<app-id>` (`https://app.orizu.ai` by default). `apps list` prints a `Link: <app> <link>` line under the table for each app that is not archived; `apps list --json` has `pageUrl` for each app. `apps create` and `apps update` print it after `View app:`; `apps create --json` and `apps update --json` both have it as `app.pageUrl`. Get `<team>/<project>` from `orizu projects list`. Give that link; never guess one.
+
 Create from file:
 
 ```bash

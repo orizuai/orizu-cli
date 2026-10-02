@@ -25,20 +25,27 @@ import { resolveProjectSlug, fetchApps, selectAppIdInteractively } from './accou
 import { printJson, printLine, getErrorMessage } from './cli-console-output.js'
 import { printAppSummaries } from './archive-artifacts-cli.js'
 import { isNodeError, formatTerminalLink } from './auth-commands.js'
-import { authedFetch } from './http.js'
-import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
+import { authedFetch, getBaseUrl } from './http.js'
+import { appPageUrl } from './app-page-url.js'
+import { parseJsonResponse, sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 import { runLocalAppPreview } from './preview-runtime.js'
 
 
 
 async function listApps() {
   const project = getArg('--project') || await resolveProjectSlug(null)
-  const apps = await fetchApps(project, getArchiveListStatus('apps'))
+  const baseUrl = getBaseUrl()
+  const apps = (await fetchApps(project, getArchiveListStatus('apps')))
+    .map(app => ({ ...app, pageUrl: appPageUrl(baseUrl, app.id) }))
   if (hasJsonFlag()) {
     printJson({ apps })
     return
   }
   printAppSummaries(apps, printLine)
+  // An archived app's page still renders as if live, so it gets no link line.
+  apps
+    .filter(app => app.status !== 'archived')
+    .forEach(app => printLine(`Link: ${sanitizeHumanInlineText(sanitizeTerminalText, app.name || app.id)} ${formatTerminalLink(app.pageUrl)}`))
 }
 
 function readSourceFile(pathArg: string): string {
@@ -195,7 +202,7 @@ async function createAppFromFile() {
     warnings?: string[]
   }>(response, 'App create')
   if (hasJsonFlag()) {
-    printJson({ app: data.app, warnings: data.warnings || [] })
+    printJson({ app: { ...data.app, pageUrl: data.app.url || appPageUrl(getBaseUrl(), data.app.id) }, warnings: data.warnings || [] })
     return
   }
   printLine(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`)
@@ -297,11 +304,13 @@ async function updateAppFromFile() {
     app: { id: string; name: string; versionNum: number; componentName?: string }
     warnings?: string[]
   }>(response, 'App update')
+  const pageUrl = appPageUrl(getBaseUrl(), data.app.id)
   if (hasJsonFlag()) {
-    printJson({ app: data.app, warnings: data.warnings || [] })
+    printJson({ app: { ...data.app, pageUrl }, warnings: data.warnings || [] })
     return
   }
   printLine(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`)
+  printLine(`View app: ${formatTerminalLink(pageUrl)}`)
   if (data.warnings?.length) {
     printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
   }
