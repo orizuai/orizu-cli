@@ -19,18 +19,20 @@ case "$(uname -m)" in
   *) echo "install-sandbox-tools.sh: unsupported machine $(uname -m); only x86_64 and aarch64 were measured" >&2; exit 1 ;;
 esac
 
+# The script's own tools (the minimal amazonlinux:2023 image has no find, tar or
+# gzip), then Chromium's libraries: from ldd on the browser and Playwright's rpm.deps.
+dnf -y install findutils tar gzip \
+  nss nspr atk at-spi2-atk at-spi2-core cups-libs dbus-libs libX11 libXcomposite libXdamage \
+  libXext libXfixes libXrandr mesa-libgbm libxcb libxkbcommon alsa-lib fontconfig liberation-fonts
+dnf clean all
+rm -rf /var/cache/dnf
+
 ripgrep="ripgrep-${RIPGREP_VERSION}-${RIPGREP_TARGET}"
 curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${ripgrep}.tar.gz" -o "/tmp/${ripgrep}.tar.gz"
 echo "${RIPGREP_SHA256}  /tmp/${ripgrep}.tar.gz" | sha256sum -c -
 tar -xzf "/tmp/${ripgrep}.tar.gz" -C /tmp
 install "/tmp/${ripgrep}/rg" /usr/local/bin/rg
 rm -rf "/tmp/${ripgrep}.tar.gz" "/tmp/${ripgrep}"
-
-# Chromium's libraries: from ldd on the browser and Playwright's own rpm.deps.
-dnf -y install nss nspr atk at-spi2-atk at-spi2-core cups-libs dbus-libs libX11 libXcomposite libXdamage \
-  libXext libXfixes libXrandr mesa-libgbm libxcb libxkbcommon alsa-lib fontconfig liberation-fonts
-dnf clean all
-rm -rf /var/cache/dnf
 
 npm install --prefix /opt/orizu --no-save --package-lock=false \
   esbuild@0.25.12 react@19.2.6 react-dom@19.2.6 @playwright/test@1.61.1 \
