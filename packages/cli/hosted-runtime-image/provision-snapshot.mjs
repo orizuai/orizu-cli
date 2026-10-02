@@ -149,11 +149,18 @@ export function cliOnPathCheck(cliIndex = CLI_INDEX) {
   return `{ p="$(command -v orizu)" && [ "$(readlink -f "$p")" = "$(readlink -f ${shellQuote(cliIndex)})" ] || { echo "orizu on PATH is $p, not ${cliIndex}" >&2; false; }; }`
 }
 
+/** ORI-2375: hosted skill staging falls back to the canonical copy's skill, so the
+ *  published bake must ship it there. */
+export function orizuSkillCheck(cliDir = CLI_DIR) {
+  const skill = `${cliDir}/vendor/skills/orizu/SKILL.md`
+  return `{ test -f ${shellQuote(skill)} || { echo "no orizu skill at ${skill}" >&2; false; }; }`
+}
+
 /** The boot proof for a published-package runtime: run before capture here, and
  *  again in a sandbox started from the captured snapshot (check-snapshot-starts.mjs). */
 export function publishedBootProof(braintrustPyVersion = DEFAULT_BRAINTRUST_PY_VERSION) {
   return (
-    `${cliOnPathCheck()} && command -v opencode && ` +
+    `${cliOnPathCheck()} && ${orizuSkillCheck()} && command -v opencode && ` +
     `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
     `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
     `${claudeSdkImportProbe()} && ` +

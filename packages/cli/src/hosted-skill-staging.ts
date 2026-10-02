@@ -15,7 +15,11 @@
  *       skill-installer; the local-sim rehearsal sets it),
  *   (2) `orizu skills path`      — the packaged vendor/skills/orizu of the
  *       globally-installed CLI (the production path),
- *   (3) `$(npm root -g)/orizu/vendor/skills/orizu` — belt fallback.
+ *   (3) `/opt/orizu/cli/vendor/skills/orizu` — the canonical copy the
+ *       published-package bake installs (ORI-2375: in a prebaked sandbox the
+ *       sandbox user's npm prefix never holds the sudo-installed package),
+ *   (4) `$(npm root -g)/orizu/vendor/skills/orizu` — for the non-prebaked
+ *       bootstrap, which installs orizu globally and has no /opt/orizu/cli.
  * Then SYMLINK it under `<workspaceDir>/.claude/skills/orizu`, falling back to
  * a copy if the symlink cannot be created. Resolved paths stay in shell vars
  * (never interpolated), so they cannot inject into the command.
@@ -68,8 +72,11 @@ export interface StageOrizuSkillResult {
 // operator path) — never an untrusted or user-supplied value.
 const SAFE_WORKSPACE_DIR = /^[A-Za-z0-9._/:@-]+$/
 
-/** The exact staging script — exported for tests that assert its shape. */
-export function renderStageOrizuSkillScript(workspaceDir: string): string {
+const CANONICAL_SKILL_DIR = '/opt/orizu/cli/vendor/skills/orizu'
+
+/** The exact staging script — exported for tests that assert its shape and run it
+ *  (`canonicalSkillDir` lets a test lay the canonical copy out under a temp root). */
+export function renderStageOrizuSkillScript(workspaceDir: string, canonicalSkillDir = CANONICAL_SKILL_DIR): string {
   const skillsDir = `${workspaceDir}/.claude/skills`
   return [
     `mkdir -p ${skillsDir}`,
@@ -84,6 +91,7 @@ export function renderStageOrizuSkillScript(workspaceDir: string): string {
     `if [ -d ${workspaceDir}/.git ] && git -C ${workspaceDir} ls-files -- '.claude/skills/orizu' '.claude/skills/orizu/**' | grep -q .; then if [ -f "$dest/SKILL.md" ]; then echo "PRESERVED_TRACKED $dest"; else echo "PRESERVED_INVALID $dest"; fi; exit 0; fi`,
     `src="${'${ORIZU_SKILL_SOURCE_DIR:-}'}"`,
     `if [ -z "$src" ] || [ ! -d "$src" ]; then src="$(orizu skills path 2>/dev/null || true)"; fi`,
+    `if [ -z "$src" ] || [ ! -d "$src" ]; then src='${canonicalSkillDir}'; fi`,
     `if [ -z "$src" ] || [ ! -d "$src" ]; then r="$(npm root -g 2>/dev/null || true)"; if [ -n "$r" ] && [ -d "$r/orizu/vendor/skills/orizu" ]; then src="$r/orizu/vendor/skills/orizu"; fi; fi`,
     `if [ -z "$src" ] || [ ! -d "$src" ]; then echo "NO_SOURCE"; exit 0; fi`,
     `rm -rf "$dest"`,
