@@ -34,6 +34,7 @@ import { spawnSync } from 'child_process'
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'fs'
 
 import { isValidCloudflareArtifactsGitRemote } from './cloudflare-artifacts-git-remote.js'
+import { seedSessionCopy } from './hosted-session-seed.js'
 import {
   AGENT_GIT_IDENTITY,
   BEARER_BASENAME,
@@ -681,6 +682,30 @@ export async function beginRunExecution(opts: {
   throw new Error(`run_started transition failed: ${detail}`)
 }
 
+/** Mint a `team_read` key (ORI-2280 B1) to learn this session's team copy, so
+ *  the boot can fill an empty session copy from it (ORI-2118). The credential
+ *  helper mints its own keys for the git commands; this one only names the
+ *  remote and lapses on its own (300 s). */
+export async function resolveTeamRemote(opts: {
+  baseUrl: string
+  workspaceId: string
+  sessionId: string
+  bearer: string
+  fetchImpl: BootFetch
+}): Promise<string> {
+  const url = `${opts.baseUrl}/api/cli/workspaces/${encodeURIComponent(opts.workspaceId)}/repo-token`
+  const minted = await bearerJson(opts.fetchImpl, url, opts.bearer, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ purpose: 'team_read', sessionId: opts.sessionId }),
+  })
+  const remote = asString(minted.remote)
+  if (asString(minted.provider) !== 'cloudflare_artifacts' || !remote || !isValidCloudflareArtifactsGitRemote(remote)) {
+    throw new Error('team_read response carried no valid Artifacts remote')
+  }
+  return remote
+}
+
 /** Mint a session_read repo token to learn the repo full name, then build the
  *  GitHub clone URL (mirrors the operator path's `defaultResolveRepo`). */
 export async function resolveRepo(opts: {
@@ -739,6 +764,10 @@ export interface BootExecResult {
   stderr: string
 }
 export type BootExec = (cmd: string, args: string[], opts?: { cwd?: string }) => BootExecResult
+
+/** The credential-helper context for the team copy, used only to fill an
+ *  empty session copy (ORI-2118). */
+const TEAM_BOOT_CONTEXT_BASENAME = 'boot-team.json'
 
 const defaultExec: BootExec = (cmd, args, opts) => {
   const res = spawnSync(cmd, args, { cwd: opts?.cwd, encoding: 'utf8' })
@@ -1037,9 +1066,35 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   }
   writeFile(bootContextAbs, serializeBootContext(bootContext))
 
+  const helperValue = `!node ${helperScriptAbs} ${bootContextAbs}`
+
+  // 4b — ORI-2118: a hosted session's Artifacts copy is created empty (forks
+  // of a busy team copy cannot be cloned), so fill it from the team copy
+  // before the first clone. A copy that already has `main` is left alone.
+  if (isValidCloudflareArtifactsGitRemote(repo.cloneUrl)) {
+    const credentialConfig = (helper: string) => [`credential.helper=${helper}`, 'credential.useHttpPath=true']
+    await seedSessionCopy({
+      exec,
+      sessionRemote: repo.cloneUrl,
+      sessionGitConfig: credentialConfig(helperValue),
+      scratchDir: `${sessionDirAbs}/seed.git`,
+      resolveTeam: async () => {
+        const teamRemote = await resolveTeamRemote({ baseUrl: env.baseUrl, workspaceId, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
+        assertSafeGitValue('teamRemote', teamRemote)
+        const teamContextAbs = `${sessionDirAbs}/${TEAM_BOOT_CONTEXT_BASENAME}`
+        writeFile(teamContextAbs, serializeBootContext({
+          ...bootContext,
+          repoFullName: teamRemote,
+          host: new URL(teamRemote).host.toLowerCase(),
+          tokenPurposes: { primary: 'team_read', fallback: 'team_read' },
+        }))
+        return { remote: teamRemote, gitConfig: credentialConfig(`!node ${helperScriptAbs} ${teamContextAbs}`) }
+      },
+    })
+  }
+
   // 5 — Clone the session branch VIA the pull-mode credential helper (same
   // invocation the operator path makes; no token in the URL/config).
-  const helperValue = `!node ${helperScriptAbs} ${bootContextAbs}`
   const clone = exec('git', [
     'clone',
     '--depth',
