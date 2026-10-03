@@ -1,4 +1,5 @@
 import { authedFetch } from './http.js'
+import { providerWireRecord as object } from './provider-wire-record.js'
 import { credentialEnvFor, providerLookupFor } from './provider-lookup.js'
 import { CREDENTIAL_ENV_PATTERN, PROVIDER_FIELD_PATTERNS, RESERVED_CREDENTIAL_ENVS, isProviderRefusalCode } from './provider-refusals.js'
 import { findProvider, parseModelIdentity } from './provider-registry.js'
@@ -8,9 +9,6 @@ import type { ModelConfigsCommandIo } from './model-configs-cli.js'
 import type { ProviderEntry, WireProtocol } from './provider-registry.js'
 
 const FIELD_CONTRACT = 'Anthropic Messages base URL excludes /v1; OpenAI base URLs include the version segment.'
-function object(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? Object.fromEntries(Object.entries(value)) : {}
-}
 function assertProtocol(value: unknown): asserts value is WireProtocol {
   if (typeof value !== 'string' || !Object.hasOwn(PROBE_PROTOCOLS, value)) throw new Error('provider_protocol_invalid')
 }
@@ -89,6 +87,10 @@ export async function providersCommand(args: string[], io: ModelConfigsCommandIo
       baseUrl = baseUrl.replace(/^(https:\/\/)([^/]+)/, (_, scheme: string, host: string) => scheme + host.toLowerCase())
       provider = providerRow({ id, baseUrl, protocol: flags.get('--protocol') ?? 'openai-chat', credentialEnv: flags.get('--credential-env') ?? credentialEnvFor(id), authHeader: flags.get('--auth-header') ?? 'Authorization', authValuePrefix: flags.get('--auth-value-prefix') ?? 'Bearer ' })
     }
+    if (checkIdentity === undefined && command === 'list' && positional.length === 1) {
+      const { listProviders } = await import('./provider-list-workflow.js')
+      return listProviders(flags.get('--project') || null, io)
+    }
     const project = await io.resolveProjectSlug?.(flags.get('--project') || null)
     if (!project) throw new Error('Project resolver unavailable')
     const fetcher = io.fetcher ?? authedFetch
@@ -116,16 +118,6 @@ export async function providersCommand(args: string[], io: ModelConfigsCommandIo
       const entry = lookup.find(identity.provider)
       if (!entry) throw new Error('provider_not_found')
       await runProbe(entry, identity.modelId, io)
-    } else if (command === 'list' && positional.length === 1) {
-      const body = await request(root, { method: 'GET' })
-      if (io.json) io.print(JSON.stringify(body))
-      else {
-        io.print('ID  PROTOCOL  HOST  CREDENTIAL ENV  BUILT-IN')
-        for (const value of Array.isArray(body.providers) ? body.providers : []) {
-          const row = object(value)
-          io.print(`${row.id}  ${row.protocol}  ${row.host}  ${row.credentialEnv}  ${row.builtIn ? 'yes' : 'no'}`)
-        }
-      }
     } else if (command === 'remove' && id && positional.length === 2) {
       await request(`/api/cli/providers/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`, { method: 'DELETE' })
       io.print(io.json ? JSON.stringify({ removed: id }) : `Removed provider ${id}`)
