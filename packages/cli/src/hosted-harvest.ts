@@ -305,9 +305,19 @@ export function harvestWorkspace(opts: HarvestOptions): HarvestOutcome {
     const dirty = status.stdout.trim().length > 0
 
     if (dirty) {
-      const add = exec(['add', '-A', '--', '.', ...excludeScaffold])
+      // Add everything, then unstage the staged skill link. An exclude
+      // pathspec on add makes git exit 1 once bootstrap has ignored
+      // .claude/skills ("paths are ignored"), which is every hosted session
+      // (ORI-2441, git 2.49 in the sandbox). Only the link's own path is reset,
+      // so an agent's edits to a team's tracked skills next to it are saved;
+      // reset, unlike rm --cached, never deletes a tracked file.
+      const add = exec(['add', '-A', '--', '.'])
       if (add.exitCode !== 0) {
         return { kind: 'work_persist_failed', error: `git add failed: ${detail(add)}` }
+      }
+      const unstage = exec(['reset', '-q', '--', '.claude/skills/orizu'])
+      if (unstage.exitCode !== 0) {
+        return { kind: 'work_persist_failed', error: `git reset of .claude/skills/orizu failed: ${detail(unstage)}` }
       }
       const commit = exec([
         '-c',
