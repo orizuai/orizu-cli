@@ -36,6 +36,8 @@ interface PreparedSessionMerge {
   readonly sourceSha: string
   readonly mergeSha: string
   readonly attempt: number
+  /** The merge folder: both copies' fetched objects plus the merge commit. */
+  readonly worktree: string
 }
 
 type SessionMergePushResult = 'pushed' | 'stale'
@@ -172,7 +174,7 @@ async function prepareMerge(
   if (parents.length !== 2 || parents[0] !== canonicalSha || parents[1] !== sourceSha) {
     throw new Error('Merge did not keep the team head and session head as its parents')
   }
-  return { kind: 'merge', merge: { previousCanonicalSha: canonicalSha, sourceSha, mergeSha, attempt } }
+  return { kind: 'merge', merge: { previousCanonicalSha: canonicalSha, sourceSha, mergeSha, attempt, worktree } }
 }
 
 async function pushMerge(

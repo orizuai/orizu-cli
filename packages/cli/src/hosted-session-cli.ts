@@ -59,6 +59,7 @@ import { DEFAULT_HOSTED_MODEL, hostedLoopCommand, type HostedLoopContext } from 
 import { hostedBootCommand } from './hosted-boot.js'
 import { mergeJobCommand } from './merge-job.js'
 import { workspaceBootstrapJobCommand } from './workspace-bootstrap-job.js'
+import { publishMergeJobCommand } from './publish-merge-job.js'
 import { hostedOptimizationCommand } from './hosted-optimization.js'
 import { writeChildStderr } from './child-output-tee.js'
 import { skilledProposerBakeCommand } from './skilled-proposer-launch.js'
@@ -1557,12 +1558,16 @@ export async function hostedCommand(
     if (positional[1] === 'workspace-bootstrap-job') {
       return workspaceBootstrapJobCommand(args, io)
     }
+    // ORI-2280: the one-shot publish merge (coordinator publish-merge job).
+    if (positional[1] === 'publish-merge-job') {
+      return publishMergeJobCommand(args, io)
+    }
     if (positional[1] === 'hosted-optimization') {
       return hostedOptimizationCommand({ ...io, printErr: writeChildStderr })
     }
     if (positional[1] === 'bake-skilled-proposer-venv') return skilledProposerBakeCommand(io)
     if (positional[1] === 'verify-skilled-proposer-bake') return skilledProposerBakeCommand(io, true)
-    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot | hosted-optimization | merge-job | workspace-bootstrap-job | bake-skilled-proposer-venv | verify-skilled-proposer-bake>')
+    io.printErr?.('Usage: orizu internal <hosted-loop --context <path> | hosted-boot | hosted-optimization | merge-job | workspace-bootstrap-job | publish-merge-job | bake-skilled-proposer-venv | verify-skilled-proposer-bake>')
     return 1
   }
 

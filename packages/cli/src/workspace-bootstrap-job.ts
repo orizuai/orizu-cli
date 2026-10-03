@@ -114,7 +114,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-function isLoopbackOrigin(value: string): boolean {
+export function isLoopbackOrigin(value: string): boolean {
   try {
     const host = new URL(value).hostname
     return host === 'localhost' || host === '127.0.0.1' || host === '::1'
