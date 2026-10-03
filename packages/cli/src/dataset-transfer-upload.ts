@@ -1,4 +1,4 @@
-import { Context, Effect, Either, Layer } from 'effect'
+import { Context, Effect, Layer, Result } from 'effect'
 
 import { ensureDatasetUploadSnapshot } from './dataset-upload-snapshot.js'
 import { datasetTransferTimeoutMs } from './dataset-transfer-policy.js'
@@ -43,7 +43,7 @@ interface DatasetUploadApi {
   append: (id: string, rows: UploadRows) => Effect.Effect<DatasetAppendResponse, DatasetWriteFailure>
   snapshot: (id: string) => Effect.Effect<DatasetSnapshot, DatasetWriteFailure>
 }
-const DatasetUploadApi = Context.GenericTag<DatasetUploadApi>('orizu/DatasetUploadApi')
+const DatasetUploadApi = Context.Service<DatasetUploadApi>('orizu/DatasetUploadApi')
 
 // Only the existing authentication client's rejected-token refresh may replay a
 // request. No transient/transport retries belong around these non-idempotent writes.
@@ -64,9 +64,9 @@ function post<T>(path: string, body: unknown, context: string, prefix: string, t
       catch: cause => cause instanceof DatasetWriteFailure ? cause : new DatasetWriteFailure(
         cause instanceof Error ? cause.message : String(cause), requestStarted ? 'unknown' : 'rejected', { cause },
       ),
-    }).pipe(Effect.timeoutFail({
+    }).pipe(Effect.timeoutOrElse({
       duration: timeoutMs,
-      onTimeout: () => new DatasetWriteFailure(`DATASET_TRANSFER_TIMEOUT: ${context} exceeded its deadline`, requestStarted ? 'unknown' : 'rejected'),
+      orElse: () => Effect.fail(new DatasetWriteFailure(`DATASET_TRANSFER_TIMEOUT: ${context} exceeded its deadline`, requestStarted ? 'unknown' : 'rejected')),
     }))
   })
 }
@@ -84,9 +84,9 @@ function liveUploadApi(options: DatasetUploadOptions) {
 }
 
 async function expectedPromise<A, E>(program: Effect.Effect<A, E>): Promise<A> {
-  const result = await Effect.runPromise(Effect.either(program))
-  if (Either.isLeft(result)) throw result.left
-  return result.right
+  const result = await Effect.runPromise(Effect.result(program))
+  if (Result.isFailure(result)) throw result.failure
+  return result.success
 }
 
 function uploadProgram(options: DatasetUploadOptions) {

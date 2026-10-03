@@ -1,4 +1,4 @@
-import { Effect, Either, Schedule } from 'effect'
+import { Effect, Result, Schedule } from 'effect'
 import { writeFileSync } from 'node:fs'
 import { datasetTransferTimeoutMs } from './dataset-transfer-policy.js'
 import { authedFetch } from './http.js'
@@ -29,9 +29,9 @@ export async function transferDatasetDownload(datasetId: string, format: string,
       if (cause instanceof TypeError) return new DownloadTransportError(cause)
       return cause instanceof Error ? cause : new Error('Dataset download request failed', { cause })
     },
-  }).pipe(Effect.timeoutFail({
+  }).pipe(Effect.timeoutOrElse({
     duration: timeoutMs,
-    onTimeout: () => new Error('DATASET_TRANSFER_TIMEOUT: Dataset download exceeded its deadline'),
+    orElse: () => Effect.fail(new Error('DATASET_TRANSFER_TIMEOUT: Dataset download exceeded its deadline')),
   }), Effect.retry({
     times: 2,
     schedule: Schedule.spaced(100),
@@ -49,8 +49,8 @@ export async function transferDatasetDownload(datasetId: string, format: string,
   process.once('SIGINT', handleInterrupt)
   process.once('SIGTERM', handleInterrupt)
   try {
-    const result = await Effect.runPromise(Effect.either(Effect.flatMap(download, write)), { signal: controller.signal })
-    if (Either.isLeft(result)) throw result.left
+    const result = await Effect.runPromise(Effect.result(Effect.flatMap(download, write)), { signal: controller.signal })
+    if (Result.isFailure(result)) throw result.failure
   } catch (error) {
     if (controller.signal.aborted) throw new Error('DATASET_TRANSFER_INTERRUPTED: Dataset download cancelled')
     throw error
