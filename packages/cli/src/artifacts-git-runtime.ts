@@ -1,13 +1,16 @@
 import { spawn } from 'node:child_process'
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
+import { rmSync } from 'node:fs'
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Writable } from 'node:stream'
 
 const ARTIFACT_TOKEN_BODY = /^[^\s\u0000-\u001f\u007f]{16,1024}$/
 const ARTIFACT_TOKEN_ADVISORY_SUFFIX = '?expires='
 const ARTIFACT_TOKEN_BARE_BODY = /art_v1_[0-9a-fA-F]{40}/
 const DEFAULT_GIT_TIMEOUT_MS = 30_000
 const GIT_TERMINATION_GRACE_MS = 1_000
+/** Names the one-use key file, set on the git process that needs it and nowhere else. */
+const GIT_KEY_FILE_ENV = 'ORIZU_GIT_KEY_FILE'
 const GIT_CONTEXT_ENV_KEYS = [
   'GIT_DIR',
   'GIT_WORK_TREE',
@@ -118,7 +121,8 @@ export async function createEphemeralAskPass(
 case "$1" in
   *sername*) printf '%s\\n' x ;;
   *assword*)
-    IFS= read -r password <&3 || exit 1
+    [ -n "$${GIT_KEY_FILE_ENV}" ] || exit 1
+    IFS= read -r password < "$${GIT_KEY_FILE_ENV}" || exit 1
     [ -n "$password" ] || exit 1
     printf '%s\\n' "$password"
     ;;
@@ -204,10 +208,70 @@ function signalGitProcess(child: ReturnType<typeof spawn>, signal: NodeJS.Signal
   }
 }
 
-export const defaultGitRunner: GitRunner = (
-  args,
-  { cwd, auth, env: suppliedEnv, commitIdentityEnv, timeoutMs = DEFAULT_GIT_TIMEOUT_MS, signal }
-) =>
+/** Key folders this process holds right now. An abrupt end of the process
+ * skips the runner's own cleanup, so they are also removed, best effort, on
+ * exit, and on a termination signal that ends the process. A script that
+ * handles the signal itself keeps its keys: its running command may still need
+ * them, and the exit listener covers it later. SIGKILL cannot be caught: a
+ * folder it leaves behind holds a key that still expires on its own. */
+const liveKeyDirs = new Set<string>()
+let isExitCleanupInstalled = false
+// SIGHUP and SIGQUIT run no exit handlers either; operator scripts run over SSH.
+const TERMINATION_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const
+
+function removeLiveKeyDirs(): void {
+  for (const dir of liveKeyDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Best effort: the process is ending.
+    }
+  }
+  liveKeyDirs.clear()
+}
+
+function handleTerminationSignal(signal: NodeJS.Signals): void {
+  // Another listener decides whether the process ends; leave the keys to it.
+  if (process.listenerCount(signal) !== 1) return
+  removeLiveKeyDirs()
+  // End the way the signal would have without this listener.
+  process.off(signal, handleTerminationSignal)
+  process.kill(process.pid, signal)
+}
+
+function installExitCleanup(): void {
+  if (isExitCleanupInstalled) return
+  isExitCleanupInstalled = true
+  process.on('exit', removeLiveKeyDirs)
+  for (const signal of TERMINATION_SIGNALS) process.on(signal, handleTerminationSignal)
+}
+
+/** Runs one git command. With auth, the key goes in a 0600 file inside a
+ * fresh 0700 folder, named to that git process only by ORIZU_GIT_KEY_FILE.
+ * Askpass reads it from there. The folder is removed when the command
+ * settles, however it ends: success, failure, timeout or cancel; and if this
+ * process ends first, on its way out (see liveKeyDirs). */
+export const defaultGitRunner: GitRunner = async (args, options) => {
+  if (!options.auth) return runGitProcess(args, options, null)
+  installExitCleanup()
+  const keyDir = await mkdtemp(join(tmpdir(), 'orizu-git-key-'))
+  liveKeyDirs.add(keyDir)
+  try {
+    await chmod(keyDir, 0o700)
+    const keyFile = join(keyDir, 'key')
+    await writeFile(keyFile, `${options.auth.token}\n`, { mode: 0o600, flag: 'wx' })
+    return await runGitProcess(args, options, keyFile)
+  } finally {
+    await rm(keyDir, { recursive: true, force: true })
+    liveKeyDirs.delete(keyDir)
+  }
+}
+
+const runGitProcess = (
+  args: string[],
+  { cwd, auth, env: suppliedEnv, commitIdentityEnv, timeoutMs = DEFAULT_GIT_TIMEOUT_MS, signal }: GitRunOptions,
+  keyFile: string | null
+): Promise<GitCommandResult> =>
   new Promise((resolve, reject) => {
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
       reject(new Error('Git timeout must be a positive integer'))
@@ -225,7 +289,7 @@ export const defaultGitRunner: GitRunner = (
       return
     }
     const baseEnv = auth
-      ? buildGitAuthEnvironment(auth, suppliedEnv)
+      ? { ...buildGitAuthEnvironment(auth, suppliedEnv), ...(keyFile ? { [GIT_KEY_FILE_ENV]: keyFile } : {}) }
       : buildUnauthenticatedGitEnvironment(suppliedEnv)
     let env = baseEnv
     if (commitIdentityEnv) {
@@ -237,7 +301,7 @@ export const defaultGitRunner: GitRunner = (
       cwd,
       env,
       detached: process.platform !== 'win32',
-      stdio: auth ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stdout = ''
     let stderr = ''
@@ -314,28 +378,6 @@ export const defaultGitRunner: GitRunner = (
     child.on('close', (code) => {
       finish(termination === 'timeout' ? 124 : termination === 'cancelled' ? 130 : (code ?? 1))
     })
-
-    if (auth) {
-      const credentialPipe = child.stdio[3] as Writable | null
-      if (!credentialPipe) {
-        fail(new Error('Could not establish one-use Git credential pipe'))
-        return
-      }
-      credentialPipe.on('error', () => {
-        /* EPIPE if Git fails before auth. */
-      })
-      if (termination) {
-        credentialPipe.destroy()
-        return
-      }
-      try {
-        credentialPipe.end(`${auth.token}\n`)
-      } catch (error) {
-        fail(
-          error instanceof Error ? error : new Error('Could not write the one-use Git credential')
-        )
-      }
-    }
   })
 
 export async function gitOk(
