@@ -13,7 +13,13 @@ import { publishSessionMerge, type PublishSessionMergeResult } from './artifacts
 import { CLOUDFLARE_ARTIFACTS_HOST_PATTERN } from './cloudflare-artifacts-git-remote.js'
 import { assertSecureTokenTransport } from './http.js'
 import { assertWorkspaceBootstrapRemote, isLoopbackOrigin } from './workspace-bootstrap-job.js'
-import { PUBLISH_MERGE_COORDINATOR_WALL_MS, PUBLISH_MERGE_WALL_AT_ENV } from './publish-merge-timing.js'
+import {
+  PUBLISH_MERGE_CONFLICT_FILES_LIMIT,
+  PUBLISH_MERGE_CONFLICT_PATH_MAX,
+  PUBLISH_MERGE_COORDINATOR_WALL_MS,
+  PUBLISH_MERGE_WALL_AT_ENV,
+  type PublishMergeJobFailureCode,
+} from './publish-merge-timing.js'
 import { DEFAULT_REPOSITORY_BACKUP_LIMITS } from './repository-backup-core.js'
 
 const PUBLISH_MERGE_JOB_CAPABILITY = 'publish-merge-job:v1'
@@ -65,10 +71,11 @@ interface PublishMergeJobEnv {
 export type PublishMergeJobOutcome =
   | { outcome: 'merged'; mergeSha: string }
   | { outcome: 'already_merged'; headSha: string }
-  | { outcome: 'conflict'; files: readonly string[] }
+  /** At most PUBLISH_MERGE_CONFLICT_FILES_LIMIT paths; `moreFiles` counts the rest. */
+  | { outcome: 'conflict'; files: readonly string[]; moreFiles: number }
   | { outcome: 'denied' }
   | { outcome: 'race_lost' }
-  | { outcome: 'failed'; code: string }
+  | { outcome: 'failed'; code: PublishMergeJobFailureCode }
 
 interface Credential {
   tokenId: string
@@ -76,7 +83,11 @@ interface Credential {
   remote: string
 }
 
-class JobFailure extends Error {}
+class JobFailure extends Error {
+  constructor(readonly code: PublishMergeJobFailureCode | 'denied') {
+    super(code)
+  }
+}
 
 function resolvePublishMergeJobEnv(env: Record<string, string | undefined>): PublishMergeJobEnv | string {
   const value = (name: string) => env[name]?.trim() ?? ''
@@ -125,14 +136,14 @@ async function post(url: string, bearer: string, body: object, signal?: AbortSig
       body: JSON.stringify(body),
     })
   } catch {
-    throw new JobFailure(signal?.aborted ? 'timed_out' : 'provider_unavailable')
+    throw new JobFailure(signal?.aborted ? 'job_timed_out' : 'api_unavailable')
   }
   const value: unknown = await response.json().catch(() => null)
   const record = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
   // The session lost its authority while a key was being minted: a refusal.
   if (response.status === 403 && record?.error === 'gate_denied') throw new JobFailure('denied')
   if (response.status === 401 || response.status === 403) throw new JobFailure('scope_refused')
-  if (!response.ok || !record) throw new JobFailure('provider_unavailable')
+  if (!response.ok || !record) throw new JobFailure('api_unavailable')
   return record
 }
 
@@ -141,7 +152,7 @@ function gateAllows(value: Record<string, unknown>): boolean {
   const keys = Object.keys(value).sort().join(',')
   if (keys === 'allowed' && value.allowed === true) return true
   if (keys === 'allowed,reason' && value.allowed === false && typeof value.reason === 'string') return false
-  throw new JobFailure('provider_unavailable')
+  throw new JobFailure('api_unavailable')
 }
 
 /** ADR-012: the team copy is canonical state, so the merged graph must fit
@@ -188,6 +199,13 @@ async function postWithin(timeoutMs: number, url: string, bearer: string, body: 
   }
 }
 
+/** The conflict list the job reports, bounded so the result always fits the
+ * coordinator's body limit. A path too long to name is counted instead. */
+export function boundConflictFiles(files: readonly string[]): { files: string[]; moreFiles: number } {
+  const named = files.filter((file) => file.length <= PUBLISH_MERGE_CONFLICT_PATH_MAX).slice(0, PUBLISH_MERGE_CONFLICT_FILES_LIMIT)
+  return { files: named, moreFiles: files.length - named.length }
+}
+
 function toOutcome(result: PublishSessionMergeResult): PublishMergeJobOutcome {
   switch (result.kind) {
     case 'merged':
@@ -195,7 +213,7 @@ function toOutcome(result: PublishSessionMergeResult): PublishMergeJobOutcome {
     case 'already_merged':
       return { outcome: 'already_merged', headSha: result.canonicalSha }
     case 'conflict':
-      return { outcome: 'conflict', files: result.files }
+      return { outcome: 'conflict', ...boundConflictFiles(result.files) }
     case 'denied':
       return { outcome: 'denied' }
     case 'race_lost':
@@ -284,9 +302,9 @@ export async function runPublishMergeJob(options: {
     })
     outcome = toOutcome(result)
   } catch (error) {
-    if (error instanceof JobFailure && error.message === 'denied') outcome = { outcome: 'denied' }
-    else if (deadline.aborted) outcome = { outcome: 'failed', code: 'timed_out' }
-    else outcome = { outcome: 'failed', code: error instanceof JobFailure ? error.message : 'publish_failed' }
+    if (error instanceof JobFailure && error.code === 'denied') outcome = { outcome: 'denied' }
+    else if (deadline.aborted) outcome = { outcome: 'failed', code: 'job_timed_out' }
+    else outcome = { outcome: 'failed', code: error instanceof JobFailure && error.code !== 'denied' ? error.code : 'publish_failed' }
   } finally {
     clearTimeout(timer)
     // Revoke whatever is still live, newest first, even past the deadline; an
@@ -304,7 +322,7 @@ export async function runPublishMergeJob(options: {
   let reported = false
   try {
     const bound = lateBound(0)
-    if (bound <= 0) throw new JobFailure('timed_out')
+    if (bound <= 0) throw new JobFailure('job_timed_out')
     await postWithin(bound, `${env.coordinatorUrl}/publish-merge-jobs/${env.jobId}/result`, env.bootSecret, outcome)
     reported = true
   } catch {
