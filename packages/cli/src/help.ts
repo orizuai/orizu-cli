@@ -742,7 +742,7 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['apps', 'create'],
-    usage: 'orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]',
+    usage: 'orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>] [--id <app-id>]',
     summary: 'Create a review app from a local component and schema files.',
     group: 'Apps',
     examples: [

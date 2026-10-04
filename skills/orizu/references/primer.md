@@ -125,6 +125,7 @@ Two artifacts: an **app** (custom labeler UI) and a **task** (the labeling round
 
 ```bash
 # 1. Create the labeler app, bound to the dataset
+#    (in a hosted session it is committed and merged into the team copy first; see building-apps.md)
 orizu apps create \
   --project <teamSlug>/<projectSlug> \
   --name "Support QA Labeler" \

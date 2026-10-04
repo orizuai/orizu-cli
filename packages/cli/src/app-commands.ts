@@ -13,7 +13,7 @@ import {
   join,
   dirname,
 } from 'path'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import {
   getArg,
   getArchiveListStatus,
@@ -25,10 +25,15 @@ import { resolveProjectSlug, fetchApps, selectAppIdInteractively } from './accou
 import { printJson, printLine, getErrorMessage } from './cli-console-output.js'
 import { printAppSummaries } from './archive-artifacts-cli.js'
 import { isNodeError, formatTerminalLink } from './auth-commands.js'
+import { parseCliProjectSlug } from './cli-project-slug.js'
+import { AppPublishFailure } from './app-publish-failure.js'
+import { inspectAppDestination } from './app-publish-paths.js'
 import { authedFetch, getBaseUrl } from './http.js'
 import { appPageUrl } from './app-page-url.js'
 import { parseJsonResponse, sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 import { runLocalAppPreview } from './preview-runtime.js'
+import type { AppFiles } from './app-publish-workspace.js'
+import { findWorkspaceRoot } from './workspace.js'
 
 
 
@@ -73,7 +78,10 @@ function readSourceBytes(pathArg: string): Buffer {
 }
 
 function readJsonFile(pathArg: string): Record<string, unknown> {
-  const raw = readSourceFile(pathArg)
+  return parseJsonFileContents(readSourceFile(pathArg), pathArg)
+}
+
+function parseJsonFileContents(raw: string, pathArg: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -163,54 +171,175 @@ function readManifestFile(dirArg: string): Record<string, unknown> {
   return readJsonFile(join(expandHomePath(dirArg), 'manifest.json'))
 }
 
+const LOCAL_PUBLISH_NOTE =
+  'Note: this app version is not in the team repository yet; it reaches git when published from a hosted session.'
+const APP_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+interface PublishedCommit {
+  outcome: 'merged' | 'already_merged'
+  sha: string
+}
+
+/** The workspace root when this runs in a hosted session, else null. */
+function hostedWorkspaceRoot(): string | null {
+  if (!process.env.ORIZU_SESSION_ID?.trim()) return null
+  const workspaceRoot = findWorkspaceRoot(process.cwd())
+  if (!workspaceRoot) throw new Error('Hosted app publishing must run inside the attached workspace. Run this command from the workspace containing orizu.team.json.')
+  return workspaceRoot
+}
+
+/** The hosted publish path, loaded only when it runs: it needs Effect, which
+ * the rest of the CLI does not load at startup. */
+function loadAppPublishWorkspace() {
+  return import('./app-publish-workspace.js')
+}
+
+/** The app as committed into its folder: the files exactly as the agent wrote them. */
+function appFilesFromArgs(filePath: string, inputSchemaPath: string, outputSchemaPath: string): AppFiles {
+  return { sourceCode: readSourceFile(filePath), inputSchema: readSourceFile(inputSchemaPath), outputSchema: readSourceFile(outputSchemaPath) }
+}
+
+/** ORI-2280: a hosted publish the merge stopped. The server's text says what to
+ * do; a create's rerun must name the same app id, so its folder is reused. A
+ * conflict also adds the team copy remote the text tells the agent to pull. */
+async function publishRefusalError(responseText: string, workspaceRoot: string): Promise<Error | null> {
+  let body: unknown
+  try {
+    body = JSON.parse(responseText)
+  } catch {
+    return null
+  }
+  if (!isRecord(body) || typeof body.error !== 'string' || typeof body.code !== 'string' || !body.code.startsWith('publish_')) return null
+  let message = sanitizeTerminalText(body.error)
+  if (body.code === 'publish_conflict') {
+    const { addTeamCopyRemote } = await loadAppPublishWorkspace()
+    const remoteNote = await addTeamCopyRemote(workspaceRoot)
+    if (remoteNote) message = `${message} ${remoteNote}`
+  }
+  return new Error(message)
+}
+
+function printPublishedCommit(commit: PublishedCommit | null | undefined, isHosted: boolean) {
+  if (commit) {
+    const where = commit.outcome === 'merged' ? 'Merged into' : 'Already in'
+    printLine(`${where} the team copy: ${sanitizeTerminalText(commit.sha.slice(0, 7))}`)
+  } else if (!isHosted) {
+    printLine(LOCAL_PUBLISH_NOTE)
+  }
+}
+
+/** Quote each original argument so spaces and quotes survive a copied retry. */
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function canonicalRetryInputPath(workspaceRoot: string, folder: string, filename: string, originalPath: string): string {
+  const canonicalPath = join(workspaceRoot, folder, filename)
+  try {
+    return inspectAppDestination(workspaceRoot, join(folder, filename)) ? canonicalPath : originalPath
+  } catch {
+    return originalPath
+  }
+}
+
 async function createAppFromFile() {
-  const project = getArg('--project')
+  const workspaceRoot = hostedWorkspaceRoot()
+  let project = getArg('--project')
   const name = getArg('--name')
   const datasetId = getArg('--dataset')
   const filePath = getArg('--file')
   const inputSchemaPath = getArg('--input-schema')
   const outputSchemaPath = getArg('--output-schema')
   const component = getArg('--component') || undefined
+  const requestedAppId = getArg('--id') ?? undefined
 
   if (!project || !name || !datasetId || !filePath || !inputSchemaPath || !outputSchemaPath) {
-    throw new Error('Usage: orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>]')
+    throw new Error('Usage: orizu apps create --project <team/project> --name <name> --dataset <datasetId> --file <path> --input-schema <json-path> --output-schema <json-path> [--component <name>] [--id <app-id>]')
+  }
+  if (requestedAppId !== undefined && !APP_ID_PATTERN.test(requestedAppId)) {
+    throw new Error('--id must be a lowercase app id (UUID), as printed by the earlier publish')
   }
 
-  const sourceCode = readSourceFile(filePath)
-  const inputJsonSchema = readJsonFile(inputSchemaPath)
-  const outputJsonSchema = readJsonFile(outputSchemaPath)
-  const response = await authedFetch('/api/cli/apps/create-from-file', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      projectSlug: project,
-      name,
-      datasetId,
-      sourceCode,
-      componentName: component,
-      inputJsonSchema,
-      outputJsonSchema,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to create app: ${await response.text()}`)
+  if (workspaceRoot) {
+    const parsedProject = parseCliProjectSlug(project)
+    const slug = /^[a-z0-9][a-z0-9-]{0,99}$/
+    if (!parsedProject || !slug.test(parsedProject.teamSlug) || !slug.test(parsedProject.projectSlug)) {
+      throw new Error('--project must be a valid <team/project> reference')
+    }
+    project = `${parsedProject.teamSlug}/${parsedProject.projectSlug}`
   }
 
-  const data = await parseJsonResponse<{
-    app: { id: string; name: string; versionNum: number; componentName?: string; url?: string }
-    warnings?: string[]
-  }>(response, 'App create')
-  if (hasJsonFlag()) {
-    printJson({ app: { ...data.app, pageUrl: data.app.url || appPageUrl(getBaseUrl(), data.app.id) }, warnings: data.warnings || [] })
-    return
-  }
-  printLine(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`)
-  if (data.app.url) {
-    printLine(`View app: ${formatTerminalLink(data.app.url)}`)
-  }
-  if (data.warnings?.length) {
-    printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
+  const files = appFilesFromArgs(filePath, inputSchemaPath, outputSchemaPath)
+  const sourceCode = files.sourceCode
+  const inputJsonSchema = parseJsonFileContents(files.inputSchema, inputSchemaPath)
+  const outputJsonSchema = parseJsonFileContents(files.outputSchema, outputSchemaPath)
+
+  // In a hosted session the app is committed into its folder and pushed first;
+  // the server merges that commit into the team copy before recording the app.
+  let appId = requestedAppId
+  let sessionCommitSha: string | undefined
+  let recoveryFolder: string | undefined
+  let filesMaterialized = false
+  try {
+    if (workspaceRoot) {
+      const projectSlug = parseCliProjectSlug(project)!.projectSlug
+      appId ??= randomUUID()
+      recoveryFolder = `projects/${projectSlug}/apps/${appId}`
+      const { pushAppToSessionCopy } = await loadAppPublishWorkspace()
+      sessionCommitSha = await pushAppToSessionCopy(workspaceRoot, {
+        projectSlug,
+        appId,
+        files,
+      })
+      filesMaterialized = true
+    }
+
+    const response = await authedFetch('/api/cli/apps/create-from-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectSlug: project,
+        name,
+        datasetId,
+        sourceCode,
+        componentName: component,
+        inputJsonSchema,
+        outputJsonSchema,
+        ...(appId !== undefined ? { appId } : {}),
+        ...(sessionCommitSha !== undefined ? { sessionCommitSha } : {}),
+      }),
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      const refusal = workspaceRoot ? await publishRefusalError(text, workspaceRoot) : null
+      throw refusal ?? new Error(`Failed to create app: ${text}`)
+    }
+
+    const data = await parseJsonResponse<{
+      app: { id: string; name: string; versionNum: number; componentName?: string; url?: string; publishedCommit?: PublishedCommit | null }
+      warnings?: string[]
+    }>(response, 'App create')
+    if (hasJsonFlag()) {
+      printJson({ app: { ...data.app, pageUrl: data.app.url || appPageUrl(getBaseUrl(), data.app.id) }, warnings: data.warnings || [] })
+      return
+    }
+    printLine(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`)
+    if (data.app.url) {
+      printLine(`View app: ${formatTerminalLink(data.app.url)}`)
+    }
+    printPublishedCommit(data.app.publishedCommit, workspaceRoot !== null)
+    if (data.warnings?.length) {
+      printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
+    }
+  } catch (error) {
+    if (!workspaceRoot || !appId || !recoveryFolder) throw error
+    const useCanonicalInputs = filesMaterialized || (error instanceof AppPublishFailure && error.filesMaterialized)
+    const retryArgs = ['orizu', '--server', getBaseUrl(), 'apps', 'create', '--project', project, '--name', name, '--dataset', datasetId,
+      '--file', useCanonicalInputs ? canonicalRetryInputPath(workspaceRoot, recoveryFolder, 'App.tsx', filePath) : filePath, '--input-schema', useCanonicalInputs ? canonicalRetryInputPath(workspaceRoot, recoveryFolder, 'input.schema.json', inputSchemaPath) : inputSchemaPath,
+      '--output-schema', useCanonicalInputs ? canonicalRetryInputPath(workspaceRoot, recoveryFolder, 'output.schema.json', outputSchemaPath) : outputSchemaPath,
+      ...(component ? ['--component', component] : []), ...(hasJsonFlag() ? ['--json'] : []), '--id', appId]
+    throw new Error(`${getErrorMessage(error)}\nApp ID: ${appId}\nFolder: ${recoveryFolder}\nRetry: ${retryArgs.map(shellSingleQuote).join(' ')}`)
   }
 }
 
@@ -266,6 +395,7 @@ async function previewAppFromFile() {
 }
 
 async function updateAppFromFile() {
+  const workspaceRoot = hostedWorkspaceRoot()
   const filePath = getArg('--file')
   const inputSchemaPath = getArg('--input-schema')
   const outputSchemaPath = getArg('--output-schema')
@@ -282,37 +412,75 @@ async function updateAppFromFile() {
     appId = selected.appId
   }
 
-  const sourceCode = readSourceFile(filePath)
-  const inputJsonSchema = readJsonFile(inputSchemaPath)
-  const outputJsonSchema = readJsonFile(outputSchemaPath)
-  const response = await authedFetch(`/api/cli/apps/${encodeURIComponent(appId)}/update-from-file`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sourceCode,
-      componentName: component,
-      inputJsonSchema,
-      outputJsonSchema,
-    }),
-  })
+  const files = appFilesFromArgs(filePath, inputSchemaPath, outputSchemaPath)
+  const sourceCode = files.sourceCode
+  const inputJsonSchema = parseJsonFileContents(files.inputSchema, inputSchemaPath)
+  const outputJsonSchema = parseJsonFileContents(files.outputSchema, outputSchemaPath)
 
-  if (!response.ok) {
-    throw new Error(`Failed to update app: ${await response.text()}`)
-  }
+  // In a hosted session the app is committed into its folder and pushed first;
+  // the server merges that commit into the team copy before recording the version.
+  let recoveryFolder: string | undefined
+  let filesMaterialized = false
+  try {
+    let sessionCommitSha: string | undefined
+    if (workspaceRoot) {
+      const folderResponse = await authedFetch(`/api/cli/apps/${encodeURIComponent(appId)}`)
+      if (!folderResponse.ok) {
+        throw new Error(`Failed to find the app's project: ${await folderResponse.text()}`)
+      }
+      const folder = await parseJsonResponse<{ appId: string; projectSlug: string }>(folderResponse, 'App folder')
+      recoveryFolder = `projects/${folder.projectSlug}/apps/${folder.appId}`
+      const { pushAppToSessionCopy } = await loadAppPublishWorkspace()
+      sessionCommitSha = await pushAppToSessionCopy(workspaceRoot, {
+        projectSlug: folder.projectSlug,
+        appId: folder.appId,
+        files,
+      })
+      filesMaterialized = true
+    }
 
-  const data = await parseJsonResponse<{
-    app: { id: string; name: string; versionNum: number; componentName?: string }
-    warnings?: string[]
-  }>(response, 'App update')
-  const pageUrl = appPageUrl(getBaseUrl(), data.app.id)
-  if (hasJsonFlag()) {
-    printJson({ app: { ...data.app, pageUrl }, warnings: data.warnings || [] })
-    return
-  }
-  printLine(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`)
-  printLine(`View app: ${formatTerminalLink(pageUrl)}`)
-  if (data.warnings?.length) {
-    printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
+    const response = await authedFetch(`/api/cli/apps/${encodeURIComponent(appId)}/update-from-file`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceCode,
+        componentName: component,
+        inputJsonSchema,
+        outputJsonSchema,
+        ...(sessionCommitSha !== undefined ? { sessionCommitSha } : {}),
+      }),
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      const refusal = workspaceRoot ? await publishRefusalError(text, workspaceRoot) : null
+      throw refusal ?? new Error(`Failed to update app: ${text}`)
+    }
+
+    const data = await parseJsonResponse<{
+      app: { id: string; name: string; versionNum: number; componentName?: string; publishedCommit?: PublishedCommit | null }
+      warnings?: string[]
+    }>(response, 'App update')
+    const pageUrl = appPageUrl(getBaseUrl(), data.app.id)
+    if (hasJsonFlag()) {
+      printJson({ app: { ...data.app, pageUrl }, warnings: data.warnings || [] })
+      return
+    }
+    printLine(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`)
+    printLine(`View app: ${formatTerminalLink(pageUrl)}`)
+    printPublishedCommit(data.app.publishedCommit, workspaceRoot !== null)
+    if (data.warnings?.length) {
+      printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
+    }
+  } catch (error) {
+    if (!workspaceRoot || !recoveryFolder) throw error
+    const useCanonicalInputs = filesMaterialized || (error instanceof AppPublishFailure && error.filesMaterialized)
+    const retryArgs = ['orizu', '--server', getBaseUrl(), 'apps', 'update', '--app', appId,
+      '--file', useCanonicalInputs ? canonicalRetryInputPath(workspaceRoot, recoveryFolder, 'App.tsx', filePath) : filePath,
+      '--input-schema', useCanonicalInputs ? canonicalRetryInputPath(workspaceRoot, recoveryFolder, 'input.schema.json', inputSchemaPath) : inputSchemaPath,
+      '--output-schema', useCanonicalInputs ? canonicalRetryInputPath(workspaceRoot, recoveryFolder, 'output.schema.json', outputSchemaPath) : outputSchemaPath,
+      ...(component ? ['--component', component] : []), ...(hasJsonFlag() ? ['--json'] : [])]
+    throw new Error(`${getErrorMessage(error)}\nApp ID: ${appId}\nFolder: ${recoveryFolder}\nRetry: ${retryArgs.map(shellSingleQuote).join(' ')}`)
   }
 }
 

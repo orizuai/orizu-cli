@@ -63,6 +63,9 @@ const SAFE_REMOTE_COMPONENT = /^[^\u0000-\u0020\u007f\\?#]+$/
 export const REPO_TOKEN_PURPOSES = [
   'read',
   'write',
+  // ORI-2280: a hosted session's read key for its team copy, used by the
+  // `orizu-team` remote a publish conflict adds. Artifacts remotes only.
+  'team_read',
 ] as const
 
 export type RepoTokenPurpose =
@@ -375,7 +378,7 @@ async function mintArtifactsCredential(
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ purpose }),
+      body: JSON.stringify({ purpose, ...(purpose === 'team_read' ? { sessionId: process.env.ORIZU_SESSION_ID?.trim() } : {}) }),
     }
   )
 
@@ -539,6 +542,10 @@ export async function runGitCredential(op: string, io: GitCredentialIo): Promise
     io.printErr(
       'orizu git-credential: refusing GitHub credential selection without an exact repository path'
     )
+    return 1
+  }
+  if (io.purpose === 'team_read') {
+    io.printErr('orizu git-credential: team_read is only for an Artifacts team copy')
     return 1
   }
   const primaryPurpose = io.purpose ?? 'write'

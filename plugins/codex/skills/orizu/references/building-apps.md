@@ -1608,3 +1608,27 @@ Before `orizu apps create`:
 - [ ] `?` shortcut overlay or visible cheat sheet
 - [ ] Smoke test passes (`node scripts/test-app.mjs ...`)
 - [ ] Local preview renders and screenshot is inspected against the user's intended workflow (`orizu apps preview ... --screenshot preview.png`)
+
+---
+
+## Publishing from a hosted session
+
+In a hosted session, `orizu apps create` and `orizu apps update` publish through git. Pass `--file`, `--input-schema` and `--output-schema` as usual; the command then:
+
+1. Copies the three files into `projects/<project-slug>/apps/<app-id>/` in the workspace as `App.tsx`, `input.schema.json` and `output.schema.json`, commits only App.tsx, input.schema.json, and output.schema.json, and pushes the session copy.
+2. Merges the session into the team copy, then records the version. It prints `Merged into the team copy: <sha>` or `Already in the team copy: <sha>`.
+
+Edit an existing app in its folder and pass those files to `apps update`. A new app can live anywhere until `apps create` places it.
+
+The merge includes all earlier committed work on the session branch, including files outside the app folder. Review that work before publishing. Unrelated uncommitted work stays local. A conflict may name files outside the app folder; resolve and commit those files too.
+
+When a hosted `apps create` or `apps update` stops after its folder is known, its error prints `App ID`, `Folder`, and a full `Retry` command. Keep that ID and folder. After all three app files have been written, the retry uses safe canonical files, preserving committed conflict resolutions. If the attempt stops before all three files are written, the retry keeps the original input paths. Both retries preserve the selected server. After following the error's instructions, run the printed retry command; create keeps its original `--id`, and update keeps its `--app`. This also applies when the push is rejected, the API refuses the create, or the merge is still running. The files and commits already made stay in the workspace; a refused push has not sent them to the server.
+
+An explicit publish refusal before recording means no app version was recorded. Act on its message, then use the printed retry command. If transport fails or the response cannot be read, the outcome is uncertain: check the retained app ID before retrying.
+
+- **Conflict** (names the files): run the full printed `Recovery` command. It checks whether the workspace is shallow, fetches missing history from origin if needed, then pulls the team copy with an explicit merge strategy. If ancestry preparation fails, stop and repair origin before retrying; the team pull must not run. Resolve those files and commit. For `apps create`, use the printed retry command with its original `--id`, so the app keeps its folder.
+- **Session copy has commits this workspace does not**: run `git pull --no-rebase --no-edit`, then retry. For `apps create`, keep the printed `--id`.
+- **Still merging, other publishes landed first, or failed**: retry. For `apps create`, use the printed retry command with its original `--id`; for `apps update`, use its printed retry command.
+- **Refused** (the session ended or the team paused agents): stop and tell the user.
+
+Outside a hosted session the command records the version only, and prints a note that it is not in the team repository yet.

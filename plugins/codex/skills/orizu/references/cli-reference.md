@@ -309,6 +309,8 @@ orizu apps update \
   --output-schema ./schemas/output.json
 ```
 
+In a hosted session both commands commit the app into `projects/<project-slug>/apps/<app-id>/` and merge it into the team copy before recording it; `apps create --id <app-id>` reruns a create that stopped and keeps its folder. See [building-apps.md](building-apps.md#publishing-from-a-hosted-session).
+
 Link dataset:
 
 ```bash
