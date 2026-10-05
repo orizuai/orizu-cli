@@ -67,10 +67,12 @@ RUN npm install -g "braintrust@${BRAINTRUST_NPM_VERSION}" \
 COPY packages/cli/hosted-runtime-image/dist/orizu.js /opt/orizu/cli/dist/index.js
 COPY packages/cli/hosted-runtime-image/dist/skilled-proposer-assets.json /tmp/skilled-proposer-assets.json
 RUN node -e 'const f=require("fs"),p=require("path"),o=JSON.parse(f.readFileSync(process.argv[1],"utf8"));for(const [n,v] of Object.entries(o)){const d=p.join(process.argv[2],n);f.mkdirSync(p.dirname(d),{recursive:true});f.writeFileSync(d,Buffer.from(v,"base64"))}' /tmp/skilled-proposer-assets.json /opt/orizu/cli \
+  && sh /opt/orizu/cli/scripts/check-orizu-skill.sh \
   && rm -f /tmp/skilled-proposer-assets.json
 RUN chmod +x /opt/orizu/cli/dist/index.js \
   && ln -sf /opt/orizu/cli/dist/index.js /usr/local/bin/orizu \
   && command -v orizu && command -v opencode && orizu --version \
+  && test "$(orizu skills path)" = /opt/orizu/cli/vendor/skills/orizu \
   && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' \
   && printf "const m=await import('@anthropic-ai/claude-agent-sdk');if(typeof m.query!=='function')process.exit(1);\n" > /opt/orizu/cli/dist/_sdk_probe.mjs \
   && node /opt/orizu/cli/dist/_sdk_probe.mjs && rm -f /opt/orizu/cli/dist/_sdk_probe.mjs

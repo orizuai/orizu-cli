@@ -49,7 +49,7 @@ const execStep = (name, exec, timeoutClass = 'quick') => ({ name, timeoutClass, 
 export function sourceAssetPayload(runGit = spawnSync) {
   const cliRoot = resolve(HERE, '..')
   const repoRoot = resolve(cliRoot, '..', '..')
-  const roots = ['packages/cli/scripts/ensure-skilled-proposer-venv.mjs', 'packages/cli/scripts/vendor-gepa-python.mjs', 'packages/cli/src/skilled-proposer-venv-manager.mjs', 'packages/cli/src/skilled-proposer-bake-report.ts', 'packages/cli/requirements/skilled-proposer.lock', 'packages/cli/gepa-python-source.zip', 'packages/orizu-gepa/src', 'packages/orizu-gepa/pyproject.toml', 'packages/orizu-gepa-python/src', 'packages/orizu-gepa-python/pyproject.toml', 'packages/orizu-gepa-python/manifest.json']
+  const roots = ['packages/cli/scripts/ensure-skilled-proposer-venv.mjs', 'packages/cli/scripts/vendor-gepa-python.mjs', 'packages/cli/src/skilled-proposer-venv-manager.mjs', 'packages/cli/src/skilled-proposer-bake-report.ts', 'packages/cli/requirements/skilled-proposer.lock', 'packages/cli/gepa-python-source.zip', 'packages/orizu-gepa/src', 'packages/orizu-gepa/pyproject.toml', 'packages/orizu-gepa-python/src', 'packages/orizu-gepa-python/pyproject.toml', 'packages/orizu-gepa-python/manifest.json', 'skills/orizu']
   const listed = runGit('git', ['ls-files', '-z', '--error-unmatch', '--', ...roots], { cwd: repoRoot, encoding: 'utf8' })
   if (listed.error || listed.status !== 0) throw new Error(`ALI_1588_SOURCE_ASSET_MANIFEST_FAILED: ${listed.error?.message || listed.stderr || `exit ${listed.status}`}`)
   const entries = {}
@@ -57,8 +57,17 @@ export function sourceAssetPayload(runGit = spawnSync) {
     let target = source.replace('packages/cli/', '')
     if (source.startsWith('packages/orizu-gepa/')) target = source.replace('packages/orizu-gepa/', 'vendor/orizu-gepa/')
     if (source.startsWith('packages/orizu-gepa-python/')) target = source.replace('packages/orizu-gepa-python/', 'vendor/orizu-gepa-python/')
+    if (source.startsWith('skills/orizu/')) {
+      const skillPath = source.slice('skills/orizu/'.length)
+      if (skillPath.split('/').some(part => part === '.DS_Store' || part === '__pycache__' || part === '.pytest_cache') || skillPath.endsWith('.pyc') || skillPath.endsWith('.pyo')) continue
+      target = `vendor/skills/orizu/${skillPath}`
+    }
     entries[target] = readFileSync(resolve(repoRoot, source)).toString('base64')
   }
+  if (!entries['vendor/skills/orizu/SKILL.md']) throw new Error('SOURCE_ASSET_ORIZU_SKILL_MISSING: tracked skills/orizu/SKILL.md is required')
+  // The same guard owner gates published boot, source provisioning and Docker.
+  const skillGuard = `#!/bin/sh\nset -eu\ncd "\${1:-/opt/orizu/cli}"\n${orizuSkillCheck('.')}\n`
+  entries['scripts/check-orizu-skill.sh'] = Buffer.from(skillGuard).toString('base64')
   return JSON.stringify(entries)
 }
 
@@ -243,7 +252,7 @@ export function buildProvisionSteps({
     execStep('install prebaked marker', `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}`),
     execStep('verify git + ssh client present (merge-job runtime requirement)', 'git --version && ssh -V'),
     execStep('verify bake (orizu + opencode + hosted-loop + braintrust)',
-        `command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
+        `${orizuSkillCheck()} && command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
         `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
         braintrustVerify(braintrustPyVersion)),
     sandboxToolsCheckStep(),
