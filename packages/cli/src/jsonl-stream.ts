@@ -5,6 +5,7 @@ export const JSONL_UPLOAD_CHUNK_MAX_BYTES = 2 * 1024 * 1024
 
 interface JsonlChunkOptions {
   maxPayloadBytes?: number
+  signal?: AbortSignal
 }
 
 interface PendingRow {
@@ -66,11 +67,17 @@ export async function* streamJsonlRowChunks(
   let parsedRowCount = 0
   let lineNumber = 0
 
+  if (options.signal?.aborted) throw new Error('Dataset input interrupted')
+
   const stream = createReadStream(filePath, { encoding: 'utf8' })
   const lines = createInterface({
     input: stream,
     crlfDelay: Infinity,
   })
+  // Closing the owned reader unblocks an outstanding next() before a scoped
+  // caller awaits return(); return alone would queue behind that pending read.
+  const interrupt = () => { lines.close(); stream.destroy() }
+  options.signal?.addEventListener('abort', interrupt, { once: true })
 
   try {
     for await (const line of lines) {
@@ -117,6 +124,7 @@ export async function* streamJsonlRowChunks(
   } catch (error) {
     throw mapReadError(filePath, error)
   } finally {
+    options.signal?.removeEventListener('abort', interrupt)
     lines.close()
     stream.destroy()
   }

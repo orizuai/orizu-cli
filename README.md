@@ -485,6 +485,19 @@ SIGINT/SIGTERM cancels a download. Upload writes
 have no additional transient retries; the existing session refresh behavior is
 unchanged.
 
+Dataset `append` prints one result document with `--json`, including JSONL and
+multiple chunks. Its failure document preserves the resolved `datasetId`,
+`confirmedRows` and `confirmedChunks`, and identifies the acquired `failedChunk`
+when one exists. A lost or malformed receipt leaves that chunk's outcome
+`unknown`: inspect and reconcile the dataset before repeating the write.
+Earlier acknowledged rows remain appended. Each admitted append request uses
+the same two-minute transfer deadline and validated environment override,
+including response-body consumption. This deadline does not time out file input
+or interactive selection. SIGINT/SIGTERM closes append's owned JSONL reader and
+in-flight transport; retained interactive selection keeps ordinary process signal
+termination. Append adds no transient write retries or write deduplication.
+
+
 ## Interactive And Automated Usage
 
 Many commands can prompt for missing team, project, app, dataset, or task selections in an interactive terminal. In scripts and CI, pass explicit flags instead:
@@ -499,3 +512,5 @@ Use `--json` on supported task and app commands when automation needs structured
 
 - [docs/cli.md](docs/cli.md): complete CLI guide and command reference
 - [skills/orizu/references/cli-reference.md](skills/orizu/references/cli-reference.md): compact command matrix and end-to-end flows
+
+If the server loses or cannot decode a database append acknowledgement, it preserves the request's prepared row artifacts because rows may already reference them. Unknown outcomes require inspection; automatic orphan reconciliation and write deduplication are not promised. Known SQL refusals clean up only that request's newly prepared artifacts.
