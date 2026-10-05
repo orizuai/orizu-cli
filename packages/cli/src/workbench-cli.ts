@@ -45,6 +45,8 @@ export interface WorkbenchRunCosts {
 export interface WorkbenchRunSummary extends WorkbenchRunCosts {
   id: string
   status: string
+  /** Why a failed run failed, in plain words, mapped by the server (ORI-2264). */
+  failureReason?: string
 }
 
 export interface WorkbenchSession {
@@ -76,6 +78,8 @@ export interface WorkbenchRun extends WorkbenchRunCosts {
   status: string
   evidence?: Record<string, unknown>
   summary?: Record<string, unknown>
+  /** Why a failed run failed, in plain words, mapped by the server (ORI-2264). */
+  failureReason?: string
   latestSequence?: number
   startedAt?: string | null
   finishedAt?: string | null
@@ -1130,6 +1134,8 @@ function formatSessionStatus(result: SessionStatusResult): string {
       const cost = finiteOrNull(run.modelCostUsd)
       const suffix = cost !== null ? `  ${formatUsd(cost)}` : ''
       lines.push(`  run ${run.id}  ${run.status}${suffix}`)
+      const why = failedRunLine(run)
+      if (why) lines.push(`    ${why}`)
     }
     return lines.join('\n')
   }
@@ -1167,10 +1173,18 @@ function formatSessionFinishOutcome(result: SessionFinishResult): string {
   return `manifest ${id}  ${status}  repo_merge  (${files} files, +${additions}/-${deletions})`
 }
 
+// The web page's failed line, with the reason the server mapped (ORI-2264).
+function failedRunLine(run: { status: string; failureReason?: unknown }): string | null {
+  return run.status === 'failed' && typeof run.failureReason === 'string' && run.failureReason
+    ? `The agent stopped: ${run.failureReason}.`
+    : null
+}
+
 function formatRunStatus(run: WorkbenchRun): string {
   const sequence = typeof run.latestSequence === 'number' ? `  latestSequence=${run.latestSequence}` : ''
   const costLine = formatCostSummary(run)
-  return `run ${run.id}  ${run.status}${sequence}${costLine ? `\n  ${costLine}` : ''}`
+  const why = failedRunLine(run)
+  return `run ${run.id}  ${run.status}${sequence}${costLine ? `\n  ${costLine}` : ''}${why ? `\n  ${why}` : ''}`
 }
 
 // ALI-1045: one compact digest line per event — shared with the attached
