@@ -29,7 +29,6 @@ import { printDatasetSummaries } from './archive-artifacts-cli.js'
 import { formatTerminalLink } from './auth-commands.js'
 import { parseDatasetFile } from './file-parser.js'
 import { parseDatasetReference } from './dataset-download.js'
-import { editDatasetRows as runEditDatasetRows } from './dataset-edit-rows.js'
 import { parseCommaSeparated } from './task-commands.js'
 import type { DatasetSelection } from './account-directory.js'
 
@@ -506,7 +505,8 @@ async function editDatasetRows() {
     datasetId = selected.datasetId
   }
 
-  await runEditDatasetRows({
+  const { editDatasetRows: runEditDatasetRows } = await import('./dataset-row-workflow.js')
+  const exitCode = await runEditDatasetRows({
     datasetId,
     file: expandHomePath(fileArg),
     json: hasJsonFlag(),
@@ -514,6 +514,7 @@ async function editDatasetRows() {
     printLine,
     sanitize: sanitizeTerminalText,
   })
+  if (exitCode !== 0) process.exitCode = exitCode
 }
 
 async function deleteDatasetRows() {
@@ -533,30 +534,16 @@ async function deleteDatasetRows() {
     datasetId = selected.datasetId
   }
 
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/rows`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      rowIds,
-    }),
+  const { deleteDatasetRows: runDeleteDatasetRows } = await import('./dataset-row-workflow.js')
+  const exitCode = await runDeleteDatasetRows({
+    datasetId,
+    rowIds,
+    json: hasJsonFlag(),
+    printJson,
+    printLine,
+    sanitize: sanitizeTerminalText,
   })
-
-  if (!response.ok) {
-    throw new Error(`Delete rows failed: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    dataset: { id: string; name: string; rowCount: number }
-    deletedCount: number
-  }>(response, 'Dataset delete rows')
-
-  if (hasJsonFlag()) {
-    printJson({ dataset: data.dataset, deletedCount: data.deletedCount })
-    return
-  }
-  printLine(
-    `Deleted ${data.deletedCount} rows from dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). New row count: ${data.dataset.rowCount}`
-  )
+  if (exitCode !== 0) process.exitCode = exitCode
 }
 
 async function confirmDatasetDeletion(dataset: DatasetSelection) {

@@ -501,6 +501,15 @@ or interactive selection. SIGINT/SIGTERM closes append's owned JSONL reader and
 in-flight transport; retained interactive selection keeps ordinary process signal
 termination. Append adds no transient write retries or write deduplication.
 
+Dataset `edit-rows` and `delete-rows` use the same transfer deadline for each
+request, including its response body. When a request times out, loses its
+connection or gets a server error or a malformed reply, the message says the
+change may already be applied (or removed): check those rows before retrying.
+A refusal from the server (for example, a locked dataset) leaves `edit-rows`
+with the usual retry advice, and reports `delete-rows` as refused.
+SIGINT/SIGTERM aborts the request in flight and exits 130/143. Neither command
+retries a write automatically.
+
 
 ## Interactive And Automated Usage
 
