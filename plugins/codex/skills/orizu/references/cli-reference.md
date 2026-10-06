@@ -192,10 +192,17 @@ Profile, never a version, and exposes no fallback or affected-Profile list.
 `default move` repoints
 Default to the named Profile without moving Production; if that Profile is
 unpromoted, bare resolution refuses with `instruction_set_profile_not_promoted`.
-`shape add` and `shape remove` create a new complete version for every profile;
-they never move Default or a Production label. The set does not resolve for affected model
-configs until those pointers move to the new shape-change profile versions; the
-text CLI prints the required follow-up commands.
+`shape add` and `shape remove` work only until the first promotion of any
+profile. They create a new complete unpromoted version for every profile and
+never move Default or a Production label. First promotion permanently freezes
+the shape; changing component names after publication requires a new instruction
+set, even after archiving or removing production pointers. Every set that
+existed when this rule shipped is already frozen, including drafts, so a 409
+`Instruction set shape is permanently frozen` on an existing set means: create a
+new instruction set. If sync or a run refuses with
+`instruction_set_production_shape_mismatch`, the Production version predates the
+freeze and disagrees with the set's components; hand off creating and promoting
+a compatible version to a human. Exact `@vN` sync still works.
 
 The manifest is a JSON object with `name`, optional unversioned `description`,
 ordered `shape`, and `components`. The description belongs to the instruction

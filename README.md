@@ -195,8 +195,8 @@ Agents are first-class users of this CLI: **every command supports `--json`**
 (as a prefix, `orizu --json teams list`, or a trailing flag) and emits a single
 machine-readable JSON document instead of formatted text. Discover the full
 command surface, including global options, with `orizu capabilities --json`.
-Hosted agents may read and sync instruction sets, create profile seeds, run shape add/remove with team-scoped curator authority, and prepare complete manifests. A local coding agent using the user's token runs instruction create, push, shape add/remove, archive, and restore itself after plan ratification. It gathers only read-only pointer-resolution and binding evidence; a human curator executes every production/default pointer command on every surface.
-In a hosted session, a human curator using the local CLI must run create/push, archive/restore, and every pointer command; shape add/remove stays agent-runnable because it creates unpromoted heads only.
+Hosted agents may read and sync instruction sets, create profile seeds, run shape add/remove before first promotion with team-scoped curator authority, and prepare complete manifests. A local coding agent using the user's token runs instruction create, push, shape add/remove, archive, and restore itself after plan ratification. It gathers only read-only pointer-resolution and binding evidence; a human curator executes every production/default pointer command on every surface.
+In a hosted session, a human curator using the local CLI must run create/push, archive/restore, and every pointer command; shape add/remove stays agent-runnable before first promotion because it creates unpromoted heads only; sets that existed when the freeze shipped are already frozen. The first promotion of any profile permanently freezes component names; a changed published shape requires a new instruction set, even after archiving or removing production pointers.
 
 ## Authentication
 

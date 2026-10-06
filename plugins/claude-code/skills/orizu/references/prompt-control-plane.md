@@ -67,17 +67,21 @@ display name. Archiving changes list visibility only, so archived sets still res
 and sync; use `--status archived` or `--status all` to find them before
 restoring.
 
-Shape changes create unpromoted profile heads but leave the default and
-production pointers in place. The instruction set does not resolve for affected
-model configs until those pointers move to their new shape-change versions; use
-the follow-up commands printed by the text CLI.
+Shape add/remove works only until the first promotion of any profile. Draft
+shape changes create unpromoted profile heads and leave Default in place. First
+promotion permanently freezes component names; changing a published shape
+requires a new instruction set, even after archiving or removing production
+pointers. Sets that existed when this rule shipped are frozen too, including
+drafts. `instruction_set_production_shape_mismatch` means a pre-freeze Production
+version disagrees with the set's components; a human must promote a compatible
+version, and exact `@vN` sync still works meanwhile.
 
 `default show` reports the Default Profile and the Version its Production
 currently names, or `null` when that Profile is unpromoted. `default move`
 targets a Profile by model-config identity, never a Version, and does not move
 Production. Moving Default to an unpromoted Profile makes bare resolution refuse
 with `instruction_set_profile_not_promoted`; no other Profile falls back to it.
-Shape changes create a new `shape_change` Version for every Profile; they do not
+Before first promotion, shape changes create a new `shape_change` Version for every Profile; they do not
 repoint Default or any Production label.
 
 Sync an offline runner directory with `orizu instructions sync planner
