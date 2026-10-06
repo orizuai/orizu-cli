@@ -155,6 +155,8 @@ import {
   setDatasetReadme,
   createDatasetVersion,
   createDatasetSplitSet,
+  listDatasetSplitSets,
+  showDatasetSplitSet,
   editDatasetRows,
   deleteDatasetRows,
   deleteDataset,
@@ -2137,6 +2139,14 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
   if (command === 'datasets' && subcommand === 'versions' && datasetsAction === 'create') {
     await createDatasetVersion()
+    return
+  }
+  if (command === 'datasets' && subcommand === 'splits' && datasetsAction === 'list') {
+    await listDatasetSplitSets()
+    return
+  }
+  if (command === 'datasets' && subcommand === 'splits' && datasetsAction === 'show') {
+    await showDatasetSplitSet()
     return
   }
   if (command === 'datasets' && subcommand === 'splits' && datasetsAction === 'create') {

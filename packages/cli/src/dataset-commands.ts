@@ -6,6 +6,7 @@ import { createInterface } from 'readline/promises'
 import { stdin as input, stdout as output } from 'process'
 import {
   getArg,
+  hasArg,
   expandHomePath,
   getPositionalArg,
   hasJsonFlag,
@@ -174,6 +175,36 @@ async function createDatasetVersion() {
   )
 }
 
+async function listDatasetSplitSets() {
+  const versionId = getPositionalArg(3)
+  if (!versionId) throw new Error('Usage: orizu datasets splits list <datasetVersionId> [--json]')
+  const { listDatasetSplits } = await import('./dataset-split-reads.js')
+  const data = await listDatasetSplits(versionId)
+  if (hasJsonFlag()) return printJson({ ...data })
+  printLine(`Dataset version ${sanitizeTerminalText(data.dataset_version_id)}`)
+  for (const set of data.split_sets) {
+    printLine(`${sanitizeTerminalText(set.name)} (${sanitizeTerminalText(set.id)})`)
+    for (const partition of set.partitions) printLine(`  ${sanitizeTerminalText(partition.name)}: ${partition.row_count} rows`)
+  }
+  if (!data.split_sets.length) printLine('No saved split sets.')
+}
+
+async function showDatasetSplitSet() {
+  const setId = getPositionalArg(3)
+  if (!setId) throw new Error('Usage: orizu datasets splits show <splitSetId> [--json]')
+  const { showDatasetSplit } = await import('./dataset-split-reads.js')
+  const data = await showDatasetSplit(setId)
+  if (hasJsonFlag()) return printJson({ ...data })
+  printLine(`${sanitizeTerminalText(data.name)} (${sanitizeTerminalText(data.split_set_id)})`)
+  printLine(`Dataset version: ${sanitizeTerminalText(data.dataset_version_id)}`)
+  printLine(`Strategy: ${sanitizeTerminalText(data.strategy)}; seed: ${data.seed ?? 'none'}`)
+  printLine(`Metadata: ${sanitizeTerminalText(JSON.stringify(data.metadata))}`)
+  for (const partition of data.partitions) {
+    printLine(`${sanitizeTerminalText(partition.name)}: ${partition.row_ids.length} rows`)
+    for (const id of partition.row_ids) printLine(`  ${sanitizeTerminalText(id)}`)
+  }
+}
+
 async function createDatasetSplitSet() {
   const datasetVersionId = getPositionalArg(3) || getArg('--dataset-version')
   const splitFile = getArg('--from-file')
@@ -194,7 +225,7 @@ async function createDatasetSplitSet() {
   }
 
   const partitions = splitSpec && Array.isArray(splitSpec.partitions) ? splitSpec.partitions : undefined
-  const metadata = splitSpec && typeof splitSpec.metadata === 'object' && splitSpec.metadata !== null
+  const metadata = splitSpec && Object.prototype.hasOwnProperty.call(splitSpec, 'metadata')
     ? splitSpec.metadata
     : undefined
 
@@ -407,6 +438,21 @@ async function downloadDataset() {
 
   if (!['csv', 'json', 'jsonl'].includes(format)) {
     throw new Error('format must be one of: csv, json, jsonl')
+  }
+
+  const versionId = getArg('--dataset-version'), setId = getArg('--split-set')
+  const inlineSplit = cliArgs.find(argument => argument.startsWith('--split='))
+  const split = inlineSplit === undefined ? getArg('--split') : inlineSplit.slice('--split='.length)
+  if (['--dataset-version', '--split-set', '--split'].some(flag => hasArg(flag) || cliArgs.some(argument => argument.startsWith(`${flag}=`)))) {
+    if (!versionId || !setId || !split || [versionId, setId].some(value => value.startsWith('--')) || (inlineSplit === undefined && split.startsWith('--'))) throw new Error('Pinned download requires --dataset-version, --split-set and --split together')
+    if (datasetInput) throw new Error('Use --dataset-version with split selectors without a live --dataset or dataset argument')
+    if (format === 'csv') throw new Error('Pinned download format must be json or jsonl')
+    const filename = outPathArg ? expandHomePath(outPathArg) : `${versionId}.${format}`
+    const { downloadPinnedDatasetSplit } = await import('./dataset-split-reads.js')
+    await downloadPinnedDatasetSplit(versionId, setId, split, format, filename)
+    if (hasJsonFlag()) return printJson({ dataset_version_id: versionId, split_set_id: setId, split, format, savedTo: filename })
+    printLine(`Saved split ${sanitizeTerminalText(split)} from dataset version ${sanitizeTerminalText(versionId)} (${format.toUpperCase()}) to ${sanitizeTerminalText(filename)}`)
+    return
   }
 
   let datasetId: string
@@ -694,6 +740,8 @@ export {
   setDatasetReadme,
   createDatasetVersion,
   createDatasetSplitSet,
+  listDatasetSplitSets,
+  showDatasetSplitSet,
   editDatasetRows,
   deleteDatasetRows,
   deleteDataset,

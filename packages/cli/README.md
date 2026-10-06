@@ -337,6 +337,10 @@ orizu logout
     <td><code>orizu datasets download --dataset &lt;datasetId&gt; --format jsonl --out ./dataset.jsonl</code></td>
   </tr>
   <tr>
+    <td>Inspect saved splits and download validation rows</td>
+    <td><code>orizu datasets splits list &lt;datasetVersionId&gt; --json</code><br><code>orizu datasets splits show &lt;splitSetId&gt; --json</code><br><code>orizu datasets download --dataset-version &lt;datasetVersionId&gt; --split-set &lt;splitSetId&gt; --split validation --format jsonl --out ./validation.jsonl</code></td>
+  </tr>
+  <tr>
     <td>Append dataset rows</td>
     <td><code>orizu datasets append --dataset &lt;datasetId&gt; --file ./datasets/support-extra.jsonl</code></td>
   </tr>
@@ -514,3 +518,43 @@ Use `--json` on supported task and app commands when automation needs structured
 - [skills/orizu/references/cli-reference.md](skills/orizu/references/cli-reference.md): compact command matrix and end-to-end flows
 
 If the server loses or cannot decode a database append acknowledgement, it preserves the request's prepared row artifacts because rows may already reference them. Unknown outcomes require inspection; automatic orphan reconciliation and write deduplication are not promised. Known SQL refusals clean up only that request's newly prepared artifacts.
+
+### Enrich validation rows while preserving split assignments
+
+Start with the immutable dataset version ID returned by dataset upload or version
+creation. List its saved split sets, then inspect one set to find the exact
+partition name (custom names and empty partitions are retained):
+
+```bash
+orizu datasets splits list DATASET_VERSION_ID --json
+orizu datasets splits show SPLIT_SET_ID --json > split.json
+orizu datasets download --dataset-version DATASET_VERSION_ID --split-set SPLIT_SET_ID --split validation --format jsonl --out validation.jsonl
+```
+
+`validation.jsonl` contains only that partition, in its saved order. Each row has
+its canonical `id` and the fields stored in that version. These reads stay fixed
+when the live dataset changes. No prompt, runner, scorer or optimization is needed.
+
+The assignment JSON retains set and partition metadata, including arrays, scalars
+and null values, together with exact saved memberships.
+
+Enrich the exported rows in your own workflow, keeping every `id` unchanged.
+Combine them with the other rows when preparing the complete enriched dataset.
+After uploading that dataset or creating its version, use the new version's ID
+explicitly to reuse every original assignment:
+
+```bash
+orizu datasets splits create TARGET_DATASET_VERSION_ID --from-file split.json --json
+```
+
+The import accepts the `name`, `strategy`, `seed`, `metadata` and
+`partitions: [{name, row_ids}]` from show JSON. Source identity is for inspection;
+the command's target version decides where assignments are created. Every
+referenced canonical row ID must exist in that target. Missing IDs fail instead
+of being dropped or remapped. Unknown or inaccessible versions, sets or names,
+mismatched selectors and incomplete artifacts fail; pinned reads never fall back
+to live data. Existing live downloads remain available with `--dataset`.
+
+For saved split names beginning with `--`, use the unambiguous equals spelling:
+`orizu datasets download --dataset-version DATASET_VERSION_ID --split-set SPLIT_SET_ID --split=--validation --format jsonl --out validation.jsonl`.
+The same spelling supports `--split=--json` and `--split=--help`; all pinned selectors remain required.

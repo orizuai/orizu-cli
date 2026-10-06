@@ -351,6 +351,40 @@ orizu datasets lock --dataset <datasetId|datasetUrl> --reason "Finalize for labe
 orizu datasets clone --dataset <datasetId|datasetUrl> --name "Batch 1 Copy"
 ```
 
+For validation-first enrichment, start with an explicit immutable version ID
+returned by upload or version creation. Discover the saved names, export the
+assignments, then download only the selected partition:
+
+```bash
+orizu datasets splits list DATASET_VERSION_ID --json
+orizu datasets splits show SPLIT_SET_ID --json > split.json
+orizu datasets download --dataset-version DATASET_VERSION_ID --split-set SPLIT_SET_ID --split validation --format jsonl --out validation.jsonl
+```
+
+The download retains canonical `id` values and existing fields in saved partition
+order; `--format json` is also supported. Custom partition names and empty splits
+are valid. Pinned reads remain unchanged after live row edits and require no
+prompt, runner, scorer or optimization. Unknown/inaccessible or mismatched
+selectors and incomplete artifacts fail without live-data fallback.
+
+For saved split names beginning with `--`, use the unambiguous equals spelling:
+`orizu datasets download --dataset-version DATASET_VERSION_ID --split-set SPLIT_SET_ID --split=--validation --format jsonl --out validation.jsonl`.
+The same spelling supports `--split=--json` and `--split=--help`; all pinned selectors remain required.
+
+Enrich rows outside Orizu, preserving every canonical `id`. Assemble the complete
+enriched dataset, including other partitions, and upload or version it. Import
+assignments into the explicit new version:
+
+```bash
+orizu datasets splits create TARGET_DATASET_VERSION_ID --from-file split.json --json
+```
+
+Show JSON preserves `name`, `strategy`, `seed`, `metadata`, and
+`partitions: [{name, row_ids, metadata}]`. Set and partition metadata retain
+their JSON values, including arrays, scalars and null. Source identity never overrides the command's
+target. Every referenced ID must exist in the target; missing IDs fail rather
+than being dropped or remapped. Reads follow existing project permissions.
+
 Dataset version and split-set commands used by prompt runs are covered in `prompt-control-plane.md`.
 
 ### Model configs

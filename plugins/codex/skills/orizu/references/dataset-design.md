@@ -73,7 +73,7 @@ orizu datasets splits create <upload-returned-dataset-version-id> --from-file ./
 
 Reserve `orizu datasets versions create` for a subsequent snapshot, and give it a new label such as `v2`; labels are unique within a dataset. The dataset README should record source approval, source locators, sampling decisions, deduplication rules, the coverage table, ground-truth status, and the split rationale.
 
-The dataset version freezes its rows. Server-side split membership is mutable, but the CLI exposes no split-set read operation, so membership cannot be re-read through the CLI. Treat the independently reviewed local split file plus the returned split-set ID as the canonical record available to this workflow. Do not mutate that server-side split set; pass the recorded `--dataset-version-id` and `--split-set-id` to `orizu optimizations run-gepa`, and record the CLI verification gap explicitly rather than claiming the server membership was re-verified.
+The dataset version freezes its rows. After creating the split set, re-read its saved membership with `orizu datasets splits show <split-set-id> --json` and confirm it matches the reviewed local split file before relying on it; the saved split set, not the local file, is the canonical record. Do not mutate that server-side split set; pass the recorded `--dataset-version-id` and `--split-set-id` to `orizu optimizations run-gepa`.
 
 ## Guard live rows before annotation and version later data
 
