@@ -12,6 +12,9 @@
   "bin": {
     "orizu": "dist/index.js"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "files": [
     "README.md",
     "dist",

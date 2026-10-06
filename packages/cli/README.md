@@ -19,7 +19,7 @@ Note: the one task we do _not_ let you perform from your CLI is any reviews assi
 
 ## Requirements
 
-- [Node.js 20+](https://nodejs.org/en/download)
+- [Node.js 22+](https://nodejs.org/en/download)
 - Access to an Orizu web app/API
 - A valid Orizu account
 

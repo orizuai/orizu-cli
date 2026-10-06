@@ -16,7 +16,7 @@ The CLI supports:
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - Running Orizu web app/API (login and API commands default to `https://app.orizu.ai`; custom/local server overrides are supported)
 - Valid Orizu account
 
