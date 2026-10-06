@@ -509,17 +509,25 @@ function removeObservedSyncLock(lockPath: string, observed: ObservedSyncLock): b
   return true
 }
 
-export function withSyncLock<T>(appRoot: string, operation: () => T): T {
+export interface SyncLockClaim { lockPath: string; metadata: string; deadline: number }
+
+export function startSyncLockClaim(appRoot: string): SyncLockClaim {
   mkdirSync(appRoot, { recursive: true })
-  const lockPath = join(appRoot, '.orizu.lock.json.lock')
-  const metadata = `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`
   const lockWaitMs = processTestMilliseconds(
     'ORIZU_TEST_SYNC_LOCK_WAIT_MS',
     100,
     SYNC_LOCK_WAIT_MS
   ) ?? SYNC_LOCK_WAIT_MS
-  const deadline = Date.now() + lockWaitMs
+  return {
+    lockPath: join(appRoot, '.orizu.lock.json.lock'),
+    metadata: `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+    deadline: Date.now() + lockWaitMs,
+  }
+}
 
+// One claim attempt: returns the release function, or how long to wait before
+// trying again. Waiting is the caller's job so it can be blocking or not.
+export function tryClaimSyncLock({ lockPath, metadata, deadline }: SyncLockClaim): (() => void) | number {
   while (true) {
     try {
       writeFileSync(lockPath, metadata, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
@@ -540,16 +548,25 @@ export function withSyncLock<T>(appRoot: string, operation: () => T): T {
       if (Date.now() >= deadline) {
         throw new Error(`instruction_set_sync_lock_busy${busyPid === undefined ? '' : `:${busyPid}`}`)
       }
-      sleepSync(Math.min(SYNC_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())))
+      return Math.min(SYNC_LOCK_RETRY_MS, Math.max(1, deadline - Date.now()))
     }
   }
 
-  const release = () => {
+  return () => {
     try {
       if (readFileSync(lockPath, 'utf8') === metadata) rmSync(lockPath)
     } catch (error) {
       if (!(isNodeError(error) && error.code === 'ENOENT')) throw error
     }
+  }
+}
+
+export function withSyncLock<T>(appRoot: string, operation: () => T): T {
+  const claim = startSyncLockClaim(appRoot)
+  let release = tryClaimSyncLock(claim)
+  while (typeof release === 'number') {
+    sleepSync(release)
+    release = tryClaimSyncLock(claim)
   }
   let result: T
   try {
@@ -600,6 +617,16 @@ export interface SyncDiskOptions {
   platform?: NodeJS.Platform
 }
 
+export interface StagedSync {
+  appRoot: string
+  destination: string
+  wasPresent: boolean
+  /** Publishes the staged version; the caller must hold the folder lock. Returns warnings. */
+  publish: () => string[]
+  /** Removes the staged version if it was not published. Safe to call more than once. */
+  discard: () => void
+}
+
 export function syncPayloadToDisk(
   out: string,
   project: string,
@@ -607,6 +634,22 @@ export function syncPayloadToDisk(
   payload: SyncPayload,
   options: SyncDiskOptions = {}
 ): SyncDiskResult {
+  const staged = stageSyncPayload(out, project, plan, payload, options)
+  try {
+    const warnings = withSyncLock(staged.appRoot, staged.publish)
+    return { destination: staged.destination, wasPresent: staged.wasPresent, warnings }
+  } finally {
+    staged.discard()
+  }
+}
+
+export function stageSyncPayload(
+  out: string,
+  project: string,
+  plan: SyncRequestPlan,
+  payload: SyncPayload,
+  options: SyncDiskOptions = {}
+): StagedSync {
   const target = parseSyncTarget(options.target)
   const now = options.now ?? (() => new Date())
   const set = payload.instructionSet
@@ -717,9 +760,11 @@ export function syncPayloadToDisk(
     assertExistingVersionMatches(destination, componentHashes, manifestBytes, generatedBytes)
   }
 
-  let warnings: string[] = []
-  try {
-    withSyncLock(appRoot, () => {
+  return {
+    appRoot,
+    destination,
+    wasPresent,
+    publish: () => {
       holdForProcessTest('ORIZU_TEST_SYNC_HOLD_BEFORE_PUBLISH_MS')
       const currentLock = readLock(appRoot, project)
       holdForProcessTest('ORIZU_TEST_SYNC_HOLD_LOCK_MS')
@@ -786,8 +831,9 @@ export function syncPayloadToDisk(
           }
           stagedTemp = null
         }
-        warnings = emitManagedArtifacts(out, appRoot, currentLock, options.forceHelpers ?? false, target, journal)
+        const warnings = emitManagedArtifacts(out, appRoot, currentLock, options.forceHelpers ?? false, target, journal)
         journal.write(join(appRoot, 'orizu.lock.json'), serializeLock(currentLock))
+        return warnings
       } catch (error) {
         journal.rollback()
         currentLock.helpers = priorHelpers
@@ -802,9 +848,10 @@ export function syncPayloadToDisk(
         }
         throw error
       }
-    })
-  } finally {
-    if (stagedTemp) rmSync(stagedTemp, { recursive: true, force: true })
+    },
+    discard: () => {
+      if (stagedTemp) rmSync(stagedTemp, { recursive: true, force: true })
+      stagedTemp = null
+    },
   }
-  return { destination, wasPresent, warnings }
 }

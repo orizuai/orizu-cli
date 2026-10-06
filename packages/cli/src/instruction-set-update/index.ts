@@ -11,7 +11,7 @@ import {
   type InstructionSetLockV1,
 } from '../instruction-set-lock/index.js'
 import { assertOutputConfined, reconcileGeneratedIndex } from '../instruction-set-sync/helpers.js'
-import { profileSlug, recordResolvedPayloadInLock, syncPayloadToDisk, withSyncLock, type SyncPayload } from '../instruction-set-sync/index.js'
+import { profileSlug, recordResolvedPayloadInLock, syncPayloadToDisk, withSyncLock, type SyncDiskResult, type SyncPayload } from '../instruction-set-sync/index.js'
 import { verifyInstructionSetTree, verifyMaterializedVersionAgainstLock } from '../instruction-set-verify/index.js'
 
 export interface UpdateResolution {
@@ -222,7 +222,8 @@ export async function applyUpdate(
   project: string,
   plan: UpdatePlan,
   noSync: boolean,
-  now: () => Date = () => new Date()
+  now: () => Date = () => new Date(),
+  sync: (...args: Parameters<typeof syncPayloadToDisk>) => SyncDiskResult | Promise<SyncDiskResult> = syncPayloadToDisk
 ): Promise<UpdateResult> {
   const absent: string[] = []
   const warnings: string[] = []
@@ -271,7 +272,7 @@ export async function applyUpdate(
   let lock = plan.lock
   for (const resolution of plan.resolutions) {
     const set = resolution.payload.instructionSet
-    const result = syncPayloadToDisk(out, project, {
+    const result = await sync(out, project, {
       parsed: { set: set.slug, profile: resolution.profileIdentity },
       path: '',
       lock,

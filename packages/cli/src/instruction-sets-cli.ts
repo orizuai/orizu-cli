@@ -1,9 +1,9 @@
 import { authedFetch } from './http.js'
 import { INSTRUCTION_SET_COMPONENT_KEY } from './instruction-set-lock/index.js'
 import { loadInstructionSetManifest, MAX_INSTRUCTION_SET_COMPONENT_BYTES, type InstructionSetManifest } from './instruction-set-manifest.js'
-import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
-import { parseSyncTarget, planSyncRequest, syncPayloadToDisk, type SyncPayload, type SyncTarget } from './instruction-set-sync/index.js'
-import { applyPrune, applyUpdate, lockedProfileIdentity, makeUpdatePlan, planPrune, PruneKeepUnresolvedError, readUpdateLock } from './instruction-set-update/index.js'
+import { responsePayload, sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
+import { parseSyncTarget, planSyncRequest, type SyncTarget } from './instruction-set-sync/index.js'
+import { applyPrune, planPrune, PruneKeepUnresolvedError } from './instruction-set-update/index.js'
 import { printVerifyReport, verifyInstructionSetTree } from './instruction-set-verify/index.js'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -74,12 +74,8 @@ function lifecycleOptionValues(args: string[], command: 'update' | 'prune', flag
   return values
 }
 
-async function responsePayload(response: Response, action: string): Promise<Record<string, unknown>> {
-  const payload = await response.json().catch(() => ({})) as Record<string, unknown>
-  if (!response.ok) {
-    throw new Error(`${action} failed (${response.status}): ${typeof payload.error === 'string' ? payload.error : response.statusText}`)
-  }
-  return payload
+function printInterrupted(io: InstructionSetsCommandIo, message: string) {
+  io.print(io.json ? JSON.stringify({ error: message }) : message)
 }
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
@@ -340,23 +336,14 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   const project = await io.resolveProjectSlug(projectOption)
   if (subcommand === 'update') {
     const output = lifecycleOptionValues(args, 'update', '--out')[0] ?? '.'
-    const lock = readUpdateLock(output, project)
-    const payloads: SyncPayload[] = []
-    for (const [setSlug, set] of Object.entries(lock.instructionSets)) {
-      const barePath = `/api/cli/instruction-sets/${encodeURIComponent(setSlug)}/sync?project=${encodeURIComponent(project)}`
-      payloads.push(await responsePayload(await authedFetch(barePath, { method: 'GET' }), 'Instruction sets update') as unknown as SyncPayload)
-      for (const profileSlugValue of Object.keys(set.profiles)) {
-        const identity = lockedProfileIdentity(output, setSlug, profileSlugValue)
-        const query = new URLSearchParams({ project, profile: identity })
-        const path = `/api/cli/instruction-sets/${encodeURIComponent(setSlug)}/sync?${query.toString()}`
-        payloads.push(await responsePayload(await authedFetch(path, { method: 'GET' }), 'Instruction sets update') as unknown as SyncPayload)
-      }
-    }
-    const plan = makeUpdatePlan(project, lock, payloads)
     const isApproved = args.includes('--yes')
-    const result = isApproved
-      ? await applyUpdate(output, project, plan, args.includes('--no-sync'))
-      : { absent: [], warnings: [] }
+    const { updateInstructionSets } = await import('./instruction-delivery.js')
+    const updated = await updateInstructionSets(output, project, isApproved, args.includes('--no-sync'))
+    if ('interrupted' in updated) {
+      printInterrupted(io, 'Instruction sets update interrupted; some sets may already be updated. Run orizu instructions update again, then orizu instructions verify.')
+      return updated.interrupted
+    }
+    const { plan, result } = updated
     if (io.json) io.print(JSON.stringify({ plan: plan.lines, applied: isApproved, absent: result.absent, warnings: result.warnings }))
     else {
       for (const line of plan.lines) io.print(line)
@@ -527,11 +514,16 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     if (unknownOption) throw new Error(`instruction_set_sync_option_unknown:${unknownOption}`)
     const output = requiredOptionValue(args, subcommand, '--out') ?? '.'
     const plan = planSyncRequest(reference, requiredOptionValue(args, subcommand, '--version'), output, project)
-    const payload = await responsePayload(await authedFetch(plan.path, { method: 'GET' }), 'Instruction sets sync') as unknown as SyncPayload
-    const result = syncPayloadToDisk(output, project, plan, payload, {
+    const { syncInstructionSet } = await import('./instruction-delivery.js')
+    const delivered = await syncInstructionSet(output, project, plan, {
       forceHelpers: args.includes('--force-helpers'),
       target: syncTarget!,
     })
+    if ('interrupted' in delivered) {
+      printInterrupted(io, 'Instruction set sync interrupted; any unpublished staged version was removed. Run orizu instructions sync again.')
+      return delivered.interrupted
+    }
+    const { payload, result } = delivered
     if (io.json) io.print(JSON.stringify({ ...payload, warnings: result.warnings }))
     else {
       io.print(`Synced ${reference} to ${result.destination}`)

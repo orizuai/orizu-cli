@@ -35,3 +35,11 @@ export async function parseJsonResponse<T>(
     )
   }
 }
+
+export async function responsePayload(response: Response, action: string): Promise<Record<string, unknown>> {
+  const payload = await response.json().catch(() => ({})) as Record<string, unknown>
+  if (!response.ok) {
+    throw new Error(`${action} failed (${response.status}): ${typeof payload.error === 'string' ? payload.error : response.statusText}`)
+  }
+  return payload
+}
