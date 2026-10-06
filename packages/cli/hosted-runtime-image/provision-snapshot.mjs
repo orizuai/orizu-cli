@@ -85,6 +85,14 @@ function sandboxToolsSteps() {
 export function sandboxToolsCheck() { return `bash -c ${shellQuote(SANDBOX_TOOLS_CHECK)}` }
 const sandboxToolsCheckStep = () => execStep('verify sandbox tools (ripgrep + a real app preview)', sandboxToolsCheck())
 
+export const HOSTED_HARVEST_CA_BUNDLE_CANDIDATES = [
+  '/etc/pki/tls/certs/ca-bundle.crt',
+  '/etc/ssl/certs/ca-certificates.crt',
+  '/etc/ssl/cert.pem',
+]
+export const harvestCaBundleCheck = () =>
+  `( for p in ${HOSTED_HARVEST_CA_BUNDLE_CANDIDATES.map(shellQuote).join(' ')}; do if test -f "$p"; then test -s "$p" && exit 0; break; fi; done; echo "no non-empty certificate bundle for saving" >&2; exit 1 )`
+
 function skilledProposerSteps() {
   return [
     execStep('prepare skilled-proposer cache', 'sudo mkdir -p /opt/orizu/cache/skilled-proposer && sudo chown -R "$(id -u):$(id -g)" /opt/orizu/cache/skilled-proposer'),
@@ -169,7 +177,7 @@ export function orizuSkillCheck(cliDir = CLI_DIR) {
  *  again in a sandbox started from the captured snapshot (check-snapshot-starts.mjs). */
 export function publishedBootProof(braintrustPyVersion = DEFAULT_BRAINTRUST_PY_VERSION) {
   return (
-    `${cliOnPathCheck()} && ${orizuSkillCheck()} && command -v opencode && ` +
+    `${cliOnPathCheck()} && ${harvestCaBundleCheck()} && ${orizuSkillCheck()} && command -v opencode && ` +
     `orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
     `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
     `${claudeSdkImportProbe()} && ` +
@@ -252,7 +260,7 @@ export function buildProvisionSteps({
     execStep('install prebaked marker', `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}`),
     execStep('verify git + ssh client present (merge-job runtime requirement)', 'git --version && ssh -V'),
     execStep('verify bake (orizu + opencode + hosted-loop + braintrust)',
-        `${orizuSkillCheck()} && command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
+        `${harvestCaBundleCheck()} && ${orizuSkillCheck()} && command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
         `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
         braintrustVerify(braintrustPyVersion)),
     sandboxToolsCheckStep(),
