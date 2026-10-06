@@ -516,6 +516,14 @@ reply, the message says the dataset may already be locked: running `lock` again
 is safe and shows its current state. A refusal from the server keeps its usual
 message. Lock keeps ordinary process signal termination and never retries.
 
+Dataset `delete` asks you to type the dataset id first, then uses the same
+transfer deadline for its request, including the response body. After a
+timeout, a lost connection, a server error or a malformed reply, the message
+says the dataset may already be deleted: check with
+`orizu datasets list --status all` before retrying. When tasks or app versions
+still use the dataset, the refusal also names `orizu datasets archive <id>`.
+Delete keeps ordinary process signal termination and never retries.
+
 
 ## Interactive And Automated Usage
 

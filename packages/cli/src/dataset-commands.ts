@@ -583,23 +583,14 @@ async function deleteDataset() {
 
   await confirmDatasetDeletion(dataset)
 
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(dataset.datasetId)}`, {
-    method: 'DELETE',
-  })
-
-  if (!response.ok) {
-    throw new Error(`Delete failed: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    dataset: { id: string }
-  }>(response, 'Dataset delete')
+  const { deleteDataset: requestDelete } = await import('./dataset-delete-workflow.js')
+  const deleted = await requestDelete(dataset.datasetId, projectArg ?? dataset.project ?? null)
 
   if (hasJsonFlag()) {
-    printJson({ dataset: data.dataset, deleted: true })
+    printJson({ dataset: deleted, deleted: true })
     return
   }
-  printLine(`Deleted dataset ${sanitizeTerminalText(data.dataset.id)}.`)
+  printLine(`Deleted dataset ${sanitizeTerminalText(deleted.id)}.`)
 }
 
 async function lockDataset() {
