@@ -615,32 +615,15 @@ async function lockDataset() {
     datasetId = selected.datasetId
   }
 
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/lock`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(reason ? { reason } : {}),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Lock failed: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    dataset: {
-      id: string
-      name: string
-      rowCount: number
-      lockedAt: string
-      lockedBy: string | null
-    }
-  }>(response, 'Dataset lock')
+  const { lockDataset: requestLock } = await import('./dataset-lock-workflow.js')
+  const dataset = await requestLock(datasetId, reason)
 
   if (hasJsonFlag()) {
-    printJson({ dataset: data.dataset })
+    printJson({ dataset })
     return
   }
   printLine(
-    `Locked dataset ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}) at ${sanitizeTerminalText(data.dataset.lockedAt)}. Row count: ${data.dataset.rowCount}`
+    `Locked dataset ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}) at ${sanitizeTerminalText(dataset.lockedAt)}. Row count: ${dataset.rowCount}`
   )
 }
 

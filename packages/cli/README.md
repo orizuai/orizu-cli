@@ -510,6 +510,12 @@ with the usual retry advice, and reports `delete-rows` as refused.
 SIGINT/SIGTERM aborts the request in flight and exits 130/143. Neither command
 retries a write automatically.
 
+Dataset `lock` uses the same transfer deadline for its request, including the
+response body. After a timeout, a lost connection, a server error or a malformed
+reply, the message says the dataset may already be locked: running `lock` again
+is safe and shows its current state. A refusal from the server keeps its usual
+message. Lock keeps ordinary process signal termination and never retries.
+
 
 ## Interactive And Automated Usage
 
