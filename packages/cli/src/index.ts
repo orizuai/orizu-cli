@@ -2262,10 +2262,10 @@ function isCliEntrypoint(): boolean {
 if (isCliEntrypoint()) {
   const rawArgs = process.argv.slice(2)
   withPassiveUpdateNotice(rawArgs, getCliVersion, printError, args =>
-    main(args).catch(error => {
+    main(args).catch(async error => {
       const message = error instanceof Error ? error.message : 'Unknown error'
       // The reporter email is unknown on the failure path, so the record masks every address.
-      writeLastErrorRecord({
+      await writeLastErrorRecord({
         argv: args,
         message,
         code: extractLastErrorCode(error),

@@ -1,16 +1,3 @@
-import { randomBytes } from 'crypto'
-import {
-  chmodSync,
-  closeSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -235,7 +222,7 @@ function resolveHomeDir(): string | null {
   }
 }
 
-function isStringWithinCap(
+export function isStringWithinCap(
   value: unknown,
   maximumCharacters: number,
   wasTruncated: boolean
@@ -247,43 +234,10 @@ function isStringWithinCap(
     && value.endsWith(LAST_ERROR_TRUNCATION_MARKER)
 }
 
-function boundedServerBaseUrl(value: string | null | undefined): string | null {
+export function boundedServerBaseUrl(value: string | null | undefined): string | null {
   return value && Buffer.byteLength(value, 'utf8') <= LAST_ERROR_SERVER_BASE_URL_MAX_BYTES
     ? value
     : null
-}
-
-function isLastErrorRecord(value: unknown): value is LastErrorRecord {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const record = value as Partial<LastErrorRecord>
-  if (record.version !== LAST_ERROR_RECORD_VERSION) return false
-  if (typeof record.recordedAt !== 'string' || !Number.isFinite(Date.parse(record.recordedAt))) return false
-  if (typeof record.cliVersion !== 'string' && record.cliVersion !== null) return false
-  if (record.code !== undefined && record.code !== null && (
-    typeof record.code !== 'string'
-    || Array.from(record.code).length > LAST_ERROR_CODE_MAX_CHARS
-  )) return false
-  if (record.serverBaseUrl !== undefined && typeof record.serverBaseUrl !== 'string' && record.serverBaseUrl !== null) return false
-  if (record.teamSlug !== undefined && typeof record.teamSlug !== 'string' && record.teamSlug !== null) return false
-  if (typeof record.argvTruncated !== 'boolean') return false
-  const argvTruncated = record.argvTruncated
-  if (record.command !== null && !isStringWithinCap(
-    record.command,
-    LAST_ERROR_ARG_MAX_CHARS,
-    argvTruncated
-  )) return false
-  if (!Array.isArray(record.argv) || record.argv.length > LAST_ERROR_MAX_ARGS) return false
-  if (!record.argv.every(argument => isStringWithinCap(
-    argument,
-    LAST_ERROR_ARG_MAX_CHARS,
-    argvTruncated
-  ))) return false
-  if (typeof record.messageTruncated !== 'boolean') return false
-  return isStringWithinCap(
-    record.message,
-    LAST_ERROR_MESSAGE_MAX_CHARS,
-    record.messageTruncated
-  )
 }
 
 export function buildLastErrorRecord(input: LastErrorRecordInput): LastErrorRecord {
@@ -350,15 +304,12 @@ export function getLastErrorRecordPath(configDir?: string): string {
   return join(configDir ?? getConfigDir(), LAST_ERROR_FILENAME)
 }
 
-export function writeLastErrorRecord(
+export async function writeLastErrorRecord(
   input: LastErrorRecordInput,
   options: WriteLastErrorRecordOptions = {}
-): void {
+): Promise<void> {
   try {
     const configDirectory = options.configDir ?? getConfigDir()
-    mkdirSync(configDirectory, { recursive: true, mode: 0o700 })
-    chmodSync(configDirectory, 0o700)
-
     const record = buildLastErrorRecord({
       ...input,
       homeDir: input.homeDir === undefined ? resolveHomeDir() : input.homeDir,
@@ -371,44 +322,19 @@ export function writeLastErrorRecord(
     const serialized = serializeRecord(record)
     if (Buffer.byteLength(serialized, 'utf8') > LAST_ERROR_FILE_MAX_BYTES) return
 
-    const path = getLastErrorRecordPath(configDirectory)
-    const temporaryPath = join(
-      configDirectory,
-      `.${LAST_ERROR_FILENAME}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
-    )
-
-    try {
-      const fileDescriptor = openSync(temporaryPath, 'wx', 0o600)
-      try {
-        writeFileSync(fileDescriptor, serialized, 'utf8')
-        fsyncSync(fileDescriptor)
-      } finally {
-        closeSync(fileDescriptor)
-      }
-      chmodSync(temporaryPath, 0o600)
-      renameSync(temporaryPath, path)
-      chmodSync(path, 0o600)
-    } finally {
-      rmSync(temporaryPath, { force: true })
-    }
+    const { publishLastErrorRecord } = await import('./last-error-workflow.js')
+    await publishLastErrorRecord(configDirectory, serialized)
   } catch {
-    // A diagnostic record is best effort and must never replace the original CLI failure.
+    // A diagnostic record is best effort and must never replace the original CLI failure,
+    // including when Effect cannot load (a packed CLI without its dependencies).
   }
 }
 
-export function readLastErrorRecord(configDir?: string): LastErrorRecord | null {
+export async function readLastErrorRecord(configDir?: string): Promise<LastErrorRecord | null> {
   try {
     const path = getLastErrorRecordPath(configDir)
-    if (statSync(path).size > LAST_ERROR_FILE_MAX_BYTES) return null
-    const record = JSON.parse(readFileSync(path, 'utf8')) as unknown
-    return isLastErrorRecord(record)
-      ? {
-          ...record,
-          code: record.code ?? null,
-          serverBaseUrl: boundedServerBaseUrl(record.serverBaseUrl),
-          teamSlug: record.teamSlug ?? null,
-        }
-      : null
+    const { loadLastErrorRecord } = await import('./last-error-workflow.js')
+    return await loadLastErrorRecord(path)
   } catch {
     return null
   }

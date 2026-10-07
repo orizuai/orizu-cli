@@ -419,15 +419,15 @@ function resolveProjectContext(
   return { teamSlug: workspaceTeam, projectSlug: null }
 }
 
-function lastErrorForContext(
+async function lastErrorForContext(
   configDirectory: string,
   serverBaseUrl: string,
   teamSlug: string | null,
   now: number,
   printErr: (message: string) => void,
   scrubNotice: (message: string) => string
-): LastErrorRecord | null {
-  const record = readLastErrorRecord(configDirectory)
+): Promise<LastErrorRecord | null> {
+  const record = await readLastErrorRecord(configDirectory)
   if (!record || !isLastErrorRecordShape(record)) return null
   if (teamSlug === null) {
     printErr('last error not attached: no team context')
@@ -633,7 +633,7 @@ export async function feedbackCommand(args: string[], io: FeedbackCliIo): Promis
     const values = { ...fromFile, ...parsed.values }
     const lastError = parsed.suppressLastError
       ? null
-      : lastErrorForContext(
+      : await lastErrorForContext(
         configDirectory,
         baseUrl,
         projectContext.teamSlug,
