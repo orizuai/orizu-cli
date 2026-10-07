@@ -1,6 +1,6 @@
 // ORI-2044: moved from index.ts to keep dataset commands together.
 
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { basename, extname } from 'path'
 import { createInterface } from 'readline/promises'
 import { stdin as input, stdout as output } from 'process'
@@ -668,18 +668,13 @@ async function downloadAnnotations() {
     taskId = await selectTaskIdInteractively()
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${taskId}/export?format=${format}`)
-  if (!response.ok) {
-    throw new Error(`Download failed: ${await response.text()}`)
-  }
-
   const fallbackName = `${taskId}.${format}`
   const filename = outPathArg
     ? expandHomePath(outPathArg)
     : fallbackName
 
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  writeFileSync(filename, bytes)
+  const { runTaskExportDownload } = await import('./task-export-workflow.js')
+  await runTaskExportDownload(taskId, format, filename)
 
   if (hasJsonFlag()) {
     printJson({ taskId, format, savedTo: filename })
