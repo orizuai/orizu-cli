@@ -54,7 +54,7 @@ import { readFileSync } from 'fs'
 import { refreshHostedModels } from '../src/hosted-model-cache.mjs'
 
 import { HOSTED_AGENT_NAME, HOSTED_AGENT_PROMPT } from './hosted-agent-prompt.js'
-import { findProvider, parseModelIdentity } from './provider-registry.js'
+import { parseModelIdentity } from './provider-registry.js'
 
 import { HARNESS_NAMES } from './hosted-harness.js'
 import type {
@@ -154,17 +154,6 @@ export function ascendingId(prefix: 'ses' | 'msg' | 'prt', nowMs: number = Date.
   return `${prefix}_${hex}${randomBase62(14)}`
 }
 
-// -- Anthropic / OpenAI reasoning-effort mapping (port of bridge.py) ---------
-const ANTHROPIC_THINKING_BUDGETS: Record<string, number> = { high: 16_000, max: 31_999 }
-const ANTHROPIC_ADAPTIVE_THINKING_MODELS = new Set([
-  'claude-fable-5',
-  'claude-opus-4-6',
-  'claude-opus-4-7',
-  'claude-opus-4-8',
-  'claude-sonnet-4-6',
-])
-const ANTHROPIC_ADAPTIVE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
-
 /**
  * Split a possibly provider-qualified model string into provider + model id,
  * through THE registry parse (`parseModelIdentity`, ORI-2031): the provider is
@@ -203,34 +192,13 @@ export function buildPromptRequestBody(
   // Shared parse (see qualifyHostedModel): keeps the prompt path and the
   // ALI-1086 pre-prompt validation in lockstep by construction.
   const { providerId, modelId } = qualifyHostedModel(model)
-  const modelSpec: Record<string, unknown> = { providerID: providerId, modelID: modelId }
-
-  // Reasoning options are a property of the WIRE PROTOCOL, not of a provider
-  // name (ORI-2031 row 7). `openai-chat` gets no options at all — identical to
-  // today's fall-through for any provider the driver does not recognise, and
-  // honest: Orizu has never measured chat-completions reasoning fields
-  // (ORI-2032). A bare model id still resolves through qualifyHostedModel's
-  // 'anthropic' default, so its options are unchanged.
-  const protocol = findProvider(providerId)?.protocol ?? null
-  if (reasoningEffort) {
-    if (protocol === 'anthropic-messages') {
-      if (ANTHROPIC_ADAPTIVE_THINKING_MODELS.has(modelId)) {
-        const options: Record<string, unknown> = { thinking: { type: 'adaptive' } }
-        if (ANTHROPIC_ADAPTIVE_EFFORTS.has(reasoningEffort)) {
-          options.outputConfig = { effort: reasoningEffort }
-        }
-        modelSpec.options = options
-      } else {
-        const budget = ANTHROPIC_THINKING_BUDGETS[reasoningEffort]
-        if (budget !== undefined) {
-          modelSpec.options = { thinking: { type: 'enabled', budgetTokens: budget } }
-        }
-      }
-    } else if (protocol === 'openai-responses') {
-      modelSpec.options = { reasoningEffort, reasoningSummary: 'auto' }
-    }
-  }
-  body.model = modelSpec
+  body.model = { providerID: providerId, modelID: modelId }
+  // Reasoning effort travels as the top-level `variant` (ORI-2526). OpenCode's
+  // prompt body accepts only providerID/modelID inside `model` and silently
+  // dropped the options we used to send there. Each model's variants map the
+  // effort onto its own request fields; an effort the model has no variant for
+  // is ignored by OpenCode, so no per-provider mapping lives here.
+  if (reasoningEffort) body.variant = reasoningEffort
   return body
 }
 
@@ -573,6 +541,8 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
       const userMessageIds = new Set<string>([opencodeMessageId])
       const pendingParts = new Map<string, Array<{ part: Record<string, unknown>; delta: unknown }>>()
       const emittedToolStates = new Set<string>()
+      const partTypes = new Map<string, string>()
+      const untypedDeltas = new Map<string, string[]>()
 
       const handlePart = (part: Record<string, unknown>, delta: unknown): HarnessEvent[] => {
         const partType = typeof part.type === 'string' ? part.type : ''
@@ -781,16 +751,50 @@ export function createOpenCodeHarness(options: OpenCodeHarnessOptions): AgentHar
                 }
               }
             }
-          } else if (eventType === 'message.part.updated') {
-            const part = asRecord(props.part)
-            const delta = props.delta
-            const ocMsgId = typeof part.messageID === 'string' ? part.messageID : ''
-            if (allowedAssistantMsgIds.has(ocMsgId)) {
-              for (const ev of handlePart(part, delta)) yield ev
-            } else if (ocMsgId) {
-              const list = pendingParts.get(ocMsgId) ?? []
-              list.push({ part, delta })
-              pendingParts.set(ocMsgId, list)
+          } else if (eventType === 'message.part.updated' || eventType === 'message.part.delta') {
+            // Word-by-word text arrives as `message.part.delta` (ORI-2525), which
+            // names the part but not its type. Reasoning parts send deltas too,
+            // so a delta streams only once its part is known to be text. A delta
+            // can overtake its part's announcement (opencode #26924); it waits
+            // here until the announcement says what the part is.
+            const updates: Array<{ part: Record<string, unknown>; delta: unknown }> = []
+            if (eventType === 'message.part.updated') {
+              const part = asRecord(props.part)
+              const partId = typeof part.id === 'string' ? part.id : ''
+              updates.push({ part, delta: props.delta })
+              if (partId && typeof part.type === 'string') partTypes.set(partId, part.type)
+              const early = untypedDeltas.get(partId)
+              if (early) {
+                untypedDeltas.delete(partId)
+                const announced = typeof part.text === 'string' ? part.text : ''
+                // Replay unless the announced text already includes them.
+                if (part.type === 'text' && !announced.startsWith(early.join(''))) {
+                  for (const delta of early) {
+                    updates.push({ part: { type: 'text', id: partId, messageID: part.messageID }, delta })
+                  }
+                }
+              }
+            } else {
+              const partId = typeof props.partID === 'string' ? props.partID : ''
+              const delta = props.delta
+              if (props.field !== 'text' || !partId || typeof delta !== 'string') continue
+              const partType = partTypes.get(partId)
+              if (partType === undefined) {
+                untypedDeltas.set(partId, [...(untypedDeltas.get(partId) ?? []), delta])
+                continue
+              }
+              if (partType !== 'text') continue
+              updates.push({ part: { type: 'text', id: partId, messageID: props.messageID }, delta })
+            }
+            for (const { part, delta } of updates) {
+              const ocMsgId = typeof part.messageID === 'string' ? part.messageID : ''
+              if (allowedAssistantMsgIds.has(ocMsgId)) {
+                for (const ev of handlePart(part, delta)) yield ev
+              } else if (ocMsgId) {
+                const list = pendingParts.get(ocMsgId) ?? []
+                list.push({ part, delta })
+                pendingParts.set(ocMsgId, list)
+              }
             }
           } else if (eventType === 'session.compacted') {
             // Compaction re-chains messages so subsequent assistant parentIDs no
