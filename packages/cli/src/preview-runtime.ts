@@ -112,8 +112,8 @@ interface PreviewPage {
   screenshot: (options: { path: string; fullPage: boolean }) => Promise<unknown>
   waitForTimeout: (timeout: number) => Promise<unknown>
   once?: (event: string, listener: () => void) => unknown
-  on?: (event: string, listener: () => void) => unknown
-  off?: (event: string, listener: () => void) => unknown
+  on?: (event: string, listener: (error: Error) => void) => unknown
+  off?: (event: string, listener: (error: Error) => void) => unknown
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
@@ -256,19 +256,32 @@ export async function runLocalAppPreview(options: AppPreviewOptions): Promise<Ap
       headless: !options.headed,
       ...(chromiumExecutablePath ? { executablePath: chromiumExecutablePath } : {}),
     })
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
-
+    let page: PreviewPage | null = null
+    let handleRenderError: ((error: Error) => void) | undefined
+    let hasFinishedKeepingOpen = false
     try {
-      await page.goto(url, { waitUntil: 'networkidle' })
-      await page.waitForSelector('[data-orizu-preview-ready="true"]', { timeout: 15_000 })
+      page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+      const renderError = new Promise<never>((_, reject) => {
+        handleRenderError = error => reject(new Error(`App preview render failed: ${error.message}`))
+        page?.on?.('pageerror', handleRenderError)
+      })
+      // Listen before navigation: React can fail before the ready marker mounts.
+      await Promise.race([
+        page.goto(url, { waitUntil: 'networkidle' }).then(() =>
+          page!.waitForSelector('[data-orizu-preview-ready="true"]', { timeout: 15_000 })
+        ),
+        renderError,
+      ])
       if (options.screenshotPath) {
         await page.screenshot({ path: options.screenshotPath, fullPage: true })
       }
       if (options.keepOpen) {
         await waitForPreviewClose(page, browser)
+        hasFinishedKeepingOpen = true
       }
     } finally {
-      if (!options.keepOpen) {
+      if (handleRenderError) page?.off?.('pageerror', handleRenderError)
+      if (!hasFinishedKeepingOpen) {
         await browser.close()
       }
     }
@@ -826,7 +839,8 @@ export default TextContent
 import React from 'react'
 function cn(...values) { return values.filter(Boolean).join(' ') }
 export function CodeBlock({ code, children, className, ...props }) {
-  return <pre {...props} className={cn('overflow-auto rounded-md border bg-muted p-3 font-mono text-xs', className)}><code>{children ?? code}</code></pre>
+  const codeText = Array.isArray(code) ? code.map(line => line.content).join('\\n') : code
+  return <pre {...props} className={cn('overflow-auto rounded-md border bg-muted p-3 font-mono text-xs', className)}><code>{children ?? codeText}</code></pre>
 }
 export default CodeBlock
 `
@@ -843,8 +857,24 @@ export default Prose
   const contentRendererSource = `
 import React from 'react'
 function cn(...values) { return values.filter(Boolean).join(' ') }
-export function ContentRenderer({ content, children, className, ...props }) {
-  return <div {...props} className={cn('whitespace-pre-wrap text-sm leading-relaxed', className)}>{children ?? content}</div>
+export function ContentRenderer({ contentType, content, maxHeight = '400px', customRenderer, className }) {
+  let renderedContent
+  switch (contentType) {
+    case 'image':
+      renderedContent = <div className="flex items-center justify-center p-2"><img src={content} alt="Content" width={800} height={600} className="max-w-full object-contain" style={{ maxHeight, height: 'auto', width: 'auto' }} /></div>
+      break
+    case 'video':
+      renderedContent = <div className="flex h-full justify-center p-2"><video src={content} controls className="max-h-full max-w-full" /></div>
+      break
+    case 'custom':
+      renderedContent = customRenderer ? customRenderer({ content }) : <p className="text-destructive">Custom renderer required for custom content type</p>
+      break
+    default:
+      renderedContent = <p>Invalid content type</p>
+  }
+  return maxHeight
+    ? <div className={cn('overflow-auto', className)} style={{ maxHeight }}>{renderedContent}</div>
+    : renderedContent
 }
 export default ContentRenderer
 `
