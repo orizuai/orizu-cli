@@ -45,6 +45,16 @@ interface DatasetVersionResponse {
   }
 }
 
+function readReadmeFile(readmeFile: string): string {
+  try {
+    return readFileSync(expandHomePath(readmeFile), 'utf8')
+  } catch (error) {
+    const missing = error instanceof Error && 'code' in error && error.code === 'ENOENT'
+    const reason = missing ? 'file not found' : error instanceof Error ? error.message : String(error)
+    throw new Error(`Could not read README file ${readmeFile}: ${reason}`)
+  }
+}
+
 function readReadmeMarkdownFromArgs(usage: string): string | null {
   const readmeFile = getArg('--readme-file')
   const readmeText = getArg('--readme-text')
@@ -54,7 +64,7 @@ function readReadmeMarkdownFromArgs(usage: string): string | null {
   }
 
   const markdown = readmeFile !== null
-    ? readFileSync(expandHomePath(readmeFile), 'utf8')
+    ? readReadmeFile(readmeFile)
     : readmeText
 
   if (markdown !== null && markdown.length > MAX_README_LENGTH) {
@@ -381,37 +391,21 @@ async function setDatasetReadme() {
   }
 
   const resolvedDatasetId = await resolveDatasetIdForProject(datasetId, project)
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(resolvedDatasetId)}/readme`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ markdown: readmeMarkdown }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to save dataset README: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    version: {
-      id: string
-      dataset_id: string
-      version_num: number
-      created_at: string
-    }
-  }>(response, 'Dataset README save')
+  const { saveDatasetReadme } = await import('./dataset-readme-workflow.js')
+  const version = await saveDatasetReadme(resolvedDatasetId, readmeMarkdown)
 
   if (hasJsonFlag()) {
     printJson({
-      dataset_id: data.version.dataset_id,
-      readme_version_id: data.version.id,
-      readme_version_num: data.version.version_num,
+      dataset_id: version.dataset_id,
+      readme_version_id: version.id,
+      readme_version_num: version.version_num,
     })
     return
   }
 
   printLine(
-    `Saved README v${data.version.version_num} for dataset ` +
-    `${sanitizeTerminalText(data.version.dataset_id)} (${sanitizeTerminalText(data.version.id)}).`
+    `Saved README v${version.version_num} for dataset ` +
+    `${sanitizeTerminalText(version.dataset_id)} (${sanitizeTerminalText(version.id)}).`
   )
 }
 

@@ -524,6 +524,16 @@ says the dataset may already be deleted: check with
 still use the dataset, the refusal also names `orizu datasets archive <id>`.
 Delete keeps ordinary process signal termination and never retries.
 
+Dataset `readme set` uses the same transfer deadline for its request, including
+the response body. Each save adds a new README version. After a timeout, a lost
+connection, a server error or a malformed reply, the message says the README may
+already be saved as a new version: check the dataset's README tab before saving
+again, since another save would add a second version. When another save for the
+same dataset happened at the same time, the message says yours was not saved
+and to run the command again. A README file that cannot be read is named and
+nothing is sent. `readme set` keeps ordinary process signal termination and
+never retries.
+
 
 ## Interactive And Automated Usage
 
