@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Result } from 'effect'
 
 import { ensureDatasetUploadSnapshot } from './dataset-upload-snapshot.js'
 import { datasetTransferTimeoutMs } from './dataset-transfer-policy.js'
+import { datasetVersionSnapshot, type DatasetVersionFailure, type DatasetVersionResponse } from './dataset-version-workflow.js'
 import { extractErrorMessage } from './error-response.js'
 import { authedFetch } from './http.js'
 import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
@@ -12,7 +13,6 @@ export interface DatasetUploadResponse {
   readmeVersion?: { id: string; version_num: number; created_at: string } | null
 }
 
-interface DatasetSnapshot { datasetVersion: { id: string } }
 interface DatasetAppendResponse { dataset: { id: string; name: string; rowCount: number }; appendedCount: number }
 type UploadRows = Array<Record<string, unknown>>
 type UploadSource = { kind: 'jsonl'; file: string } | { kind: 'rows'; rows: UploadRows; sourceType: 'csv' | 'json' | 'jsonl' }
@@ -41,7 +41,7 @@ class DatasetInputFailure extends Error {
 interface DatasetUploadApi {
   create: (rows: UploadRows, sourceType: string) => Effect.Effect<DatasetUploadResponse, DatasetWriteFailure>
   append: (id: string, rows: UploadRows) => Effect.Effect<DatasetAppendResponse, DatasetWriteFailure>
-  snapshot: (id: string) => Effect.Effect<DatasetSnapshot, DatasetWriteFailure>
+  snapshot: (id: string) => Effect.Effect<DatasetVersionResponse, DatasetVersionFailure>
 }
 const DatasetUploadApi = Context.Service<DatasetUploadApi>('orizu/DatasetUploadApi')
 
@@ -79,7 +79,7 @@ function liveUploadApi(options: DatasetUploadOptions) {
       ...(options.readmeMarkdown !== null ? { readmeMarkdown: options.readmeMarkdown } : {}),
     }, 'Dataset upload', 'Upload failed', timeoutMs),
     append: (id, rows) => post<DatasetAppendResponse>(`/api/cli/datasets/${encodeURIComponent(id)}/rows`, { rows }, 'Dataset append', 'Append failed', timeoutMs),
-    snapshot: id => post<DatasetSnapshot>(`/api/cli/datasets/${encodeURIComponent(id)}/versions`, {}, 'Dataset version create', 'Failed to create dataset version', timeoutMs),
+    snapshot: id => datasetVersionSnapshot(id, {}, timeoutMs),
   })
 }
 
@@ -140,6 +140,6 @@ function uploadProgram(options: DatasetUploadOptions) {
   })
 }
 
-export function transferDatasetUpload(options: DatasetUploadOptions): Promise<{ data: DatasetUploadResponse; version: DatasetSnapshot }> {
+export function transferDatasetUpload(options: DatasetUploadOptions): Promise<{ data: DatasetUploadResponse; version: DatasetVersionResponse }> {
   return expectedPromise(uploadProgram(options).pipe(Effect.scoped, Effect.provide(liveUploadApi(options))))
 }

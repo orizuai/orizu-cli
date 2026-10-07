@@ -22,7 +22,6 @@ import {
 } from './account-directory.js'
 import { sanitizeTerminalText, parseJsonResponse } from './json-response.js'
 import { authedFetch } from './http.js'
-import { extractErrorMessage } from './error-response.js'
 import { printJson, printLine } from './cli-console-output.js'
 import { readJsonFile } from './app-commands.js'
 import { printDatasetSummaries } from './archive-artifacts-cli.js'
@@ -35,15 +34,6 @@ import type { DatasetSelection } from './account-directory.js'
 
 
 const MAX_README_LENGTH = 200_000
-
-interface DatasetVersionResponse {
-  datasetVersion: {
-    id: string
-    rowCount: number
-    artifactFormat?: string
-    artifactStoragePath?: string
-  }
-}
 
 function readReadmeFile(readmeFile: string): string {
   try {
@@ -127,28 +117,6 @@ async function resolveDatasetIdForProject(datasetRef: string, projectArg: string
   return matches[0].id
 }
 
-async function requestDatasetVersionSnapshot(
-  datasetId: string,
-  options: { versionLabel?: string | null; readmeMarkdown?: string | null } = {}
-): Promise<DatasetVersionResponse> {
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/versions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...(options.versionLabel ? { versionLabel: options.versionLabel } : {}),
-      ...(options.readmeMarkdown !== undefined && options.readmeMarkdown !== null
-        ? { readmeMarkdown: options.readmeMarkdown }
-        : {}),
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to create dataset version: ${await extractErrorMessage(response)}`)
-  }
-
-  return parseJsonResponse<DatasetVersionResponse>(response, 'Dataset version create')
-}
-
 async function createDatasetVersion() {
   const datasetId = getPositionalArg(3) || getArg('--dataset')
   const versionLabel = getArg('--label') || getArg('--version-label') || null
@@ -161,7 +129,8 @@ async function createDatasetVersion() {
 
   const readmeMarkdown = readReadmeMarkdownFromArgs(usage)
   const resolvedDatasetId = await resolveDatasetIdForProject(datasetId, project)
-  const data = await requestDatasetVersionSnapshot(resolvedDatasetId, {
+  const { createDatasetVersionSnapshot } = await import('./dataset-version-workflow.js')
+  const data = await createDatasetVersionSnapshot(resolvedDatasetId, {
     versionLabel,
     readmeMarkdown,
   })
