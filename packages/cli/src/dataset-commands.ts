@@ -584,7 +584,9 @@ async function deleteDataset() {
   await confirmDatasetDeletion(dataset)
 
   const { deleteDataset: requestDelete } = await import('./dataset-delete-workflow.js')
-  const deleted = await requestDelete(dataset.datasetId, projectArg ?? dataset.project ?? null)
+  // Only a dataset picked from a project's list has a known project; with
+  // --dataset, --project is never checked against the dataset.
+  const deleted = await requestDelete(dataset.datasetId, dataset.project ?? null)
 
   if (hasJsonFlag()) {
     printJson({ dataset: deleted, deleted: true })
