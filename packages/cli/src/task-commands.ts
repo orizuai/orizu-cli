@@ -26,20 +26,6 @@ import type { TaskStatusPayload } from './account-directory.js'
 
 
 
-interface TaskReportPayload {
-  task: {
-    id: string
-    title?: string | null
-    status?: string | null
-    report: {
-      markdown: string
-      sourceName: string | null
-      createdAt: string | null
-      updatedAt?: string | null
-    }
-  }
-}
-
 function readTaskReportInput(): { markdown: string; sourceName: string | null } | null {
   return readMarkdownReportInput(cliArgs, 'Task')
 }
@@ -619,30 +605,14 @@ async function setTaskReport() {
     )
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/report`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      reportMarkdown: report.markdown,
-      reportSourceName: report.sourceName,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to update task report: ${await response.text()}`)
+  // Loaded lazily: the workflow pulls in Effect (ORI-2408).
+  const workflow = await import('./task-report-workflow.js')
+  const outcome = await workflow.setTaskReport(taskId, report)
+  if (outcome.kind === 'interrupted') {
+    process.exitCode = outcome.exitCode
+    return
   }
-
-  const data = await parseJsonResponse<{
-    task: {
-      id: string
-      status: string
-      report: {
-        markdown: string
-        sourceName: string | null
-        createdAt: string | null
-      }
-    }
-  }>(response, 'Task report update')
+  const data = outcome.reply
 
   if (hasJsonFlag()) {
     printJson(data)
@@ -662,12 +632,8 @@ async function getTaskReport() {
     throw new Error('Usage: orizu tasks report get --task <taskId> [--json]')
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/report`)
-  if (!response.ok) {
-    throw new Error(`Failed to read task report: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<TaskReportPayload>(response, 'Task report get')
+  const workflow = await import('./task-report-workflow.js')
+  const data = await workflow.getTaskReport(taskId)
   if (hasJsonFlag()) {
     printJson(data as unknown as Record<string, unknown>)
     return
