@@ -596,31 +596,15 @@ async function cloneDataset() {
     datasetId = selected.datasetId
   }
 
-  const response = await authedFetch(`/api/cli/datasets/${encodeURIComponent(datasetId)}/clone`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(name ? { name } : {}),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Clone failed: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    dataset: {
-      id: string
-      name: string
-      rowCount: number
-      parentDatasetId: string
-    }
-  }>(response, 'Dataset clone')
+  const { cloneDataset: requestClone } = await import('./dataset-clone-workflow.js')
+  const dataset = await requestClone(datasetId, name ?? null)
 
   if (hasJsonFlag()) {
-    printJson({ dataset: data.dataset })
+    printJson({ dataset })
     return
   }
   printLine(
-    `Cloned dataset ${sanitizeTerminalText(data.dataset.parentDatasetId)} -> ${sanitizeTerminalText(data.dataset.name)} (${sanitizeTerminalText(data.dataset.id)}). Row count: ${data.dataset.rowCount}`
+    `Cloned dataset ${sanitizeTerminalText(dataset.parentDatasetId)} -> ${sanitizeTerminalText(dataset.name)} (${sanitizeTerminalText(dataset.id)}). Row count: ${dataset.rowCount}`
   )
 }
 
