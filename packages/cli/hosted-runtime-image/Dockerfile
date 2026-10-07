@@ -96,4 +96,8 @@ RUN mkdir -p /vercel/sandbox/repo \
 
 COPY packages/cli/red-gate-local/verify_ali_1588_hosted_artifact.ts /opt/orizu/cli/red-gate-local/verify_ali_1588_hosted_artifact.ts
 
+# Vercel runs as uid 1000 with this HOME; root's cache is never read by it.
+RUN HOME=/home/vercel-sandbox node --input-type=module -e 'import { bakeHostedModels } from "/opt/orizu/cli/src/hosted-model-cache.mjs"; await bakeHostedModels()' \
+  && chown -R 1000:1000 /home/vercel-sandbox/.cache
+
 WORKDIR /vercel/sandbox

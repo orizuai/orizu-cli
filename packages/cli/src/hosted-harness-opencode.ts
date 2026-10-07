@@ -51,6 +51,8 @@
 
 import { readFileSync } from 'fs'
 
+import { refreshHostedModels } from '../src/hosted-model-cache.mjs'
+
 import { HOSTED_AGENT_NAME, HOSTED_AGENT_PROMPT } from './hosted-agent-prompt.js'
 import { findProvider, parseModelIdentity } from './provider-registry.js'
 
@@ -910,16 +912,9 @@ function errorEvent(messageId: string, error: unknown): HarnessEvent {
 
 // -- Pre-prompt model validation (ALI-1086) -----------------------------------
 //
-// The pinned OpenCode (see OPENCODE_PINNED_VERSION) resolves model ids against
-// a catalog that is its BUNDLED snapshot merged with a runtime fetch of
-// https://models.dev/api.json (verified empirically on ALI-1086: fetched at
-// boot when reachable, cached to <cache>/opencode/models.json, refreshed when
-// stale). When models.dev is unreachable the bundled snapshot is stale
-// (predates claude-opus-4-8) and the FIRST prompt dies inside the SSE stream
-// with an opaque `run_failed: Model not found`. These helpers let the hosted
-// loop ask the RUNNING `opencode serve` — `GET /config/providers` is the
-// runtime's actual resolvable catalog — whether the requested model resolves,
-// BEFORE the prompt is posted, and fail fast naming the alternatives.
+// Images bake a validated catalog. Orizu refreshes it before OpenCode's first
+// read and disables its unchecked background writer (ORI-2513). This validation
+// asks the running server whether the selected model resolves before prompting.
 
 /** provider id → model ids the RUNNING opencode instance can resolve. */
 export type OpenCodeModelCatalog = ReadonlyMap<string, readonly string[]>
@@ -1006,10 +1001,9 @@ export interface AwaitModelResolvableOptions {
   model: string
   fetchImpl?: HarnessFetch
   /**
-   * Total budget to wait for the model to become resolvable. OpenCode's
-   * models.dev refresh runs in the BACKGROUND at boot, so the catalog can be
-   * bundled-only for the first seconds after the server answers HTTP; polling
-   * bridges that window instead of failing a run the refresh would have fixed.
+   * Budget for catalog readiness and transient server reads. Hosted startup
+   * finishes its validated refresh before spawn; this polling remains a
+   * compatibility guard for other callers and startup endpoint delays.
    */
   timeoutMs?: number
   pollMs?: number
@@ -1022,7 +1016,7 @@ const MODEL_RESOLVE_POLL_MS = 2_000
 
 /**
  * Decide whether the requested model is resolvable by the RUNNING opencode,
- * polling briefly so the boot-time models.dev refresh has time to land.
+ * polling briefly for catalog readiness or transient server failures.
  * Fail-open on validator infrastructure, with a DELIBERATE asymmetry on null
  * catalog reads:
  *   - null BEFORE any successful read → `skipped` immediately (dead/absent
@@ -1207,7 +1201,11 @@ export async function spawnOpenCode(opts: SpawnOpenCodeOptions): Promise<Spawned
   const env: Record<string, string> = {
     OPENCODE_CONFIG_CONTENT: buildOpenCodeConfigContent(opts),
     ...(opts.env ?? {}),
+    OPENCODE_DISABLE_MODELS_FETCH: '1',
   }
+  const model = qualifyHostedModel(opts.model)
+  env.OPENCODE_MODELS_PATH = await refreshHostedModels({ env: { ...process.env, ...env }, required: [`${model.providerId}/${model.modelId}`], fetchImpl: opts.fetchImpl, signal: opts.signal })
+  opts.signal?.throwIfAborted()
   const cmd = ['opencode', 'serve', '--port', String(port)]
   const spawnImpl =
     opts.spawn ??

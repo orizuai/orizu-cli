@@ -1176,7 +1176,7 @@ function formatSessionFinishOutcome(result: SessionFinishResult): string {
 // The web page's failed line, with the reason the server mapped (ORI-2264).
 function failedRunLine(run: { status: string; failureReason?: unknown }): string | null {
   return run.status === 'failed' && typeof run.failureReason === 'string' && run.failureReason
-    ? `The agent stopped: ${run.failureReason}.`
+    ? run.failureReason === 'The selected model is unavailable in this session.' ? run.failureReason : `The agent stopped: ${run.failureReason}.`
     : null
 }
 

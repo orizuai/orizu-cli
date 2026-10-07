@@ -33,16 +33,10 @@ import type { HostedSessionOrigin } from './hosted-runtime-assets.js'
  *
  * PIN CONSTRAINT: the hosted OpenCode runtime is HARD-PINNED to
  * `opencode-ai@1.14.41` (`OPENCODE_PINNED_VERSION`, SSE-fragile — do not bump)
- * whose BUNDLED model catalog predates this model (newest bundled anthropic
- * opus: claude-opus-4-7). Verified empirically on ALI-1086: 1.14.41 DOES fetch
- * `https://models.dev/api.json` at boot when reachable (cached to
- * `~/.cache/opencode/models.json`, refreshed when stale, disabled only by
- * `OPENCODE_DISABLE_MODELS_FETCH`), so with models.dev on the sandbox egress
- * allowlist (#1392, `ORIZU_HOSTED_EGRESS_ALLOWLIST`) this id resolves in new
- * sandboxes. If the catalog fetch is blocked/stale anyway, the loop's
- * pre-prompt validation (`awaitOpenCodeModelResolvable`) fails the run fast,
- * naming the resolvable alternatives. The durable fix for the stale bundled
- * catalog is the ALI-929 harness swap.
+ * whose bundled catalog predates this model. Images bake a validated models.dev
+ * list into the runtime user's cache. Orizu refreshes that cache before spawning
+ * OpenCode, preserving baked models on failure; the native unchecked writer is
+ * disabled (ORI-2513). Pre-prompt validation still checks the running server.
  */
 export const DEFAULT_HOSTED_MODEL = 'anthropic/claude-opus-4-8'
 

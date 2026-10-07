@@ -632,10 +632,9 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
 
       // Fail-fast model validation (ALI-1086): ask the RUNNING opencode whether
       // the requested model is resolvable BEFORE the first prompt. The pinned
-      // opencode's bundled catalog is stale (predates claude-opus-4-8) and only
-      // a boot-time models.dev fetch (#1392 allowlists it) refreshes it — when
-      // that fetch is blocked, the first prompt used to die inside the SSE
-      // stream with an opaque `run_failed: Model not found`. Now the run fails
+      // image catalog is baked and refreshed before spawn (ORI-2513). A model
+      // absent from that validated list still needs a clear error rather than
+      // dying inside the SSE stream with an opaque Model not found. The run fails
       // immediately with a structured artifact + an error naming the requested
       // id AND the resolvable alternatives. Fail-open on validator
       // infrastructure: an unreachable catalog endpoint (`skipped`) proceeds

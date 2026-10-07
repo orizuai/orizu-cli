@@ -40,6 +40,8 @@ const BAKE_COMMAND = 'orizu internal bake-skilled-proposer-venv --json'
 const VERIFY_COMMAND = 'orizu internal verify-skilled-proposer-bake --json'
 const WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK =
   "orizu internal workspace-bootstrap-job --capability-check | grep -qx 'workspace-bootstrap-job:v1'"
+const MODELS_REFRESHER = readFileSync(resolve(HERE, '../src/hosted-model-cache.mjs'), 'utf8') + '\nawait bakeHostedModels()\n'
+export const bakeModelsCheck = () => `node --input-type=module -e ${shellQuote(MODELS_REFRESHER)}`
 const STAGE_SANDBOX_TOOLS = 'orizu-install-sandbox-tools.sh'
 const SANDBOX_TOOLS_INSTALLER = readFileSync(resolve(HERE, 'install-sandbox-tools.sh'), 'utf8')
 const SANDBOX_TOOLS_CHECK = readFileSync(resolve(HERE, 'check-sandbox-tools.sh'), 'utf8')
@@ -49,7 +51,7 @@ const execStep = (name, exec, timeoutClass = 'quick') => ({ name, timeoutClass, 
 export function sourceAssetPayload(runGit = spawnSync) {
   const cliRoot = resolve(HERE, '..')
   const repoRoot = resolve(cliRoot, '..', '..')
-  const roots = ['packages/cli/scripts/ensure-skilled-proposer-venv.mjs', 'packages/cli/scripts/vendor-gepa-python.mjs', 'packages/cli/src/skilled-proposer-venv-manager.mjs', 'packages/cli/src/skilled-proposer-bake-report.ts', 'packages/cli/requirements/skilled-proposer.lock', 'packages/cli/gepa-python-source.zip', 'packages/orizu-gepa/src', 'packages/orizu-gepa/pyproject.toml', 'packages/orizu-gepa-python/src', 'packages/orizu-gepa-python/pyproject.toml', 'packages/orizu-gepa-python/manifest.json', 'skills/orizu']
+  const roots = ['packages/cli/src/hosted-model-cache.mjs', 'packages/cli/scripts/ensure-skilled-proposer-venv.mjs', 'packages/cli/scripts/vendor-gepa-python.mjs', 'packages/cli/src/skilled-proposer-venv-manager.mjs', 'packages/cli/src/skilled-proposer-bake-report.ts', 'packages/cli/requirements/skilled-proposer.lock', 'packages/cli/gepa-python-source.zip', 'packages/orizu-gepa/src', 'packages/orizu-gepa/pyproject.toml', 'packages/orizu-gepa-python/src', 'packages/orizu-gepa-python/pyproject.toml', 'packages/orizu-gepa-python/manifest.json', 'skills/orizu']
   const listed = runGit('git', ['ls-files', '-z', '--error-unmatch', '--', ...roots], { cwd: repoRoot, encoding: 'utf8' })
   if (listed.error || listed.status !== 0) throw new Error(`ALI_1588_SOURCE_ASSET_MANIFEST_FAILED: ${listed.error?.message || listed.stderr || `exit ${listed.status}`}`)
   const entries = {}
@@ -236,7 +238,7 @@ export function buildProvisionSteps({
       execStep('install prebaked marker', `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}`),
       execStep('verify git + ssh client present (merge-job runtime requirement)', 'command -v ssh >/dev/null 2>&1 || sudo dnf -y install openssh-clients; git --version && ssh -V', 'install'),
       execStep('verify bake (orizu version + opencode + hosted-loop + braintrust)',
-          `orizu --version | grep -F "${cliVersion}" && ${publishedBootProof(braintrustPyVersion)}`),
+          `orizu --version | grep -F "${cliVersion}" && ${publishedBootProof(braintrustPyVersion)} && ${bakeModelsCheck()}`),
       sandboxToolsCheckStep(),
       ...skilledProposerSteps(),
     ]
@@ -260,7 +262,7 @@ export function buildProvisionSteps({
     execStep('install prebaked marker', `sudo mkdir -p /opt/orizu && sudo mv ${STAGE_MARKER} ${MARKER_PATH}`),
     execStep('verify git + ssh client present (merge-job runtime requirement)', 'git --version && ssh -V'),
     execStep('verify bake (orizu + opencode + hosted-loop + braintrust)',
-        `${harvestCaBundleCheck()} && ${orizuSkillCheck()} && command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
+        `${bakeModelsCheck()} && ${harvestCaBundleCheck()} && ${orizuSkillCheck()} && command -v orizu && command -v opencode && orizu --version && orizu internal hosted-loop 2>&1 | grep -q 'hosted-loop --context' && ` +
         `${WORKSPACE_BOOTSTRAP_CAPABILITY_CHECK} && ` +
         braintrustVerify(braintrustPyVersion)),
     sandboxToolsCheckStep(),
