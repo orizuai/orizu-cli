@@ -45,6 +45,13 @@ interface DatasetUploadApi {
 }
 const DatasetUploadApi = Context.Service<DatasetUploadApi>('orizu/DatasetUploadApi')
 
+// authedFetch raises this code only when it sent nothing, or after the server
+// answered 401 (it writes nothing) and the stored credentials changed, so it
+// refused to replay. Either way nothing was written (ORI-2431).
+function isAuthContextChange(cause: unknown) {
+  return cause instanceof Error && cause.message.startsWith('ORIZU_AUTH_CONTEXT_CHANGED:')
+}
+
 // Only the existing authentication client's rejected-token refresh may replay a
 // request. No transient/transport retries belong around these non-idempotent writes.
 function post<T>(path: string, body: unknown, context: string, prefix: string, timeoutMs: number): Effect.Effect<T, DatasetWriteFailure> {
@@ -62,7 +69,7 @@ function post<T>(path: string, body: unknown, context: string, prefix: string, t
         return await parseJsonResponse<T>(response, context)
       },
       catch: cause => cause instanceof DatasetWriteFailure ? cause : new DatasetWriteFailure(
-        cause instanceof Error ? cause.message : String(cause), requestStarted ? 'unknown' : 'rejected', { cause },
+        cause instanceof Error ? cause.message : String(cause), requestStarted && !isAuthContextChange(cause) ? 'unknown' : 'rejected', { cause },
       ),
     }).pipe(Effect.timeoutOrElse({
       duration: timeoutMs,
