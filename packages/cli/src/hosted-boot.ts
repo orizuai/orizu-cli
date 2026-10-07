@@ -150,6 +150,7 @@ export function deriveBootStatusUrl(agentTokenUrl: string): string {
  *  secret defensively before sending. */
 const MAX_BOOT_REASON_CHARS = 800
 const TURN_STATUS_ATTEMPT_TIMEOUT_MS = 10_000
+export const HOSTED_TURN_PROGRESS_REPORT_MS = 5 * 60_000
 
 function resolveTestPositiveInteger(
   processEnv: Record<string, string | undefined>,
@@ -241,7 +242,7 @@ async function postRequiredIdleReady(opts: {
 async function postTurnStatus(opts: {
   bootStatusUrl: string
   bootSecret: string
-  status: 'turn_started' | 'turn_completed' | 'turn_failed'
+  status: 'turn_started' | 'turn_progress' | 'turn_completed' | 'turn_failed'
   runId: string
   reason?: string | null
   fetchImpl: BootFetch
@@ -1283,6 +1284,7 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
         minimumDelayMs: bearerRotationMinimumDelayMs,
       })
       const promptInterruptController = new AbortController()
+      let nextProgressAt = now()
       const interruptPollController = new AbortController()
       const interruptPoll = pollHostedSessionDuringTurn({
         baseUrl: env.baseUrl,
@@ -1312,6 +1314,19 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
             bearerProvider: () => readFile(bearerFileAbs).trim(),
             interruptSignal: promptInterruptController.signal,
             onDiagnostic: log,
+            onProgress: async () => {
+              if (now() < nextProgressAt) return
+              nextProgressAt = now() + HOSTED_TURN_PROGRESS_REPORT_MS
+              try {
+                await postTurnStatus({
+                  bootStatusUrl: env.bootStatusUrl, bootSecret: env.bootSecret,
+                  status: 'turn_progress', runId: current.runId, fetchImpl, sleep,
+                  attemptTimeoutMs: turnStatusAttemptTimeoutMs,
+                })
+              } catch {
+                log('turn progress acknowledgement unavailable')
+              }
+            },
           }
         )
       } finally {

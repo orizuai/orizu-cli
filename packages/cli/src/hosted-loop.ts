@@ -231,6 +231,8 @@ export interface RunHostedLoopOptions {
   /** Value-free local diagnostics shared with the event sink. Production routes
    *  this through hosted-boot's stderr seam; consumer failures are ignored. */
   onDiagnostic?: (message: string) => void
+  /** Report genuine harness activity to the session's progress watchdog. */
+  onProgress?: () => Promise<void>
 }
 
 export interface HostedLoopResult {
@@ -784,6 +786,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
           }
           return
         }
+        if (event.kind !== 'question_auto_answered') await opts.onProgress?.()
         yield event
       }
       // A signal already durable before prompt startup can make a driver end
