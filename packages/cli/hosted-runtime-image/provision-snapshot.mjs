@@ -13,7 +13,7 @@ import { buildCliBundle, resolveGitVersion } from './build-cli-bundle.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 // Pins mirrored from the Dockerfile (source-of-truth for the npm-pinned externals).
-export const DEFAULT_OPENCODE_VERSION = '1.14.41'
+export const DEFAULT_OPENCODE_VERSION = '1.18.35'
 export const DEFAULT_CLAUDE_SDK_VERSION = '0.3.201'
 export const DEFAULT_BRAINTRUST_PY_VERSION = '0.30.0'
 export const DEFAULT_BRAINTRUST_NPM_VERSION = '3.23.1'
@@ -168,6 +168,13 @@ export function cliOnPathCheck(cliIndex = CLI_INDEX) {
   return `{ p="$(command -v orizu)" && [ "$(readlink -f "$p")" = "$(readlink -f ${shellQuote(cliIndex)})" ] || { echo "orizu on PATH is $p, not ${cliIndex}" >&2; false; }; }`
 }
 
+/** ORI-2523: the opencode command on PATH runs and is the pinned version. From
+ *  1.18 the command is written by the package's postinstall script; if npm
+ *  blocked it, `opencode` is a placeholder that exits 1, and the bake must stop. */
+export function opencodeVersionCheck(version = DEFAULT_OPENCODE_VERSION) {
+  return `{ v="$(opencode --version)" && [ "$v" = ${shellQuote(version)} ] || { echo "opencode --version printed \\"$v\\", not ${version}" >&2; false; }; }`
+}
+
 /** ORI-2375: hosted skill staging falls back to the canonical copy's skill, so the
  *  published bake must ship it there. */
 export function orizuSkillCheck(cliDir = CLI_DIR) {
@@ -228,7 +235,7 @@ export function buildProvisionSteps({
       // the canonical copy. The global package stays: it is harmless, and removing it is
       // not this step's job.
       execStep(`install published orizu@${cliVersion} at canonical root`, `sudo sh -c 'npm install -g "orizu@${cliVersion}" && mkdir -p /opt/orizu && cp -a "$(npm root -g)/orizu" ${CLI_DIR} && rm -f "$(npm prefix -g)/bin/orizu" && cd ${CLI_DIR} && npm install --no-save --package-lock=false --omit=dev "@anthropic-ai/claude-agent-sdk@${claudeSdkVersion}" && npm cache clean --force && ln -sf ${CLI_INDEX} /usr/local/bin/orizu' && ${cliOnPathCheck()}`, 'install'),
-      execStep('install opencode-ai (global bin)', `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force`, 'install'),
+      execStep('install opencode-ai (global bin)', `sudo npm install -g --allow-scripts=opencode-ai "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force && ${opencodeVersionCheck(opencodeVersion)}`, 'install'),
       ...sandboxToolsSteps(),
       ...braintrustSteps({ braintrustPyVersion, braintrustNpmVersion }),
       writeStep('stage prebaked marker', [
@@ -252,7 +259,7 @@ export function buildProvisionSteps({
     execStep('install package.json', `sudo mv ${STAGE_PKG} ${CLI_PKG}`),
     execStep('symlink orizu onto PATH', `sudo ln -sf ${CLI_INDEX} /usr/local/bin/orizu`),
     execStep('install @anthropic-ai/claude-agent-sdk (sibling of bundle)', `cd ${CLI_DIR} && sudo npm install --no-save --omit=dev "@anthropic-ai/claude-agent-sdk@${claudeSdkVersion}" && sudo npm cache clean --force`, 'install'),
-    execStep('install opencode-ai (global bin)', `sudo npm install -g "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force`, 'install'),
+    execStep('install opencode-ai (global bin)', `sudo npm install -g --allow-scripts=opencode-ai "opencode-ai@${opencodeVersion}" && sudo npm cache clean --force && ${opencodeVersionCheck(opencodeVersion)}`, 'install'),
     ...sandboxToolsSteps(),
     ...braintrustSteps({ braintrustPyVersion, braintrustNpmVersion }),
     writeStep('stage prebaked marker', [

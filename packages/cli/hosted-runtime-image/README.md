@@ -199,7 +199,7 @@ release/git ref.
 | Bun | 1.3.13 x64 baseline | `BUN_VERSION` + `BUN_LINUX_X64_BASELINE_SHA256` build ARGs |
 | git | AL2023 repo | — |
 | **Orizu CLI** | **published `orizu@X.Y.Z`** (CI snapshot bake) or **from source** (`git describe`, escape hatch) | `cli-v*` tag → publish-cli.yml, or this checkout — `bun build src/index.ts` |
-| OpenCode | `opencode-ai@1.14.41` | `OPENCODE_PINNED_VERSION` (`hosted-harness-opencode.ts`) — npm-pinned |
+| OpenCode | `opencode-ai@1.18.35` | `OPENCODE_PINNED_VERSION` (`hosted-harness-opencode.ts`) — npm-pinned |
 | Claude Agent SDK | `@anthropic-ai/claude-agent-sdk@0.3.201` | `packages/cli/package.json` deps — npm-pinned |
 | Python | `python3.11` (+ `pip`); `/usr/local/bin/python3` → `python3.11` | AL2023 repo (system python is 3.9 — too old for braintrust, which needs ≥3.10). The symlink wins by PATH precedence so plain `python3` (what the GEPA runner manifest and the CLI launch) resolves to 3.11 and can import braintrust; dnf's absolute-shebang `/usr/bin/python3` scripts stay on 3.9 |
 | Braintrust (python) | `braintrust[cli]==0.30.0` (PyPI; the `[cli]` extra carries the CLI's deps) | `DEFAULT_BRAINTRUST_PY_VERSION` (`provision-snapshot.mjs`) / `BRAINTRUST_PY_VERSION` ARG — ALI-1048 |
@@ -227,7 +227,7 @@ The provenance + pins are written to **`/opt/orizu/prebaked.json`**:
   "cliVersion": "cli-v0.4.1-51-gedbe8d42",
   "cliSource": "from-source",
   "cliGitVersion": "cli-v0.4.1-51-gedbe8d42",
-  "opencodeVersion": "1.14.41",
+  "opencodeVersion": "1.18.35",
   "claudeSdkVersion": "0.3.201",
   "braintrustPyVersion": "0.30.0",
   "braintrustNpmVersion": "3.23.1",
@@ -381,7 +381,10 @@ Pre-baking does **not** disable G5 — the egress canary still runs.
   needed; git-describe labels it).
 - **OpenCode / Claude SDK**: change `OPENCODE_PINNED_VERSION` / the package.json dep,
   update the matching `ARG` default in the `Dockerfile` (and the snapshot script's
-  `DEFAULT_*` constants) + the table above.
+  `DEFAULT_*` constants) + the table above. For OpenCode, run
+  `test/cli/hosted-opencode-contract-real.test.ts` against the new binary first
+  (`ORIZU_REAL_OPENCODE_BIN=<path> ORIZU_REQUIRE_REAL_OPENCODE=1 bun test …`); the
+  `opencode-real` PR check runs it when the pin changes.
 
 Then re-cut the runtime:
 

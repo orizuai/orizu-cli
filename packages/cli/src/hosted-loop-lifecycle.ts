@@ -32,8 +32,9 @@ import type { HostedSessionOrigin } from './hosted-runtime-assets.js'
  * re-inline it.
  *
  * PIN CONSTRAINT: the hosted OpenCode runtime is HARD-PINNED to
- * `opencode-ai@1.14.41` (`OPENCODE_PINNED_VERSION`, SSE-fragile — do not bump)
- * whose bundled catalog predates this model. Images bake a validated models.dev
+ * `OPENCODE_PINNED_VERSION` (opencode-ai@1.18.35, whose bundled catalog
+ * includes this model; bumps are checked by the real-binary contract test,
+ * ORI-2523). Images also bake a validated models.dev
  * list into the runtime user's cache. Orizu refreshes that cache before spawning
  * OpenCode, preserving baked models on failure; the native unchecked writer is
  * disabled (ORI-2513). Pre-prompt validation still checks the running server.

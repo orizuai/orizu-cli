@@ -66,13 +66,13 @@ import type {
 } from './hosted-harness.js'
 
 // OpenCode is HARD-PINNED to this version everywhere it is installed/launched.
-// AUDIT RISK #1 (SSE fragility): the entire event model rides OpenCode's
-// undocumented `/event` SSE part schema (`message.part.updated`, `session.idle`,
-// `session.error`, `session.updated`, ...). Versions newer than 1.14.41 broke
-// that stream upstream, so the pin is load-bearing and must be re-verified
-// before any bump. The AgentHarness seam is the mitigation of last resort: swap
-// to a Claude-Agent-SDK loop (ALI-929) rather than chase OpenCode's SSE.
-export const OPENCODE_PINNED_VERSION = '1.14.41'
+// The event model rides OpenCode's undocumented `/event` SSE part schema
+// (`message.part.updated`, `session.idle`, `session.error`, `session.updated`,
+// ...), so every bump must pass test/cli/hosted-opencode-contract-real.test.ts
+// against the real binary (the path-gated `opencode-real` CI job runs it when
+// this pin changes). 1.14.41 → 1.18.35 was measured and checked that way
+// (ORI-2523). The AgentHarness seam remains the mitigation of last resort.
+export const OPENCODE_PINNED_VERSION = '1.18.35'
 
 const DEFAULT_OPENCODE_PORT = 4096
 const DEFAULT_SSE_INACTIVITY_MS = 120_000

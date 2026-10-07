@@ -105,7 +105,7 @@ function main() {
   for (const [flag, re, example] of [
     ['braintrust-py-version', BRAINTRUST_PY_VERSION_RE, '0.30.0'],
     ['braintrust-npm-version', BRAINTRUST_NPM_VERSION_RE, '3.23.1'],
-    ['opencode-version', BRAINTRUST_NPM_VERSION_RE, '1.14.41'],
+    ['opencode-version', BRAINTRUST_NPM_VERSION_RE, '1.18.35'],
     ['claude-sdk-version', BRAINTRUST_NPM_VERSION_RE, '0.3.201'],
     ['node-major', /^[0-9]+$/, '24'],
   ]) {

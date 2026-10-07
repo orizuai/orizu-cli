@@ -1,7 +1,7 @@
 FROM amazonlinux:2023
 
 ARG ORIZU_CLI_GIT_VERSION=source-unknown
-ARG OPENCODE_VERSION=1.14.41
+ARG OPENCODE_VERSION=1.18.35
 ARG CLAUDE_SDK_VERSION=0.3.201
 ARG BRAINTRUST_PY_VERSION=0.30.0
 ARG BRAINTRUST_NPM_VERSION=3.23.1
@@ -43,8 +43,9 @@ RUN mkdir -p /opt/orizu/cli \
 
 RUN cd /opt/orizu/cli \
   && npm install --no-save --omit=dev "@anthropic-ai/claude-agent-sdk@${CLAUDE_SDK_VERSION}" \
-  && npm install -g "opencode-ai@${OPENCODE_VERSION}" \
-  && npm cache clean --force
+  && npm install -g --allow-scripts=opencode-ai "opencode-ai@${OPENCODE_VERSION}" \
+  && npm cache clean --force \
+  && test "$(opencode --version)" = "${OPENCODE_VERSION}"
 
 RUN npm install -g "braintrust@${BRAINTRUST_NPM_VERSION}" \
   && npm cache clean --force \

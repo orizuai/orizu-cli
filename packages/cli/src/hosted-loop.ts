@@ -328,14 +328,22 @@ function detectLoopPrebaked(flag: boolean | undefined, markerPath: string): bool
 }
 
 /** Best-effort global install of the pinned opencode. Non-fatal: a failure is
- *  recorded and the run finishes cleanly when the subsequent connect fails. */
-function installOpenCodePinned(version: string): InstallResult {
+ *  recorded and the run finishes cleanly when the subsequent connect fails.
+ *  From 1.18 opencode's postinstall script writes the `opencode` command, and
+ *  npm 12 blocks it unless allowed, leaving a placeholder that exits 1; so npm
+ *  allows that one script and the result must print the pinned version
+ *  (ORI-2523). `env` exists for tests. */
+export function installOpenCodePinned(version: string, env?: NodeJS.ProcessEnv): InstallResult {
   const command =
-    `bun add -g opencode-ai@${version} >/dev/null 2>&1 || ` +
-    `npm install -g opencode-ai@${version} >/dev/null 2>&1`
-  const res = spawnSync('bash', ['-c', command], { encoding: 'utf8' })
+    `{ bun add -g opencode-ai@${version} >/dev/null 2>&1 || ` +
+    `npm install -g --allow-scripts=opencode-ai opencode-ai@${version} >/dev/null 2>&1; } && ` +
+    `v="$(opencode --version 2>/dev/null)" && [ "$v" = '${version}' ]`
+  const res = spawnSync('bash', ['-c', command], { encoding: 'utf8', ...(env ? { env } : {}) })
   const ok = (res.status ?? 1) === 0
-  return { ok, detail: ok ? `installed opencode-ai@${version}` : `install exit ${res.status ?? 'unknown'}` }
+  return {
+    ok,
+    detail: ok ? `installed opencode-ai@${version}` : `install exit ${res.status ?? 'unknown'}, or opencode --version is not ${version}`,
+  }
 }
 
 /** Node child_process spawner for `opencode serve` (the sandbox runtime is
