@@ -966,9 +966,17 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
   },
   {
     path: ['datasets', 'splits', 'create'],
-    usage: 'orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--json]',
-    summary: 'Create a split set for the explicit target dataset version. --from-file accepts splits show JSON; canonical row IDs must exist in the target.',
+    usage: 'orizu datasets splits create <datasetVersionId> [--from-file <split.json>] [--name <name>] [--seed <n>] [--train <ratio>] [--validation <ratio>] [--test <ratio>] [--json]',
+    summary: 'Create a split set for the explicit target dataset version. --from-file accepts splits show JSON; canonical row IDs must exist in the target. Each version allows one set per name.',
     group: 'Datasets',
+    options: [
+      { name: '--from-file <split.json>', help: 'Saved partitions to import, for example from splits show --json.' },
+      { name: '--name <name>', help: 'Set name; defaults to the file name field, then "default".' },
+      { name: '--seed <n>', help: 'Whole number from 0 to 2147483647 for a random split (default 1). The same seed gives the same rows.' },
+      { name: '--train <ratio>', help: 'Share of rows for train, from 0 to 1 (default 0.7).' },
+      { name: '--validation <ratio>', help: 'Share of rows for validation (default 0.2). Train plus validation must not be more than 1.' },
+      { name: '--test <ratio>', help: 'Share of rows for test. Defaults to what train and validation leave; if given, the three must add up to 1.' },
+    ],
   },
   {
     path: ['datasets', 'download'],

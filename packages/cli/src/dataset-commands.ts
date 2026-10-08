@@ -20,8 +20,7 @@ import {
   selectDatasetInteractively,
   selectTaskIdInteractively,
 } from './account-directory.js'
-import { sanitizeTerminalText, parseJsonResponse } from './json-response.js'
-import { authedFetch } from './http.js'
+import { sanitizeTerminalText } from './json-response.js'
 import { printJson, printLine } from './cli-console-output.js'
 import { readJsonFile } from './app-commands.js'
 import { printDatasetSummaries } from './archive-artifacts-cli.js'
@@ -78,15 +77,16 @@ function parseRatioFlag(name: string, fallback: number): number {
   return parsed
 }
 
-function parsePositiveIntegerFlag(name: string, fallback: number): number {
+// The app accepts 0 and stores seeds as 32-bit integers.
+function parseSeedFlag(name: string, fallback: number): number {
   const value = getArg(name)
   if (!value) {
     return fallback
   }
 
   const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`)
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 2147483647) {
+    throw new Error(`${name} must be a whole number from 0 to 2147483647`)
   }
 
   return parsed
@@ -189,12 +189,15 @@ async function createDatasetSplitSet() {
   const splitSpec = splitFile ? readJsonFile(splitFile) : null
   const name = getArg('--name') || (typeof splitSpec?.name === 'string' ? splitSpec.name : 'default')
   const strategy = getArg('--strategy') || (typeof splitSpec?.strategy === 'string' ? splitSpec.strategy : 'random')
-  const seed = splitSpec && (splitSpec.seed === null || typeof splitSpec.seed === 'number')
+  // A file's seed goes to the app as written, so one that isn't a whole number
+  // is refused there instead of quietly replaced.
+  const seed = splitSpec && Object.prototype.hasOwnProperty.call(splitSpec, 'seed')
     ? splitSpec.seed
-    : parsePositiveIntegerFlag('--seed', 1)
+    : parseSeedFlag('--seed', 1)
   const train = parseRatioFlag('--train', 0.7)
   const validation = parseRatioFlag('--validation', 0.2)
-  const test = parseRatioFlag('--test', 0.1)
+  // Without --test, test takes whatever train and validation leave.
+  const test = getArg('--test') ? parseRatioFlag('--test', 0) : undefined
 
   if (!datasetVersionId) {
     throw new Error(
@@ -202,37 +205,22 @@ async function createDatasetSplitSet() {
     )
   }
 
-  const partitions = splitSpec && Array.isArray(splitSpec.partitions) ? splitSpec.partitions : undefined
+  const { createSplitSet, splitRatioProblem } = await import('./dataset-split-create-workflow.js')
+  const ratioProblem = splitRatioProblem(train, validation, test)
+  if (ratioProblem) throw new Error(ratioProblem)
+
+  const partitions = splitSpec && Object.prototype.hasOwnProperty.call(splitSpec, 'partitions') ? splitSpec.partitions : undefined
   const metadata = splitSpec && Object.prototype.hasOwnProperty.call(splitSpec, 'metadata')
     ? splitSpec.metadata
     : undefined
 
-  const response = await authedFetch(`/api/cli/dataset-versions/${encodeURIComponent(datasetVersionId)}/split-sets`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name,
-      strategy,
-      seed,
-      train,
-      validation,
-      test,
-      partitions,
-      metadata,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to create dataset split set: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ splitSet: { id: string } }>(response, 'Dataset split set create')
+  const splitSetId = await createSplitSet({ versionId: datasetVersionId, name, strategy, seed, train, validation, test, partitions, metadata })
   if (hasJsonFlag()) {
-    printJson({ split_set_id: data.splitSet.id })
+    printJson({ split_set_id: splitSetId })
     return
   }
 
-  printLine(`Created split set ${sanitizeTerminalText(data.splitSet.id)}`)
+  printLine(`Created split set ${sanitizeTerminalText(splitSetId)}`)
 }
 
 async function listDatasets() {
