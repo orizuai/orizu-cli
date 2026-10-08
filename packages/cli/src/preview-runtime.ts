@@ -66,6 +66,12 @@ export const PREVIEW_ALLOWED_IMPORTS: Record<string, string[]> = {
 }
 // END_ORIZU_PREVIEW_IMPORT_REGISTRY
 
+// Names the web runtime gives an app's code without an import, and the module each
+// one is (apps/web/lib/app-runtime-globals.ts). A unit test keeps the two the same.
+export const PREVIEW_RUNTIME_GLOBALS: Record<string, string> = {
+  React: 'react',
+}
+
 export interface AppPreviewOptions {
   filePath: string
   inputSchema: Record<string, unknown>
@@ -191,10 +197,12 @@ export async function runLocalAppPreview(options: AppPreviewOptions): Promise<Ap
   const entryPath = join(tempDir, 'entry.tsx')
   const cssPath = join(tempDir, 'preview.css')
   const htmlPath = join(tempDir, 'index.html')
+  const globalsPath = join(tempDir, 'runtime-globals.ts')
   const outDir = join(tempDir, 'dist')
 
   writeFileSync(entryPath, buildEntrySource(appPath, options.sampleRow), 'utf8')
   writeFileSync(htmlPath, buildPreviewHtml(), 'utf8')
+  writeFileSync(globalsPath, buildRuntimeGlobalsSource(), 'utf8')
 
   let server: { port: number; close: () => Promise<void> } | null = null
   try {
@@ -229,6 +237,8 @@ export async function runLocalAppPreview(options: AppPreviewOptions): Promise<Ap
       target: 'es2020',
       jsx: 'automatic',
       jsxImportSource: 'react',
+      // Only replaces names the app uses without declaring or importing them.
+      inject: [globalsPath],
       loader: {
         '.css': 'css',
         '.tsx': 'tsx',
@@ -651,6 +661,12 @@ function PreviewShell() {
 
 root.render(React.createElement(PreviewShell))
 `
+}
+
+function buildRuntimeGlobalsSource() {
+  return Object.entries(PREVIEW_RUNTIME_GLOBALS)
+    .map(([name, path]) => `import ${name} from ${JSON.stringify(path)}\nexport { ${name} }\n`)
+    .join('')
 }
 
 function buildPreviewHtml() {
