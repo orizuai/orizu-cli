@@ -47,6 +47,10 @@ import {
   LegacySkillInstall,
   LegacySkillProblem,
   LegacySkillReplacement,
+  PROJECT_SKILL_COPY_TARGETS,
+  ProjectSkillCopies,
+  compareProjectSkillCopies,
+  withProjectSkillCopyPair,
 } from './skill-installer.js'
 import {
   createTeamOnServer,
@@ -559,9 +563,10 @@ async function installSkillCommand() {
   const scope = parseSkillInstallScope()
   const mode = parseSkillInstallMode()
   let targets = parseSkillInstallTargets(scope)
-  if (targets.length === 0) {
-    targets = await promptSkillInstallTargets(scope)
-  }
+  // The picker asks about each project copy, so its answers stand as given.
+  targets = targets.length === 0
+    ? await promptSkillInstallTargets(scope)
+    : withProjectSkillCopyPair(targets)
 
   if (targets.length === 0) {
     if (hasJsonFlag()) {
@@ -573,6 +578,14 @@ async function installSkillCommand() {
   }
 
   const outcomes = await applySkillInstallTargets(targets, { mode, skipConfirm, dryRun })
+  const failedCopy = outcomes.some(outcome =>
+    outcome.action === 'failed' && (PROJECT_SKILL_COPY_TARGETS as readonly string[]).includes(outcome.target))
+  if (failedCopy) {
+    process.exitCode = 1
+    if (!hasJsonFlag()) {
+      printLine('The two project copies were not both written. Fix the error above and run the command again.')
+    }
+  }
   const legacy = replaceLegacySkillInstalls({
     ...legacyScopeAfterInstall(targets, outcomes, dryRun),
     mode,
@@ -672,9 +685,15 @@ function describeSkillTargetState(status: SkillTargetStatus): string {
   return 'not installed'
 }
 
+function describeProjectCopyDrift(copies: ProjectSkillCopies): string {
+  return `This project's two Orizu skill copies differ: ${copies.paths.join(' and ')}. ` +
+    'Agents may follow different instructions. Run `orizu skills update` to rewrite both from the installed CLI skill.'
+}
+
 function skillsStatusCommand() {
   const source = resolveSkillSource()
   const statuses = SKILL_INSTALL_TARGETS.map(target => getSkillTargetStatus(target))
+  const projectCopies = compareProjectSkillCopies()
   const { installs: legacyInstalls, problems: legacyProblems } = findLegacySkillInstalls()
 
   if (hasJsonFlag()) {
@@ -695,6 +714,7 @@ function skillsStatusCommand() {
       })),
       legacyInstalls,
       legacyProblems,
+      projectCopies,
     })
     return
   }
@@ -705,6 +725,11 @@ function skillsStatusCommand() {
     const mode = status.mode ? `, ${status.mode}` : ''
     printLine(`  ${status.target.padEnd(16)} ${describeSkillTargetState(status)}${mode}`)
     printLine(`  ${''.padEnd(16)} ${status.path}`)
+  }
+
+  if (projectCopies.state === 'differ') {
+    printLine('')
+    printLine(describeProjectCopyDrift(projectCopies))
   }
 
   if (legacyInstalls.length > 0) {
@@ -730,8 +755,26 @@ async function skillsUpdateCommand() {
   const cliVersion = getCliVersion()
   const updates: Array<{ target: SkillInstallTarget, path: string, action: string }> = []
   const legacy = replaceLegacySkillInstalls({ dryRun, cliVersion })
+  // Two project copies that differ are both rewritten from the installed CLI
+  // skill, including a hand-made copy the loop below would leave alone.
+  const projectCopies = compareProjectSkillCopies()
+  const rewriteProjectCopies = projectCopies.state === 'differ'
+  if (rewriteProjectCopies) {
+    for (const target of PROJECT_SKILL_COPY_TARGETS) {
+      const path = getSkillInstallPath(target)
+      if (dryRun) {
+        updates.push({ target, path, action: 'would-rewrite' })
+        continue
+      }
+      installSkillTarget(target, { overwrite: true, mode: 'copy', cliVersion })
+      updates.push({ target, path, action: 'rewrote' })
+    }
+  }
 
   for (const target of SKILL_INSTALL_TARGETS) {
+    if (rewriteProjectCopies && (PROJECT_SKILL_COPY_TARGETS as readonly string[]).includes(target)) {
+      continue
+    }
     const status = getSkillTargetStatus(target)
     if (status.state === 'missing' || status.state === 'unmanaged') {
       continue
@@ -772,7 +815,15 @@ async function skillsUpdateCommand() {
     return
   }
 
+  if (rewriteProjectCopies) {
+    const verb = dryRun ? 'Would rewrite' : 'Rewrote'
+    printLine(`${verb} both project copies from the installed CLI skill: ${projectCopies.paths.join(' and ')}`)
+  }
+
   for (const update of updates) {
+    if (update.action === 'rewrote' || update.action === 'would-rewrite') {
+      continue
+    }
     if (update.action === 'already-current') {
       printLine(`Current ${update.path}`)
     } else if (update.action === 'would-update') {

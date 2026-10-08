@@ -14,7 +14,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs'
-import { dirname, isAbsolute, join, relative, resolve } from 'path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { createHash } from 'crypto'
@@ -257,8 +257,8 @@ export function getSkillInstallPath(
   }
 
   // OpenCode discovers user skills under XDG config (~/.config/opencode/skills)
-  // and project skills under .opencode/skills (ALI-1044). The copy/link machinery
-  // is agent-neutral; only the destination path differs.
+  // and project skills under .opencode/skills (ALI-1044). `--agent opencode`
+  // now installs to ~/.agents/skills; these targets stay for `--target`.
   if (target === 'opencode-user') {
     return resolve(home, '.config', 'opencode', 'skills', SKILL_NAME)
   }
@@ -277,8 +277,10 @@ export function getTargetForAgent(
   if (agent === 'claude') {
     return scope === 'global' ? 'claude-user' : 'claude-project'
   }
-  if (agent === 'opencode') {
-    return scope === 'global' ? 'opencode-user' : 'opencode-project'
+  // opencode also reads ~/.agents/skills (measured on 1.14.41, ORI-2521), so a
+  // home-folder install shares the universal link instead of adding a second.
+  if (agent === 'opencode' && scope === 'local') {
+    return 'opencode-project'
   }
   if (scope === 'local') {
     return 'agents-project'
@@ -292,6 +294,43 @@ export function getTargetForAgent(
 
 export function isSkillInstallAgent(value: string): value is SkillInstallAgent {
   return (SKILL_INSTALL_AGENTS as readonly string[]).includes(value)
+}
+
+/**
+ * A project install commits two real copies of the skill, one in each folder
+ * agents read: `.agents/skills` (Codex, pi, opencode) and `.claude/skills`
+ * (Claude Code). A committed link would break for teams on Windows (ORI-2521).
+ */
+export const PROJECT_SKILL_COPY_TARGETS = ['agents-project', 'claude-project'] as const
+
+// opencode also reads both folders, so its project install gets the pair too.
+const PROJECT_SKILL_COPY_TRIGGERS: readonly string[] = [...PROJECT_SKILL_COPY_TARGETS, 'opencode-project']
+
+/** Adds both project copies whenever a project target for an agent is chosen. */
+export function withProjectSkillCopyPair(targets: SkillInstallTarget[]): SkillInstallTarget[] {
+  if (!targets.some(target => PROJECT_SKILL_COPY_TRIGGERS.includes(target))) {
+    return targets
+  }
+  return [...new Set<SkillInstallTarget>([...targets, ...PROJECT_SKILL_COPY_TARGETS])]
+}
+
+export interface ProjectSkillCopies {
+  /** `incomplete` when either copy is missing; only `differ` needs action. */
+  state: 'match' | 'differ' | 'incomplete'
+  /** Project-relative paths of the two copies. */
+  paths: string[]
+}
+
+/** Compares the two project copies by content, ignoring Orizu's sync metadata. */
+export function compareProjectSkillCopies(options?: SkillInstallOptions): ProjectSkillCopies {
+  const cwd = options?.cwd ?? process.cwd()
+  const dirs = PROJECT_SKILL_COPY_TARGETS.map(target => getSkillInstallPath(target, { cwd }))
+  const paths = dirs.map(dir => relative(cwd, dir).split(sep).join('/'))
+  if (!dirs.every(dir => existsSync(join(dir, 'SKILL.md')))) {
+    return { state: 'incomplete', paths }
+  }
+  const [agentsHash, claudeHash] = dirs.map(dir => computeSkillContentHash(dir))
+  return { state: agentsHash === claudeHash ? 'match' : 'differ', paths }
 }
 
 export function isProjectLevelTarget(target: SkillInstallTarget): boolean {

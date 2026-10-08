@@ -20,15 +20,21 @@
  *       sandbox user's npm prefix never holds the sudo-installed package),
  *   (4) `$(npm root -g)/orizu/vendor/skills/orizu` — for the non-prebaked
  *       bootstrap, which installs orizu globally and has no /opt/orizu/cli.
- * Then SYMLINK it under `<workspaceDir>/.claude/skills/orizu`, falling back to
- * a copy if the symlink cannot be created. Resolved paths stay in shell vars
- * (never interpolated), so they cannot inject into the command.
+ * Then SYMLINK it into each folder in ORIZU_SKILL_LINK_FOLDERS (ORI-2521:
+ * `.claude/skills/orizu` for Claude Code and opencode, `.agents/skills/orizu`
+ * for opencode, pi and Codex), falling back to a copy if a symlink cannot be
+ * created. Resolved paths stay in shell vars (never interpolated), so they
+ * cannot inject into the command.
  *
- * HARVEST-SAFE (ALI-1051): the script appends `/.claude/skills/` to the repo-LOCAL
- * `.git/info/exclude` so auto-harvest's `git add -A` cannot sweep the staged
- * symlink into the session branch (hosted-harvest.ts also excludes it by pathspec,
- * belt-and-braces).
+ * SAVE-SAFE (ALI-1051, ORI-2442): a skills folder may itself be a link, so the
+ * script resolves each folder's real location first. It appends the exact
+ * repo-relative path of each staged link to the repo-LOCAL `.git/info/exclude`
+ * (so the agent's own `git add -A` skips it) and records it in
+ * `.git/orizu/staged-skill-links`, which auto-save and `session finish --push`
+ * read to unstage the links (orizu-skill-links.ts).
  */
+
+import { ORIZU_SKILL_LINK_FOLDERS, STAGED_SKILL_LINKS_FILE } from './orizu-skill-links.js'
 
 export interface SkillStageExecResult {
   exitCode: number
@@ -48,17 +54,28 @@ export interface StageOrizuSkillOptions {
   /**
    * Directory the session branch is cloned into (ABSOLUTE on the DO path,
    * sandbox-root RELATIVE on the operator path). The skill is staged under
-   * `<workspaceDir>/.claude/skills/orizu`.
+   * each of ORIZU_SKILL_LINK_FOLDERS.
    */
   workspaceDir: string
   exec: SkillStageExec
 }
 
+type SkillLinkStageMethod = 'symlink' | 'copy' | 'preserved' | 'same_folder'
+
+interface StagedSkillLink {
+  /** The link's real path, after resolving a linked skills folder. */
+  dest: string
+  method: SkillLinkStageMethod | null
+}
+
 export interface StageOrizuSkillResult {
+  /** Every folder was staged, preserved, or is the same real folder as an earlier one. */
   ok: boolean
-  method: 'symlink' | 'copy' | 'preserved' | null
+  /** The `.claude/skills` link's method; kept for the boot logs. */
+  method: SkillLinkStageMethod | null
   /** `<workspaceDir>/.claude/skills/orizu`. */
   dest: string
+  links: StagedSkillLink[]
   exitCode: number
   stdout: string
   stderr: string
@@ -74,33 +91,79 @@ const SAFE_WORKSPACE_DIR = /^[A-Za-z0-9._/:@-]+$/
 
 const CANONICAL_SKILL_DIR = '/opt/orizu/cli/vendor/skills/orizu'
 
+const STATUS_METHODS: Record<string, SkillLinkStageMethod> = {
+  SYMLINK: 'symlink',
+  COPY: 'copy',
+  PRESERVED_TRACKED: 'preserved',
+  SAME_FOLDER: 'same_folder',
+}
+
 /** The exact staging script — exported for tests that assert its shape and run it
- *  (`canonicalSkillDir` lets a test lay the canonical copy out under a temp root). */
+ *  (`canonicalSkillDir` lets a test lay the canonical copy out under a temp root).
+ *
+ *  For each folder in ORIZU_SKILL_LINK_FOLDERS it prints one line:
+ *    SYMLINK <dest> <src> | COPY <dest> <src>   — staged
+ *    PRESERVED_TRACKED <dest>                  — the team tracks a valid skill there; left alone
+ *    PRESERVED_INVALID <dest>                  — the team tracks something there without SKILL.md
+ *    SAME_FOLDER <dest>                        — this folder is the same real folder as an earlier one
+ *    UNRESOLVED <dest>                         — the folder could not be created
+ *    OUTSIDE_REPO <dest>                       — the folder is a link out of the repo; skipped
+ *    INSIDE_GIT_DIR <dest>                     — the folder is a link into the git directory; skipped
+ *  or a single NO_SOURCE when no copy of the skill was found. */
 export function renderStageOrizuSkillScript(workspaceDir: string, canonicalSkillDir = CANONICAL_SKILL_DIR): string {
-  const skillsDir = `${workspaceDir}/.claude/skills`
   return [
-    `mkdir -p ${skillsDir}`,
-    // The staged skill is bootstrap-injected RUNTIME scaffolding (a symlink to the
-    // sandbox-local CLI vendor dir), NOT the agent's work. Exclude it repo-LOCALLY
-    // (.git/info/exclude — invisible to the diff, never committed) so auto-harvest's
-    // `git add -A` can't sweep it into the session branch and (ALI-1051) auto-apply
-    // a broken symlink to the customer's main. IDEMPOTENT (ALI-1060 resume/retry):
-    // only append when the line is absent, so a re-invocation never duplicates it.
-    `if [ -d ${workspaceDir}/.git ] && ! grep -qxF '/.claude/skills/' ${workspaceDir}/.git/info/exclude 2>/dev/null; then printf '%s\\n' '/.claude/skills/' >> ${workspaceDir}/.git/info/exclude; fi`,
-    `dest="${skillsDir}/orizu"`,
-    `if [ -d ${workspaceDir}/.git ] && git -C ${workspaceDir} ls-files -- '.claude/skills/orizu' '.claude/skills/orizu/**' | grep -q .; then if [ -f "$dest/SKILL.md" ]; then echo "PRESERVED_TRACKED $dest"; else echo "PRESERVED_INVALID $dest"; fi; exit 0; fi`,
+    `ws='${workspaceDir}'`,
+    `mkdir -p "$ws"`,
+    `root="$(cd "$ws" && pwd -P)" || exit 1`,
+    // Paths live in the git dir, never in the work tree. Both files are
+    // repo-local: `.git/info/exclude` hides each link from the agent's own
+    // `git add -A`, and the staged-links list tells the save steps where each
+    // link really landed (ORI-2442).
+    `gitdir="$(git -C "$ws" rev-parse --absolute-git-dir 2>/dev/null || true)"`,
+    `gitdir_p=''`,
+    `if [ -n "$gitdir" ]; then mkdir -p "$gitdir/info" "$(dirname "$gitdir/${STAGED_SKILL_LINKS_FILE}")"; gitdir_p="$(cd "$gitdir" && pwd -P)"; fi`,
+    // Sessions staged by an older CLI ignore the whole folder, which hides a
+    // team's new skills from saves; this script ignores exact link paths instead.
+    `if [ -n "$gitdir" ] && grep -qxF '/.claude/skills/' "$gitdir/info/exclude" 2>/dev/null; then grep -vxF '/.claude/skills/' "$gitdir/info/exclude" > "$gitdir/info/exclude.orizu-tmp"; mv "$gitdir/info/exclude.orizu-tmp" "$gitdir/info/exclude"; fi`,
     `src="${'${ORIZU_SKILL_SOURCE_DIR:-}'}"`,
     `if [ -z "$src" ] || [ ! -d "$src" ]; then src="$(orizu skills path 2>/dev/null || true)"; fi`,
     `if [ -z "$src" ] || [ ! -d "$src" ]; then src='${canonicalSkillDir}'; fi`,
     `if [ -z "$src" ] || [ ! -d "$src" ]; then r="$(npm root -g 2>/dev/null || true)"; if [ -n "$r" ] && [ -d "$r/orizu/vendor/skills/orizu" ]; then src="$r/orizu/vendor/skills/orizu"; fi; fi`,
-    `if [ -z "$src" ] || [ ! -d "$src" ]; then echo "NO_SOURCE"; exit 0; fi`,
-    `rm -rf "$dest"`,
-    `if ln -s "$src" "$dest" 2>/dev/null; then echo "SYMLINK $src"; else cp -R "$src" "$dest" && echo "COPY $src"; fi`,
+    `if [ -z "$src" ] || [ ! -d "$src" ]; then src=''; fi`,
+    `seen=' '`,
+    `nosource=''`,
+    `stage_one() {`,
+    `  mkdir -p "$ws/$1" 2>/dev/null`,
+    // Resolve the folder's REAL location: when it is itself a link, the skill
+    // link lands at the link's target (ORI-2442).
+    `  phys="$(cd "$ws/$1" 2>/dev/null && pwd -P)" || { echo "UNRESOLVED $ws/$1/orizu"; return; }`,
+    `  dest="$phys/orizu"`,
+    `  case "$seen" in *" $phys "*) echo "SAME_FOLDER $dest"; return;; esac`,
+    `  seen="$seen$phys "`,
+    // Never write outside the repo: a folder linked elsewhere is skipped, so
+    // the `rm -rf` below cannot reach another directory.
+    `  case "$phys" in "$root"/*) rel="\${phys#"$root"/}/orizu";; *) echo "OUTSIDE_REPO $dest"; return;; esac`,
+    `  if [ -n "$gitdir_p" ]; then case "$phys" in "$gitdir_p"|"$gitdir_p"/*) echo "INSIDE_GIT_DIR $dest"; return;; esac; fi`,
+    `  if [ -n "$gitdir" ] && git -C "$ws" ls-files -- "$rel" "$rel/**" | grep -q .; then if [ -f "$dest/SKILL.md" ]; then echo "PRESERVED_TRACKED $dest"; else echo "PRESERVED_INVALID $dest"; fi; return; fi`,
+    // IDEMPOTENT (ALI-1060 resume/retry): each line is appended only when absent.
+    `  if [ -n "$gitdir" ]; then`,
+    // Escape ignore-pattern characters so the line matches this exact path.
+    `    pat="/$(printf '%s' "$rel" | sed 's/[][*?\\\\]/\\\\&/g')"`,
+    `    grep -qxF "$pat" "$gitdir/info/exclude" 2>/dev/null || printf '%s\\n' "$pat" >> "$gitdir/info/exclude"`,
+    `    grep -qxF "$rel" "$gitdir/${STAGED_SKILL_LINKS_FILE}" 2>/dev/null || printf '%s\\n' "$rel" >> "$gitdir/${STAGED_SKILL_LINKS_FILE}"`,
+    `  fi`,
+    `  if [ -z "$src" ]; then nosource=1; return; fi`,
+    `  rm -rf "$dest"`,
+    `  if ln -s "$src" "$dest" 2>/dev/null; then echo "SYMLINK $dest $src"; else cp -R "$src" "$dest" && echo "COPY $dest $src"; fi`,
+    `}`,
+    ...ORIZU_SKILL_LINK_FOLDERS.map(folder => `stage_one '${folder}'`),
+    `if [ -n "$nosource" ]; then echo "NO_SOURCE"; fi`,
+    `exit 0`,
   ].join('\n')
 }
 
 /**
- * Stage the orizu skill into `<workspaceDir>/.claude/skills/orizu`.
+ * Stage the orizu skill into each of ORIZU_SKILL_LINK_FOLDERS under `workspaceDir`.
  * Non-throwing (except via the injected exec): resolves to a structured result
  * both callers record their own way. A malformed `workspaceDir` returns a non-ok
  * result rather than throwing, so staging stays non-fatal to the boot.
@@ -109,7 +172,7 @@ export function renderStageOrizuSkillScript(workspaceDir: string, canonicalSkill
  * non-traversal directory. The shell-safety guard blocks injection metacharacters
  * but deliberately does not reject `..` or a leading `-` — do not pass untrusted
  * input here. Idempotent: safe to re-invoke (e.g. ALI-1060 resume/retry) — the
- * `.git/info/exclude` line is appended only when absent.
+ * `.git/info/exclude` and staged-links lines are appended only when absent.
  */
 export async function stageOrizuSkill(opts: StageOrizuSkillOptions): Promise<StageOrizuSkillResult> {
   const dest = `${opts.workspaceDir}/.claude/skills/orizu`
@@ -118,20 +181,31 @@ export async function stageOrizuSkill(opts: StageOrizuSkillOptions): Promise<Sta
       ok: false,
       method: null,
       dest,
+      links: [],
       exitCode: 1,
       stdout: '',
       stderr: `unsafe workspaceDir — refusing to interpolate into a shell command: ${opts.workspaceDir}`,
     }
   }
   const result = await opts.exec(renderStageOrizuSkillScript(opts.workspaceDir))
-  const out = result.stdout.trim()
-  const method: 'symlink' | 'copy' | 'preserved' | null = out.startsWith('SYMLINK')
-    ? 'symlink'
-    : out.startsWith('COPY')
-      ? 'copy'
-      : out.startsWith('PRESERVED_TRACKED')
-        ? 'preserved'
-        : null
-  const ok = result.exitCode === 0 && method !== null
-  return { ok, method, dest, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr }
+  const lines = result.stdout.split('\n').map(line => line.trim()).filter(Boolean)
+  const links = lines.flatMap((line): StagedSkillLink[] => {
+    const [status, linkDest] = line.split(' ')
+    if (!linkDest) return []
+    const method = STATUS_METHODS[status] ?? null
+    return [{ dest: linkDest, method }]
+  })
+  const ok = result.exitCode === 0
+    && !lines.includes('NO_SOURCE')
+    && links.length === ORIZU_SKILL_LINK_FOLDERS.length
+    && links.every(link => link.method !== null)
+  return {
+    ok,
+    method: links[0]?.method ?? null,
+    dest,
+    links,
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  }
 }

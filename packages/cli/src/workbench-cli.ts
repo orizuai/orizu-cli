@@ -10,6 +10,7 @@ import { spawnSync } from 'child_process'
 
 import { authedFetch } from './http.js'
 import { findUnknownOption } from './option-validation.js'
+import { hasStagedChanges, NOTHING_STAGED_ERROR, unstageOrizuSkillLinks } from './orizu-skill-links.js'
 import { formatRunEventDigest } from './run-event-digest.js'
 import {
   createStartIntentId,
@@ -764,10 +765,29 @@ async function prepareLocalSessionBranch(
       if (add.status !== 0) {
         throw new Error(`session finish --push: git add failed: ${add.stderr.trim() || `exit ${add.status}`}`)
       }
-      const message = stringOrNull(opts.message) ?? `Session ${opts.sessionId} work (orizu session finish --push)`
-      const commit = git(['commit', '-m', message], { cwd: root })
-      if (commit.status !== 0) {
-        throw new Error(`session finish --push: git commit failed: ${commit.stderr.trim() || `exit ${commit.status}`}`)
+      // A hosted session's Orizu skill links are sandbox-local; never ship
+      // them (ORI-2442). Commit only if something else is still staged.
+      const skillGit = (args: readonly string[]) => {
+        const result = git([...args], { cwd: root })
+        return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr }
+      }
+      const unstage = unstageOrizuSkillLinks(skillGit)
+      if (!unstage.ok) {
+        throw new Error(`session finish --push: ${unstage.error}`)
+      }
+      const staged = hasStagedChanges(skillGit)
+      if (typeof staged !== 'boolean') {
+        throw new Error(`session finish --push: ${staged.error}`)
+      }
+      if (!staged && unstage.unstaged.length === 0) {
+        throw new Error(`session finish --push: ${NOTHING_STAGED_ERROR}`)
+      }
+      if (staged) {
+        const message = stringOrNull(opts.message) ?? `Session ${opts.sessionId} work (orizu session finish --push)`
+        const commit = git(['commit', '-m', message], { cwd: root })
+        if (commit.status !== 0) {
+          throw new Error(`session finish --push: git commit failed: ${commit.stderr.trim() || `exit ${commit.status}`}`)
+        }
       }
     }
     const push = git(['push', 'origin', branch], { cwd: root })

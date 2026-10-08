@@ -127,7 +127,9 @@ const SETUP_NATIVE_SKILL_CHOICES: ReadonlyArray<{
 ]
 
 export function setupNativeTargetForAgent(agent: SkillInstallAgent): SkillInstallTarget | null {
-  if (agent === 'codex' || agent === 'pi') return null
+  // Codex, pi and opencode all read ~/.agents/skills, which Universal covers
+  // (opencode measured on 1.14.41 and 1.18.35, ORI-2521).
+  if (agent === 'codex' || agent === 'pi' || agent === 'opencode') return null
   return getTargetForAgent(agent, 'global')
 }
 
@@ -174,7 +176,9 @@ export function detectedSetupSkillChoices(homeDir: string): SetupSkillChoice[] {
   }, ...detectedNativeChoices
     .sort((left, right) => priority(left) - priority(right))
     .map(choice => {
-      const target = getTargetForAgent(choice.agent, 'global')
+      // The picker keeps OpenCode as its own choice (ADR-026), so it names
+      // OpenCode's own folder rather than the shared one `--agent` uses.
+      const target = choice.agent === 'opencode' ? 'opencode-user' : getTargetForAgent(choice.agent, 'global')
       return {
         label: setupSkillChoiceLabel(
           choice.agent === 'claude' ? 'Claude' : choice.label,

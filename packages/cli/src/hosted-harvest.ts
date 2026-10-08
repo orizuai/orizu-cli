@@ -8,7 +8,8 @@
  *   1. `git status --porcelain` (plumbing) decides if the clone is dirty. Ignored
  *      files never appear in porcelain output, so a checkpoint is skipped when the
  *      only changes are ignored files.
- *   2. If dirty: `git add -A` then `git commit` attributed to the agent identity
+ *   2. If dirty: `git add -A`, unstage the staged Orizu skill links
+ *      (orizu-skill-links.ts), and if anything is still staged, `git commit` attributed to the agent identity
  *      (AGENT_GIT_IDENTITY) with message `checkpoint: run <runId> auto-harvest`.
  *   3. If there is anything unpushed (a fresh checkpoint OR pre-existing local
  *      commits the agent made but did not push), push the exact HEAD SHA to the
@@ -35,6 +36,7 @@ import {
   isValidCloudflareArtifactsGitRemote,
   parseCanonicalCredentialFreeHttpsUrl,
 } from './cloudflare-artifacts-git-remote.js'
+import { hasStagedChanges, NOTHING_STAGED_ERROR, unstageOrizuSkillLinks } from './orizu-skill-links.js'
 
 export interface HarvestExecResult {
   exitCode: number
@@ -293,32 +295,43 @@ export function harvestWorkspace(opts: HarvestOptions): HarvestOutcome {
         return { kind: 'work_persist_failed', error: 'hosted_harvest_ca_path_policy_ineffective' }
       }
     }
-    // Never harvest bootstrap-injected runtime scaffolding (ALI-1051): the
-    // .claude/skills symlink is a sandbox-local pointer, not the agent's work.
-    // Bootstrap also excludes it via .git/info/exclude; this pathspec is the
-    // belt-and-braces for any sandbox where that didn't run.
-    const excludeScaffold = [':(exclude).claude/skills/**', ':(exclude).claude/skills']
-    const status = exec(['status', '--porcelain', '--', '.', ...excludeScaffold])
+    // `git status` is only the cheap first look; whether there is anything to
+    // save is decided from the index after the staged skill links are taken
+    // back out (ALI-1051, ORI-2442). A sandbox where the ignore lines did not
+    // run shows the links here and still saves nothing.
+    const status = exec(['status', '--porcelain'])
     if (status.exitCode !== 0) {
       return { kind: 'work_persist_failed', error: `git status failed: ${detail(status)}` }
     }
-    const dirty = status.stdout.trim().length > 0
+    let dirty = status.stdout.trim().length > 0
 
     if (dirty) {
-      // Add everything, then unstage the staged skill link. An exclude
-      // pathspec on add makes git exit 1 once bootstrap has ignored
-      // .claude/skills ("paths are ignored"), which is every hosted session
-      // (ORI-2441, git 2.49 in the sandbox). Only the link's own path is reset,
-      // so an agent's edits to a team's tracked skills next to it are saved;
-      // reset, unlike rm --cached, never deletes a tracked file.
+      // Add everything, then unstage the staged skill links. An exclude
+      // pathspec on add makes git exit 1 for ignored paths (ORI-2441, git 2.49
+      // in the sandbox). Only the links themselves are reset, so an agent's
+      // edits to a team's own skills next to them are saved; reset, unlike
+      // rm --cached, never deletes a tracked file.
       const add = exec(['add', '-A', '--', '.'])
       if (add.exitCode !== 0) {
         return { kind: 'work_persist_failed', error: `git add failed: ${detail(add)}` }
       }
-      const unstage = exec(['reset', '-q', '--', '.claude/skills/orizu'])
-      if (unstage.exitCode !== 0) {
-        return { kind: 'work_persist_failed', error: `git reset of .claude/skills/orizu failed: ${detail(unstage)}` }
+      const unstage = unstageOrizuSkillLinks(exec)
+      if (!unstage.ok) {
+        return { kind: 'work_persist_failed', error: unstage.error }
       }
+      const staged = hasStagedChanges(exec)
+      if (typeof staged !== 'boolean') {
+        return { kind: 'work_persist_failed', error: staged.error }
+      }
+      // Dirty with nothing staged and no link taken out means the work cannot
+      // be committed here; say so rather than report nothing to save.
+      if (!staged && unstage.unstaged.length === 0) {
+        return { kind: 'work_persist_failed', error: NOTHING_STAGED_ERROR }
+      }
+      dirty = staged
+    }
+
+    if (dirty) {
       const commit = exec([
         '-c',
         `user.name=${opts.author.name}`,

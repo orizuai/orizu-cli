@@ -352,6 +352,11 @@ orizu install-skill --agent claude --agent codex --yes
   `copy` force a mode. Project-scope installs always copy, and copied installs
   include a `.orizu-skill-meta.json` (skill hash, CLI version, source) used for
   drift detection.
+- A project install always writes two real copies, `./.agents/skills/orizu`
+  and `./.claude/skills/orizu`, so every agent finds the skill without a
+  committed link (links break for teams on Windows). `orizu skills status` says
+  when the two copies differ, and `orizu skills update` rewrites both from the
+  installed CLI skill.
 - `--yes` replaces an existing managed install without prompting.
 - `--dry-run` prints the write plan without changing files. Interactive and
   normal runs print the same plan before writing, including how a managed
@@ -359,7 +364,7 @@ orizu install-skill --agent claude --agent codex --yes
 
 Advanced target IDs (stable machine flags, repeatable via `--target`):
 
-- `agent-user`: `~/.agents/skills/orizu` (standard shared user target; Codex and Pi)
+- `agent-user`: `~/.agents/skills/orizu` (standard shared user target; Codex, Pi, and OpenCode. `--agent opencode` installs here)
 - `codex-user`: `~/.codex/skills/orizu` (legacy explicit target)
 - `agents-project`: `./.agents/skills/orizu`
 - `codex-project`: `./.codex/skills/orizu` (legacy Codex project folder)
