@@ -61,6 +61,7 @@ import { DEFAULT_EGRESS_CANARY_HOST, DEFAULT_HOSTED_MODEL } from './hosted-loop-
 import { composeHostedAnswerPrompt } from './hosted-question.js'
 import { resumeRunEventSink } from './hosted-run-event-sink.js'
 import { stageOrizuSkill } from './hosted-skill-staging.js'
+import { openHostedLiveChannel, type HostedLiveChannel } from './hosted-live-channel.js'
 
 export type BootFetch = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -560,6 +561,49 @@ export async function waitForNextHostedSessionRead(
   await sleep(pollMs)
 }
 
+function sleepUntil(signal: AbortSignal) {
+  return (ms: number): Promise<void> => new Promise(resolve => {
+    if (signal.aborted) { resolve(); return }
+    const timer = setTimeout(finish, ms)
+    const handleAbort = (): void => finish()
+    function finish(): void {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', handleAbort)
+      resolve()
+    }
+    signal.addEventListener('abort', handleAbort, { once: true })
+  })
+}
+
+/** ORI-2200: wait for the next session read, or less when the coordinator says
+ *  "check now". The read still decides what happens; a check alone does nothing. */
+async function waitForReadOrCheck(opts: {
+  signal: AbortSignal
+  pollMs: number
+  sleep?: (ms: number) => Promise<void>
+  live?: Pick<HostedLiveChannel, 'nextCheck'>
+}): Promise<void> {
+  if (!opts.live) {
+    await waitForNextHostedSessionRead(opts.sleep ?? sleepUntil(opts.signal), opts.pollMs)
+    return
+  }
+  const woken = new AbortController()
+  const wait = AbortSignal.any([opts.signal, woken.signal])
+  await Promise.race([
+    waitForNextHostedSessionRead(opts.sleep ?? sleepUntil(wait), opts.pollMs),
+    opts.live.nextCheck(wait),
+  ])
+  woken.abort()
+}
+
+/** The sandbox's live-socket pass route sits beside its agent-token route. */
+export function deriveLiveSandboxPassUrl(agentTokenUrl: string): string {
+  if (/\/agent-token\/?$/.test(agentTokenUrl)) {
+    return agentTokenUrl.replace(/\/agent-token\/?$/, '/live/sandbox-pass')
+  }
+  return `${agentTokenUrl.replace(/\/+$/, '')}/live/sandbox-pass`
+}
+
 /** Ride the ALI-1757 session/pending-turn poll while one prompt is active.
  *  This uses the same additive session GET contract, but deliberately shares
  *  none of the between-turn credential cleanup or mint-on-401 behavior: the
@@ -576,23 +620,15 @@ export async function pollHostedSessionDuringTurn(opts: {
   readFile?: (path: string) => string
   sleep?: (ms: number) => Promise<void>
   pollMs?: number
+  /** ORI-2200: the coordinator's "check now" (a Stop was recorded) cuts the
+   *  wait short. The read below still decides; a check alone stops nothing. */
+  live?: Pick<HostedLiveChannel, 'nextCheck'>
 }): Promise<void> {
   const diagnose = (message: string): void => {
     try { opts.onDiagnostic?.(message) } catch { /* diagnostics are best-effort */ }
   }
   const readFile = opts.readFile ?? ((path: string): string => readFileSync(path, 'utf8'))
   const pollMs = opts.pollMs ?? HOSTED_SESSION_DEFAULT_POLL_MS
-  const sleep = opts.sleep ?? ((ms: number): Promise<void> => new Promise(resolve => {
-    if (opts.signal.aborted) { resolve(); return }
-    const timer = setTimeout(finish, ms)
-    const handleAbort = (): void => finish()
-    function finish(): void {
-      clearTimeout(timer)
-      opts.signal.removeEventListener('abort', handleAbort)
-      resolve()
-    }
-    opts.signal.addEventListener('abort', handleAbort, { once: true })
-  }))
   while (!opts.signal.aborted) {
     try {
       const latest = await resolveSession({
@@ -625,7 +661,9 @@ export async function pollHostedSessionDuringTurn(opts: {
       // enter logs. A transient read failure cannot fail the running turn.
       diagnose('hosted interrupt poll failed; retrying')
     }
-    if (!opts.signal.aborted) await waitForNextHostedSessionRead(sleep, pollMs)
+    if (!opts.signal.aborted) {
+      await waitForReadOrCheck({ signal: opts.signal, pollMs, sleep: opts.sleep, live: opts.live })
+    }
   }
 }
 
@@ -888,6 +926,21 @@ export interface HostedBootResult {
  * provider fed by the same pull-mode source. Returns the loop's terminal status.
  */
 export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedBootResult> {
+  // ORI-2200: the sandbox's live socket, opened once the boot first waits for
+  // work and closed however the boot ends.
+  const liveChannels: HostedLiveChannel[] = []
+  const idleWait = new AbortController()
+  try {
+    return await runHostedBootWithLive(opts, liveChannels, idleWait.signal)
+  } finally {
+    idleWait.abort()
+    for (const channel of liveChannels) channel.close()
+  }
+}
+
+async function runHostedBootWithLive(
+  opts: RunHostedBootOptions, liveChannels: HostedLiveChannel[], idleWaitSignal: AbortSignal
+): Promise<HostedBootResult> {
   const env = opts.env
   const processEnv = opts.processEnv ?? process.env
   const root = opts.root ?? process.cwd()
@@ -976,6 +1029,22 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
       attemptTimeoutMs: turnStatusAttemptTimeoutMs,
     })
   }
+  // The coordinator says "check now" over this socket when someone presses
+  // Stop or sends a message, so the waits below need not run their full
+  // interval. Best effort: without it the regular reads still run.
+  let liveChannel: HostedLiveChannel | null = null
+  const openLive = (): HostedLiveChannel => {
+    if (!liveChannel) {
+      liveChannel = openHostedLiveChannel({
+        sandboxPassUrl: deriveLiveSandboxPassUrl(env.agentTokenUrl),
+        bootSecret: env.bootSecret,
+        fetchImpl,
+        log,
+      })
+      liveChannels.push(liveChannel)
+    }
+    return liveChannel
+  }
   let consecutiveIdleSessionReadFailures = 0
   const recordIdleSessionReadFailure = (detail: string): void => {
     consecutiveIdleSessionReadFailures += 1
@@ -985,10 +1054,12 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
     log(`idle session resolution failed; retrying (${detail})`)
   }
   while (!opts.runLoop && !currentNonTerminalRunId) {
-    await sleep(Math.min(
-      idlePollMs * 2 ** consecutiveIdleSessionReadFailures,
-      idleReadBackoffCapMs
-    ))
+    await waitForReadOrCheck({
+      signal: idleWaitSignal,
+      pollMs: Math.min(idlePollMs * 2 ** consecutiveIdleSessionReadFailures, idleReadBackoffCapMs),
+      sleep: opts.sleep,
+      live: openLive(),
+    })
     try {
       if (bearer.expiresAtMs !== null && bearer.expiresAtMs <= now() + 60_000) {
         bearer = await pullAgentBearer({
@@ -1370,6 +1441,7 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   let lastResult: HostedLoopResult = { status: 'succeeded', agentSessionId: session.agentSessionId, installOk: true, error: null }
 
   let hostedTurnFailure: HostedTurnFailure | null = null
+  const live = openLive()
   try {
     for (;;) {
       assertSafeRunId(current.runId)
@@ -1414,6 +1486,7 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
         onDiagnostic: log,
         readFile,
         pollMs: idlePollMs,
+        live,
       })
       try {
         lastResult = await runHostedLoopTurn(
@@ -1472,10 +1545,11 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
       // the bounded agent-token pull is fatal and reported for the current run;
       // other transient status-read failures retain the session and back off.
       // ORI-2517: the first read after a turn runs at once. A message the
-      // person sent during the turn or its save is already waiting.
+      // person sent during the turn or its save, or a check that came in
+      // meanwhile, is already waiting.
       let isFirstIdleRead = true
       for (;;) {
-        if (!isFirstIdleRead) await waitForNextHostedSessionRead(sleep, idlePollMs)
+        if (!isFirstIdleRead) await waitForReadOrCheck({ signal: idleWaitSignal, pollMs: idlePollMs, sleep: opts.sleep, live })
         isFirstIdleRead = false
         let pendingTurn: PendingHostedTurn | null = null
         try {
