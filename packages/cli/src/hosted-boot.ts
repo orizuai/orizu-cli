@@ -32,7 +32,7 @@
 
 import { spawnSync } from 'child_process'
 import { randomUUID } from 'crypto'
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'fs'
 
 import { isValidCloudflareArtifactsGitRemote } from './cloudflare-artifacts-git-remote.js'
 import { seedSessionCopy } from './hosted-session-seed.js'
@@ -780,6 +780,31 @@ const defaultExec: BootExec = (cmd, args, opts) => {
   return { status: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
 }
 
+/** ORI-2520: the repo on a woken disk must be this session's: a repository
+ *  at the folder's top with the session's remote and a commit checked out
+ *  (detached is fine). Which branch is checked out is not checked: each
+ *  turn's save pushes the current commit to the session branch whatever is
+ *  checked out, so an agent may have left another branch (or none) checked
+ *  out. Returns that branch for the log. */
+function assertWokenRepo(exec: BootExec, workspaceDir: string, remote: string): string {
+  const read = (...args: string[]): string | null => {
+    const result = exec('git', ['-C', workspaceDir, ...args])
+    return result.status === 0 ? result.stdout.trim() : null
+  }
+  if (read('rev-parse', '--git-dir') !== '.git') {
+    throw new Error('woken disk: the repo folder holds no repository of its own')
+  }
+  // The configured value, not `remote get-url`, which applies url rewrites.
+  if (read('config', '--get', 'remote.origin.url') !== remote) {
+    throw new Error("woken disk: the repo's remote is not this session's")
+  }
+  // A clone cut off before any commit was checked out has no saved work.
+  if (read('rev-parse', '--verify', '--quiet', 'HEAD^{commit}') === null) {
+    throw new Error('woken disk: the repo has no commit checked out')
+  }
+  return read('rev-parse', '--abbrev-ref', 'HEAD') ?? 'no branch'
+}
+
 /** Values interpolated into git's credential.helper string / clone args must be
  *  benign. We pass everything via execFile-style arg arrays (no shell), but
  *  still reject anything with newlines/control chars as defense in depth. */
@@ -1177,29 +1202,40 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 
   // 5 — Clone the session branch VIA the pull-mode credential helper (same
   // invocation the operator path makes; no token in the URL/config).
-  const clone = exec('git', [
-    'clone',
-    '--depth',
-    '1',
-    '--branch',
-    session.repoBranch,
-    '-c',
-    `credential.helper=${helperValue}`,
-    '-c',
-    'credential.useHttpPath=true',
-    repo.cloneUrl,
-    workspaceDir,
-  ])
-  if (clone.status !== 0) {
-    const detail = (clone.stderr || clone.stdout || `exit ${clone.status}`).trim()
-    throw new Error(`git clone failed: ${detail}`)
+  // ORI-2520: a woken sandbox boots on the disk it slept with, so this
+  // session's repo is already here with any work since the last push. It is
+  // reused; anything else in that folder is refused, never overwritten. An
+  // empty folder is a fresh disk (the runtime image ships one) and is cloned
+  // into.
+  const wokenDisk = existsSync(workspaceDir) && readdirSync(workspaceDir).length > 0
+  if (wokenDisk) {
+    const checkedOut = assertWokenRepo(exec, workspaceDir, repo.cloneUrl)
+    log(`woken disk: reusing the repo (checked out: ${checkedOut})`)
+  } else {
+    const clone = exec('git', [
+      'clone',
+      '--depth',
+      '1',
+      '--branch',
+      session.repoBranch,
+      '-c',
+      `credential.helper=${helperValue}`,
+      '-c',
+      'credential.useHttpPath=true',
+      repo.cloneUrl,
+      workspaceDir,
+    ])
+    if (clone.status !== 0) {
+      const detail = (clone.stderr || clone.stdout || `exit ${clone.status}`).trim()
+      throw new Error(`git clone failed: ${detail}`)
+    }
   }
   // Persist the helper + agent identity repo-LOCAL for subsequent fetch/push.
   exec('git', ['-C', workspaceDir, 'config', 'credential.helper', helperValue])
   exec('git', ['-C', workspaceDir, 'config', 'credential.useHttpPath', 'true'])
   exec('git', ['-C', workspaceDir, 'config', 'user.name', AGENT_GIT_IDENTITY.name])
   exec('git', ['-C', workspaceDir, 'config', 'user.email', AGENT_GIT_IDENTITY.email])
-  log(`cloned ${session.repoBranch}`)
+  if (!wokenDisk) log(`cloned ${session.repoBranch}`)
 
   // 5b — Stage the orizu skill into the cloned repo so the agent discovers the
   // Orizu workflows (ALI-1059). SHARED with the operator path via `stageOrizuSkill`
