@@ -80,6 +80,7 @@ const EVENT_TYPE_BY_KIND: Partial<Record<HarnessEventKind, string>> = {
   // Durability + headless (ALI-1036 / ALI-1037), emitted by the in-sandbox loop
   // through this SAME sink (single writer): auto-harvest results + headless
   // question auto-handling record.
+  work_saving: 'work_saving',
   work_persisted: 'work_persisted',
   work_none: 'work_none',
   work_not_inspected: 'work_not_inspected',
@@ -134,6 +135,9 @@ export interface RunEventSink {
   finish(status: TerminalStatus, opts?: FinishOptions): Promise<void>
   /** True once a terminal transition has landed and the sink is sealed. */
   readonly sealed: boolean
+  /** True while a token snapshot is still buffered: its last POST was not
+   *  confirmed delivered (ORI-2517). */
+  readonly hasUndeliveredTokens: boolean
   /** True when an append met 404/410, i.e. the server ended the run, not this
    *  writer's PATCH. A timer flush can learn this with no caller awaiting it. */
   readonly terminatedServerSide: boolean
@@ -651,6 +655,9 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
     finish: (status, opts) => serialize(() => finish(status, opts)),
     get sealed() {
       return sealed
+    },
+    get hasUndeliveredTokens() {
+      return tokenBuffer.size > 0
     },
     get terminatedServerSide() {
       return terminatedServerSide

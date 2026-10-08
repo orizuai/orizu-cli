@@ -84,6 +84,8 @@ export const HARNESS_EVENT_KINDS = {
   // the end-of-run auto-harvest result (persisted/none/not-inspected/failed)
   // and the headless question auto-handling record (question_auto_answered). They
   // are ordinary structural events (never terminal), appended like any other.
+  // work_saving (ORI-2517) marks the model done and the save starting.
+  work_saving: 'work_saving',
   work_persisted: 'work_persisted',
   work_none: 'work_none',
   work_not_inspected: 'work_not_inspected',

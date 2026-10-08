@@ -515,6 +515,22 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
   const runAutoHarvest = async (): Promise<BeforeFinishResult | void> => {
     if (harvested) return checkpointFinishPatch
     harvested = true
+    // ORI-2517: the model is done; tell the chat before the save starts so the
+    // reply shows finished instead of "Thinking" through the save. The append
+    // also posts the reply's last buffered text, which the save would hold
+    // back: harvestWorkspace runs git synchronously and blocks the flush timer.
+    // Best-effort: if it does not land, the chat waits for the terminal state
+    // as before. It is posted only once the reply's last text is confirmed
+    // delivered; otherwise the chat would show a cut-off reply as finished for
+    // the whole save.
+    if (!sink.sealed) {
+      try {
+        await sink.flushTokens()
+        if (!sink.hasUndeliveredTokens) await sink.append({ kind: 'work_saving', payload: {} })
+      } catch {
+        diagnose('hosted saving event delivery failed')
+      }
+    }
     let outcome: HarvestOutcome
     try {
       const markerValid = hasValidPrebakedMarker(prebakedMarkerPath)

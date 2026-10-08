@@ -1354,8 +1354,12 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
       // budget. Refresh proactively near expiry and once on a 401. Exhausting
       // the bounded agent-token pull is fatal and reported for the current run;
       // other transient status-read failures retain the session and back off.
+      // ORI-2517: the first read after a turn runs at once. A message the
+      // person sent during the turn or its save is already waiting.
+      let isFirstIdleRead = true
       for (;;) {
-        await waitForNextHostedSessionRead(sleep, idlePollMs)
+        if (!isFirstIdleRead) await waitForNextHostedSessionRead(sleep, idlePollMs)
+        isFirstIdleRead = false
         let pendingTurn: PendingHostedTurn | null = null
         try {
           if (currentBearer.expiresAtMs !== null && currentBearer.expiresAtMs <= now() + 60_000) {
