@@ -20,9 +20,9 @@ import { BRAINTRUST_PY_VERSION_RE, publishedBootProof, resolveCredsOrFail, sandb
 
 /** The workflow passes none of the timeout flags, so these are the release contract. */
 export const DEFAULTS = Object.freeze({ createTimeoutMs: 180_000, checkTimeoutMs: 180_000, stopTimeoutMs: 60_000, sandboxLifetimeMs: 1_800_000 })
-/** Version, marker, boot proof, skilled-proposer venv verify, merge-job tools,
+/** Version, marker, boot proof, source-copy protocol, skilled-proposer venv verify, merge-job tools,
  *  sandbox tools (ripgrep + an app preview, ORI-2258 / ORI-2261). */
-const CHECK_COUNT = 6
+const CHECK_COUNT = 7
 /** Read-only on a good snapshot: it fails, rather than installs, when the baked
  *  venv cannot be reused (skilled-proposer-launch.ts skilledProposerBakeCommand). */
 const SKILLED_PROPOSER_VERIFY = 'orizu internal verify-skilled-proposer-bake --json'
@@ -114,6 +114,11 @@ async function runCheck(session, options, out) {
   out(`- boot proof (opencode, hosted-loop, workspace bootstrap, claude-agent-sdk, braintrust ${braintrustPyVersion})\n`)
   const proof = await withDeadline(() => session.exec(publishedBootProof(braintrustPyVersion)), 'START_CHECK_BOOT_PROOF', checkTimeoutMs)
   if (proof.exitCode !== 0) throw new Error(`boot proof failed: ${(proof.stderr || proof.stdout || `exit ${proof.exitCode}`).trim()}`)
+  out('- source copy capability\n')
+  const sourceCopy = await withDeadline(() => session.exec('orizu internal hosted-boot --capability-check'), 'START_CHECK_SOURCE_COPY', checkTimeoutMs)
+  if (sourceCopy.exitCode !== 0 || sourceCopy.stdout.trim() !== 'orizu-hosted-source-copy-v1' || sourceCopy.stderr.trim()) {
+    throw new Error('source copy capability was not confirmed by the installed CLI')
+  }
   out(`- ${SKILLED_PROPOSER_VERIFY}\n`)
   const venv = await withDeadline(() => session.exec(SKILLED_PROPOSER_VERIFY), 'START_CHECK_SKILLED_PROPOSER', checkTimeoutMs)
   if (venv.exitCode !== 0) throw new Error(`skilled-proposer venv verify failed: ${(venv.stderr || venv.stdout || `exit ${venv.exitCode}`).trim()}`)

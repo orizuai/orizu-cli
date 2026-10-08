@@ -31,6 +31,7 @@
  */
 
 import { spawnSync } from 'child_process'
+import { randomUUID } from 'crypto'
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'fs'
 
 import { isValidCloudflareArtifactsGitRemote } from './cloudflare-artifacts-git-remote.js'
@@ -437,6 +438,7 @@ export interface ResolvedSession {
   pendingTurn: PendingHostedTurn | null
   interruptRequestedRunId: string | null
   agentSessionId: string | null
+  seedOrigin: 'team' | 'session'
   projectId: string | null
   /** Session lifetime in minutes (from client_info), if the coordinator recorded
    *  it — used to derive the per-prompt max-duration cap (ALI-1061). */
@@ -483,13 +485,14 @@ export async function resolveSession(opts: {
     opts.fetchImpl,
     `${opts.baseUrl}/api/cli/sessions/${encodeURIComponent(opts.sessionId)}`,
     opts.bearer,
-    opts.signal ? { signal: opts.signal } : {}
+    { headers: { 'X-Orizu-Session-Seed-Protocol': '1' }, ...(opts.signal ? { signal: opts.signal } : {}) }
   )
   const session = (body.session ?? {}) as Record<string, unknown>
   const workspaceId = asString(session.workspaceId)
   if (!workspaceId) throw new Error('session response carried no workspaceId')
   const repoBranch = asString(session.repoBranch)
   if (!repoBranch) throw new Error('session response carried no repoBranch (branch not provisioned)')
+  if (session.seedOrigin !== undefined && session.seedOrigin !== 'team' && session.seedOrigin !== 'session') throw new Error('session response carried invalid seedOrigin')
   const clientInfo = (session.clientInfo ?? {}) as Record<string, unknown>
   const initialTask = asString(clientInfo.task)
   if (!initialTask) throw new Error('session client_info carried no task prompt')
@@ -540,6 +543,8 @@ export async function resolveSession(opts: {
     pendingTurn: unfinishedRun ? pendingTurn : null,
     interruptRequestedRunId: asString(session.interruptRequestedRunId),
     agentSessionId: asString(session.agentSessionId),
+    // A server with copying switched off omits seedOrigin; no source is bound.
+    seedOrigin: session.seedOrigin === 'session' ? 'session' : 'team',
     projectId: asString(session.projectId),
   }
 }
@@ -697,7 +702,7 @@ export async function resolveTeamRemote(opts: {
   const url = `${opts.baseUrl}/api/cli/workspaces/${encodeURIComponent(opts.workspaceId)}/repo-token`
   const minted = await bearerJson(opts.fetchImpl, url, opts.bearer, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Orizu-Session-Seed-Protocol': '1' },
     body: JSON.stringify({ purpose: 'team_read', sessionId: opts.sessionId }),
   })
   const remote = asString(minted.remote)
@@ -1070,28 +1075,104 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   const helperValue = `!node ${helperScriptAbs} ${bootContextAbs}`
 
   // 4b — ORI-2118: a hosted session's Artifacts copy is created empty (forks
-  // of a busy team copy cannot be cloned), so fill it from the team copy
-  // before the first clone. A copy that already has `main` is left alone.
+  // of a busy team copy cannot be cloned). Fill it from the server-selected
+  // origin before cloning. Selected saved history is checked on retries too.
+  if (session.seedOrigin === 'session' && !isValidCloudflareArtifactsGitRemote(repo.cloneUrl)) {
+    throw new Error('selected session source requires an admitted Artifacts destination')
+  }
   if (isValidCloudflareArtifactsGitRemote(repo.cloneUrl)) {
     const credentialConfig = (helper: string) => [`credential.helper=${helper}`, 'credential.useHttpPath=true']
-    await seedSessionCopy({
-      exec,
-      sessionRemote: repo.cloneUrl,
-      sessionGitConfig: credentialConfig(helperValue),
-      scratchDir: `${sessionDirAbs}/seed.git`,
-      resolveTeam: async () => {
-        const teamRemote = await resolveTeamRemote({ baseUrl: env.baseUrl, workspaceId, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
-        assertSafeGitValue('teamRemote', teamRemote)
-        const teamContextAbs = `${sessionDirAbs}/${TEAM_BOOT_CONTEXT_BASENAME}`
-        writeFile(teamContextAbs, serializeBootContext({
-          ...bootContext,
-          repoFullName: teamRemote,
-          host: new URL(teamRemote).host.toLowerCase(),
-          tokenPurposes: { primary: 'team_read', fallback: 'team_read' },
-        }))
-        return { remote: teamRemote, gitConfig: credentialConfig(`!node ${helperScriptAbs} ${teamContextAbs}`) }
-      },
-    })
+    const sourceRequestId = session.seedOrigin === 'session' ? randomUUID() : null
+    const sourceCredentialFile = `${sessionDirAbs}/seed-source-credential`
+    const sourceHelperFile = `${sessionDirAbs}/seed-source-helper.js`
+    let seedFailed = false
+    let seedError: unknown = null
+    try {
+      await seedSessionCopy({
+        seedOrigin: session.seedOrigin,
+        exec,
+        sessionRemote: repo.cloneUrl,
+        sessionGitConfig: credentialConfig(helperValue),
+        scratchDir: `${sessionDirAbs}/seed.git`,
+        resolveTeam: async () => {
+          if (sourceRequestId) {
+            const url = `${env.baseUrl}/api/cli/workspaces/${encodeURIComponent(workspaceId)}/repo-token`
+            const credential = await bearerJson(fetchImpl, url, bearer.token, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ purpose: 'source_read', sessionId: env.sessionId, requestId: sourceRequestId }),
+            })
+            const remote = asString(credential.remote)
+            const token = asString(credential.token)
+            const username = asString(credential.username)
+            if (credential.provider !== 'cloudflare_artifacts' || !remote || !isValidCloudflareArtifactsGitRemote(remote) || !token || !username || credential.requestId !== sourceRequestId) {
+              throw new Error('source_read response carried no valid admitted source credential')
+            }
+            assertSafeGitValue('sourceRemote', remote)
+            writeSecretFile(sourceCredentialFile, JSON.stringify({ remote, username, token }), writeFile)
+            writeFile(sourceHelperFile, String.raw`const fs = require('fs');
+const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+  let input = '';
+  process.stdin.on('data', d => input += d);
+  process.stdin.on('end', () => {
+    const fields = Object.fromEntries(input.trim().split('\n').map(line => {
+      const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)];
+    }));
+    const u = new URL(c.remote);
+    if (process.argv[3] === 'get' && fields.protocol === 'https' && fields.host === u.host && fields.path === u.pathname.slice(1)) {
+      process.stdout.write('username=' + c.username + '\npassword=' + c.token + '\n\n');
+    }
+  });`)
+            return { remote, gitConfig: ['credential.helper=', `credential.helper=!node ${sourceHelperFile} ${sourceCredentialFile}`, 'credential.useHttpPath=true'] }
+          }
+          const teamRemote = await resolveTeamRemote({ baseUrl: env.baseUrl, workspaceId, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
+          assertSafeGitValue('teamRemote', teamRemote)
+          const teamContextAbs = `${sessionDirAbs}/${TEAM_BOOT_CONTEXT_BASENAME}`
+          writeFile(teamContextAbs, serializeBootContext({
+            ...bootContext,
+            repoFullName: teamRemote,
+            host: new URL(teamRemote).host.toLowerCase(),
+            tokenPurposes: { primary: 'team_read', fallback: 'team_read' },
+          }))
+          return { remote: teamRemote, gitConfig: credentialConfig(`!node ${helperScriptAbs} ${teamContextAbs}`) }
+        },
+      })
+    } catch (error) {
+      seedFailed = true
+      seedError = error
+    }
+    // Always request cleanup, including lost mint replies. The server tracks
+    // the request before issuance and refuses uncertain cleanup.
+    let cleanupFailed = false
+    let cleanupError: unknown = null
+    try {
+      try {
+        if (sourceRequestId) {
+          const cleanup = await bearerJson(fetchImpl, `${env.baseUrl}/api/cli/workspaces/${encodeURIComponent(workspaceId)}/repo-token`, bearer.token, {
+            method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ purpose: 'source_read', sessionId: env.sessionId, requestId: sourceRequestId }),
+          })
+          if (cleanup.settled !== true || cleanup.outcome !== 'revoked') {
+            throw new Error('temporary source credential revocation could not be proved')
+          }
+        }
+      } finally {
+        if (sourceRequestId) {
+          const removed = exec('rm', ['-f', '--', sourceCredentialFile, sourceHelperFile])
+          if (removed.status !== 0) throw new Error('temporary source credential cleanup failed')
+        }
+      }
+    } catch (error) {
+      cleanupFailed = true
+      cleanupError = error
+    }
+    // A failed copy keeps its own reason; a cleanup failure is added, never
+    // substituted, so the person sees why the copy stopped.
+    if (seedFailed && cleanupFailed) {
+      const reason = (error: unknown) => error instanceof Error ? error.message : String(error)
+      throw new Error(`${reason(seedError)}; temporary source credential cleanup also failed: ${reason(cleanupError)}`)
+    }
+    if (seedFailed) throw seedError
+    if (cleanupFailed) throw cleanupError
   }
 
   // 5 — Clone the session branch VIA the pull-mode credential helper (same

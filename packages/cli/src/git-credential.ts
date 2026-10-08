@@ -377,7 +377,7 @@ async function mintArtifactsCredential(
     `/api/cli/workspaces/${encodeURIComponent(workspaceId)}/repo-token`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Orizu-Session-Seed-Protocol': '1' },
       body: JSON.stringify({ purpose, ...(purpose === 'team_read' ? { sessionId: process.env.ORIZU_SESSION_ID?.trim() } : {}) }),
     }
   )

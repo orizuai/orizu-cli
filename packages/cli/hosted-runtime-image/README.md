@@ -136,6 +136,7 @@ sandbox from the new snapshot through the CLI's own Vercel provider, under the
 same default-deny network policy a hosted session gets (`buildEgressPolicy`), then
 checks:
 
+- `orizu internal hosted-boot --capability-check` reports the exact saved-work copying protocol. This check does not enable copying: a person must separately approve the current snapshot for it.
 - `orizu --version` prints **exactly** `orizu X.Y.Z` (the CLI's real output
   shape; the test captures it from the real CLI);
 - `/opt/orizu/prebaked.json` (the prebaked marker) passes the coordinator's own

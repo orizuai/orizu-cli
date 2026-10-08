@@ -1549,6 +1549,10 @@ export async function hostedCommand(
     }
     // ALI-1057: the DO-path in-sandbox boot entrypoint (ORIZU_SANDBOX_ENTRYPOINT).
     if (positional[1] === 'hosted-boot') {
+      if (args.includes('--capability-check')) {
+        io.print('orizu-hosted-source-copy-v1')
+        return 0
+      }
       return hostedBootCommand(io)
     }
     // ALI-1084: the one-shot merge sandbox entrypoint (MergeJobCoordinator DO).

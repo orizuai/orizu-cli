@@ -371,7 +371,7 @@ function isArtifactsCredentialKey(credentialKey) {
 async function requestToken(url, bearer, purpose, sessionId, expectedCredentialKey) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + bearer },
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + bearer, 'X-Orizu-Session-Seed-Protocol': '1' },
     body: JSON.stringify({ purpose: purpose, sessionId: sessionId }),
   })
   if (res.ok) {
