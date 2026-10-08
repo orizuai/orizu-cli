@@ -64,7 +64,8 @@ const DEFAULT_LINK_PATHS: readonly string[] = ORIZU_SKILL_LINK_FOLDERS.map(folde
  * put where a staged link was, is never taken out.
  */
 function stagedOrizuSkillLinks(git: SkillLinkGit, recorded: ReadonlySet<string>): string[] | { error: string } {
-  const diff = git(['diff', '--cached', '--raw', '-z', '--no-renames'])
+  // Full object ids, so cat-file never gets a shortened one.
+  const diff = git(['diff', '--cached', '--raw', '-z', '--no-renames', '--no-abbrev'])
   if (diff.exitCode !== 0) return { error: `git diff --cached failed: ${diff.stderr.trim() || `exit ${diff.exitCode}`}` }
   const fields = diff.stdout.split('\0')
   const found: string[] = []
@@ -72,7 +73,12 @@ function stagedOrizuSkillLinks(git: SkillLinkGit, recorded: ReadonlySet<string>)
     const [, newMode, , newSha, change] = fields[i].split(' ')
     const path = fields[i + 1]
     if (newMode !== '120000' || !newSha) continue
-    const target = git(['cat-file', '-p', newSha]).stdout
+    // An unread link might be ours, so refuse the save rather than keep it.
+    const read = git(['cat-file', '-p', newSha])
+    if (read.exitCode !== 0) {
+      return { error: `git cat-file could not read the staged link ${path}: ${read.stderr.trim() || `exit ${read.exitCode}`}` }
+    }
+    const target = read.stdout
     if (!target.startsWith('/')) continue
     const isVendored = target.replace(/\/+$/u, '').endsWith(VENDORED_SKILL_SUFFIX)
     if (isVendored || recorded.has(path) || (change === 'A' && DEFAULT_LINK_PATHS.includes(path))) found.push(path)
