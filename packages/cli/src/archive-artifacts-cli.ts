@@ -27,14 +27,6 @@ export interface ArchiveArtifactsIo {
   fetcher?: (path: string, init?: RequestInit) => Promise<Response>
 }
 
-interface ArchiveArtifactResult {
-  id: string
-  type: ArchiveArtifactType
-  status: 'active' | 'archived'
-  archivedAt: string | null
-  assigneeId?: string
-}
-
 interface AssignmentSummary {
   taskId: string
   taskTitle: string
@@ -262,27 +254,14 @@ export async function archiveArtifactCommand(
     archived: action === 'archive',
     ...(assigneeId ? { assigneeId } : {}),
   }
-  const fetcher = io.fetcher || authedFetch
-  const response = await fetcher(
-    `/api/cli/archive-artifacts/${artifactType}/${encodeURIComponent(artifactId)}` +
+  const { archiveArtifact } = await import('./archive-artifact-workflow.js')
+  const data = await archiveArtifact({
+    path: `/api/cli/archive-artifacts/${artifactType}/${encodeURIComponent(artifactId)}` +
       `?${params.toString()}`,
-    {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    }
-  )
-  if (!response.ok) {
-    throw new Error(
-      `Failed to ${action} ${artifactType}: ` +
-      await extractErrorMessage(response)
-    )
-  }
-
-  const data = await parseJsonPayload<{ artifact: ArchiveArtifactResult }>(
-    response,
-    `${action === 'archive' ? 'Archive' : 'Restore'} ${artifactType}`
-  )
+    body,
+    label: `${action} ${artifactType}`,
+    fetcher: io.fetcher,
+  })
   if (io.json) {
     io.print(JSON.stringify(data))
     return
