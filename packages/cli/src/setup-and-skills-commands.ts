@@ -876,9 +876,7 @@ async function resolveSetupTeam(
     if (workspaceTeamSlug) throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Create the new team from another directory.`)
     const name = createTeamName.trim()
     if (!name) throw new Error('--create-team requires a non-empty team name.')
-    const team = await createTeamOnServer(name, request)
-    printLine(`Created team ${sanitizeTerminalText(team.slug)}`)
-    return team
+    return await createSetupTeam(name, request)
   }
   const teams = await fetchTeams(request)
   const normalizedTeamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null
@@ -911,6 +909,11 @@ async function resolveSetupTeam(
     throw new Error('Team name is required to create a team.')
   }
   if (workspaceTeamSlug) throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Create the new team from another directory.`)
+  return await createSetupTeam(name, request)
+}
+
+// Both of setup's ways to create a team: one request with a deadline, never retried.
+async function createSetupTeam(name: string, request: AuthenticatedRequest): Promise<Team> {
   const team = await createTeamOnServer(name, request)
   printLine(`Created team ${sanitizeTerminalText(team.slug)}`)
   return team

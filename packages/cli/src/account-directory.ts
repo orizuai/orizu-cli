@@ -243,16 +243,8 @@ async function createTeamOnServer(
   name: string,
   request: AuthenticatedRequest = authedFetch
 ): Promise<Team> {
-  const response = await request('/api/cli/teams', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  })
-  if (!response.ok) {
-    throw new Error(`Failed to create team: ${await response.text()}`)
-  }
-  const data = await parseJsonResponse<{ team: Team }>(response, 'Team create')
-  return data.team
+  const { createTeamWithDeadline } = await import('./team-create-workflow.js')
+  return await createTeamWithDeadline(name, request)
 }
 
 async function createProjectOnServer(

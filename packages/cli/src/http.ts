@@ -324,7 +324,8 @@ export type AuthenticatedRequestSource = 'ORIZU_TOKEN' | 'ORIZU_TOKEN_FILE' | 's
 export interface AuthenticatedRequestContext {
   readonly baseUrl: string
   readonly source: AuthenticatedRequestSource
-  fetch(path: string, init?: RequestInit): Promise<Response>
+  /** `onRequestStart` runs just before each request goes out, as with `authedFetch`. */
+  fetch(path: string, init?: RequestInit, onRequestStart?: () => void): Promise<Response>
   logout(signal?: AbortSignal | null): Promise<LogoutResult>
 }
 
@@ -367,13 +368,15 @@ export function captureAuthenticatedRequestContext(
     return {
       baseUrl,
       source,
-      async fetch(path: string, init: RequestInit = {}) {
+      async fetch(path: string, init: RequestInit = {}, onRequestStart?: () => void) {
+        const headers = {
+          ...(init.headers || {}),
+          Authorization: `Bearer ${resolveRequestBearer()}`,
+        }
+        onRequestStart?.()
         return await fetch(`${baseUrl}${path}`, {
           ...init,
-          headers: {
-            ...(init.headers || {}),
-            Authorization: `Bearer ${resolveRequestBearer()}`,
-          },
+          headers,
           ...credentialRequestRedirectPolicy(),
         })
       },
@@ -403,7 +406,7 @@ export function captureAuthenticatedRequestContext(
   return {
     baseUrl,
     source: 'stored',
-    async fetch(path: string, init: RequestInit = {}) {
+    async fetch(path: string, init: RequestInit = {}, onRequestStart?: () => void) {
       let didRefresh = false
       if (
         allowRefresh
@@ -414,6 +417,7 @@ export function captureAuthenticatedRequestContext(
         didRefresh = true
       }
 
+      onRequestStart?.()
       let response = await fetch(`${baseUrl}${path}`, {
         ...init,
         headers: {
@@ -430,6 +434,7 @@ export function captureAuthenticatedRequestContext(
         && !didRefresh
       ) {
         await refreshCapturedCredentials(init.signal)
+        onRequestStart?.()
         response = await fetch(`${baseUrl}${path}`, {
           ...init,
           headers: {
