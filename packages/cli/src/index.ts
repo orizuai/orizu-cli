@@ -796,9 +796,13 @@ async function submitRunResults() {
   const resultsJsonl = resultsPath.endsWith('.gz')
     ? gunzipSync(resultBytes).toString('utf8')
     : resultBytes.toString('utf8')
-  const response = await authedFetch(`/api/cli/runs/submit?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const { sendScoreSave } = await import('./score-save-workflow.js')
+  const data = await sendScoreSave({
+    command: 'run',
+    path: `/api/cli/runs/submit?project=${encodeURIComponent(project)}`,
+    project,
+    promptVersionId,
+    saves: true,
     body: JSON.stringify({
       promptVersionId,
       runnerVersionId,
@@ -810,19 +814,13 @@ async function submitRunResults() {
       resultsJsonl,
       ...instructionSetProvenanceFields(project),
     }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to submit run: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
+  }, authedFetch) as {
     run: {
       id: string
       aggregateScore: number | null
       perRowResultsStoragePath: string
     }
-  }>(response, 'Run submit')
+  }
   if (hasJsonFlag()) {
     printJson({ run: data.run })
     return

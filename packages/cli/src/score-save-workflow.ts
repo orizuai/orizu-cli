@@ -8,34 +8,39 @@ import { appErrorOf, unreachedCode } from './request-outcome.js'
 
 // Loaded only through `await import(...)`, like the dataset workflows.
 
+const SavedScore = Schema.Struct({ scoreRun: Schema.Struct({ id: Schema.NonEmptyString }) })
+const SavedRun = Schema.Struct({ run: Schema.Struct({ id: Schema.NonEmptyString }) })
+
+// `serverMayBeSaved` is what the route says when it cannot tell whether the run was saved.
 const COMMANDS = {
-  submit: { label: 'Score submit', failed: 'Failed to submit score' },
-  exec: { label: 'Scorer exec', failed: 'Failed to execute scorer' },
+  submit: { label: 'Score submit', failed: 'Failed to submit score', serverMayBeSaved: 'Score run may already be saved', saved: SavedScore },
+  exec: { label: 'Scorer exec', failed: 'Failed to execute scorer', serverMayBeSaved: 'Score run may already be saved', saved: SavedScore },
+  run: { label: 'Run submit', failed: 'Failed to submit run', serverMayBeSaved: 'Run may already be saved', saved: SavedRun },
 } as const
 
-// What the server says when it cannot tell whether the run was saved.
-const SERVER_MAY_BE_SAVED = 'Score run may already be saved'
 // Node's fetch publishes this once a request's whole body has been written.
 const BODY_SENT = 'undici:request:bodySent'
 
-const SavedReply = Schema.Struct({ scoreRun: Schema.Struct({ id: Schema.NonEmptyString }) })
-
-export interface ScoreSave {
-  command: keyof typeof COMMANDS
+interface SaveRequest {
   /** The route path with its query, as sent. */
   path: string
   body: string
   project: string
-  scorerVersionId: string
   /** False for `scorers exec --no-submit`, which saves nothing. */
   saves: boolean
 }
 
+/** `scores submit` and `scorers exec`, or `runs submit` (ORI-1097 S3b). */
+export type ScoreSave =
+  | SaveRequest & { command: 'submit' | 'exec'; scorerVersionId: string }
+  | SaveRequest & { command: 'run'; promptVersionId: string }
+
 /** Sends one request; calls `onRequestStart` just before anything goes out. */
 export type ScoreSaveRequest = (path: string, init: RequestInit, onRequestStart?: () => void) => Promise<Response>
 
-const scoreMayBeSaved = (save: ScoreSave) =>
-  `The score may already be saved: run \`orizu scorers detail ${save.scorerVersionId} --project ${save.project}\` and check its newest score runs before running this again.`
+const mayBeSaved = (save: ScoreSave) => save.command === 'run'
+  ? `The run may already be saved: run \`orizu runs list --project ${save.project} --prompt-version ${save.promptVersionId}\` and check its newest runs before running this again.`
+  : `The score may already be saved: run \`orizu scorers detail ${save.scorerVersionId} --project ${save.project}\` and check its newest score runs before running this again.`
 
 // The run may be saved when the server says so, when the reply was lost, late
 // or unreadable after the request was sent, when a 5xx did not come from the
@@ -50,7 +55,7 @@ class ScoreSaveFailure extends Error {
 // second run. The deadline starts once the whole body has been sent, so a
 // large upload on a slow link takes as long as it did before.
 function scoreSave(save: ScoreSave, request: ScoreSaveRequest, timeoutMs: number): Effect.Effect<Record<string, unknown>, ScoreSaveFailure> {
-  const { label, failed } = COMMANDS[save.command]
+  const { label, failed, serverMayBeSaved, saved } = COMMANDS[save.command]
   return Effect.suspend(() => {
     let sent = false
     let timedOut = false
@@ -79,7 +84,7 @@ function scoreSave(save: ScoreSave, request: ScoreSaveRequest, timeoutMs: number
           if (!response.ok) {
             const appError = await appErrorOf(response.clone())
             const detail = await extractErrorMessage(response)
-            if (appError === SERVER_MAY_BE_SAVED) throw new ScoreSaveFailure(appError, true)
+            if (appError === serverMayBeSaved) throw new ScoreSaveFailure(appError, true)
             if (response.status < 400 || (response.status >= 500 && appError === null)) {
               throw new ScoreSaveFailure(`${label} got no clear answer (status ${response.status}).`, true)
             }
@@ -94,7 +99,7 @@ function scoreSave(save: ScoreSave, request: ScoreSaveRequest, timeoutMs: number
             data = undefined
           }
           const usable = save.saves
-            ? Result.isSuccess(Schema.decodeUnknownResult(SavedReply)(data))
+            ? Result.isSuccess(Schema.decodeUnknownResult(saved)(data))
             : typeof data === 'object' && data !== null && !Array.isArray(data)
           if (!usable) {
             throw new ScoreSaveFailure(`${label} returned an unexpected response (status ${response.status}).`, true)
@@ -122,10 +127,10 @@ function scoreSave(save: ScoreSave, request: ScoreSaveRequest, timeoutMs: number
   })
 }
 
-/** `orizu scores submit` and `orizu scorers exec`: the reply, or an error saying whether the score may be saved. */
+/** `orizu scores submit`, `orizu scorers exec` and `orizu runs submit`: the reply, or an error saying whether the save may have happened. */
 export async function sendScoreSave(save: ScoreSave, request: ScoreSaveRequest): Promise<Record<string, unknown>> {
   const exit = await Effect.runPromiseExit(scoreSave(save, request, datasetTransferTimeoutMs()).pipe(
-    Effect.mapError(failure => new Error(failure.mayBeSaved && save.saves ? `${failure.message}\n${scoreMayBeSaved(save)}` : failure.message)),
+    Effect.mapError(failure => new Error(failure.mayBeSaved && save.saves ? `${failure.message}\n${mayBeSaved(save)}` : failure.message)),
   ))
   if (Exit.isSuccess(exit)) return exit.value
   throw Cause.squash(exit.cause)
