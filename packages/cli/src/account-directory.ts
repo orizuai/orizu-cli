@@ -657,19 +657,8 @@ async function removeTeamMember() {
     throw new Error('Usage: orizu teams members remove --email <email> [--team <teamSlug>]')
   }
 
-  const members = await fetchTeamMembers(teamSlug)
-  const member = members.find(item => item.email.toLowerCase() === email.toLowerCase())
-  if (!member) {
-    throw new Error(`No member found with email '${email}' in team '${teamSlug}'`)
-  }
-
-  const response = await authedFetch(
-    `/api/cli/teams/${encodeURIComponent(teamSlug)}/members/${encodeURIComponent(member.id)}`,
-    { method: 'DELETE' }
-  )
-  if (!response.ok) {
-    throw new Error(`Failed to remove team member: ${await response.text()}`)
-  }
+  const { changeTeamMemberWithDeadline } = await import('./team-member-change-workflow.js')
+  const member = await changeTeamMemberWithDeadline({ kind: 'remove', teamSlug, email }, () => fetchTeamMembers(teamSlug), authedFetch)
   if (hasJsonFlag()) {
     printJson({ removed: { id: member.id, email: member.email } })
     return
@@ -689,24 +678,8 @@ async function changeTeamMemberRole() {
     throw new Error('role must be one of: admin, curator, judge')
   }
 
-  const members = await fetchTeamMembers(teamSlug)
-  const member = members.find(item => item.email.toLowerCase() === email.toLowerCase())
-  if (!member) {
-    throw new Error(`No member found with email '${email}' in team '${teamSlug}'`)
-  }
-
-  const response = await authedFetch(
-    `/api/cli/teams/${encodeURIComponent(teamSlug)}/members/${encodeURIComponent(member.id)}`,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role }),
-    }
-  )
-
-  if (!response.ok) {
-    throw new Error(`Failed to update member role: ${await response.text()}`)
-  }
+  const { changeTeamMemberWithDeadline } = await import('./team-member-change-workflow.js')
+  const member = await changeTeamMemberWithDeadline({ kind: 'role', teamSlug, email, role }, () => fetchTeamMembers(teamSlug), authedFetch)
 
   if (hasJsonFlag()) {
     printJson({ member: { id: member.id, email: member.email, role } })
