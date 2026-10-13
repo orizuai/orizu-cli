@@ -60,6 +60,7 @@ import {
 import { DEFAULT_EGRESS_CANARY_HOST, DEFAULT_HOSTED_MODEL } from './hosted-loop-lifecycle.js'
 import { composeHostedAnswerPrompt } from './hosted-question.js'
 import { resumeRunEventSink } from './hosted-run-event-sink.js'
+import { seedProjectFolder } from './hosted-project-folder-seed.js'
 import { stageOrizuSkill } from './hosted-skill-staging.js'
 import { openHostedLiveChannel, type HostedLiveChannel } from './hosted-live-channel.js'
 
@@ -441,6 +442,9 @@ export interface ResolvedSession {
   agentSessionId: string | null
   seedOrigin: 'team' | 'session'
   projectId: string | null
+  /** The session's own project's slug and name (ORI-2609), when the server sends them. */
+  projectSlug: string | null
+  projectName: string | null
   /** Session lifetime in minutes (from client_info), if the coordinator recorded
    *  it — used to derive the per-prompt max-duration cap (ALI-1061). */
   durationMinutes: number | null
@@ -547,6 +551,8 @@ export async function resolveSession(opts: {
     // A server with copying switched off omits seedOrigin; no source is bound.
     seedOrigin: session.seedOrigin === 'session' ? 'session' : 'team',
     projectId: asString(session.projectId),
+    projectSlug: asString(session.projectSlug),
+    projectName: asString(session.projectName),
   }
 }
 
@@ -1341,6 +1347,18 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   exec('git', ['-C', workspaceDir, 'config', 'user.name', AGENT_GIT_IDENTITY.name])
   exec('git', ['-C', workspaceDir, 'config', 'user.email', AGENT_GIT_IDENTITY.email])
   if (!wokenDisk && !sessionCopyFilled) log(`cloned ${session.repoBranch}`)
+
+  // 5a — ORI-2609: the team copy holds only the projects the team seed knew
+  // about. Write this session's project folder if it is missing, before the
+  // agent starts. Never fails the boot. A woken disk is the agent's own saved
+  // state, so a folder it removed there is not put back.
+  log(wokenDisk
+    ? 'project folder left as the woken disk has it'
+    : seedProjectFolder({
+      workTree: workspaceDir,
+      project: { id: session.projectId, slug: session.projectSlug, name: session.projectName },
+      exec: (cmd, args) => exec(cmd, args),
+    }))
 
   // 5b — Stage the orizu skill into the cloned repo so the agent discovers the
   // Orizu workflows (ALI-1059). SHARED with the operator path via `stageOrizuSkill`
