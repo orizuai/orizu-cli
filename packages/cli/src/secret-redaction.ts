@@ -76,6 +76,36 @@ function redactString(input: string, secrets: readonly string[]): string {
   return out
 }
 
+/**
+ * The shape pass alone, for servers that hold no secret values: the web app
+ * and the session coordinator scrub agent text with it before it reaches a
+ * browser (ORI-1905). One list of shapes for the CLI and both servers.
+ */
+export function redactSecretShapes(input: string): string {
+  return redactString(input, [])
+}
+
+// A known credential prefix at the end of the text, followed by fewer
+// characters than its shape above needs: the start of a token still being
+// written. Each run is bounded, so the scan stays linear in the text, and a
+// longer run that is not a token (a path, a word) is left alone. `Bearer` only
+// counts in an Authorization header, so prose like "a Bearer token" keeps its
+// last word.
+const OPEN_TOKEN_AT_END = /(?:\bgithub_pat_[A-Za-z0-9_]{0,19}|\bgh[posur]_[A-Za-z0-9_]{0,19}|\borizu_(?:agent|pat)_[A-Za-z0-9_-]{0,9}|\bsk-[A-Za-z0-9_-]{0,19}|\b(authorization:\s*bearer)\s+[A-Za-z0-9._~+/-]{0,15})$/i
+
+/**
+ * For reply text shown as it is written: each snapshot is the reply so far, so
+ * one can end part-way through a token, before it is long enough for its shape
+ * to match. Such a tail is redacted too. The saved read shows a reply's last
+ * snapshot, so a finished reply that really ends in a bare `sk-` loses those
+ * characters there as well.
+ */
+export function redactStreamedTextShapes(input: string): string {
+  return redactSecretShapes(input).replace(OPEN_TOKEN_AT_END, (_match, header?: string) =>
+    header ? `${header} ${REDACTION_PLACEHOLDER}` : REDACTION_PLACEHOLDER
+  )
+}
+
 export interface RedactOptions {
   /** Verbatim secret values to strip wherever they appear (bearer, tokens). */
   secrets?: readonly string[]
