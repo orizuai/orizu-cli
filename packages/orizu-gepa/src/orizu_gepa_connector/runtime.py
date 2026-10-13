@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import sys
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -431,7 +436,120 @@ def _result_summary(*, run_id: str, best_id: str, best_score: float, seed_score:
     }
 
 
+_STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+# One Ctrl-C reaches the optimizer twice: from the terminal and again from the
+# CLI that passes it on. A repeat this soon after the first is the same press.
+_REPEAT_WINDOW_SECONDS = 1.0
+_STATUS_WRITE_SECONDS = 10.0
+
+
+class RunInterrupted(BaseException):
+    """A stop signal (Ctrl-C, SIGTERM, a closed terminal) reached the run."""
+
+    def __init__(self, signal_name: str, signum: int) -> None:
+        super().__init__(signal_name)
+        self.signal_name = signal_name
+        self.signum = signum
+
+
+def _end_by_signal(signum: int) -> None:
+    """Exit the way an unhandled signal would, so callers see 128 + its number."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+@contextmanager
+def interrupt_signals():
+    """Turn the first stop signal into ``RunInterrupted``; a later one ends at once."""
+    first_at: list[float] = []
+
+    def handle(signum: int, _frame: Any) -> None:
+        if not first_at:
+            first_at.append(time.monotonic())
+            if os.getpgrp() == os.getpid():
+                # Runners may run in worker threads, which this interrupt does
+                # not reach; when we lead the process group, stop them too.
+                # Our own copy of the signal falls in the repeat window.
+                try:
+                    os.killpg(os.getpgrp(), signum)
+                except OSError:
+                    pass
+            raise RunInterrupted(signal.Signals(signum).name, signum)
+        if time.monotonic() - first_at[0] < _REPEAT_WINDOW_SECONDS:
+            return
+        _end_by_signal(signum)
+
+    previous = {signum: signal.getsignal(signum) for signum in _STOP_SIGNALS}
+    for signum in _STOP_SIGNALS:
+        signal.signal(signum, handle)
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _stop_when_parent_exits() -> None:
+    """Stop like SIGTERM once the CLI that started us is gone (e.g. SIGKILLed).
+
+    The CLI puts the optimizer in its own process group, so a signal sent to
+    the CLI's group no longer reaches it; without this it would keep running.
+    """
+    parent = os.getppid()
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def _mark_interrupted_run(client: OrizuClient, run_id: str, signal_name: str) -> None:
+    """Mark a stopped local run cancelled once, waiting at most 10 s; never retry."""
+    outcome: list[BaseException | None] = []
+
+    def write() -> None:
+        try:
+            client.update_run(run_id, status="cancelled",
+                              metadata={"stop_reason": "interrupted", "signal": signal_name})
+            outcome.append(None)
+        except BaseException as error:  # reported below; the run still stops
+            outcome.append(error)
+
+    writer = threading.Thread(target=write, daemon=True)
+    writer.start()
+    writer.join(_STATUS_WRITE_SECONDS)
+    if not outcome or outcome[0] is not None:
+        print(
+            f"Run {run_id} may still show as running: run "
+            f"`orizu optimizations cancel {run_id}` to mark it stopped.",
+            file=sys.stderr, flush=True,
+        )
+
+
 def run_from_environment() -> dict[str, Any]:
+    """Run official GEPA; a stopped local run is marked cancelled (ORI-2402).
+
+    A hosted run's final status belongs to its coordinator, which records it
+    before stopping the sandbox, so a hosted run writes no status here.
+    """
+    started: dict[str, Any] = {}
+    with interrupt_signals():
+        if os.environ.get("ORIZU_STOP_WITH_PARENT") == "1":
+            _stop_when_parent_exits()
+        try:
+            return _run_from_environment(started)
+        except RunInterrupted as interrupt:
+            if started.get("run_id") and not started.get("hosted"):
+                _mark_interrupted_run(started["client"], started["run_id"], interrupt.signal_name)
+            _end_by_signal(interrupt.signum)
+            raise
+
+
+def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
     """Run official GEPA over the verified legacy runner subprocess contract.
 
     ALI-1502 supplies these variables after verifying runner bytes. Scorer
@@ -542,6 +660,7 @@ def run_from_environment() -> dict[str, Any]:
         model_config_settings_version_id=instruction_set.get("model_config_settings_version_id") if isinstance(instruction_set, dict) else None,
         runner_version_id=prompt_context.runner_version_id,
     )
+    started.update(client=client, run_id=run_id, hosted=hosted_run_id is not None)
     print(json.dumps({"optimization_run_id": run_id}), flush=True)
     # The frozen sink treats ``None`` as no local artifact writer.  Keep that
     # legacy behavior rather than maintaining a connector-local no-op logger.
@@ -728,6 +847,9 @@ def run_from_environment() -> dict[str, Any]:
                     total_tokens_out=int(getattr(reflection_lm, "total_tokens_out", 0)),
                     total_tokens=int(getattr(reflection_lm, "total_tokens", 0)),
                 )
+        # From here the run has its own final status; a stop must not
+        # overwrite it with "cancelled".
+        started.pop("run_id", None)
         if budget_exhausted:
             if hosted_run_id is None:
                 client.update_run(
@@ -764,6 +886,7 @@ def run_from_environment() -> dict[str, Any]:
             temporary_result_path.replace(result_path)
         return summary
     except Exception as error:
+        started.pop("run_id", None)
         if sink.failed:
             sink.retry_failed_status()
         elif hosted_run_id is None:

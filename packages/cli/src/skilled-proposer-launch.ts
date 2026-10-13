@@ -49,39 +49,64 @@ function materializeConfigPayload(engine: GepaEngine, environment: NodeJS.Proces
   return () => rmSync(root, { recursive: true, force: true })
 }
 
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const
+// The optimizer marks its run stopped before exiting (at most 10 s for the
+// status write); past this it is killed so nothing is left running (ORI-2402).
+const CHILD_STOP_WAIT_MS = 15_000
+
+/**
+ * Run the optimizer, passing a stop signal on to it. On a stop signal the CLI
+ * waits until the optimizer exits (capped at CHILD_STOP_WAIT_MS, then kills
+ * it) and then ends by that same signal.
+ */
 export async function spawnSkilledProposerChild(
   command: string, args: string[], engine: GepaEngine, environment: NodeJS.ProcessEnv,
   onSpawn?: () => Promise<void>,
   output?: SkilledProposerChildOutput,
 ) {
   const childEnvironment = { ...environment }
-  const shouldMaterialize = engine === 'official'
-    && childEnvironment.ORIZU_CANDIDATE_PROPOSER === 'skilled-proposer'
-    && childEnvironment.ORIZU_SKILLED_PROPOSER_CONFIG !== undefined
-  if (!shouldMaterialize) return spawnSync(command, args, { stdio: 'inherit', env: childEnvironment })
-
   let child: ReturnType<typeof spawn> | PipedChild | undefined
   let cleanup = () => {}
-  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const
-  const handlers = signals.map(signal => ({
+  let stopSignal: NodeJS.Signals | undefined
+  // On the terminal path the optimizer leads its own process group, so a stop
+  // also reaches its runners, which may run in worker threads it can't stop.
+  let childGroup: number | undefined
+  const forward = (signal: NodeJS.Signals) => {
+    if (childGroup) {
+      try { process.kill(-childGroup, signal); return } catch { /* group already gone */ }
+    }
+    try { child?.kill(signal) } catch { /* already exited */ }
+  }
+  let giveUp: ReturnType<typeof setTimeout> | undefined
+  const removeHandlers = () => { for (const entry of handlers) process.off(entry.signal, entry.handle) }
+  const endBySignal = (signal: NodeJS.Signals): Promise<never> => {
+    if (giveUp) clearTimeout(giveUp)
+    removeHandlers()
+    cleanup()
+    // With our handlers gone, the signal's default action ends the process.
+    process.kill(process.pid, signal)
+    return new Promise<never>(() => {})
+  }
+  const handlers = STOP_SIGNALS.map(signal => ({
     signal,
     handle: () => {
-      try { cleanup() }
-      finally {
-        try { child?.kill(signal) }
-        finally {
-          for (const entry of handlers) process.off(entry.signal, entry.handle)
-          process.kill(process.pid, signal)
-        }
-      }
+      if (!child) { void endBySignal(signal); return }
+      forward(signal)
+      if (stopSignal) return
+      stopSignal = signal
+      // The child read the private payload at start and a stopping run
+      // proposes nothing, so it goes now rather than when the child exits.
+      cleanup()
+      giveUp = setTimeout(() => forward('SIGKILL'), CHILD_STOP_WAIT_MS)
     },
   }))
-  for (const entry of handlers) process.once(entry.signal, entry.handle)
+  for (const entry of handlers) process.on(entry.signal, entry.handle)
   try {
     cleanup = materializeConfigPayload(engine, childEnvironment) ?? cleanup
     await new Promise<void>(resolve => setImmediate(resolve))
+    let result: { status: number | null, error?: Error }
     if (output) {
-      return await runPipedChild(
+      result = await runPipedChild(
         command,
         args,
         childEnvironment,
@@ -89,27 +114,44 @@ export async function spawnSkilledProposerChild(
         output,
         spawnedChild => { child = spawnedChild }
       )
+    } else {
+      // stdin is not passed on: a process outside the terminal's foreground
+      // group that read the terminal would be stopped by it.
+      // Outside the CLI's group, the optimizer would outlive a SIGKILL of the
+      // CLI; it watches for that and stops itself.
+      const spawnedChild = spawn(command, args, {
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: { ...childEnvironment, ORIZU_STOP_WITH_PARENT: '1' },
+        detached: true,
+      })
+      child = spawnedChild
+      childGroup = spawnedChild.pid
+      const spawned = new Promise<void>((resolve, reject) => {
+        spawnedChild.once('spawn', resolve)
+        spawnedChild.once('error', reject)
+      })
+      const closed = new Promise<{ status: number | null, error?: Error }>(resolve => {
+        let error: Error | undefined
+        spawnedChild.once('error', cause => { error = cause })
+        spawnedChild.once('close', status => resolve(error ? { status, error } : { status }))
+      })
+      // A launch failure (e.g. ENOENT) is returned, not thrown, so callers
+      // name the engine as they did with spawnSync.
+      try { await spawned }
+      catch (error) { return { status: null, error: error as Error } }
+      try { await onSpawn?.() }
+      catch (error) { spawnedChild.kill('SIGTERM'); await closed; throw error }
+      result = await closed
+      // A runner that ignored the stop must not outlive the optimizer.
+      if (stopSignal) {
+        try { process.kill(-spawnedChild.pid!, 'SIGKILL') } catch { /* group already gone */ }
+      }
     }
-    const spawnedChild = spawn(command, args, {
-      stdio: 'inherit',
-      env: childEnvironment,
-    })
-    child = spawnedChild
-    const spawned = new Promise<void>((resolve, reject) => {
-      spawnedChild.once('spawn', resolve)
-      spawnedChild.once('error', reject)
-    })
-    const closed = new Promise<{ status: number | null, error?: Error }>(resolve => {
-      let error: Error | undefined
-      spawnedChild.once('error', cause => { error = cause })
-      spawnedChild.once('close', status => resolve(error ? { status, error } : { status }))
-    })
-    await spawned
-    try { await onSpawn?.() }
-    catch (error) { spawnedChild.kill('SIGTERM'); await closed; throw error }
-    return await closed
+    if (stopSignal) return await endBySignal(stopSignal)
+    return result
   } finally {
-    for (const entry of handlers) process.off(entry.signal, entry.handle)
+    if (giveUp) clearTimeout(giveUp)
+    removeHandlers()
     cleanup()
   }
 }
