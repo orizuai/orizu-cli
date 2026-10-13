@@ -30,12 +30,12 @@
  * non-secret ANTHROPIC_API_KEY dummy placeholder (firewall brokers the real key).
  */
 
-import { spawnSync } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { randomUUID } from 'crypto'
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'fs'
 
 import { isValidCloudflareArtifactsGitRemote } from './cloudflare-artifacts-git-remote.js'
-import { seedSessionCopy } from './hosted-session-seed.js'
+import { cloneTeamIntoWorkTree, seedSessionCopy } from './hosted-session-seed.js'
 import {
   AGENT_GIT_IDENTITY,
   BEARER_BASENAME,
@@ -813,6 +813,18 @@ export type BootExec = (cmd: string, args: string[], opts?: { cwd?: string }) =>
  *  empty session copy (ORI-2118). */
 const TEAM_BOOT_CONTEXT_BASENAME = 'boot-team.json'
 
+type BootExecAsync = (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<BootExecResult>
+
+const defaultExecAsync: BootExecAsync = (cmd, args, opts) => new Promise(resolve => {
+  const child = spawn(cmd, args, { cwd: opts?.cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk })
+  child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk })
+  child.on('error', error => resolve({ status: 1, stdout, stderr: stderr || error.message }))
+  child.on('close', code => resolve({ status: code ?? 1, stdout, stderr }))
+})
+
 const defaultExec: BootExec = (cmd, args, opts) => {
   const res = spawnSync(cmd, args, { cwd: opts?.cwd, encoding: 'utf8' })
   return { status: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
@@ -946,6 +958,9 @@ async function runHostedBootWithLive(
   const root = opts.root ?? process.cwd()
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as BootFetch)
   const exec = opts.exec ?? defaultExec
+  // Non-blocking exec for git work that overlaps the boot (ORI-2512); an
+  // injected test `exec` serves both.
+  const execAsync: BootExecAsync = opts.exec ? async (cmd, args, o) => opts.exec!(cmd, args, o) : defaultExecAsync
   const mkdirp = opts.mkdirp ?? ((path: string): void => void mkdirSync(path, { recursive: true }))
   const writeFile =
     opts.writeFile ??
@@ -1176,6 +1191,11 @@ async function runHostedBootWithLive(
   if (session.seedOrigin === 'session' && !isValidCloudflareArtifactsGitRemote(repo.cloneUrl)) {
     throw new Error('selected session source requires an admitted Artifacts destination')
   }
+  // ORI-2520: a woken sandbox boots on the disk it slept with (see step 5).
+  const wokenDisk = existsSync(workspaceDir) && readdirSync(workspaceDir).length > 0
+  // Set when the working folder came from the team copy (ORI-2512); settles
+  // when the background fill of the session copy ends, and never rejects.
+  let sessionCopyFilled: Promise<void> | null = null
   if (isValidCloudflareArtifactsGitRemote(repo.cloneUrl)) {
     const credentialConfig = (helper: string) => [`credential.helper=${helper}`, 'credential.useHttpPath=true']
     const sourceRequestId = session.seedOrigin === 'session' ? randomUUID() : null
@@ -1184,7 +1204,7 @@ async function runHostedBootWithLive(
     let seedFailed = false
     let seedError: unknown = null
     try {
-      await seedSessionCopy({
+      const seedInput = {
         seedOrigin: session.seedOrigin,
         exec,
         sessionRemote: repo.cloneUrl,
@@ -1231,7 +1251,20 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
           }))
           return { remote: teamRemote, gitConfig: credentialConfig(`!node ${helperScriptAbs} ${teamContextAbs}`) }
         },
-      })
+      }
+      // ORI-2512: a fresh team boot clones the team copy once as its working
+      // folder and fills the session copy from it in the background. Saved
+      // sources and woken disks keep the checked fill below.
+      if (session.seedOrigin !== 'session' && !wokenDisk) {
+        const cloned = await cloneTeamIntoWorkTree({ ...seedInput, execAsync, scratchDir: `${sessionDirAbs}/seed-work`, workTree: workspaceDir })
+        if (cloned.cloned) {
+          sessionCopyFilled = cloned.filled.then(filled => {
+            log(filled ? 'session copy filled from the team copy' : 'session copy fill did not land; the first save pushes the same history')
+          })
+        }
+      } else {
+        await seedSessionCopy(seedInput)
+      }
     } catch (error) {
       seedFailed = true
       seedError = error
@@ -1278,8 +1311,9 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   // reused; anything else in that folder is refused, never overwritten. An
   // empty folder is a fresh disk (the runtime image ships one) and is cloned
   // into.
-  const wokenDisk = existsSync(workspaceDir) && readdirSync(workspaceDir).length > 0
-  if (wokenDisk) {
+  if (sessionCopyFilled) {
+    log('working folder cloned from the team copy; filling the session copy in the background')
+  } else if (wokenDisk) {
     const checkedOut = assertWokenRepo(exec, workspaceDir, repo.cloneUrl)
     log(`woken disk: reusing the repo (checked out: ${checkedOut})`)
   } else {
@@ -1306,7 +1340,7 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   exec('git', ['-C', workspaceDir, 'config', 'credential.useHttpPath', 'true'])
   exec('git', ['-C', workspaceDir, 'config', 'user.name', AGENT_GIT_IDENTITY.name])
   exec('git', ['-C', workspaceDir, 'config', 'user.email', AGENT_GIT_IDENTITY.email])
-  if (!wokenDisk) log(`cloned ${session.repoBranch}`)
+  if (!wokenDisk && !sessionCopyFilled) log(`cloned ${session.repoBranch}`)
 
   // 5b — Stage the orizu skill into the cloned repo so the agent discovers the
   // Orizu workflows (ALI-1059). SHARED with the operator path via `stageOrizuSkill`
@@ -1506,6 +1540,8 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
             // ORI-2594: the reply text also goes over the coordinator socket.
             onLiveText: snapshot => live.sendText(snapshot),
             onDiagnostic: log,
+            // Never two pushes at once: the save waits for the fill.
+            ...(sessionCopyFilled ? { beforeSave: () => sessionCopyFilled! } : {}),
             onProgress: async () => {
               if (now() < nextProgressAt) return
               nextProgressAt = now() + HOSTED_TURN_PROGRESS_REPORT_MS

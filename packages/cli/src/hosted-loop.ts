@@ -222,6 +222,11 @@ export interface RunHostedLoopOptions {
    * real `git` via child_process in `context.workspaceDir`.
    */
   harvestExec?: HarvestExec
+  /** ORI-2512: the boot's background fill of the session copy. Awaited
+   *  (at most BEFORE_SAVE_WAIT_MS each time) before the end-of-run save, so
+   *  two pushes never race, and before a customer setup hook, which may pull
+   *  from the session copy. */
+  beforeSave?: () => Promise<void>
   /**
    * Idle watchdog window (ALI-1037): abort the prompt + fail the run
    * `agent_stalled` if NO progress event arrives for this many ms. Default: env
@@ -384,6 +389,25 @@ function nodeChildSpawner(
   return { kill: () => child.kill() }
 }
 
+/** ORI-2512: the longest the end-of-turn save waits for the boot's
+ *  background fill of the session copy before saving anyway. */
+const BEFORE_SAVE_WAIT_MS = 60_000
+
+// Bounded: a stalled background push must never hold the turn's work.
+async function waitForSessionCopyFill(fill: () => Promise<void>, diagnose: (message: string) => void): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      fill(),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, BEFORE_SAVE_WAIT_MS) }),
+    ])
+  } catch {
+    diagnose('hosted pre-save wait failed')
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedLoopResult> {
   const { context, taskPrompt } = opts
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as HostedFetch)
@@ -479,6 +503,11 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
   if (context.runSetupHook && !opts.sharedRuntime?.startupComplete) {
     try {
       const runHook = opts.runSetupHook ?? defaultRunSetupHook
+      // A customer hook may pull from origin, which is the session copy and
+      // stays empty until the boot's background fill lands.
+      if (opts.beforeSave && existsSync(join(context.workspaceDir, SETUP_HOOK_RELATIVE_PATH))) {
+        await waitForSessionCopyFill(opts.beforeSave, diagnose)
+      }
       const outcome = await runHook({ workspaceDir: context.workspaceDir })
       await sink.append({
         kind: 'artifact',
@@ -535,6 +564,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
         diagnose('hosted saving event delivery failed')
       }
     }
+    if (opts.beforeSave) await waitForSessionCopyFill(opts.beforeSave, diagnose)
     let outcome: HarvestOutcome
     try {
       const markerValid = hasValidPrebakedMarker(prebakedMarkerPath)

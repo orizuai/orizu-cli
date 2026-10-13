@@ -94,3 +94,86 @@ export async function seedSessionCopy(input: SeedSessionCopyInput): Promise<{ se
     input.exec('rm', ['-rf', '--', input.scratchDir])
   }
 }
+
+type SeedExecAsync = (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<SeedExecResult>
+
+export interface CloneTeamIntoWorkTreeInput {
+  exec: SeedExec
+  /** Runs a command without blocking, so the check, the clone and the push
+   *  can overlap with each other and with the rest of the boot. */
+  execAsync: SeedExecAsync
+  sessionRemote: string
+  sessionGitConfig: string[]
+  resolveTeam: () => Promise<{ remote: string; gitConfig: string[] }>
+  /** A path owned only by this clone; cleared before and after use. */
+  scratchDir: string
+  /** The boot's working folder: absent or empty. */
+  workTree: string
+}
+
+export type CloneTeamIntoWorkTreeResult =
+  | { cloned: false }
+  /** `filled` settles once the background push into the session copy ends:
+   *  true when the copy now has main. It never rejects. */
+  | { cloned: true; filled: Promise<boolean> }
+
+/**
+ * ORI-2512: a team boot of an empty session copy makes its working folder
+ * from ONE clone of the team copy, with the session copy as its push remote,
+ * and fills the session copy by pushing in the background. The session copy
+ * is checked at the same time as the clone; a copy that already has branches
+ * belongs to an earlier boot of this session, so the clone is dropped and the
+ * caller clones the session copy as usual. The clone keeps the whole history:
+ * an empty copy refuses a push from a shallow clone.
+ */
+export async function cloneTeamIntoWorkTree(input: CloneTeamIntoWorkTreeInput): Promise<CloneTeamIntoWorkTreeResult> {
+  const clear = () => input.exec('rm', ['-rf', '--', input.scratchDir])
+  const listing = input.execAsync('git', [...withConfig(input.sessionGitConfig), 'ls-remote', '--heads', input.sessionRemote])
+  const cloning = (async () => {
+    const origin = await input.resolveTeam()
+    const cleared = clear()
+    if (cleared.status !== 0) throw failure('clearing the seed scratch', cleared)
+    return input.execAsync('git', [...withConfig(origin.gitConfig), 'clone', '--quiet', '--single-branch', '--branch', 'main', origin.remote, input.scratchDir])
+  })()
+  const settled = cloning.then(() => undefined, () => undefined)
+  let listed: SeedExecResult
+  try {
+    listed = await listing
+  } catch (error) {
+    await settled
+    clear()
+    throw error
+  }
+  // A copy with saved work: answer now. The unneeded clone ends on its own
+  // and its scratch is cleared then.
+  if (listed.status === 0 && listed.stdout.trim().length > 0) {
+    void settled.then(clear)
+    return { cloned: false }
+  }
+  try {
+    const fetched = await cloning
+    if (listed.status !== 0) throw failure('reading the session copy', listed)
+    if (fetched.status !== 0) throw failure('reading the team copy', fetched)
+    const pointed = input.exec('git', ['-C', input.scratchDir, 'remote', 'set-url', 'origin', input.sessionRemote])
+    if (pointed.status !== 0) throw failure('pointing the working folder at the session copy', pointed)
+    // The runtime image may ship the folder empty; `mv` needs it gone.
+    input.exec('rmdir', ['--', input.workTree])
+    // A folder that is still there (not empty, or a mount point) would make
+    // `mv` put the clone inside it.
+    const remaining = input.exec('test', ['-e', input.workTree])
+    if (remaining.status === 0) throw failure('making the working folder', { status: 1, stdout: '', stderr: `${input.workTree} is not empty` })
+    const moved = input.exec('mv', ['--', input.scratchDir, input.workTree])
+    if (moved.status !== 0) throw failure('making the working folder', moved)
+  } finally {
+    clear()
+  }
+  const filled = input.execAsync('git', ['-C', input.workTree, ...withConfig(input.sessionGitConfig), 'push', '--quiet', 'origin', 'refs/heads/main:refs/heads/main'])
+    .then(async pushed => {
+      if (pushed.status === 0) return true
+      // Another boot, or the agent's own first save, may have filled it first.
+      const listed = await input.execAsync('git', [...withConfig(input.sessionGitConfig), 'ls-remote', '--heads', input.sessionRemote])
+      return listed.status === 0 && listed.stdout.trim().length > 0
+    })
+    .catch(() => false)
+  return { cloned: true, filled }
+}
