@@ -674,6 +674,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
       spawned = await spawnImpl({
         model: context.model,
         permission: permissionForOrigin(context.sessionOrigin),
+        projectId: context.projectId,
         cwd: context.workspaceDir,
         port: context.opencodePort,
         env: buildOpenCodeSpawnEnv(context),
@@ -1063,6 +1064,7 @@ function validateHostedLoopContext(value: unknown): { context: HostedLoopContext
   if (record.sandboxBudgetMs !== undefined && (typeof record.sandboxBudgetMs !== 'number' || !Number.isFinite(record.sandboxBudgetMs) || record.sandboxBudgetMs <= 0)) fields.push('sandboxBudgetMs')
   if (record.opencodePort !== undefined && (typeof record.opencodePort !== 'number' || !Number.isInteger(record.opencodePort) || record.opencodePort <= 0 || record.opencodePort > 65_535)) fields.push('opencodePort')
   for (const name of OPTIONAL_CONTEXT_STRINGS) if (record[name] !== undefined && typeof record[name] !== 'string') fields.push(name)
+  if (record.projectId !== undefined && record.projectId !== null && !isNonemptyString(record.projectId)) fields.push('projectId')
   for (const name of ['prebaked', 'runSetupHook'] as const) if (record[name] !== undefined && typeof record[name] !== 'boolean') fields.push(name)
   return { context: fields.length === 0 ? value as HostedLoopContext : null, fields: [...new Set(fields)] }
 }

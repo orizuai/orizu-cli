@@ -55,6 +55,8 @@ export interface HostedLoopContext {
   taskFile: string
   /** Directory the agent operates in (the cloned session-branch workspace). */
   workspaceDir: string
+  /** The session's Orizu project, named in the agent's prompt (ORI-2601). */
+  projectId?: string | null
   /** Validated destination branch for the CLI-owned checkpoint push. */
   sessionBranch: string
   /** Credential-free repository locator established by bootstrap. */

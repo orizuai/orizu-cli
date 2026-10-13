@@ -82,6 +82,7 @@ export function brokerEnv(config: BrokerConfig): Record<string, string> {
   if (config.tokensFile) env.HB_TOKENS_FILE = config.tokensFile
   if (config.sessionId) env.HB_SESSION_ID = config.sessionId
   if (config.sessionBranch) env.HB_SESSION_BRANCH = config.sessionBranch
+  if (config.projectId) env.HB_PROJECT_ID = config.projectId
   if (config.repoTokenStatus) env.HB_REPO_TOKEN_STATUS = String(config.repoTokenStatus)
   if (config.eventsStatus) env.HB_EVENTS_STATUS = String(config.eventsStatus)
   if (config.denyWrite) env.HB_DENY_WRITE = '1'
@@ -178,6 +179,8 @@ export interface HostedBootstrapRehearsal {
   sessionId: string
   runId: string
   sessionBranch: string
+  /** The project the fake /sessions endpoint reports for the session. */
+  projectId: string
   repoFullName: string
   provider: SandboxProvider
   resolveCloneUrl: (repo: string) => string
@@ -242,6 +245,7 @@ export async function createHostedBootstrapRehearsal(
 
   const workspaceId = 'ws-hosted-1'
   const sessionId = 'sess-hosted-1'
+  const projectId = '6f1c2d3e-4b5a-4c6d-8e7f-901a2b3c4d5e'
   const runId = 'run-hosted-1'
   const sessionBranch = `orizu/session-${sessionId}`
 
@@ -280,6 +284,7 @@ export async function createHostedBootstrapRehearsal(
     fullRunApi: options.fullRunApi,
     sessionId,
     sessionBranch,
+    projectId,
   })
 
   // Real authenticated smart-HTTP git server on loopback: this is what makes the
@@ -301,6 +306,7 @@ export async function createHostedBootstrapRehearsal(
     sessionId,
     runId,
     sessionBranch,
+    projectId,
     repoFullName: repo.repoFullName,
     provider,
     resolveCloneUrl: () => cloneUrl,

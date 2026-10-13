@@ -678,8 +678,9 @@ export async function startHostedSession(
         }),
     }
   )
-  const session = sessionResp.session as { id?: unknown; repoBranch?: unknown } | undefined
+  const session = sessionResp.session as { id?: unknown; repoBranch?: unknown; projectId?: unknown } | undefined
   const sessionId = requireString(session?.id, 'session id')
+  const sessionProjectId = typeof session?.projectId === 'string' && session.projectId ? session.projectId : undefined
   const sessionBranch = requireString(session?.repoBranch, 'session repoBranch')
   log(`session ${sessionId} on ${sessionBranch}`)
 
@@ -821,6 +822,7 @@ export async function startHostedSession(
     taskFile: `${paths.runDirAbs}/task.txt`,
     workspaceDir: paths.repoDirRel,
     sessionBranch,
+    projectId: sessionProjectId,
     repositoryRemote: repo.cloneUrl,
     repositoryCredentialHelper: bootstrap.credentialHelper,
     model,

@@ -70,6 +70,8 @@ export interface BrokerConfig {
    *  a pre-seeded session branch on the local bare repo). */
   sessionId?: string
   sessionBranch?: string
+  /** E2E: the project the /sessions endpoint reports, as the real route does. */
+  projectId?: string
 }
 
 export function readBrokerConfigFromEnv(env: NodeJS.ProcessEnv): BrokerConfig {
@@ -87,6 +89,7 @@ export function readBrokerConfigFromEnv(env: NodeJS.ProcessEnv): BrokerConfig {
     fullRunApi: env.HB_FULL_RUN_API === '1',
     sessionId: env.HB_SESSION_ID,
     sessionBranch: env.HB_SESSION_BRANCH,
+    projectId: env.HB_PROJECT_ID,
   }
 }
 
@@ -151,7 +154,8 @@ export function startBrokerServer(config: BrokerConfig): { port: number; stop: (
         const id = config.sessionId ?? `sess-e2e-${sessions}`
         const repoBranch = config.sessionBranch ?? `orizu/session-${id}`
         return json(
-          { session: { id, workspaceId: sessionsMatch[1], repoBranch, status: 'active' } },
+          // Like the real route, a session has a project only when the request names one.
+          { session: { id, workspaceId: sessionsMatch[1], projectId: typeof body.projectSlug === 'string' ? config.projectId ?? null : null, repoBranch, status: 'active' } },
           201
         )
       }

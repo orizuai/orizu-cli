@@ -53,7 +53,7 @@ import { readFileSync } from 'fs'
 
 import { refreshHostedModels } from '../src/hosted-model-cache.mjs'
 
-import { HOSTED_AGENT_NAME, HOSTED_AGENT_PROMPT } from './hosted-agent-prompt.js'
+import { HOSTED_AGENT_NAME, hostedAgentPrompt } from './hosted-agent-prompt.js'
 import { parseModelIdentity } from './provider-registry.js'
 
 import { HARNESS_NAMES } from './hosted-harness.js'
@@ -1098,6 +1098,8 @@ export interface OpenCodeConfigOptions {
   /** OpenCode permission map; defaults to allow-all EXCEPT the headless-denied
    *  tools below (sandbox is the boundary for everything else). */
   permission?: Record<string, unknown>
+  /** The session's Orizu project, named in the agent's prompt (ORI-2601). */
+  projectId?: string | null
 }
 
 /**
@@ -1134,7 +1136,7 @@ export function buildOpenCodeConfigContent(opts: OpenCodeConfigOptions): string 
     model: opts.model,
     permission: opts.permission ?? defaultHeadlessPermission(),
     // Replaces OpenCode's built-in "You are opencode…" prompt (ORI-2207).
-    agent: { [HOSTED_AGENT_NAME]: { mode: 'primary', prompt: HOSTED_AGENT_PROMPT } },
+    agent: { [HOSTED_AGENT_NAME]: { mode: 'primary', prompt: hostedAgentPrompt(opts.projectId) } },
   })
 }
 
