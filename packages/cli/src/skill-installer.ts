@@ -1,3 +1,5 @@
+// Reads the bundled skill (the repository copy when run from source) and the install targets it is given.
+// @tia-reads: skills/orizu
 import {
   cpSync,
   existsSync,

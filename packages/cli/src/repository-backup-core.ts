@@ -1,3 +1,5 @@
+// Reads only the customer repository and backup folders it is given.
+// @tia-reads: none
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, type ReadStream } from 'node:fs'

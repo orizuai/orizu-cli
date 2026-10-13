@@ -1,3 +1,5 @@
+// Reads only the customer workspace it is given.
+// @tia-reads: none
 import {
   existsSync,
   lstatSync,

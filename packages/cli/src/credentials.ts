@@ -1,3 +1,5 @@
+// Reads only the user's credential, lock and token files.
+// @tia-reads: none
 import {
   chmodSync,
   closeSync,

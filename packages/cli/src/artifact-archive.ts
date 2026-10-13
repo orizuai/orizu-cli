@@ -1,3 +1,5 @@
+// Reads only the artifact folder it is given.
+// @tia-reads: none
 import { createHash } from 'crypto'
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
