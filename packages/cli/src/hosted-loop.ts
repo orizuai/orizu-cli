@@ -71,6 +71,7 @@ import {
   TerminalDeliveryError,
   type BeforeFinishResult,
   type HostedFetch,
+  type LiveTextSnapshot,
   type TerminalStatus,
 } from './hosted-run-event-sink.js'
 import {
@@ -199,6 +200,8 @@ export interface RunHostedLoopOptions {
   interruptSignal?: AbortSignal
   /** Extra verbatim secrets to redact (the bearer is added by the sink itself). */
   redactSecretsList?: readonly string[]
+  /** ORI-2594: each reply snapshot for the sandbox's coordinator socket (see the sink's `onLiveText`). */
+  onLiveText?: (snapshot: LiveTextSnapshot) => boolean | void
   /** Egress-canary probe (default: a bounded `fetch` to https://<host>/).
    *  Injectable so tests exercise both the blocked and reachable branches with
    *  no real network. Called once per host (allowed + denied) by the canary. */
@@ -411,6 +414,7 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
     now: opts.now,
     redactSecretsList: [...(opts.redactSecretsList ?? []), ...redactionListFromEnv()],
     onDiagnostic: diagnose,
+    onLiveText: opts.onLiveText,
   })
 
   // G5 startup canary (fail-closed, POSITIVE CONTROL): when the host applied an

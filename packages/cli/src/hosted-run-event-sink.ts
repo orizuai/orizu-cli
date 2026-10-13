@@ -261,11 +261,35 @@ export interface CreateRunEventSinkOptions {
   /** How often buffered token snapshots are flushed while a reply is being
    *  written (ORI-2340). Default TOKEN_FLUSH_MS. */
   tokenFlushMs?: number
+  /** ORI-2594: given each reply snapshot, scrubbed like the saved copy, at most
+   *  once per `liveTextMs`, for the sandbox's coordinator socket. Never awaited
+   *  and never retried: the next snapshot carries the whole reply. Returns false
+   *  when the socket declined it, so an unchanged snapshot is offered again. */
+  onLiveText?: (snapshot: LiveTextSnapshot) => boolean | void
+  /** Spacing of `onLiveText` calls. Default LIVE_TEXT_MS. */
+  liveTextMs?: number
+}
+
+/** One reply snapshot for the coordinator socket. `sequence` is the next one
+ *  the sink will save, so the chat places it where the saved copy will land. */
+export interface LiveTextSnapshot {
+  runId: string
+  messageId: string
+  sequence: number
+  text: string
 }
 
 /** A text-only reply reaches the browser as growing snapshots at this cadence
  *  instead of whole at the end of the turn (ORI-2340). */
 export const TOKEN_FLUSH_MS = 250 // held equal to SESSION_TIMERS.agentTokenFlushMs by test
+
+/** ORI-2594: the chat follows the model about this closely over the socket,
+ *  while saves keep their own TOKEN_FLUSH_MS pace. */
+const LIVE_TEXT_MS = 75
+// The session read shows at most this much of a reply (activity-projection.ts),
+// and the coordinator cuts live text the same way; cutting here keeps every
+// socket message well under the coordinator's size limit.
+export const LIVE_TEXT_MAX_CHARS = 16_384
 
 const DEFAULT_MAX_CRITICAL_ATTEMPTS = 4
 // Non-critical appends get a SMALL bounded retry so a single transient blip
@@ -369,6 +393,44 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
       if (error instanceof RunAuthError) stopFlushTimer()
       diag(`timer token flush failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+  }
+
+  // ORI-2594: live text for the coordinator socket. The first snapshot goes at
+  // once, later ones at most once per liveTextMs, and the latest always goes.
+  const liveTextMs = options.liveTextMs ?? LIVE_TEXT_MS
+  const livePending = new Map<string, string>()
+  // The last text sent per reply: past the cut, or on a repeated update, the
+  // snapshot does not change and is not sent again.
+  const liveSent = new Map<string, string>()
+  let liveTimer: ReturnType<typeof setTimeout> | null = null
+  let lastLiveAt = Number.NEGATIVE_INFINITY
+  function sendLiveText(): void {
+    liveTimer = null
+    const pending = [...livePending]
+    livePending.clear()
+    if (sealed || !options.onLiveText) return
+    lastLiveAt = Date.now()
+    for (const [messageId, raw] of pending) {
+      // Guarded whole: a late send can find the bearer file already gone.
+      try {
+        const scrubbed = redactSecrets({ text: raw }, { secrets: currentSecrets() }).text
+        const text = scrubbed.length > LIVE_TEXT_MAX_CHARS ? `${scrubbed.slice(0, LIVE_TEXT_MAX_CHARS)}…` : scrubbed
+        if (liveSent.get(messageId) === text) continue
+        if (options.onLiveText({ runId: options.runId, messageId, sequence: nextSequence, text }) !== false) liveSent.set(messageId, text)
+      } catch (error) {
+        diag(`live text not sent: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+  function queueLiveText(messageId: string, text: string): void {
+    // A reply with no id or no text yet has nothing the chat could place.
+    if (!options.onLiveText || !messageId || !text) return
+    livePending.set(messageId, text)
+    if (liveTimer) return
+    const waitMs = lastLiveAt + liveTextMs - Date.now()
+    if (waitMs <= 0) return sendLiveText()
+    liveTimer = setTimeout(sendLiveText, waitMs)
+    liveTimer.unref?.()
   }
 
   function assertWritable(): void {
@@ -649,10 +711,56 @@ export function createRunEventSink(options: CreateRunEventSinkOptions): RunEvent
     }
   }
 
+  // Tokens waiting behind a save, latest per reply. One batch per stretch of
+  // tokens joins the queue; any other event closes the batch, so a token
+  // written after it lands after it. Bounded however long a save stalls.
+  let tokenBatch: Map<string, HarnessEvent> | null = null
+  function queueToken(event: HarnessEvent): void {
+    if (!tokenBatch) {
+      const batch = new Map<string, HarnessEvent>()
+      tokenBatch = batch
+      serialize(async () => {
+        if (tokenBatch === batch) tokenBatch = null
+        for (const queued of batch.values()) await append(queued)
+      }).catch(error => {
+        diag(`token not buffered: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
+    tokenBatch.set(event.messageId ?? '_', event)
+  }
+
   return {
-    append: event => serialize(() => append(event)),
-    flushTokens: () => serialize(flushTokens),
-    finish: (status, opts) => serialize(() => finish(status, opts)),
+    append: event => {
+      if (event.kind !== 'token') {
+        tokenBatch = null
+        return serialize(() => append(event))
+      }
+      // ORI-2594: a token is only buffered, so the harness reader does not wait
+      // behind a save in flight (measured: each word waited for the previous
+      // save). It still joins the queue in order, and its text goes to the
+      // coordinator socket now. A sealed sink still refuses it at once.
+      try {
+        assertWritable()
+      } catch (error) {
+        return Promise.reject(error)
+      }
+      queueLiveText(event.messageId ?? '', typeof event.payload.text === 'string' ? event.payload.text : '')
+      queueToken(event)
+      return Promise.resolve()
+    },
+    flushTokens: () => {
+      tokenBatch = null
+      return serialize(flushTokens)
+    },
+    finish: (status, opts) => {
+      tokenBatch = null
+      // The last snapshot still waiting for its interval goes now, before the run is sealed.
+      if (liveTimer) {
+        clearTimeout(liveTimer)
+        sendLiveText()
+      }
+      return serialize(() => finish(status, opts))
+    },
     get sealed() {
       return sealed
     },

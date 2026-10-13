@@ -1503,6 +1503,8 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
             redactSecretsList: [env.bootSecret],
             bearerProvider: () => readFile(bearerFileAbs).trim(),
             interruptSignal: promptInterruptController.signal,
+            // ORI-2594: the reply text also goes over the coordinator socket.
+            onLiveText: snapshot => live.sendText(snapshot),
             onDiagnostic: log,
             onProgress: async () => {
               if (now() < nextProgressAt) return

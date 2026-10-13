@@ -7,19 +7,32 @@
  *
  * Best effort. If the socket cannot open (an older coordinator, a network
  * rule), the regular read every few seconds still catches the Stop.
+ *
+ * ORI-2594: the sandbox also sends its reply text here, so the chat sees it
+ * before each save lands. Also best effort: the saves still carry every reply.
  */
+import type { LiveTextSnapshot } from './hosted-run-event-sink.js'
+
 
 const RECONNECT_MAX_MS = 30_000
 const PASS_TIMEOUT_MS = 10_000
 // The coordinator closes an old socket with this code instead of sending it the
 // update that arrived, so the close counts as a check; reconnect at once.
 const RECHECK_CLOSE_CODE = 4001
+// An older coordinator closes a socket that sends anything with this code; the
+// channel then keeps the socket for checks only.
+const LISTEN_ONLY_CLOSE_CODE = 1008
+// A socket this backed up is on a slow network; skip snapshots rather than
+// queue them, since the next one carries the whole reply.
+const MAX_BUFFERED_BYTES = 256 * 1024
 
 export interface HostedLiveChannel {
   /** Resolves on the next "check now" (or at once if one arrived since the last call), or when `signal` aborts. */
   nextCheck(signal: AbortSignal): Promise<void>
   /** How many checks have arrived so far, read or not. */
   checkCount(): number
+  /** Sends one reply snapshot now if the socket is open and the coordinator takes text; true when sent (a socket still opening refuses it). */
+  sendText(snapshot: LiveTextSnapshot): boolean
   close(): void
 }
 
@@ -37,6 +50,8 @@ export function openHostedLiveChannel(opts: {
   let failures = 0
   let hasPendingCheck = false
   let checks = 0
+  let isTextRefused = false
+  let textSocket: WebSocket | null = null
   const waiters = new Set<() => void>()
 
   const diagnose = (line: string) => {
@@ -96,6 +111,10 @@ export function openHostedLiveChannel(opts: {
     opened.onclose = event => {
       if (socket !== opened) return
       socket = null
+      if (event.code === LISTEN_ONLY_CLOSE_CODE && textSocket === opened) {
+        isTextRefused = true
+        diagnose('hosted live channel does not take reply text; the saves carry it')
+      }
       if (event.code === RECHECK_CLOSE_CODE) {
         deliverCheck()
         return retry(0)
@@ -124,6 +143,18 @@ export function openHostedLiveChannel(opts: {
       })
     },
     checkCount: () => checks,
+    sendText(snapshot) {
+      const open = socket
+      if (isClosed || isTextRefused || !open) return false
+      if (open.bufferedAmount > MAX_BUFFERED_BYTES) return false
+      try {
+        open.send(JSON.stringify({ v: 1, kind: 'text', ...snapshot }))
+      } catch {
+        return false
+      }
+      textSocket = open
+      return true
+    },
     close() {
       isClosed = true
       if (timer) clearTimeout(timer)
