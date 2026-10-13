@@ -1,15 +1,14 @@
 import { Cause, Effect, Exit, Result, Schema } from 'effect'
 
 import { datasetTransferTimeoutMs } from './dataset-transfer-policy.js'
-import { extractErrorMessage, isJsonErrorResponsePayload } from './error-response.js'
+import { extractErrorMessage } from './error-response.js'
+import { appErrorOf, unreachedCode } from './request-outcome.js'
 
 // Loaded only through `await import(...)`, like the dataset workflows.
 
 const FAILED = 'Failed to create team'
 // What the server says when it cannot tell whether the team was saved.
 const SERVER_MAY_BE_CREATED = 'Team may already be created. Check your teams before creating it again.'
-// The request never reached a server, so nothing can have been created.
-const UNREACHED_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'])
 
 const teamMayBeCreated = (name: string) =>
   `The team may already be created: run \`orizu teams list\` and look for "${name}" before creating it again.`
@@ -35,28 +34,6 @@ export type TeamCreateRequest = (path: string, init: RequestInit, onRequestStart
 class TeamCreateFailure extends Error {
   readonly _tag = 'TeamCreateFailure'
   constructor(message: string, readonly mayBeCreated: boolean) { super(message) }
-}
-
-async function appErrorOf(response: Response): Promise<string | null> {
-  try {
-    const payload: unknown = await response.json()
-    return isJsonErrorResponsePayload(response, payload) ? payload.error : null
-  } catch {
-    return null
-  }
-}
-
-// fetch reports a refused connection as `fetch failed` with the reason in
-// `cause`. For a name with several addresses (localhost) the cause is an
-// AggregateError that carries the same code itself.
-function unreachedCode(error: unknown): string | null {
-  let current = error
-  for (let depth = 0; depth < 4 && current !== null && typeof current === 'object'; depth += 1) {
-    const { code, cause } = current as { code?: unknown; cause?: unknown }
-    if (typeof code === 'string' && UNREACHED_CODES.has(code)) return code
-    current = cause
-  }
-  return null
 }
 
 // One request, never retried: a retry after an unknown outcome could make a

@@ -855,9 +855,13 @@ async function submitScoreResults() {
     console.warn(scoreInput.aggregateWarning)
   }
   const aggregatePayload = scoreInput.aggregate || {}
-  const response = await authedFetch(`/api/cli/scores/submit?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const { sendScoreSave } = await import('./score-save-workflow.js')
+  const data = await sendScoreSave({
+    command: 'submit',
+    path: `/api/cli/scores/submit?project=${encodeURIComponent(project)}`,
+    project,
+    scorerVersionId,
+    saves: true,
     body: JSON.stringify({
       ...aggregatePayload,
       ...instructionSetProvenanceFields(project),
@@ -870,20 +874,14 @@ async function submitScoreResults() {
       candidateId: candidateId || undefined,
       resultsJsonl: scoreInput.resultsJsonl,
     }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to submit score: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
+  }, authedFetch) as {
     scoreRun: {
       id: string
       scoreValue: number | null
       rowResultsStoragePath?: string | null
       provenance?: string | null
     }
-  }>(response, 'Score submit')
+  }
   if (hasJsonFlag()) {
     printJson(data)
     return
@@ -1003,9 +1001,13 @@ async function execScorer() {
 
   const instructionSetProvenance = instructionSetProvenanceFields(project)
   const isNoSubmit = hasArg('--no-submit')
-  const response = await authedFetch(`/api/cli/scorers/exec?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const { sendScoreSave } = await import('./score-save-workflow.js')
+  const data = await sendScoreSave({
+    command: 'exec',
+    path: `/api/cli/scorers/exec?project=${encodeURIComponent(project)}`,
+    project,
+    scorerVersionId,
+    saves: !isNoSubmit,
     body: JSON.stringify({
       scorerVersionId,
       subjectPromptVersionId: subjectPromptVersionId || undefined,
@@ -1021,13 +1023,7 @@ async function execScorer() {
       dependencyResultsJsonl: readDependencyResultAssignments(getArg('--dependency-results')),
       ...instructionSetProvenance,
     }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to execute scorer: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Scorer exec')
+  }, authedFetch)
   const noSubmitOutput = isNoSubmit
     ? noSubmitScorerOutput(data, instructionSetProvenance)
     : null
