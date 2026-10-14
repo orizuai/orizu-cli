@@ -2,7 +2,6 @@
 
 import { createInterface } from 'readline/promises'
 import { stdin as input, stdout as output } from 'process'
-import { emitKeypressEvents } from 'readline'
 import { join, relative, resolve } from 'path'
 import { mkdirSync, writeFileSync } from 'fs'
 import { randomBytes } from 'crypto'
@@ -25,6 +24,7 @@ import {
   printJson,
   printBannerIfInteractive,
 } from './cli-console-output.js'
+import { datasetTransferTimeoutMs } from './dataset-transfer-policy.js'
 import { sanitizeTerminalText } from './json-response.js'
 import {
   SKILL_INSTALL_AGENTS,
@@ -114,50 +114,18 @@ async function askText(question: string, defaultValue: string): Promise<string> 
   }
 }
 
-type KeypressInfo = {
-  name?: string
-  sequence?: string
-  ctrl?: boolean
-}
-
-type RawInput = typeof input & {
-  setRawMode?: (mode: boolean) => void
-  isRaw?: boolean
-}
-
 async function waitForAnyKeyOrEscape(message: string): Promise<boolean> {
   if (!isInteractiveTerminal()) {
     throw new Error('Interactive terminal required.')
   }
 
   printLine(message)
-  const rawInput = input as RawInput
-  const wasRaw = Boolean(rawInput.isRaw)
-  emitKeypressEvents(input)
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    function cleanup() {
-      input.off('keypress', onKeypress)
-      if (rawInput.setRawMode && !wasRaw) {
-        rawInput.setRawMode(false)
-      }
-      input.pause()
-      printLine('')
-    }
-
-    function onKeypress(_chunk: string, key: KeypressInfo) {
-      cleanup()
-      if (key.ctrl && key.name === 'c') {
-        rejectPromise(new Error('Setup cancelled.'))
-        return
-      }
-      resolvePromise(key.name !== 'escape')
-    }
-
-    input.on('keypress', onKeypress)
-    input.resume()
-    rawInput.setRawMode?.(true)
-  })
+  const { readKeys } = await import('./terminal-key-session.js')
+  try {
+    return await readKeys(key => ({ kind: 'done', value: key.name !== 'escape' }), { hideCursor: false })
+  } finally {
+    printLine('')
+  }
 }
 
 interface MultiSelectOptions {
@@ -192,9 +160,6 @@ async function promptKeyboardMultiSelect<T>(
       checked.add(index)
     }
   })
-  const rawInput = input as RawInput
-  const wasRaw = Boolean(rawInput.isRaw)
-  emitKeypressEvents(input)
 
   function render() {
     if (rendered) {
@@ -210,60 +175,31 @@ async function promptKeyboardMultiSelect<T>(
   }
 
   render()
-  output.write('\x1b[?25l')
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    function cleanup() {
-      input.off('keypress', onKeypress)
-      if (rawInput.setRawMode && !wasRaw) {
-        rawInput.setRawMode(false)
-      }
-      input.pause()
-      output.write('\x1b[?25h')
-      printLine('')
-    }
-
-    function onKeypress(_chunk: string, key: KeypressInfo) {
-      if (key.ctrl && key.name === 'c') {
-        cleanup()
-        rejectPromise(new Error('Setup cancelled.'))
-        return
-      }
+  const { readKeys } = await import('./terminal-key-session.js')
+  try {
+    return await readKeys<T[]>(key => {
       if (key.name === 'escape') {
-        cleanup()
-        resolvePromise(options.escapeKeepsDefaults ? items.filter((item, index) => defaultSelected(item, index)) : [])
-        return
+        return { kind: 'done', value: options.escapeKeepsDefaults ? items.filter((item, index) => defaultSelected(item, index)) : [] }
       }
-      if (key.name === 'up') {
-        selected = (selected - 1 + items.length) % items.length
+      if (key.name === 'up' || key.name === 'down') {
+        selected = (selected + (key.name === 'up' ? -1 : 1) + items.length) % items.length
         render()
-        return
-      }
-      if (key.name === 'down') {
-        selected = (selected + 1) % items.length
-        render()
-        return
+        return { kind: 'wait' }
       }
       if (key.name === 'space') {
-        if (checked.has(selected)) {
-          checked.delete(selected)
-        } else {
-          checked.add(selected)
-        }
+        if (checked.has(selected)) checked.delete(selected)
+        else checked.add(selected)
         render()
-        return
+        return { kind: 'wait' }
       }
       if (key.name === 'return' || key.name === 'enter') {
-        const selectedItems = items.filter((_item, index) => checked.has(index))
-        cleanup()
-        resolvePromise(selectedItems)
+        return { kind: 'done', value: items.filter((_item, index) => checked.has(index)) }
       }
-    }
-
-    input.on('keypress', onKeypress)
-    input.resume()
-    rawInput.setRawMode?.(true)
-  })
+      return { kind: 'wait' }
+    }, { hideCursor: true })
+  } finally {
+    printLine('')
+  }
 }
 
 function formatFindingCount(count: number, label: string): string {
@@ -907,7 +843,7 @@ async function resolveSetupTeam(
     if (!name) throw new Error('--create-team requires a non-empty team name.')
     return await createSetupTeam(name, request)
   }
-  const teams = await fetchTeams(request)
+  const teams = await fetchTeams(request, datasetTransferTimeoutMs())
   const normalizedTeamSlug = teamSlugArg ? normalizeSlugInput(teamSlugArg) : null
   if (normalizedTeamSlug) {
     const team = teams.find(candidate => candidate.slug === normalizedTeamSlug)
@@ -974,7 +910,7 @@ async function resolveSetupProjects(
   if (createProjectName && !canCreateProject) {
     throw new Error(`Only team admins can create projects in '${team.slug}'. Choose an existing project or ask a team admin to create one.`)
   }
-  const projects = await fetchProjects(team.slug, request)
+  const projects = await fetchProjects(team.slug, request, datasetTransferTimeoutMs())
   if (createProjectName) {
     if (dryRun) {
       throw new Error('--create-project cannot be used with --dry-run because setup cannot preview a server-generated project slug.')
@@ -1183,7 +1119,7 @@ async function setupCommand() {
       throw new Error(`This directory is already an Orizu workspace for team '${workspaceTeamSlug}'. Run setup in another directory to set up team '${setupTeam.slug}'.`)
     }
     if (fix) {
-      setupProjects = await fetchProjects(setupTeam.slug, setupRequest)
+      setupProjects = await fetchProjects(setupTeam.slug, setupRequest, datasetTransferTimeoutMs())
       if (setupProjects.length === 0) throw new Error(`Team '${setupTeam.slug}' has no projects to restore.`)
     } else {
       const selection = await resolveSetupProjects(setupTeam, projectArg, createProjectArg, noInput, dryRun, setupRequest)
@@ -1322,7 +1258,8 @@ async function setupCommand() {
         } else if (outcome.action === 'skipped') {
           printLine(`${label} skipped`)
         } else {
-          printLine(`${label} installed`)
+          printLine(sanitizeSetupHumanInlineText(`${label} installed${describeBackup(outcome.backup)}`))
+          if (outcome.warning) printLine(sanitizeSetupHumanInlineText(`Warning: ${outcome.warning}`))
         }
       }
     }
@@ -1417,6 +1354,8 @@ async function setupCommand() {
         action: outcome.action,
         mode: outcome.mode,
         error: outcome.error,
+        ...(outcome.backup ? { backup: outcome.backup } : {}),
+        ...(outcome.warning ? { warning: outcome.warning } : {}),
       })),
       skill: {
         root: source.root,

@@ -1,21 +1,10 @@
-import { emitKeypressEvents } from 'readline'
 import { stdin as input, stdout as output } from 'process'
 
 import { sanitizeTerminalText } from './json-response.js'
 
-interface KeypressInfo {
-  name?: string
-  ctrl?: boolean
-}
-
 interface KeyboardSelectOptions<T> {
   onEscape?: () => T
   escapeLabel?: string
-}
-
-type RawInput = typeof input & {
-  setRawMode?: (mode: boolean) => void
-  isRaw?: boolean
 }
 
 export async function promptKeyboardSelect<T>(
@@ -36,9 +25,6 @@ export async function promptKeyboardSelect<T>(
 
   let selected = 0
   let rendered = false
-  const rawInput = input as RawInput
-  const wasRaw = Boolean(rawInput.isRaw)
-  emitKeypressEvents(input)
 
   function render() {
     if (rendered) output.write(`\x1b[${items.length}A`)
@@ -51,47 +37,24 @@ export async function promptKeyboardSelect<T>(
   }
 
   render()
-  output.write('\x1b[?25l')
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    function cleanup() {
-      input.off('keypress', onKeypress)
-      if (rawInput.setRawMode && !wasRaw) rawInput.setRawMode(false)
-      input.pause()
-      output.write('\x1b[?25h\n')
-    }
-
-    function onKeypress(_chunk: string, key: KeypressInfo) {
-      if (key.ctrl && key.name === 'c') {
-        cleanup()
-        rejectPromise(new Error('Setup cancelled.'))
-        return
-      }
-      if (key.name === 'escape') {
-        cleanup()
-        if (options?.onEscape) resolvePromise(options.onEscape())
-        else rejectPromise(new Error('Setup cancelled.'))
-        return
-      }
-      if (key.name === 'up') {
-        selected = (selected - 1 + items.length) % items.length
+  const onEscape = options?.onEscape
+  const { readKeys } = await import('./terminal-key-session.js')
+  let choice: { item: T } | { escaped: true }
+  try {
+    choice = await readKeys<{ item: T } | { escaped: true }>(key => {
+      if (key.name === 'escape') return onEscape ? { kind: 'done', value: { escaped: true } } : { kind: 'cancel' }
+      if (key.name === 'up' || key.name === 'down') {
+        selected = (selected + (key.name === 'up' ? -1 : 1) + items.length) % items.length
         render()
-        return
+        return { kind: 'wait' }
       }
-      if (key.name === 'down') {
-        selected = (selected + 1) % items.length
-        render()
-        return
-      }
-      if (key.name === 'return' || key.name === 'enter') {
-        const item = items[selected]
-        cleanup()
-        resolvePromise(item)
-      }
-    }
-
-    input.on('keypress', onKeypress)
-    input.resume()
-    rawInput.setRawMode?.(true)
-  })
+      if (key.name === 'return' || key.name === 'enter') return { kind: 'done', value: { item: items[selected] } }
+      return { kind: 'wait' }
+    }, { hideCursor: true })
+  } finally {
+    output.write('\n')
+  }
+  if ('item' in choice) return choice.item
+  if (!onEscape) throw new Error('Setup cancelled.')
+  return onEscape()
 }

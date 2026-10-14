@@ -1,4 +1,5 @@
 import { hasResolvableAuth } from './credentials.js'
+import { datasetTransferTimeoutMs } from './dataset-transfer-policy.js'
 import {
   getBaseUrl,
   type AuthenticatedRequestContext,
@@ -74,9 +75,11 @@ function isCredentialStoreError(error: unknown): error is Error {
 }
 
 async function fetchSetupDisplayIdentity(context: AuthenticatedRequestContext): Promise<string> {
+  // One limit covers the request and reading its reply.
+  const signal = AbortSignal.timeout(datasetTransferTimeoutMs())
   let response: Response
   try {
-    response = await context.fetch('/api/cli/auth/whoami')
+    response = await context.fetch('/api/cli/auth/whoami', { signal })
   } catch (error) {
     if (isCredentialStoreError(error)) throw error
     throw new Error(`Could not identify the authenticated account. ${identityRecovery(context)}`)

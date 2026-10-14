@@ -5,6 +5,7 @@ import { createInterface } from 'readline/promises'
 import { isInteractiveTerminal, normalizeSlugInput, hasJsonFlag, getArg } from './command-line-arguments.js'
 import { printLine, printError, printJson } from './cli-console-output.js'
 import { sanitizeTerminalText, parseJsonResponse } from './json-response.js'
+import { PROJECT_LIST, readDirectoryList, TEAM_LIST } from './directory-list-read.js'
 import { type AuthenticatedRequestContext, authedFetch } from './http.js'
 
 interface Team {
@@ -168,27 +169,18 @@ async function promptSelect<T>(
 }
 
 type AuthenticatedRequest = AuthenticatedRequestContext['fetch']
-async function fetchTeams(request: AuthenticatedRequest = authedFetch): Promise<Team[]> {
-  const response = await request('/api/cli/teams')
-  if (!response.ok) {
-    throw new Error(`Failed to fetch teams: ${await response.text()}`)
-  }
-  const data = await parseJsonResponse<{ teams: Team[] }>(response, 'Teams list')
-  return data.teams
+async function fetchTeams(request: AuthenticatedRequest = authedFetch, timeoutMs?: number): Promise<Team[]> {
+  return await readDirectoryList(request, '/api/cli/teams', TEAM_LIST, timeoutMs)
 }
 
 async function fetchProjects(
   teamSlug?: string,
-  request: AuthenticatedRequest = authedFetch
+  request: AuthenticatedRequest = authedFetch,
+  timeoutMs?: number
 ): Promise<Project[]> {
   const normalizedTeamSlug = teamSlug ? normalizeSlugInput(teamSlug) : undefined
   const query = normalizedTeamSlug ? `?teamSlug=${encodeURIComponent(normalizedTeamSlug)}` : ''
-  const response = await request(`/api/cli/projects${query}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch projects: ${await response.text()}`)
-  }
-  const data = await parseJsonResponse<{ projects: Project[] }>(response, 'Projects list')
-  return data.projects
+  return await readDirectoryList(request, `/api/cli/projects${query}`, PROJECT_LIST, timeoutMs)
 }
 
 async function fetchTasks(project?: string, status = 'active'): Promise<Task[]> {
@@ -252,34 +244,8 @@ async function createProjectOnServer(
   name: string,
   request: AuthenticatedRequest = authedFetch
 ): Promise<Project> {
-  const response = await request('/api/cli/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ teamSlug, name }),
-  })
-  if (!response.ok) {
-    throw new Error(`Failed to create project: ${await response.text()}`)
-  }
-  const data = await parseJsonResponse<{
-    project: {
-      id: string
-      name: string
-      slug: string
-      teamId?: string
-      teamName?: string
-      teamSlug: string
-      role?: string
-    }
-  }>(response, 'Project create')
-  return {
-    id: data.project.id,
-    name: data.project.name,
-    slug: data.project.slug,
-    teamId: data.project.teamId || '',
-    teamName: data.project.teamName || data.project.teamSlug,
-    teamSlug: data.project.teamSlug,
-    role: data.project.role || 'admin',
-  }
+  const { createProjectWithDeadline } = await import('./project-create-workflow.js')
+  return await createProjectWithDeadline(teamSlug, name, request)
 }
 
 async function resolveProjectSelection(projectArg: string | null): Promise<Project> {
