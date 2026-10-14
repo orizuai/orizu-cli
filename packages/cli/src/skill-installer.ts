@@ -12,7 +12,6 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'fs'
@@ -87,6 +86,10 @@ export interface SkillInstallResult {
   path: string
   action: 'created' | 'updated' | 'would-create' | 'would-update'
   mode: 'link' | 'copy' | 'section'
+  /** Where a person's own folder at the path was moved before replacing it. */
+  backup?: string
+  /** Why a person's folder, or part of it, is still beside the skill. */
+  warning?: string
 }
 
 export interface SkillInstallMeta {
@@ -384,7 +387,7 @@ export function resolveEffectiveInstallMode(
   return isStableSkillSourcePath(sourceRoot) ? 'link' : 'copy'
 }
 
-function shouldCopySkillPath(sourceRoot: string, sourcePath: string): boolean {
+export function shouldCopySkillPath(sourceRoot: string, sourcePath: string): boolean {
   const rel = relative(sourceRoot, sourcePath).replace(/\\/g, '/')
   if (!rel) {
     return true
@@ -400,15 +403,6 @@ function shouldCopySkillPath(sourceRoot: string, sourcePath: string): boolean {
     part === '.pytest_cache' ||
     part === SKILL_META_FILENAME
   ) && !rel.endsWith('.pyc') && !rel.endsWith('.pyo')
-}
-
-function copySkillTree(sourceDir: string, targetDir: string) {
-  rmSync(targetDir, { recursive: true, force: true })
-  mkdirSync(dirname(targetDir), { recursive: true })
-  cpSync(sourceDir, targetDir, {
-    recursive: true,
-    filter: sourcePath => shouldCopySkillPath(sourceDir, sourcePath),
-  })
 }
 
 function stripFrontmatter(markdown: string): string {
@@ -537,16 +531,10 @@ export function readSkillMeta(targetDir: string): SkillInstallMeta | null {
   }
 }
 
-function linkSkillTree(sourceDir: string, targetDir: string) {
-  rmSync(targetDir, { recursive: true, force: true })
-  mkdirSync(dirname(targetDir), { recursive: true })
-  symlinkSync(sourceDir, targetDir, 'dir')
-}
-
-export function installSkillTarget(
+export async function installSkillTarget(
   target: SkillInstallTarget,
   options?: SkillInstallOptions
-): SkillInstallResult {
+): Promise<SkillInstallResult> {
   const source = resolveSkillSource()
   const targetPath = getSkillInstallPath(target, options)
 
@@ -570,18 +558,23 @@ export function installSkillTarget(
     throw new Error(`${targetPath} already exists. Pass --yes to replace it.`)
   }
 
-  if (mode === 'link') {
-    linkSkillTree(source.root, targetPath)
-  } else {
-    copySkillTree(source.root, targetPath)
-    writeSkillMeta(targetPath, source, options)
-  }
+  const { runSkillFolderReplacement } = await import('./skill-install-workflow.js')
+  const { backup, warning } = await runSkillFolderReplacement({
+    sourceRoot: source.root,
+    targetPath,
+    // `section` is only AGENTS.md, handled above.
+    mode: mode === 'link' ? 'link' : 'copy',
+    backupPath: uniqueBackupPath(SKILL_NAME, target, options),
+    writeMarker: dir => writeSkillMeta(dir, source, options),
+  })
 
   return {
     target,
     path: targetPath,
     action: exists ? 'updated' : 'created',
     mode,
+    ...(backup ? { backup } : {}),
+    ...(warning ? { warning } : {}),
   }
 }
 
@@ -849,9 +842,9 @@ function backupDirectoryFor(options?: SkillInstallOptions): string {
   return resolve(resolveHome(options), '.orizu', 'skill-backups')
 }
 
-function uniqueBackupPath(install: LegacySkillInstall, options?: SkillInstallOptions): string {
+function uniqueBackupPath(name: string, target: SkillInstallTarget, options?: SkillInstallOptions): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
-  const base = join(backupDirectoryFor(options), `${LEGACY_SKILL_NAME}-${stamp}-${install.target}`)
+  const base = join(backupDirectoryFor(options), `${name}-${stamp}-${target}`)
   let candidate = base
   for (let attempt = 2; pathEntryExists(candidate); attempt += 1) {
     candidate = `${base}-${attempt}`
@@ -903,16 +896,16 @@ function removeLegacySkillInstall(
     removeLink(install.path)
     return null
   }
-  const backupPath = uniqueBackupPath(install, options)
+  const backupPath = uniqueBackupPath(LEGACY_SKILL_NAME, install.target, options)
   moveToBackup(install.path, backupPath)
   return backupPath
 }
 
-function replaceOneLegacySkillInstall(
+async function replaceOneLegacySkillInstall(
   install: LegacySkillInstall,
   options: LegacySkillReplaceOptions | undefined,
   heldBackReason: string | null
-): LegacySkillReplacement {
+): Promise<LegacySkillReplacement> {
   const installedPath = getSkillInstallPath(install.target, options)
   const needsInstall = !pathEntryExists(installedPath)
   const result = {
@@ -933,7 +926,7 @@ function replaceOneLegacySkillInstall(
   let didInstall = false
   try {
     if (needsInstall) {
-      installSkillTarget(install.target, {
+      await installSkillTarget(install.target, {
         ...options,
         overwrite: false,
         dryRun: false,
@@ -988,9 +981,9 @@ function heldBackReasonFor(
   return blockingLink ? `${blockingLink.path} links to it and is left in place` : null
 }
 
-export function replaceLegacySkillInstalls(
+export async function replaceLegacySkillInstalls(
   options?: LegacySkillReplaceOptions
-): { replacements: LegacySkillReplacement[], problems: LegacySkillProblem[] } {
+): Promise<{ replacements: LegacySkillReplacement[], problems: LegacySkillProblem[] }> {
   const { installs, problems } = findLegacySkillInstalls(options)
   // Remove links before folders, so no link is left pointing at a moved folder.
   const ordered = [
@@ -998,10 +991,10 @@ export function replaceLegacySkillInstalls(
     ...installs.filter(install => install.kind === 'directory'),
   ]
   const reasons = new Map(ordered.map(install => [install, heldBackReasonFor(install, installs, options)]))
-  return {
-    replacements: ordered.map(install =>
-      replaceOneLegacySkillInstall(install, options, reasons.get(install) ?? null)
-    ),
-    problems,
+  // One at a time, in order: links go before the folders they point to.
+  const replacements: LegacySkillReplacement[] = []
+  for (const install of ordered) {
+    replacements.push(await replaceOneLegacySkillInstall(install, options, reasons.get(install) ?? null))
   }
+  return { replacements, problems }
 }

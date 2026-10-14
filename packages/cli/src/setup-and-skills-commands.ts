@@ -34,6 +34,8 @@ import {
   getTargetForAgent,
   getSkillInstallPath,
   SkillInstallMode,
+  SkillInstallOptions,
+  SkillInstallResult,
   isSkillInstallAgent,
   isSkillInstallTarget,
   installSkillTarget,
@@ -461,6 +463,10 @@ interface SkillInstallOutcome {
   action: 'created' | 'updated' | 'skipped' | 'failed'
   mode: 'link' | 'copy' | 'section' | null
   error?: string
+  /** Where a person's own folder was moved before it was replaced. */
+  backup?: string
+  /** Why a person's folder, or part of it, is still beside the skill. */
+  warning?: string
 }
 
 async function applySkillInstallTargets(
@@ -477,7 +483,7 @@ async function applySkillInstallTargets(
 ): Promise<SkillInstallOutcome[]> {
   const cliVersion = getCliVersion()
   const jsonMode = hasJsonFlag()
-  const planned = targets.map(target =>
+  const planned = await Promise.all(targets.map(target =>
     installSkillTarget(target, {
       cwd: options.cwd,
       homeDir: options.homeDir,
@@ -485,7 +491,7 @@ async function applySkillInstallTargets(
       mode: options.mode,
       cliVersion,
     })
-  )
+  ))
   const showPlan = options.showPlan ?? true
   const printResults = options.printResults ?? true
 
@@ -528,7 +534,7 @@ async function applySkillInstallTargets(
     }
 
     try {
-      const result = installSkillTarget(target, {
+      const result = await installSkillTarget(target, {
         cwd: options.cwd,
         homeDir: options.homeDir,
         overwrite,
@@ -537,13 +543,16 @@ async function applySkillInstallTargets(
       })
       if (printResults && !jsonMode) {
         const suffix = result.mode === 'link' ? ' (symlink)' : ''
-        printLine(`${formatSkillInstallAction(result.action)} ${result.path}${suffix}`)
+        printLine(`${formatSkillInstallAction(result.action)} ${result.path}${suffix}${describeBackup(result.backup)}`)
+        if (result.warning) printLine(sanitizeSetupHumanInlineText(`Warning: ${result.warning}`))
       }
       outcomes.push({
         target,
         path: result.path,
         action: result.action as 'created' | 'updated',
         mode: result.mode,
+        ...(result.backup ? { backup: result.backup } : {}),
+        ...(result.warning ? { warning: result.warning } : {}),
       })
     } catch (error: unknown) {
       const message = getErrorMessage(error)
@@ -555,6 +564,10 @@ async function applySkillInstallTargets(
   }
 
   return outcomes
+}
+
+function describeBackup(backup: string | undefined): string {
+  return backup ? `; moved your earlier folder to ${backup}` : ''
 }
 
 async function installSkillCommand() {
@@ -578,15 +591,15 @@ async function installSkillCommand() {
   }
 
   const outcomes = await applySkillInstallTargets(targets, { mode, skipConfirm, dryRun })
+  if (outcomes.some(outcome => outcome.action === 'failed')) {
+    process.exitCode = 1
+  }
   const failedCopy = outcomes.some(outcome =>
     outcome.action === 'failed' && (PROJECT_SKILL_COPY_TARGETS as readonly string[]).includes(outcome.target))
-  if (failedCopy) {
-    process.exitCode = 1
-    if (!hasJsonFlag()) {
-      printLine('The two project copies were not both written. Fix the error above and run the command again.')
-    }
+  if (failedCopy && !hasJsonFlag()) {
+    printLine('The two project copies were not both written. Fix the error above and run the command again.')
   }
-  const legacy = replaceLegacySkillInstalls({
+  const legacy = await replaceLegacySkillInstalls({
     ...legacyScopeAfterInstall(targets, outcomes, dryRun),
     mode,
     dryRun,
@@ -753,8 +766,18 @@ function skillsStatusCommand() {
 async function skillsUpdateCommand() {
   const dryRun = hasArg('--dry-run')
   const cliVersion = getCliVersion()
-  const updates: Array<{ target: SkillInstallTarget, path: string, action: string }> = []
-  const legacy = replaceLegacySkillInstalls({ dryRun, cliVersion })
+  const updates: Array<{ target: SkillInstallTarget, path: string, action: string, error?: string, backup?: string, warning?: string }> = []
+  // A failed target is reported with its reason; the old install there stays whole.
+  const refresh = async (target: SkillInstallTarget, path: string, options: SkillInstallOptions, action: (result: SkillInstallResult) => string) => {
+    try {
+      const result = await installSkillTarget(target, options)
+      updates.push({ target, path, action: action(result), ...(result.backup ? { backup: result.backup } : {}), ...(result.warning ? { warning: result.warning } : {}) })
+    } catch (error: unknown) {
+      process.exitCode = 1
+      updates.push({ target, path, action: 'failed', error: getErrorMessage(error) })
+    }
+  }
+  const legacy = await replaceLegacySkillInstalls({ dryRun, cliVersion })
   // Two project copies that differ are both rewritten from the installed CLI
   // skill, including a hand-made copy the loop below would leave alone.
   const projectCopies = compareProjectSkillCopies()
@@ -766,8 +789,7 @@ async function skillsUpdateCommand() {
         updates.push({ target, path, action: 'would-rewrite' })
         continue
       }
-      installSkillTarget(target, { overwrite: true, mode: 'copy', cliVersion })
-      updates.push({ target, path, action: 'rewrote' })
+      await refresh(target, path, { overwrite: true, mode: 'copy', cliVersion }, () => 'rewrote')
     }
   }
 
@@ -791,16 +813,8 @@ async function skillsUpdateCommand() {
     }
 
     const refreshMode: SkillInstallMode = status.mode === 'link' ? 'auto' : 'copy'
-    const result = installSkillTarget(target, {
-      overwrite: true,
-      mode: refreshMode,
-      cliVersion,
-    })
-    updates.push({
-      target,
-      path: status.path,
-      action: status.state === 'broken-link' ? 'relinked' : result.action,
-    })
+    await refresh(target, status.path, { overwrite: true, mode: refreshMode, cliVersion },
+      result => status.state === 'broken-link' ? 'relinked' : result.action)
   }
 
   if (hasJsonFlag()) {
@@ -816,23 +830,38 @@ async function skillsUpdateCommand() {
   }
 
   if (rewriteProjectCopies) {
-    const verb = dryRun ? 'Would rewrite' : 'Rewrote'
-    printLine(`${verb} both project copies from the installed CLI skill: ${projectCopies.paths.join(' and ')}`)
+    const rewrote = updates.filter(update => update.action === 'rewrote')
+    if (dryRun) {
+      printLine(`Would rewrite both project copies from the installed CLI skill: ${projectCopies.paths.join(' and ')}`)
+    } else if (rewrote.length === PROJECT_SKILL_COPY_TARGETS.length) {
+      printLine(`Rewrote both project copies from the installed CLI skill: ${projectCopies.paths.join(' and ')}`)
+    }
   }
 
   for (const update of updates) {
-    if (update.action === 'rewrote' || update.action === 'would-rewrite') {
+    if (update.action === 'failed') {
+      printLine(sanitizeSetupHumanInlineText(`Failed ${update.path}: ${update.error}`))
       continue
     }
-    if (update.action === 'already-current') {
+    if (update.action === 'would-rewrite') {
+      continue
+    }
+    if (update.action === 'rewrote') {
+      // With both rewritten, the line above names them; otherwise each says so here.
+      const bothRewritten = updates.filter(other => other.action === 'rewrote').length === PROJECT_SKILL_COPY_TARGETS.length
+      if (!bothRewritten || update.backup) {
+        printLine(sanitizeSetupHumanInlineText(`Rewrote ${update.path} from the installed CLI skill${describeBackup(update.backup)}`))
+      }
+    } else if (update.action === 'already-current') {
       printLine(`Current ${update.path}`)
     } else if (update.action === 'would-update') {
       printLine(`Would update ${update.path}`)
     } else if (update.action === 'relinked') {
       printLine(`Relinked ${update.path}`)
     } else {
-      printLine(`Updated ${update.path}`)
+      printLine(sanitizeSetupHumanInlineText(`Updated ${update.path}${describeBackup(update.backup)}`))
     }
+    if (update.warning) printLine(sanitizeSetupHumanInlineText(`Warning: ${update.warning}`))
   }
 }
 
@@ -1277,7 +1306,7 @@ async function setupCommand() {
       if (dryRun) {
         printLine('Dry run: no skill files were changed.')
       }
-      const legacy = replaceLegacySkillInstalls({
+      const legacy = await replaceLegacySkillInstalls({
         ...legacyScopeAfterInstall(targets, installOutcomes, dryRun),
         mode: installMode,
         dryRun,
