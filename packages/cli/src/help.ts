@@ -52,7 +52,7 @@ const GROUPS: CliGroupDoc[] = [
   { name: 'Tasks', summary: 'Create review tasks, mutate task status, assign reviewers, and export labels.' },
   { name: 'Datasets', summary: 'Upload, version, split, mutate, export, lock, clone, and delete datasets.' },
   { name: 'Workspace', summary: 'Metadata-first sync of the workbench contract: inspect status, reconcile, pull, and apply.' },
-  { name: 'Sessions', summary: 'Start, inspect, and end durable workspace sessions for agent/operator work.' },
+  { name: 'Sessions', summary: 'Start, inspect, publish, and end durable workspace sessions for agent/operator work.' },
   { name: 'Workbench runs', summary: 'Start, inspect, tail, and finish resumable workbench runs.' },
   { name: 'Connectors', summary: 'Inspect project connector/integration readiness (read-only; secrets redacted).' },
   { name: 'Promotion manifests', summary: 'List, inspect, approve, reject, and idempotently apply promotion manifests.' },
@@ -1137,6 +1137,18 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
       { name: '--json', help: 'Emit the machine-readable outcome (no-changes or the created manifest).' },
     ],
     examples: ['orizu session finish --session sess_123', 'orizu session finish --session sess_123 --push --message "tune judge prompt"'],
+  },
+  {
+    path: ['session', 'publish'],
+    usage: 'orizu session publish [--message <text>] [--json]',
+    summary:
+      "Inside a hosted session: commit any uncommitted work, save it to the session's copy, and merge it into the team's main so new sessions see it. git push alone reaches only the session's copy. Prints Published only when the merge landed; a conflict or failure prints Not published and what to do.",
+    group: 'Sessions',
+    options: [
+      { name: '--message <text>', help: 'Commit message for uncommitted work (a default is used when omitted).' },
+      { name: '--json', help: 'Emit {outcome, sha} on success, or {error, code} when it was not published.' },
+    ],
+    examples: ['orizu session publish', 'orizu session publish --message "benchmark demo notes"'],
   },
   {
     path: ['run', 'start'],

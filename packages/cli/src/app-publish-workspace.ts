@@ -5,7 +5,7 @@
  * files and the web app are services, and each way this can stop is a tagged
  * failure. It holds no key (the clone's credential helper asks for one per git
  * command) and makes no temporary folder, so it has nothing to scope. */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -16,6 +16,7 @@ import { AppPublishFailure } from './app-publish-failure.js'
 import { inspectAppDestination } from './app-publish-paths.js'
 import { resolveAttachedWorkspaceId } from './git-credential.js'
 import { authedFetch, getBaseUrl } from './http.js'
+import { hasStagedChanges, NOTHING_STAGED_ERROR, unstageOrizuSkillLinks } from './orizu-skill-links.js'
 
 /** The session copy's branch, which the publish merge reads (ORI-2279). */
 const SESSION_BRANCH_REF = 'refs/heads/main'
@@ -161,6 +162,61 @@ export async function pushAppToSessionCopy(root: string, input: { projectSlug: s
   } catch (error) {
     throw new AppPublishFailure(error instanceof Error ? error.message : String(error), attempt.filesMaterialized)
   }
+}
+
+// -- A whole-session publish (ORI-2653) -------------------------------------------
+
+/** Commits everything uncommitted by the automatic save's rules (the staged
+ * Orizu skill links are left out), then pushes the session copy. Answers the
+ * commit to publish and the files this commit added. */
+const commitAllAndPush = (root: string, message: string) =>
+  Effect.gen(function* () {
+    const git = yield* WorkspaceGit
+    const status = yield* gitOrFail('read the workspace status', ['status', '--porcelain'])
+    let committed: string[] = []
+    if (status.stdout.trim().length > 0) {
+      // `git add -A` would mark conflicted files resolved and publish the markers.
+      const unmerged = yield* gitOrFail('read the merge state', ['diff', '--name-only', '--diff-filter=U', '-z'])
+      if (unmerged.stdout.split('\0').some(Boolean)) {
+        return yield* new GitFailed({ step: 'stage the work', detail: 'the workspace has unresolved conflicts; fix those files and commit first' })
+      }
+      yield* gitOrFail('stage the work', ['add', '-A', '--', '.'])
+      const syncGit = (args: readonly string[]) => {
+        const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+        return { exitCode: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? result.error?.message ?? '' }
+      }
+      const unstaged = unstageOrizuSkillLinks(syncGit)
+      if (!unstaged.ok) return yield* new GitFailed({ step: 'leave out the Orizu skill links', detail: unstaged.error })
+      const staged = hasStagedChanges(syncGit)
+      if (typeof staged !== 'boolean') return yield* new GitFailed({ step: 'read the staged work', detail: staged.error })
+      if (!staged && unstaged.unstaged.length === 0) return yield* new GitFailed({ step: 'stage the work', detail: NOTHING_STAGED_ERROR })
+      if (staged) {
+        committed = (yield* gitOrFail('list the staged work', ['diff', '--cached', '--name-only', '-z'])).stdout.split('\0').filter(Boolean)
+        // As the automatic save does: a team's hooks or a signing setting
+        // must not block or rewrite the agent's commit.
+        yield* gitOrFail('commit the work', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message])
+      }
+    }
+    const sha = (yield* gitOrFail('read the commit', ['rev-parse', 'HEAD'])).stdout.trim()
+    const pushed = yield* git.run(['push', '-q', 'origin', `HEAD:${SESSION_BRANCH_REF}`])
+    if (pushed.code !== 0) {
+      if (/\[rejected\]|non-fast-forward|fetch first/.test(pushed.stderr)) return yield* new PushRejected()
+      return yield* new GitFailed({ step: 'push the session copy', detail: pushed.stderr.trim() })
+    }
+    return { sha, committed }
+  })
+
+/** Commits all uncommitted work and pushes the session copy. Throws the
+ * message the agent should act on; nothing has been published then. */
+export async function pushSessionCopy(root: string, message: string): Promise<{ sha: string; committed: string[] }> {
+  const program = commitAllAndPush(root, message).pipe(
+    Effect.catchTags({
+      PushRejected: () =>
+        Effect.fail(new Error('your session copy has commits this workspace does not, or is still being set up on a first turn. Run "git pull --no-rebase --no-edit" in the workspace, then run `orizu session publish` again.')),
+      GitFailed: (failure) => Effect.fail(new Error(`could not ${failure.step} (${failure.detail}).`)),
+    })
+  )
+  return Effect.runPromise(Effect.provide(program, liveLayer(root)))
 }
 
 // -- The team copy, after a conflict ---------------------------------------------

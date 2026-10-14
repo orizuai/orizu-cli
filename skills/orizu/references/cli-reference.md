@@ -35,6 +35,22 @@ Behavior:
 - PAT authorization follows the owning user's current team/project roles, so demotion or removal takes effect without rotating the token.
 - A hosted session is pre-authenticated via `ORIZU_TOKEN_FILE` (no `orizu login` needed); an explicit `ORIZU_TOKEN` env var overrides both the token file and stored credentials when set.
 
+### Publishing hosted work
+
+In a hosted session, `git push` and the automatic save reach only the session's own copy of the team repository. Run this to put the work on the team's main:
+
+```bash
+orizu session publish [--message <text>] [--json]
+```
+
+- It commits any uncommitted work (the staged Orizu skill links are left out), pushes the session's copy, then merges it into the team's main. New sessions on the project start from that main. The merge includes all earlier committed work on the session branch, including the automatic saves; review that work before publishing.
+- It prints `Published: merged into the team's main as <sha>` or `Already on the team's main (<sha>)` only when the work is there. Never tell the user work is published without one of those lines.
+- Anything else starts with `Not published:` (the work cannot have landed) or `Not confirmed:` (it may have), and ends with what to do:
+  - **Conflict** (names the files): run the printed `Recovery` command, resolve those files, commit, then run `orizu session publish` again.
+  - **Session copy has commits this workspace does not**: run `git pull --no-rebase --no-edit`, then publish again.
+  - **Not confirmed, or other publishes landed first**: wait a moment and publish again; a merge that landed answers `Already on the team's main`.
+  - **Stop and tell the user**: the session ended, the team paused agents, publishing is not available for this session, or the workspace's origin is not the session's own copy.
+
 ### Product feedback
 
 ```bash

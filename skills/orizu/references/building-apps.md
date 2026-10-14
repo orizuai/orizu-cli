@@ -1620,7 +1620,7 @@ In a hosted session, `orizu apps create` and `orizu apps update` publish through
 
 Edit an existing app in its folder and pass those files to `apps update`. A new app can live anywhere until `apps create` places it.
 
-The merge includes all earlier committed work on the session branch, including files outside the app folder. Review that work before publishing. Unrelated uncommitted work stays local. A conflict may name files outside the app folder; resolve and commit those files too.
+The merge includes all earlier committed work on the session branch, including files outside the app folder. Review that work before publishing. Unrelated uncommitted work stays local. To publish work that is not an app (notes, memory, other files), use `orizu session publish` (see [cli-reference.md](cli-reference.md#publishing-hosted-work)). A conflict may name files outside the app folder; resolve and commit those files too.
 
 When a hosted `apps create` or `apps update` stops after its folder is known, its error prints `App ID`, `Folder`, and a full `Retry` command. Keep that ID and folder. After all three app files have been written, the retry uses safe canonical files, preserving committed conflict resolutions. If the attempt stops before all three files are written, the retry keeps the original input paths. Both retries preserve the selected server. After following the error's instructions, run the printed retry command; create keeps its original `--id`, and update keeps its `--app`. This also applies when the push is rejected, the API refuses the create, or the merge is still running. The files and commits already made stay in the workspace; a refused push has not sent them to the server.
 

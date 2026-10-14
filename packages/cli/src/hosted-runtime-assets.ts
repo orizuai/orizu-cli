@@ -51,15 +51,6 @@ export const AGENT_GIT_IDENTITY = { name: 'Orizu Agent', email: 'agent@orizu.ai'
 
 // -- Hosted task prompt scaffolding (ALI-1036) -------------------------------
 
-/**
- * Origin-specific standing preambles wrap hosted task prompts. Web sessions get
- * `HOSTED_TASK_PREAMBLE`, which directs the agent to use the question tool and
- * wait for the human. CLI-origin sessions get `HOSTED_TASK_PREAMBLE_CLI`, where
- * questions remain auto-answered for unattended operation. Undefined or unknown
- * origins fail safely to the CLI preamble. Both variants tell the agent to
- * commit as it goes; end-of-run auto-harvest (ALI-1036, `harvestWorkspace`)
- * preserves anything left uncommitted.
- */
 /** ORI-2653: where a push lands, shared by both preambles. A web session's
  * `origin` is its own copy of the team repository; a legacy GitHub session's
  * current branch is its session branch. Only an Orizu publish puts work on the
@@ -69,6 +60,15 @@ const HOSTED_PUSH_SCOPE =
   "not on the team's main. Never say work is published or on the team's main unless an Orizu " +
   'publish command reported that it merged or was already there. '
 
+/**
+ * Origin-specific standing preambles wrap hosted task prompts. Web sessions get
+ * `HOSTED_TASK_PREAMBLE`, which directs the agent to use the question tool and
+ * wait for the human. CLI-origin sessions get `HOSTED_TASK_PREAMBLE_CLI`, where
+ * questions remain auto-answered for unattended operation. Undefined or unknown
+ * origins fail safely to the CLI preamble. Both variants tell the agent to
+ * commit as it goes; end-of-run auto-harvest (ALI-1036, `harvestWorkspace`)
+ * preserves anything left uncommitted.
+ */
 export const HOSTED_TASK_PREAMBLE =
   'You are in a hosted sandbox. Work autonomously. When blocked on human input, call the built-in ' +
   'question tool with exactly one clear question and at most eight bounded options, then wait for ' +
@@ -76,6 +76,7 @@ export const HOSTED_TASK_PREAMBLE =
   'branch in logical units as you go (an automatic ' +
   'checkpoint will also save anything uncommitted at the end). Never switch branches. ' +
   HOSTED_PUSH_SCOPE +
+  "To put work on the team's main, run `orizu session publish`. " +
   'Production/default pointers and run metadata live in Orizu, not this repo.'
 
 /** Pre-ALI-1758 unattended behavior retained for CLI-originated sessions. */

@@ -336,6 +336,7 @@ const SESSION_START_OPTIONS = new Set([
   '--session',
   '--json',
 ])
+const SESSION_PUBLISH_OPTIONS = new Set(['--message', '--json'])
 const WORKBENCH_VALUE_OPTIONS = new Set([
   '--after',
   '--interval',
@@ -1221,7 +1222,7 @@ function terminalStatusForCommand(command: string): string | null {
 }
 
 const USAGE_LINE =
-  'Usage: orizu session <start|status|end|finish> ... | orizu run <start|status|tail|complete|fail|cancel> ...  (run tail --once drains all currently persisted events, then exits without following)'
+  'Usage: orizu session <start|status|end|finish|publish> ... | orizu run <start|status|tail|complete|fail|cancel> ...  (run tail --once drains all currently persisted events, then exits without following)'
 
 // In --json mode ANY command failure — bad usage, or an operational failure
 // such as a 401/403/404/409/network error surfaced by assertOk — must still
@@ -1268,6 +1269,18 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
     // `--workspace <dir>`: the workbench clone directory when the command is
     // not run from inside it (defaults to cwd).
     const workspaceDir = argValue(args, '--workspace') ?? undefined
+    if (subcommand === 'publish') {
+      const unknownOption = findUnknownOption(args, SESSION_PUBLISH_OPTIONS, WORKBENCH_VALUE_OPTIONS)
+      if (unknownOption) {
+        return emitJsonError(io, `unknown option ${unknownOption}\nUsage: orizu session publish [--message <text>] [--json]`)
+      }
+      const stray = positional[2]
+      if (stray !== undefined) {
+        return emitJsonError(io, `unexpected argument ${stray}\nUsage: orizu session publish [--message <text>] [--json]`)
+      }
+      const { runSessionPublish } = await import('./session-publish.js')
+      return runSessionPublish(io, { message: argValue(args, '--message') })
+    }
     if (subcommand === 'start') {
       const unknownOption = findUnknownOption(args, SESSION_START_OPTIONS, WORKBENCH_VALUE_OPTIONS)
       if (unknownOption) {
