@@ -17,6 +17,9 @@
  * boot's credential helper), never in a URL or argument.
  */
 
+import { existsSync, readdirSync, renameSync } from 'fs'
+import { join } from 'path'
+
 export const SESSION_COPY_SEED_FAILURE = 'session copy could not be filled from the team copy'
 
 interface SeedExecResult {
@@ -109,6 +112,8 @@ export interface CloneTeamIntoWorkTreeInput {
   scratchDir: string
   /** The boot's working folder: absent or empty. */
   workTree: string
+  /** Moves one entry into the working folder (default: renameSync). */
+  rename?: (from: string, to: string) => void
 }
 
 export type CloneTeamIntoWorkTreeResult =
@@ -156,14 +161,26 @@ export async function cloneTeamIntoWorkTree(input: CloneTeamIntoWorkTreeInput): 
     if (fetched.status !== 0) throw failure('reading the team copy', fetched)
     const pointed = input.exec('git', ['-C', input.scratchDir, 'remote', 'set-url', 'origin', input.sessionRemote])
     if (pointed.status !== 0) throw failure('pointing the working folder at the session copy', pointed)
-    // The runtime image may ship the folder empty; `mv` needs it gone.
-    input.exec('rmdir', ['--', input.workTree])
-    // A folder that is still there (not empty, or a mount point) would make
-    // `mv` put the clone inside it.
-    const remaining = input.exec('test', ['-e', input.workTree])
-    if (remaining.status === 0) throw failure('making the working folder', { status: 1, stdout: '', stderr: `${input.workTree} is not empty` })
-    const moved = input.exec('mv', ['--', input.scratchDir, input.workTree])
-    if (moved.status !== 0) throw failure('making the working folder', moved)
+    // ORI-2512: an existing folder (the runtime image may ship it empty, and
+    // the boot may have started OpenCode in it) is filled in place, never
+    // replaced: a process already started there would be left in a deleted
+    // folder. A missing folder becomes the clone.
+    if (existsSync(input.workTree)) {
+      if (readdirSync(input.workTree).length > 0) throw failure('making the working folder', { status: 1, stdout: '', stderr: `${input.workTree} is not empty` })
+      try {
+        // `.git` last: a fill that stops partway leaves no repository, which
+        // the next boot refuses, rather than one missing files that a save
+        // would push as deleted.
+        const entries = readdirSync(input.scratchDir).sort((a, b) => Number(a === '.git') - Number(b === '.git'))
+        const rename = input.rename ?? renameSync
+        for (const entry of entries) rename(join(input.scratchDir, entry), join(input.workTree, entry))
+      } catch (error) {
+        throw failure('making the working folder', { status: 1, stdout: '', stderr: error instanceof Error ? error.message : String(error) })
+      }
+    } else {
+      const moved = input.exec('mv', ['--', input.scratchDir, input.workTree])
+      if (moved.status !== 0) throw failure('making the working folder', moved)
+    }
   } finally {
     clear()
   }

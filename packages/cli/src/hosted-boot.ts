@@ -50,6 +50,8 @@ import {
 import {
   INJECTED_ENV_VARS_ENV,
   closeHostedLoopSession,
+  hostedSessionOpenCodeLogPath,
+  prestartHostedOpenCode,
   runHostedLoop,
   runHostedLoopTurn,
   startHostedLoopSession,
@@ -973,16 +975,20 @@ export async function runHostedBoot(opts: RunHostedBootOptions): Promise<HostedB
   // work and closed however the boot ends.
   const liveChannels: HostedLiveChannel[] = []
   const idleWait = new AbortController()
+  // ORI-2512: stops anything the boot started in the background.
+  const bootCleanups: Array<() => void> = []
   try {
-    return await runHostedBootWithLive(opts, liveChannels, idleWait.signal)
+    return await runHostedBootWithLive(opts, liveChannels, idleWait.signal, bootCleanups)
   } finally {
     idleWait.abort()
     for (const channel of liveChannels) channel.close()
+    for (const cleanup of bootCleanups) cleanup()
   }
 }
 
 async function runHostedBootWithLive(
-  opts: RunHostedBootOptions, liveChannels: HostedLiveChannel[], idleWaitSignal: AbortSignal
+  opts: RunHostedBootOptions, liveChannels: HostedLiveChannel[], idleWaitSignal: AbortSignal,
+  bootCleanups: Array<() => void>
 ): Promise<HostedBootResult> {
   const env = opts.env
   const processEnv = opts.processEnv ?? process.env
@@ -1223,6 +1229,46 @@ async function runHostedBootWithLive(
 
   const helperValue = `!node ${helperScriptAbs} ${bootContextAbs}`
 
+  // The loop's context (step 6), built before the clone so the background
+  // start below uses the same settings. The bearer PROVIDER keeps the event
+  // sink's bearer fresh from the same pull-mode source; the DO-provisioned
+  // sandbox always runs the pre-baked image under an enforced egress policy, so
+  // the loop's startup egress canary + deferred setup hook are both armed.
+  const model = session.model ?? DEFAULT_HOSTED_MODEL
+  const configuredOpenCodePort = resolveTestPositiveInteger(
+    processEnv, 'ORIZU_HOSTED_TEST_OPENCODE_PORT', 65_535
+  ) ?? (processEnv.ORIZU_OPENCODE_PORT
+    ? Number(processEnv.ORIZU_OPENCODE_PORT)
+    : undefined)
+  if (configuredOpenCodePort !== undefined && (!Number.isInteger(configuredOpenCodePort) || configuredOpenCodePort < 1 || configuredOpenCodePort > 65_535)) {
+    throw new Error('ORIZU_OPENCODE_PORT must be a valid TCP port')
+  }
+  const loopContext: HostedLoopContext = {
+    apiBaseUrl: env.baseUrl,
+    runId,
+    bearerFile: bearerFileAbs,
+    taskFile: taskFileAbs,
+    workspaceDir,
+    sessionBranch: session.repoBranch,
+    repositoryRemote: repo.cloneUrl,
+    repositoryCredentialHelper: helperValue,
+    model,
+    reasoningEffort: session.reasoningEffort ?? undefined,
+    sessionOrigin: session.surface === 'hosted-web' ? 'hosted-web' : 'cli',
+    messageId: `${runId}:task`,
+    resumeAgentSessionId: session.agentSessionId ?? undefined,
+    author: AGENT_GIT_IDENTITY,
+    anthropicDummyKey: env.anthropicDummyKey ?? ANTHROPIC_DUMMY_KEY,
+    // Derive the per-prompt max-duration cap from the session duration so a long
+    // run is not killed at the hard-coded 90-min prompt cap (ALI-1061). Unset →
+    // the harness default (5400s) floor holds.
+    sandboxBudgetMs: session.durationMinutes != null ? session.durationMinutes * 60 * 1000 : undefined,
+    prebaked: true,
+    egressCanaryHost: (processEnv.NODE_ENV === 'test' ? processEnv.ORIZU_HOSTED_TEST_EGRESS_CANARY_HOST : undefined) ?? DEFAULT_EGRESS_CANARY_HOST,
+    runSetupHook: true,
+    opencodePort: configuredOpenCodePort,
+  }
+
   // 4b — ORI-2118: a hosted session's Artifacts copy is created empty (forks
   // of a busy team copy cannot be cloned). Fill it from the server-selected
   // origin before cloning. Selected saved history is checked on retries too.
@@ -1231,6 +1277,20 @@ async function runHostedBootWithLive(
   }
   // ORI-2520: a woken sandbox boots on the disk it slept with (see step 5).
   const wokenDisk = existsSync(workspaceDir) && readdirSync(workspaceDir).length > 0
+  // ORI-2512 cut 3: start the egress canary and then OpenCode while the
+  // repository clones. OpenCode runs in the (empty) working folder, which the
+  // clone fills in place, and is asked nothing until after the clone. The
+  // one-shot test seam (opts.runLoop) starts nothing early, but makes the
+  // folder the same way, so it takes production's fill.
+  mkdirp(workspaceDir)
+  const prestart = opts.runLoop
+    ? null
+    : prestartHostedOpenCode(
+        { ...loopContext, projectId: session.projectId },
+        { logPath: hostedSessionOpenCodeLogPath({ sessionDir: sessionDirAbs, sessionId: env.sessionId }) }
+      )
+  // However the boot ends, nothing it started outlives it.
+  if (prestart) bootCleanups.push(prestart.stop)
   // Set when the working folder came from the team copy (ORI-2512); settles
   // when the background fill of the session copy ends, and never rejects.
   let sessionCopyFilled: Promise<void> | null = null
@@ -1355,7 +1415,8 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
     const checkedOut = assertWokenRepo(exec, workspaceDir, repo.cloneUrl)
     log(`woken disk: reusing the repo (checked out: ${checkedOut})`)
   } else {
-    const clone = exec('git', [
+    // Not blocking, so the background start above keeps running (ORI-2512).
+    const clone = await execAsync('git', [
       'clone',
       '--depth',
       '1',
@@ -1430,45 +1491,6 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
     log,
   })
 
-  // 6 — Launch the hosted loop, reused in-process. The bearer PROVIDER keeps the
-  // event sink's bearer fresh from the same pull-mode source; the DO-provisioned
-  // sandbox always runs the pre-baked image under an enforced egress policy, so
-  // the loop's startup egress canary + deferred setup hook are both armed.
-  const model = session.model ?? DEFAULT_HOSTED_MODEL
-  const configuredOpenCodePort = resolveTestPositiveInteger(
-    processEnv, 'ORIZU_HOSTED_TEST_OPENCODE_PORT', 65_535
-  ) ?? (processEnv.ORIZU_OPENCODE_PORT
-    ? Number(processEnv.ORIZU_OPENCODE_PORT)
-    : undefined)
-  if (configuredOpenCodePort !== undefined && (!Number.isInteger(configuredOpenCodePort) || configuredOpenCodePort < 1 || configuredOpenCodePort > 65_535)) {
-    throw new Error('ORIZU_OPENCODE_PORT must be a valid TCP port')
-  }
-  const loopContext: HostedLoopContext = {
-    apiBaseUrl: env.baseUrl,
-    runId,
-    bearerFile: bearerFileAbs,
-    taskFile: taskFileAbs,
-    workspaceDir,
-    sessionBranch: session.repoBranch,
-    repositoryRemote: repo.cloneUrl,
-    repositoryCredentialHelper: helperValue,
-    model,
-    reasoningEffort: session.reasoningEffort ?? undefined,
-    sessionOrigin: session.surface === 'hosted-web' ? 'hosted-web' : 'cli',
-    messageId: `${runId}:task`,
-    resumeAgentSessionId: session.agentSessionId ?? undefined,
-    author: AGENT_GIT_IDENTITY,
-    anthropicDummyKey: env.anthropicDummyKey ?? ANTHROPIC_DUMMY_KEY,
-    // Derive the per-prompt max-duration cap from the session duration so a long
-    // run is not killed at the hard-coded 90-min prompt cap (ALI-1061). Unset →
-    // the harness default (5400s) floor holds.
-    sandboxBudgetMs: session.durationMinutes != null ? session.durationMinutes * 60 * 1000 : undefined,
-    prebaked: true,
-    egressCanaryHost: DEFAULT_EGRESS_CANARY_HOST,
-    runSetupHook: true,
-    opencodePort: configuredOpenCodePort,
-  }
-
   const runLoop =
     opts.runLoop ??
     ((input): Promise<HostedLoopResult> =>
@@ -1523,7 +1545,7 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
     projectId: session.projectId,
     sessionDir: sessionDirAbs,
   }
-  const hostedLoopSession = await startHostedLoopSession(sessionContext)
+  const hostedLoopSession = await startHostedLoopSession(sessionContext, { prestart })
   let current = session.pendingTurn?.runId === runId
     ? { runId, ordinal: session.pendingTurn.ordinal, body: promptForPendingHostedTurn(session.pendingTurn) }
     : { runId, ordinal: 1, body: session.task }

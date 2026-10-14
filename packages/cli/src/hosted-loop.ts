@@ -53,13 +53,17 @@ import { annotateHeadlessQuestions, withIdleWatchdog } from './hosted-headless.j
 import {
   DEFAULT_PROMPT_MAX_DURATION_MS,
   OPENCODE_PINNED_VERSION,
+  OpenCodeExitedError,
   awaitOpenCodeModelResolvable,
   createOpenCodeHarness,
   permissionForOrigin,
   spawnOpenCode,
+  startOpenCodeProcess,
+  waitOpenCodeReady,
   type ModelValidationOutcome,
   type SpawnOpenCodeOptions,
   type SpawnedOpenCode,
+  type StartedOpenCode,
 } from './hosted-harness-opencode.js'
 import { createClaudeAgentHarness } from './hosted-harness-claude.js'
 import { INJECTED_ENV_VARS_ENV } from './hosted-environment.js'
@@ -137,6 +141,25 @@ interface HostedLoopSharedRuntime {
   startupComplete: boolean
   spawnLogPath: string
   closed: boolean
+  /** ORI-2512: the boot's background start, until the first turn takes it. */
+  prestart?: HostedPrestart | null
+}
+
+/**
+ * ORI-2512 cut 3: the egress canary's probes and the OpenCode start, begun by
+ * the boot while the repository clones. The first turn records the canary's
+ * events from the stored answers (same decision, same events) and waits for
+ * the started server, which is asked nothing before then.
+ */
+export interface HostedPrestart {
+  /** The probes' answers by host, and the canary's verdict. Null when a
+   *  probe threw: the turn then runs the canary itself. Never rejects. */
+  canary: Promise<{ results: Map<string, EgressProbeResult>; checkedAt: number; proceed: boolean } | null>
+  /** The started process; null when the canary said no or the start was
+   *  stopped. Rejects when the background start failed. */
+  opencode: Promise<StartedOpenCode | null>
+  /** Stop the process, now or as soon as it starts. */
+  stop: () => void
 }
 
 export interface HostedLoopSessionContext extends Omit<HostedLoopContext, 'runId' | 'bearerFile' | 'taskFile' | 'messageId'> {
@@ -362,7 +385,7 @@ export function installOpenCodePinned(version: string, env?: NodeJS.ProcessEnv):
 function nodeChildSpawner(
   cmd: string[],
   opts: { cwd?: string; env: Record<string, string>; logPath?: string }
-): { kill: () => void } {
+): { kill: () => void; hasExited: () => boolean; exitReason: () => string | null } {
   let stdio: 'ignore' | Array<'ignore' | number> = 'ignore'
   let fd: number | null = null
   if (opts.logPath) {
@@ -386,7 +409,81 @@ function nodeChildSpawner(
       // already closed
     }
   }
-  return { kill: () => child.kill() }
+  // ORI-2512: lets the readiness wait stop at once for a process that has
+  // gone. The error listener also keeps a failed spawn from crashing the boot.
+  let exited = false
+  let spawnError: string | null = null
+  child.once('exit', () => { exited = true })
+  child.once('error', error => {
+    exited = true
+    spawnError = error instanceof Error ? error.message : String(error)
+  })
+  return { kill: () => child.kill(), hasExited: () => exited, exitReason: () => spawnError }
+}
+
+/** The one place the hosted `opencode serve` options come from, for both the
+ *  boot's background start and the turn's start in order. */
+function openCodeSpawnOptions(context: HostedLoopContext, logPath: string): SpawnOpenCodeOptions {
+  return {
+    model: context.model,
+    permission: permissionForOrigin(context.sessionOrigin),
+    projectId: context.projectId,
+    cwd: context.workspaceDir,
+    port: context.opencodePort,
+    env: buildOpenCodeSpawnEnv(context),
+    spawn: nodeChildSpawner,
+    logPath,
+  }
+}
+
+/**
+ * ORI-2512 cut 3: start the egress canary and then OpenCode in the
+ * background, for the boot to call before it clones. The order is the
+ * loop's: the canary first, fail-closed, before the models.dev refresh or
+ * OpenCode. Nothing here records events; the first turn does. Only for the
+ * pre-baked OpenCode runtime under an enforced egress policy; otherwise null
+ * and the turn starts everything in order.
+ */
+export function prestartHostedOpenCode(
+  context: HostedLoopContext,
+  opts: { logPath: string }
+): HostedPrestart | null {
+  if ((context.harness ?? 'opencode') !== 'opencode' || !context.egressCanaryHost || context.prebaked !== true) return null
+  const targets: EgressCanaryTargets = {
+    allowedHost: egressCanaryAllowedHost(context.apiBaseUrl),
+    deniedHost: context.egressCanaryHost,
+  }
+  const results = new Map<string, EgressProbeResult>()
+  let stopped = false
+  const canary = (async () => {
+    let checkedAt = Date.now()
+    // The loop's own decision, with nothing recorded yet.
+    const decision = await runEgressCanary(targets, { append: async () => {} }, async host => {
+      const result = await defaultProbeEgress(host)
+      results.set(host, result)
+      return result
+    }, () => (checkedAt = Date.now()))
+    return { results, checkedAt, proceed: decision.proceed }
+  })().catch(() => null)
+  const opencode = canary.then(async stored => {
+    if (!stored?.proceed || stopped) return null
+    const started = await startOpenCodeProcess(openCodeSpawnOptions(context, opts.logPath))
+    if (stopped) {
+      started.stop()
+      return null
+    }
+    return started
+  })
+  // The turn reads a failure; until then it must not count as unhandled.
+  opencode.catch(() => {})
+  return {
+    canary,
+    opencode,
+    stop: () => {
+      stopped = true
+      void opencode.then(started => started?.stop(), () => {})
+    },
+  }
 }
 
 /** ORI-2512: the longest the end-of-turn save waits for the boot's
@@ -449,15 +546,22 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
   // unreachable → network broken / indistinguishable from a block) emits
   // `egress_allowed` and finishes the run FAILED rather than touch real customer
   // data. A canary whose own event append fails is likewise fail-closed.
+  // ORI-2512: on the first turn, the boot may already have probed in the
+  // background; the same decision is then made from its stored answers.
+  const prestart = opts.sharedRuntime && !opts.sharedRuntime.startupComplete ? opts.sharedRuntime.prestart : null
   if (context.egressCanaryHost && !opts.sharedRuntime?.startupComplete) {
-    const probe = opts.probeEgress ?? defaultProbeEgress
+    const liveProbe = opts.probeEgress ?? defaultProbeEgress
+    const stored = prestart ? await prestart.canary : null
+    const probe = stored
+      ? async (host: string): Promise<EgressProbeResult> => stored.results.get(host) ?? liveProbe(host)
+      : liveProbe
     const targets: EgressCanaryTargets = {
       allowedHost: egressCanaryAllowedHost(context.apiBaseUrl),
       deniedHost: context.egressCanaryHost,
     }
     let canary: EgressCanaryDecision
     try {
-      canary = await runEgressCanary(targets, sink, probe, opts.now)
+      canary = await runEgressCanary(targets, sink, probe, stored ? () => stored.checkedAt : opts.now)
     } catch (error) {
       // The canary's own event append failed — treat as fail-closed: we cannot
       // prove the firewall is live, so do not proceed.
@@ -666,26 +770,49 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
         })
       }
 
+      const logPath = opts.sharedRuntime?.spawnLogPath ?? join(tmpdir(), `opencode-serve-${context.runId}.log`)
+      // ORI-2512: the first turn takes the server the boot started during the
+      // clone and asks it something only now, after the clone. A background
+      // start that failed, or a process that already exited, is started again
+      // here in order.
+      const waitStartedAt = Date.now()
+      let prestarted: SpawnedOpenCode | null = null
+      if (prestart && opts.sharedRuntime) {
+        opts.sharedRuntime.prestart = null
+        let started: StartedOpenCode | null = null
+        try {
+          started = await prestart.opencode
+        } catch {
+          diagnose('hosted OpenCode background start failed; starting it in order')
+        }
+        if (started) {
+          try {
+            prestarted = await waitOpenCodeReady(started, { logPath, signal })
+          } catch (error) {
+            if (!(error instanceof OpenCodeExitedError)) throw error
+            diagnose('hosted OpenCode background start exited; starting it in order')
+          }
+        }
+      }
       const spawnImpl = opts.spawnOpenCode ?? spawnOpenCode
       // The default spawnOpenCode WAITS for the server to answer HTTP before
       // returning — OpenCode's first boot runs a one-time sqlite migration, and
       // starting the harness before the server listens raced straight into a
       // connection-refused "fetch failed" (ALI-1034).
-      spawned = await spawnImpl({
-        model: context.model,
-        permission: permissionForOrigin(context.sessionOrigin),
-        projectId: context.projectId,
-        cwd: context.workspaceDir,
-        port: context.opencodePort,
-        env: buildOpenCodeSpawnEnv(context),
-        spawn: nodeChildSpawner,
-        logPath: opts.sharedRuntime?.spawnLogPath ?? join(tmpdir(), `opencode-serve-${context.runId}.log`),
-        signal,
-      })
+      spawned = prestarted ?? await spawnImpl({ ...openCodeSpawnOptions(context, logPath), signal })
       if (typeof spawned.readyAfterMs === 'number') {
         await sink.append({
           kind: 'artifact',
-          payload: { step: 'opencode_ready', ok: true, waitedMs: spawned.readyAfterMs },
+          payload: {
+            step: 'opencode_ready',
+            ok: true,
+            // How long this turn waited for OpenCode. When the boot started it
+            // during the clone, that is the wait after the clone; the time
+            // since it was started (clone included) is kept apart.
+            ...(prestarted
+              ? { waitedMs: Date.now() - waitStartedAt, prestarted: true, sinceStartMs: spawned.readyAfterMs }
+              : { waitedMs: spawned.readyAfterMs }),
+          },
         })
       }
 
@@ -979,7 +1106,8 @@ export async function runHostedLoop(opts: RunHostedLoopOptions): Promise<HostedL
 }
 
 export async function startHostedLoopSession(
-  context: HostedLoopSessionContext
+  context: HostedLoopSessionContext,
+  options: { prestart?: HostedPrestart | null } = {}
 ): Promise<HostedLoopSessionHandle> {
   return {
     context,
@@ -989,10 +1117,16 @@ export async function startHostedLoopSession(
       agentSessionId: null,
       installOk: false,
       startupComplete: false,
-      spawnLogPath: join(context.sessionDir, `opencode-serve-${context.sessionId}.log`),
+      spawnLogPath: hostedSessionOpenCodeLogPath(context),
       closed: false,
+      prestart: options.prestart ?? null,
     },
   }
+}
+
+/** Where a hosted session's `opencode serve` writes its output. */
+export function hostedSessionOpenCodeLogPath(context: Pick<HostedLoopSessionContext, 'sessionDir' | 'sessionId'>): string {
+  return join(context.sessionDir, `opencode-serve-${context.sessionId}.log`)
 }
 
 export async function runHostedLoopTurn(

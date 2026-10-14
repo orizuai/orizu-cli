@@ -1150,7 +1150,7 @@ export interface SpawnOpenCodeOptions extends OpenCodeConfigOptions {
   spawn?: (
     cmd: string[],
     opts: { cwd?: string; env: Record<string, string>; logPath?: string }
-  ) => { kill: () => void }
+  ) => { kill: () => void; hasExited?: () => boolean; exitReason?: () => string | null }
   /** File the spawner should append opencode's stdout/stderr to. On readiness
    *  timeout its tail is included in the thrown error — the bare "fetch failed"
    *  this replaces was undiagnosable (ALI-1034). */
@@ -1203,6 +1203,33 @@ function readLogTail(logPath: string | undefined): string | null {
  * (see the SSE-fragility note on that constant).
  */
 export async function spawnOpenCode(opts: SpawnOpenCodeOptions): Promise<SpawnedOpenCode> {
+  return waitOpenCodeReady(await startOpenCodeProcess(opts), opts)
+}
+
+/** A started `opencode serve` that has not been asked anything yet. */
+export interface StartedOpenCode {
+  baseUrl: string
+  port: number
+  stop: () => void
+  /** True once the process has exited (when the spawner can tell). */
+  hasExited: () => boolean
+  /** Why it could not be started (for example ENOENT), when known. */
+  exitReason: () => string | null
+  startedAt: number
+}
+
+/** `waitOpenCodeReady` found the process already gone; nothing answered. */
+export class OpenCodeExitedError extends Error {}
+
+/**
+ * The first half of `spawnOpenCode`: refresh the model catalog and start the
+ * process, without asking it anything. ORI-2512: the hosted boot calls this
+ * while the repository is still cloning. OpenCode ties its folder to a project
+ * on the first request it gets, so nothing may ask it anything until the
+ * folder holds the repository (measured on 1.18.35: a request into an empty
+ * folder binds it to the `global` project for good).
+ */
+export async function startOpenCodeProcess(opts: SpawnOpenCodeOptions): Promise<StartedOpenCode> {
   const port = opts.port ?? DEFAULT_OPENCODE_PORT
   const env: Record<string, string> = {
     OPENCODE_CONFIG_CONTENT: buildOpenCodeConfigContent(opts),
@@ -1226,16 +1253,34 @@ export async function spawnOpenCode(opts: SpawnOpenCodeOptions): Promise<Spawned
         stderr: 'ignore',
       })
     })
-  const child = spawnImpl(cmd, { cwd: opts.cwd, env, logPath: opts.logPath })
-  const baseUrl = `http://localhost:${port}`
+  const child: { kill: () => void; hasExited?: () => boolean; exitReason?: () => string | null } = spawnImpl(cmd, { cwd: opts.cwd, env, logPath: opts.logPath })
+  return {
+    baseUrl: `http://localhost:${port}`,
+    port,
+    stop: () => child.kill(),
+    hasExited: () => child.hasExited?.() ?? false,
+    exitReason: () => child.exitReason?.() ?? null,
+    startedAt: Date.now(),
+  }
+}
 
+/**
+ * The second half of `spawnOpenCode`: poll until the started server answers.
+ * The budget counts from this call, not from the start, so a long clone
+ * before it cannot use the budget up. `readyAfterMs` is from the start.
+ */
+export async function waitOpenCodeReady(
+  started: StartedOpenCode,
+  opts: Pick<SpawnOpenCodeOptions, 'readyTimeoutMs' | 'readyPollMs' | 'signal' | 'fetchImpl' | 'logPath'>
+): Promise<SpawnedOpenCode> {
+  const { baseUrl, port } = started
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch)
   const timeoutMs = opts.readyTimeoutMs ?? OPENCODE_READY_TIMEOUT_MS
   const pollMs = opts.readyPollMs ?? OPENCODE_READY_POLL_MS
-  const startedAt = Date.now()
+  const waitStartedAt = Date.now()
   for (;;) {
     if (opts.signal?.aborted) {
-      child.kill()
+      started.stop()
       throw new Error('opencode serve readiness wait aborted')
     }
     try {
@@ -1253,12 +1298,23 @@ export async function spawnOpenCode(opts: SpawnOpenCodeOptions): Promise<Spawned
         clearTimeout(timer)
       }
     } catch {
-      // not listening yet — fall through to the timeout check + sleep
+      // not listening yet — fall through to the exit and timeout checks + sleep
+    }
+    // A process that already exited will never answer: say so now rather
+    // than at the end of the budget.
+    if (started.hasExited()) {
+      const tail = readLogTail(opts.logPath)
+      const reason = started.exitReason()
+      throw new OpenCodeExitedError(
+        `opencode serve exited before it answered on ${baseUrl}` +
+          (reason ? `: ${reason}` : '') +
+          (tail ? ` — log tail: ${tail}` : ' (no log output captured)')
+      )
     }
     // Soft budget: checked between probes, so the total wait can overrun by up
     // to one probe timeout + poll interval. Negligible against the default.
-    if (Date.now() - startedAt >= timeoutMs) {
-      child.kill()
+    if (Date.now() - waitStartedAt >= timeoutMs) {
+      started.stop()
       const tail = readLogTail(opts.logPath)
       throw new Error(
         `opencode serve did not become ready on ${baseUrl} within ${timeoutMs}ms` +
@@ -1268,5 +1324,5 @@ export async function spawnOpenCode(opts: SpawnOpenCodeOptions): Promise<Spawned
     await new Promise(resolve => setTimeout(resolve, pollMs))
   }
 
-  return { baseUrl, port, stop: () => child.kill(), readyAfterMs: Date.now() - startedAt }
+  return { baseUrl, port, stop: started.stop, readyAfterMs: Date.now() - started.startedAt }
 }
