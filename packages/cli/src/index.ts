@@ -100,7 +100,6 @@ import {
   getTaskReport,
   updateTaskStatus,
 } from './task-commands.js'
-import { cleanupAll, throwWithCleanup } from './cleanup.js'
 import {
   extractFlagValue,
   verifyGepaRunnerDirsFromArgs,
@@ -177,7 +176,6 @@ import { inspectExistingWorkspaceTeam, getWorkspaceRoot } from './workspace.js'
 import { writeLastErrorRecord, extractLastErrorCode } from './last-error-record.js'
 import type { CliLengthStats, CliLengthMeasurementUnavailableReason } from './prompt-length-wire.js'
 import type { RunnerInstructionSet } from './runner-instruction-set-contract.js'
-import type { GepaVerifiedArgs } from './runner-dir-verify.js'
 import type { ReportCommentsCliContext } from './report-comments-cli.js'
 
 
@@ -1293,101 +1291,94 @@ const GEPA_RUNNER_MATERIALIZATION_PAIRS = [
   { versionFlag: '--scorer-runner-version-id', dirFlag: '--scorer-runner-dir' },
 ] as const
 
-async function materializeMissingGepaRunnerDirs(args: string[]): Promise<{
-  args: string[]
-  cleanup: () => void
-}> {
-  const rewritten = [...args]
-  const cleanups: Array<() => void> = []
-  const cleanup = () => cleanupAll(
-    cleanups,
-    'Failed to clean materialized runner directories'
-  )
-
-  try {
-    for (const pair of GEPA_RUNNER_MATERIALIZATION_PAIRS) {
-      const runnerVersionId = extractFlagValue(rewritten, pair.versionFlag)
-      const runnerDir = extractFlagValue(rewritten, pair.dirFlag)
-      if (!runnerVersionId || runnerDir) continue
-
-      const materialized = await materializeRunnerVersion(runnerVersionId)
-      cleanups.push(materialized.cleanup)
-      rewritten.push(pair.dirFlag, materialized.runnerDir)
-    }
-  } catch (error) {
-    throwWithCleanup(
-      error,
-      cleanups,
-      'Runner materialization failed and cleanup also failed'
-    )
-  }
-
-  return { args: rewritten, cleanup }
-}
-
 async function runGepaOptimization() {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const baseUrl = getBaseUrl()
   const runGepa = getGepaPythonCommand(cliArgs.slice(2), process.env)
   const python = runGepa.python
-  let forwardedArgs = runGepa.args
-  // ALI-1159 (ADR-007): GEPA executes ad-hoc local runner dirs while
-  // attributing records to registered runner version ids — verify the bytes
-  // ARE those versions before the optimizer spawns. Scans the forwarded argv
-  // itself (both argparse flag forms), fail-closed on half-populated pairs,
-  // and REWRITES the dir flags to verified snapshots (the exact hashed bytes)
-  // so a post-hash mutation of the original dirs cannot change what runs.
-  const materialized = await materializeMissingGepaRunnerDirs(forwardedArgs)
-  let verified: GepaVerifiedArgs | undefined
+  // ORI-2429: one Effect scope owns every runner copy this run writes to the
+  // temp folder; it removes them on success, failure and stop signals.
+  const { Effect } = await import('effect')
+  const { downloadedRunner, heldUntilClose, RemovalLedger, runStoppable } = await import('./runner-folders.js')
+  const ledger = new RemovalLedger()
+  // Which step failed decides the message when a removal also failed, as before.
+  let phase: 'materialize' | 'launch' = 'materialize'
   let selectedEngine = 'official'
+  let failure: { error: unknown } | undefined
   try {
-    verified = await verifyGepaRunnerDirsFromArgs(materialized.args)
-    forwardedArgs = verified.args
-    // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
-    // credentials.json so hosted sandboxes can run optimizations. Read at spawn
-    // time — AFTER the verification awaits above, so a hosted token-file
-    // rotation crossing the hash + lookup round-trips cannot hand the child a
-    // stale bearer.
-    const token = resolveAuthTokenForBaseUrl(baseUrl)
-    if (!forwardedArgs.includes('--project')) {
-      forwardedArgs = ['--project', project, ...forwardedArgs]
-    }
-    const dispatch = applyHostedInstructionSetProfileOverride(dispatchGepaEngine(forwardedArgs, project, {
-      ...process.env,
-      ORIZU_API_URL: baseUrl,
-      ORIZU_TOKEN: token,
-      ORIZU_PROJECT: project,
-      ORIZU_VERIFIED_RUNNER_DIRS: JSON.stringify(verified.verifiedDirs),
-      PYTHONPATH: getGepaPythonPathEntries(process.env.PYTHONPATH).join(delimiter),
-      PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
+    await runStoppable(stop => Effect.gen(function* () {
+      // Download registered runner versions passed without a local folder; the
+      // verification below then checks those bytes like any local folder.
+      const materializedArgs = [...runGepa.args]
+      for (const pair of GEPA_RUNNER_MATERIALIZATION_PAIRS) {
+        const runnerVersionId = extractFlagValue(materializedArgs, pair.versionFlag)
+        const runnerDir = extractFlagValue(materializedArgs, pair.dirFlag)
+        if (!runnerVersionId || runnerDir) continue
+        const materialized = yield* downloadedRunner(runnerVersionId, ledger, false)
+        materializedArgs.push(pair.dirFlag, materialized.runnerDir)
+      }
+      phase = 'launch'
+      // ALI-1159 (ADR-007): GEPA executes ad-hoc local runner dirs while
+      // attributing records to registered runner version ids — verify the bytes
+      // ARE those versions before the optimizer spawns. Scans the forwarded argv
+      // itself (both argparse flag forms), fail-closed on half-populated pairs,
+      // and REWRITES the dir flags to verified snapshots (the exact hashed bytes)
+      // so a post-hash mutation of the original dirs cannot change what runs.
+      const verified = yield* heldUntilClose(ledger, 'snapshots', () => verifyGepaRunnerDirsFromArgs(materializedArgs))
+      let forwardedArgs = verified.args
+      // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
+      // credentials.json so hosted sandboxes can run optimizations. Read at spawn
+      // time — AFTER the verification awaits above, so a hosted token-file
+      // rotation crossing the hash + lookup round-trips cannot hand the child a
+      // stale bearer.
+      const token = resolveAuthTokenForBaseUrl(baseUrl)
+      if (!forwardedArgs.includes('--project')) {
+        forwardedArgs = ['--project', project, ...forwardedArgs]
+      }
+      const dispatch = applyHostedInstructionSetProfileOverride(dispatchGepaEngine(forwardedArgs, project, {
+        ...process.env,
+        ORIZU_API_URL: baseUrl,
+        ORIZU_TOKEN: token,
+        ORIZU_PROJECT: project,
+        ORIZU_VERIFIED_RUNNER_DIRS: JSON.stringify(verified.verifiedDirs),
+        PYTHONPATH: getGepaPythonPathEntries(process.env.PYTHONPATH).join(delimiter),
+        PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED || '1',
+      }))
+      const instructionSetProfileVersionId = yield* Effect.tryPromise({
+        try: () => resolveGepaSeedFromEnvironment(dispatch.environment, project, 'production'),
+        catch: error => error,
+      })
+      if (instructionSetProfileVersionId) dispatch.environment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID = instructionSetProfileVersionId
+      selectedEngine = dispatch.engine
+      const launch = prepareSkilledProposerLaunch(python, dispatch.engine, dispatch.environment)
+      // While the optimizer runs, the launcher owns stop signals (ORI-2402) and
+      // closes this scope just before the CLI ends by the signal. Taken in the
+      // same step as the launch, so no stop can fall between the two.
+      const result = yield* Effect.tryPromise({
+        try: () => (stop.launcherOwnsStop(), spawnSkilledProposerChild(
+          launch.python, ['-m', dispatch.module, ...dispatch.args], dispatch.engine, launch.environment,
+          undefined, undefined, { beforeSignalExit: stop.beforeSignalExit },
+        )),
+        catch: error => error,
+      }).pipe(Effect.ensuring(Effect.sync(stop.launcherDone)))
+      if (result.error) {
+        return yield* Effect.fail(new Error(`${selectedEngine} GEPA engine failed: ${result.error.message}`, { cause: result.error }))
+      }
+      if (result.status !== 0) {
+        return yield* Effect.fail(new Error(`${selectedEngine} GEPA engine failed with exit code ${result.status}`))
+      }
     }))
-    const instructionSetProfileVersionId = await resolveGepaSeedFromEnvironment(dispatch.environment, project, 'production')
-    if (instructionSetProfileVersionId) dispatch.environment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID = instructionSetProfileVersionId
-    selectedEngine = dispatch.engine
-    const launch = prepareSkilledProposerLaunch(python, dispatch.engine, dispatch.environment)
-    const result = await spawnSkilledProposerChild(
-      launch.python, ['-m', dispatch.module, ...dispatch.args], dispatch.engine, launch.environment,
-    )
-    if (result.error) {
-      throw new Error(`${selectedEngine} GEPA engine failed: ${result.error.message}`, { cause: result.error })
-    }
-    if (result.status !== 0) {
-      throw new Error(`${selectedEngine} GEPA engine failed with exit code ${result.status}`)
-    }
   } catch (error) {
-    throwWithCleanup(
-      error,
-      [
-        ...(verified ? [verified.cleanup] : []),
-        materialized.cleanup,
-      ],
-      'GEPA launch failed and runner cleanup also failed'
-    )
+    failure = { error }
   }
-  cleanupAll(
-    [verified.cleanup, materialized.cleanup],
-    'Failed to clean GEPA runner directories'
-  )
+  // The scope has closed here; a removal failure decides the message, as before.
+  if (ledger.has()) {
+    if (!failure) throw new AggregateError(ledger.errors(), 'Failed to clean GEPA runner directories')
+    throw new AggregateError([failure.error, ...ledger.errors()], phase === 'materialize'
+      ? 'Runner materialization failed and cleanup also failed'
+      : 'GEPA launch failed and runner cleanup also failed')
+  }
+  if (failure) throw failure.error
   if (hasJsonFlag()) {
     printJson({ status: 'completed', exitCode: 0 })
   }
@@ -2256,6 +2247,7 @@ function isCliEntrypoint(): boolean {
 if (isCliEntrypoint()) {
   const rawArgs = process.argv.slice(2)
   withPassiveUpdateNotice(rawArgs, getCliVersion, printError, args =>
+    // ORI-2429: the process-boundary adapter stays a Promise (ADR-038 guide); the record write is Effect-owned and never replaces this error.
     main(args).catch(async error => {
       const message = error instanceof Error ? error.message : 'Unknown error'
       // The reporter email is unknown on the failure path, so the record masks every address.

@@ -3,13 +3,12 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { runPipedChild } from './child-output-tee.js'
 import { getGepaPythonPathEntries } from './gepa-python-paths.js'
 import { deliveredProviderLookup, HOSTED_PROVIDER_FAILURE, INJECTED_ENV_VARS_ENV, PROVIDER_REGISTRY_EXTRA_ENV } from './hosted-environment.js'
 import { credentialEnvFor, parseModelIdentity } from './provider-registry.js'
 import type { ProviderLookup } from './provider-lookup.js'
-import { materializeRunnerVersion, cleanupMaterializedRunners } from './runner-version-materialization.js'
 import { prepareSkilledProposerLaunch, spawnSkilledProposerChild } from './skilled-proposer-launch.js'
+import type { SkilledProposerStopOptions } from './skilled-proposer-launch.js'
 import { hostedProviderFromModel } from './hosted-provider-settings.js'
 import { validNormalizedSkilledProposerConfig } from './skilled-proposer-wire.js'
 import { REDACTION_PLACEHOLDER, redactSecrets } from './secret-redaction.js'
@@ -358,7 +357,8 @@ async function startTokenBroker(
   }
   return {
     url: `http://127.0.0.1:${address.port}/${nonce}`,
-    stop: () => { server.close() },
+    // Also drop open keep-alive connections, so no refresh succeeds after stop.
+    stop: () => { server.close(); server.closeAllConnections() },
     token: () => activeToken,
     secrets: () => [...tokens],
   }
@@ -367,30 +367,23 @@ async function spawnOfficial(
   python: string,
   environment: NodeJS.ProcessEnv,
   ready: () => Promise<void>,
-  output: ProcessOutputCapture
+  output: ProcessOutputCapture,
+  stopOptions: SkilledProposerStopOptions,
 ): Promise<{ status: number | null; error?: Error }> {
-  if (environment.ORIZU_CANDIDATE_PROPOSER === 'skilled-proposer') {
-    return spawnSkilledProposerChild(
-      python,
-      ['-m', 'orizu_gepa_connector'],
-      'official',
-      environment,
-      ready,
-      {
-        stdout: chunk => output.stdout.append(chunk),
-        stderr: chunk => output.stderr.append(chunk),
-      }
-    )
-  }
-  return runPipedChild(
+  // ORI-2429: both proposers start through the launcher (ORI-2402), so a stop
+  // signal reaches the optimizer, which then ends instead of outliving the
+  // CLI, and the CLI cleans up before it ends by that signal.
+  return spawnSkilledProposerChild(
     python,
     ['-m', 'orizu_gepa_connector'],
+    'official',
     environment,
     ready,
     {
       stdout: chunk => output.stdout.append(chunk),
       stderr: chunk => output.stderr.append(chunk),
-    }
+    },
+    stopOptions,
   )
 }
 async function ensureFailedRun(
@@ -430,7 +423,14 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
   }
   delete process.env.ORIZU_BOOT_SECRET
   let reason = 'hosted_optimization_mint_refused'
-  const cleanups: Array<() => void> = []
+  // ORI-2429: one Effect scope owns the runner copies, the result file and the
+  // token broker, so a stop signal removes them too (see runner-folders.ts).
+  const { Effect, Scope } = await import('effect')
+  const { downloadedRunner, removeOnClose, RemovalLedger, stopClosesScope } = await import('./runner-folders.js')
+  const ledger = new RemovalLedger()
+  const { scope, close, stop, listen, removeHandlers } = stopClosesScope()
+  const inScope = <A>(effect: import('effect').Effect.Effect<A, unknown, import('effect').Scope.Scope>) =>
+    Effect.runPromise(effect.pipe(Effect.provideService(Scope.Scope, scope)))
   let broker: TokenBroker | undefined
   const resultFile = join(tmpdir(), `orizu-hosted-optimization-result-${boot.runId}-${randomUUID()}.json`)
   const diagnosticSecrets = () => injectedSecrets(boot, broker)
@@ -438,6 +438,7 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
   const bootOutput = new BoundedTextCapture(diagnosticSecrets)
   let failureDiagnostics: FailureDiagnostics | undefined
   try {
+    listen()
     const first = await mint(boot)
     if (first.response.status === 422) reason = 'hosted_optimization_spec_missing'
     if (!first.response.ok) {
@@ -462,18 +463,28 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
     process.env.ORIZU_BASE_URL = boot.baseUrl.origin
     process.env.ORIZU_TOKEN = minted.token
     reason = 'hosted_optimization_materialization_failed'
-    const candidate = await materializeRunnerVersion(String(minted.jobSpec.runnerVersionId)); cleanups.push(candidate.cleanup)
-    const scorer = await materializeRunnerVersion(String(minted.jobSpec.scorerRunnerVersionId)); cleanups.push(scorer.cleanup)
+    const candidate = await inScope(downloadedRunner(String(minted.jobSpec.runnerVersionId), ledger))
+    const scorer = await inScope(downloadedRunner(String(minted.jobSpec.scorerRunnerVersionId), ledger))
+    await inScope(removeOnClose(ledger, 'other', () => rmSync(resultFile, { force: true })))
     broker = await startTokenBroker(boot, minted)
+    const startedBroker = broker
+    await inScope(removeOnClose(ledger, 'other', () => startedBroker.stop()))
     const environment = childEnvironment(boot, minted, candidate.runnerDir, scorer.runnerDir, broker.url, resultFile)
     const launch = prepareSkilledProposerLaunch(process.env.PYTHON || 'python3', 'official', environment)
     reason = 'hosted_optimization_process_failed'
-    const result = await spawnOfficial(
-      launch.python,
-      launch.environment,
-      () => postBoot(boot, 'ready', { status: 'ready' }),
-      processOutput
-    )
+    stop.launcherOwnsStop()
+    let result: Awaited<ReturnType<typeof spawnOfficial>>
+    try {
+      result = await spawnOfficial(
+        launch.python,
+        launch.environment,
+        () => postBoot(boot, 'ready', { status: 'ready' }),
+        processOutput,
+        { beforeSignalExit: stop.beforeSignalExit },
+      )
+    } finally {
+      stop.launcherDone()
+    }
     if (result.error || result.status !== 0) {
       const processFailure = result.error?.message || `optimizer exited with status ${result.status}`
       const secrets = injectedSecrets(boot, broker)
@@ -506,8 +517,15 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
     await io.printErr?.(reason)
     return 1
   } finally {
-    broker?.stop()
-    rmSync(resultFile, { force: true })
-    cleanupMaterializedRunners(cleanups)
+    removeHandlers()
+    // Closing stops the broker, deletes the result file and removes the copies.
+    close()
+    // As before: a broker or result-file failure is thrown first, then runner removals.
+    const otherFailure = ledger.failures.find(failure => failure.group === 'other')
+    if (otherFailure) throw otherFailure.error
+    const runnerFailures = ledger.failures.filter(failure => failure.group === 'downloads').map(failure => failure.error)
+    if (runnerFailures.length > 0) {
+        throw new AggregateError(runnerFailures, 'Failed to clean materialized runner directories')
+    }
   }
 }

@@ -54,6 +54,29 @@ const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const
 // status write); past this it is killed so nothing is left running (ORI-2402).
 const CHILD_STOP_WAIT_MS = 15_000
 
+export interface SkilledProposerStopOptions {
+  /**
+   * Runs once the optimizer has exited after a stop signal, just before the
+   * CLI ends by that signal (ORI-2429: the caller removes its runner copies).
+   * It gets whatever is left of CHILD_STOP_WAIT_MS since the signal; a hook
+   * still running then is abandoned so the stop cannot hang. A synchronous
+   * hook always runs to the end, even with no time left.
+   */
+  beforeSignalExit?: () => Promise<void> | void
+}
+
+// Wait for `hook` at most until `deadline`; its failure never blocks the exit.
+async function runBeforeSignalExit(hook: SkilledProposerStopOptions['beforeSignalExit'], deadline: number): Promise<void> {
+  if (!hook) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - Date.now())) })
+  try {
+    await Promise.race([Promise.resolve().then(hook).catch(() => {}), expired])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
  * Run the optimizer, passing a stop signal on to it. On a stop signal the CLI
  * waits until the optimizer exits (capped at CHILD_STOP_WAIT_MS, then kills
@@ -63,11 +86,13 @@ export async function spawnSkilledProposerChild(
   command: string, args: string[], engine: GepaEngine, environment: NodeJS.ProcessEnv,
   onSpawn?: () => Promise<void>,
   output?: SkilledProposerChildOutput,
+  stopOptions: SkilledProposerStopOptions = {},
 ) {
   const childEnvironment = { ...environment }
   let child: ReturnType<typeof spawn> | PipedChild | undefined
   let cleanup = () => {}
   let stopSignal: NodeJS.Signals | undefined
+  let stopDeadline = 0
   // On the terminal path the optimizer leads its own process group, so a stop
   // also reaches its runners, which may run in worker threads it can't stop.
   let childGroup: number | undefined
@@ -79,10 +104,16 @@ export async function spawnSkilledProposerChild(
   }
   let giveUp: ReturnType<typeof setTimeout> | undefined
   const removeHandlers = () => { for (const entry of handlers) process.off(entry.signal, entry.handle) }
-  const endBySignal = (signal: NodeJS.Signals): Promise<never> => {
+  let ending = false
+  const endBySignal = async (signal: NodeJS.Signals): Promise<never> => {
+    if (ending) return new Promise<never>(() => {})
+    ending = true
     if (giveUp) clearTimeout(giveUp)
-    removeHandlers()
     cleanup()
+    // Our handlers stay installed during the caller's cleanup, so a second
+    // Ctrl-C then is absorbed instead of ending the CLI by default mid-cleanup.
+    await runBeforeSignalExit(stopOptions.beforeSignalExit, stopDeadline)
+    removeHandlers()
     // With our handlers gone, the signal's default action ends the process.
     process.kill(process.pid, signal)
     return new Promise<never>(() => {})
@@ -90,6 +121,7 @@ export async function spawnSkilledProposerChild(
   const handlers = STOP_SIGNALS.map(signal => ({
     signal,
     handle: () => {
+      if (!stopDeadline) stopDeadline = Date.now() + CHILD_STOP_WAIT_MS
       if (!child) { void endBySignal(signal); return }
       forward(signal)
       if (stopSignal) return
@@ -104,6 +136,8 @@ export async function spawnSkilledProposerChild(
   try {
     cleanup = materializeConfigPayload(engine, childEnvironment) ?? cleanup
     await new Promise<void>(resolve => setImmediate(resolve))
+    // A stop before the optimizer starts ends the CLI (endBySignal); never start it then.
+    if (stopDeadline) return await new Promise<never>(() => {})
     let result: { status: number | null, error?: Error }
     if (output) {
       result = await runPipedChild(
@@ -112,7 +146,11 @@ export async function spawnSkilledProposerChild(
         childEnvironment,
         async () => { await onSpawn?.() },
         output,
-        spawnedChild => { child = spawnedChild }
+        spawnedChild => {
+          child = spawnedChild
+          // Stopped while the output sinks were prepared: the CLI is ending.
+          if (stopDeadline && !stopSignal) spawnedChild.kill('SIGKILL')
+        }
       )
     } else {
       // stdin is not passed on: a process outside the terminal's foreground
