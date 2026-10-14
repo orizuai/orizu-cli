@@ -197,6 +197,8 @@ export async function postBootStatus(opts: {
   status: 'ready' | 'failed' | 'complete' | 'turn_failed'
   runId: string | null
   reason?: string | null
+  /** ORI-2512: how long each boot step took, sent with `ready`. */
+  bootSteps?: readonly BootStep[]
   fetchImpl: BootFetch
   log?: (line: string) => void
 }): Promise<void> {
@@ -208,6 +210,7 @@ export async function postBootStatus(opts: {
         status: opts.status,
         ...(opts.runId ? { runId: opts.runId } : {}),
         ...(opts.reason ? { reason: opts.reason } : {}),
+        ...(opts.bootSteps?.length ? { bootSteps: opts.bootSteps } : {}),
       }),
     })
     opts.log?.(`boot-status ${opts.status} reported (${res.status})`)
@@ -216,9 +219,31 @@ export async function postBootStatus(opts: {
   }
 }
 
+/** ORI-2512: one step of the in-sandbox boot and how long it took. */
+interface BootStep {
+  step: string
+  ms: number
+}
+
+/** Times the boot's steps, each from the end of the one before. */
+function bootStepClock(now: () => number): { mark: (step: string) => void; steps: BootStep[] } {
+  const steps: BootStep[] = []
+  let last = now()
+  return {
+    steps,
+    mark: step => {
+      const at = now()
+      // Timing only describes the boot: a clock that goes back skips a step.
+      if (at >= last) steps.push({ step, ms: Math.round(at - last) })
+      last = at
+    },
+  }
+}
+
 async function postRequiredIdleReady(opts: {
   bootStatusUrl: string
   bootSecret: string
+  bootSteps: readonly BootStep[]
   fetchImpl: BootFetch
   sleep: (ms: number) => Promise<void>
   attemptTimeoutMs?: number
@@ -229,7 +254,7 @@ async function postRequiredIdleReady(opts: {
       const response = await opts.fetchImpl(opts.bootStatusUrl, {
         method: 'POST',
         headers: { Authorization: `Bearer ${opts.bootSecret}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'ready' }),
+        body: JSON.stringify({ status: 'ready', ...(opts.bootSteps.length ? { bootSteps: opts.bootSteps } : {}) }),
         signal: AbortSignal.timeout(opts.attemptTimeoutMs ?? TURN_STATUS_ATTEMPT_TIMEOUT_MS),
       })
       if (response.ok) return
@@ -1015,6 +1040,7 @@ async function runHostedBootWithLive(
   delete processEnv.ORIZU_BOOT_SECRET
   processEnv.ORIZU_NO_UPDATE_CHECK = '1'
   if (env.runId) assertSafeRunId(env.runId)
+  const bootClock = bootStepClock(now)
 
   // 1 — Pull the agent bearer (retry/backoff — the DO may still be arming).
   let bearer = await pullAgentBearer({
@@ -1027,24 +1053,29 @@ async function runHostedBootWithLive(
     log,
   })
   log('agent bearer pulled')
+  bootClock.mark('boot_agent_token')
 
   // 2 — Pull the connector env bundle and export it (+ register redaction).
   const bundle = await fetchEnvBundle({ envBundleUrl: env.envBundleUrl, bearer: bearer.token, fetchImpl })
   const redacted = applyEnvBundle(bundle, processEnv)
   log(`env bundle applied (${bundle.connectors.length} connectors, ${redacted.length} redacted vars)`)
+  bootClock.mark('boot_env_bundle')
 
   // 3 — Resolve the session (workspace/branch/task) + run + repo from the plane.
   let session = await resolveSession({ baseUrl: env.baseUrl, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
   let currentNonTerminalRunId = session.runStatus === 'pending' || session.runStatus === 'running'
     ? session.runId
     : null
+  bootClock.mark('boot_session')
   // Production restarts with no live run are between turns. Prove this boot is
   // live before waiting so the coordinator's readiness timeout cannot reap an
   // intentionally idle sandbox before the longer hosted idle policy applies.
-  if (!opts.runLoop && !currentNonTerminalRunId) {
+  const bootsIdle = !opts.runLoop && !currentNonTerminalRunId
+  if (bootsIdle) {
     await postRequiredIdleReady({
       bootStatusUrl: env.bootStatusUrl,
       bootSecret: env.bootSecret,
+      bootSteps: bootClock.steps,
       fetchImpl,
       sleep,
       attemptTimeoutMs: turnStatusAttemptTimeoutMs,
@@ -1144,6 +1175,7 @@ async function runHostedBootWithLive(
   const repo = await resolveRepo({ baseUrl: env.baseUrl, workspaceId, sessionId: env.sessionId, bearer: bearer.token, fetchImpl })
   const repositoryHost = new URL(repo.cloneUrl).host.toLowerCase()
   log(`resolved run ${runId} on ${repo.repoFullName}@${session.repoBranch}`)
+  bootClock.mark('boot_repo')
 
   // 4 — Write the run-scoped assets: boot secret + initial bearer (0600), the
   // PULL-MODE credential helper + its boot context. The bearer file feeds the
@@ -1347,6 +1379,7 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   exec('git', ['-C', workspaceDir, 'config', 'user.name', AGENT_GIT_IDENTITY.name])
   exec('git', ['-C', workspaceDir, 'config', 'user.email', AGENT_GIT_IDENTITY.email])
   if (!wokenDisk && !sessionCopyFilled) log(`cloned ${session.repoBranch}`)
+  bootClock.mark('boot_clone')
 
   // 5a — ORI-2609: the team copy holds only the projects the team seed knew
   // about. Write this session's project folder if it is missing, before the
@@ -1359,6 +1392,7 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
       project: { id: session.projectId, slug: session.projectSlug, name: session.projectName },
       exec: (cmd, args) => exec(cmd, args),
     }))
+  bootClock.mark('boot_project_folder')
 
   // 5b — Stage the orizu skill into the cloned repo so the agent discovers the
   // Orizu workflows (ALI-1059). SHARED with the operator path via `stageOrizuSkill`
@@ -1377,6 +1411,7 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   } catch (error) {
     log(`orizu skill staging failed: ${error instanceof Error ? error.message : String(error)}`)
   }
+  bootClock.mark('boot_skill_stage')
 
   // ALI-1060: the agent is now genuinely LIVE — bearer minted, connectors
   // applied, session/run resolved, repo cloned, skill staged. Signal the
@@ -1388,6 +1423,9 @@ const c = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
     bootSecret: env.bootSecret,
     status: 'ready',
     runId,
+    // An idle boot sent its steps before it waited for work; the wait is not
+    // a boot step.
+    ...(bootsIdle ? {} : { bootSteps: bootClock.steps }),
     fetchImpl,
     log,
   })
