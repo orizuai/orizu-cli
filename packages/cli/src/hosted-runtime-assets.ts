@@ -60,12 +60,22 @@ export const AGENT_GIT_IDENTITY = { name: 'Orizu Agent', email: 'agent@orizu.ai'
  * commit as it goes; end-of-run auto-harvest (ALI-1036, `harvestWorkspace`)
  * preserves anything left uncommitted.
  */
+/** ORI-2653: where a push lands, shared by both preambles. A web session's
+ * `origin` is its own copy of the team repository; a legacy GitHub session's
+ * current branch is its session branch. Only an Orizu publish puts work on the
+ * team's main. */
+const HOSTED_PUSH_SCOPE =
+  "Push only the current branch. That push and the automatic save keep work in this session's copy, " +
+  "not on the team's main. Never say work is published or on the team's main unless an Orizu " +
+  'publish command reported that it merged or was already there. '
+
 export const HOSTED_TASK_PREAMBLE =
   'You are in a hosted sandbox. Work autonomously. When blocked on human input, call the built-in ' +
   'question tool with exactly one clear question and at most eight bounded options, then wait for ' +
   'the human. Never infer approval from silence or a recommended option. Commit your work to the current ' +
   'branch in logical units as you go (an automatic ' +
   'checkpoint will also save anything uncommitted at the end). Never switch branches. ' +
+  HOSTED_PUSH_SCOPE +
   'Production/default pointers and run metadata live in Orizu, not this repo.'
 
 /** Pre-ALI-1758 unattended behavior retained for CLI-originated sessions. */
@@ -74,6 +84,7 @@ export const HOSTED_TASK_PREAMBLE_CLI =
   'questions — when uncertain, choose the most reasonable/reversible option and note the ' +
   'decision. Commit your work to the current branch in logical units as you go (an automatic ' +
   'checkpoint will also save anything uncommitted at the end). Never switch branches. ' +
+  HOSTED_PUSH_SCOPE +
   'Production/default pointers and run metadata live in Orizu, not this repo.'
 
 export type HostedSessionOrigin = 'hosted-web' | 'cli'
