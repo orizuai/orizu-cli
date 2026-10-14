@@ -18,6 +18,8 @@ export const SKILL_NAME = 'orizu'
 export const SKILL_SOURCE_DIR = join(REPO_ROOT, 'skills', SKILL_NAME)
 export const SKILL_META_FILENAME = '.orizu-skill-meta.json'
 export const PLUGINS_DIST_DIR = join(REPO_ROOT, 'dist', 'plugins')
+// Folders the build assembles in before swapping them in (plugin-workflow.mjs).
+export const STAGING_PREFIX = '.orizu-staging-'
 
 export const PLUGIN_PACKAGES = [
   {
