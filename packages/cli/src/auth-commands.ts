@@ -11,20 +11,17 @@ import {
   resolveLogoutTarget,
   assertSecureTokenTransport,
   authedFetch,
-  credentialRequestRedirectPolicy,
 } from './http.js'
 import {
   hasResolvableAuth,
   rememberProcessSecret,
   saveServerCredentials,
   getServerCredentials,
-  clearServerCredentials,
   resolveAuthTokenForBaseUrl,
 } from './credentials.js'
 import { printJson, printLine, printLoginProgress } from './cli-console-output.js'
 import { shouldUseHeadlessLogin, waitForHeadlessAuthorization } from './headless-login.js'
 import { renderCliAuthBrowserPage } from './cli-auth-browser-page.js'
-import { describeLogoutHttpFailure, describeLogoutTransportFailure } from './logout-diagnostic.js'
 import { resolveProjectSelection } from './account-directory.js'
 
 import type { LoginResponse } from './types.js'
@@ -319,34 +316,18 @@ async function logout(baseUrlOverride?: string) {
     printLine(`Already logged out for ${sanitizeTerminalText(baseUrl)}.`)
     return
   }
-  const authorizationToken = 'accessToken' in credentials
-    ? credentials.accessToken
-    : credentials.apiKey
-  const logoutSecrets = [
-    authorizationToken,
-    ...('refreshToken' in credentials ? [credentials.refreshToken] : []),
-  ]
-  let remoteLogoutError: string | null = null
-  try {
-    assertSecureTokenTransport(baseUrl)
-    const response = await fetch(`${baseUrl}/api/cli/auth/logout`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authorizationToken}`,
-      },
-      body: 'refreshToken' in credentials
-        ? JSON.stringify({ refreshToken: credentials.refreshToken })
-        : undefined,
-      ...credentialRequestRedirectPolicy(),
-    })
-    if (!response.ok) {
-      remoteLogoutError = await describeLogoutHttpFailure(response, logoutSecrets)
+  const { storedLogout } = await import('./stored-session-requests.js')
+  const { remoteError: remoteLogoutError, localCredentialCleared } = await storedLogout(baseUrl, credentialBaseUrl, credentials)
+  // Another login saved for this server while logout was out is kept.
+  if (!localCredentialCleared && getServerCredentials(credentialBaseUrl)) {
+    if (hasJsonFlag()) {
+      printJson({ status: 'changed', server: baseUrl, remoteLogoutError })
+      process.exitCode = 1
+      return
     }
-  } catch (error) {
-    remoteLogoutError = describeLogoutTransportFailure(error, logoutSecrets)
+    if (remoteLogoutError) console.warn(`Warning: remote logout failed: ${remoteLogoutError}`)
+    throw new Error(`ORIZU_CREDENTIALS_CHANGED: another login was saved for ${sanitizeTerminalText(baseUrl)} during logout; it was kept. Run orizu logout again to remove it.`)
   }
-  clearServerCredentials(credentialBaseUrl)
   if (hasJsonFlag()) {
     printJson({ status: 'logged-out', server: baseUrl, remoteLogoutError })
     return

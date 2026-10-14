@@ -1,20 +1,12 @@
 import {
-  clearServerCredentialsIfCurrent,
-  credentialsEqual,
   resolveCredentialServer,
   getActiveBaseUrl,
   getServerCredentials,
   rememberResolvedBearer,
   resolveEnvBearerToken,
-  updateServerCredentialsIfCurrent,
-  withCredentialsTransactionLockAsync,
 } from './credentials.js'
 import { canonicalServerUrl, getFlagBaseUrl, GlobalFlags, normalizeBaseUrl } from './global-flags.js'
-import {
-  describeLogoutHttpFailure,
-  describeLogoutTransportFailure,
-} from './logout-diagnostic.js'
-import { LoginResponse, ServerCredentials, SessionServerCredentials } from './types.js'
+import { ServerCredentials } from './types.js'
 
 let runtimeFlags: GlobalFlags = { local: false, server: null }
 let lastResolvedBaseUrl: string | null = null
@@ -125,199 +117,11 @@ export function assertSecureTokenTransport(baseUrl: string) {
   )
 }
 
-function isSessionCredentials(credentials: ServerCredentials): credentials is SessionServerCredentials {
-  return 'accessToken' in credentials
-}
-
-function getAuthorizationToken(credentials: ServerCredentials): string {
-  return isSessionCredentials(credentials)
-    ? rememberSessionCredentials(credentials).accessToken
-    : rememberResolvedBearer(credentials.apiKey)
-}
-
-function rememberSessionCredentials(
-  credentials: SessionServerCredentials
-): SessionServerCredentials {
-  rememberResolvedBearer(credentials.accessToken)
-  rememberResolvedBearer(credentials.refreshToken)
-  return credentials
-}
-
-function isExpired(expiresAt: number): boolean {
-  const nowUnix = Math.floor(Date.now() / 1000)
-  return expiresAt <= nowUnix + 30
-}
-
-const DEFAULT_CREDENTIALS_REFRESH_TIMEOUT_MS = 10_000
-const MAX_CREDENTIALS_REFRESH_TIMEOUT_MS = 30_000
-const DEFAULT_LOGOUT_TIMEOUT_MS = 10_000
-const MAX_LOGOUT_TIMEOUT_MS = 30_000
-
-function getCredentialsRefreshTimeoutMs(): number {
-  const configured = Number(process.env.ORIZU_CREDENTIALS_REFRESH_TIMEOUT_MS)
-  if (!Number.isSafeInteger(configured) || configured <= 0) {
-    return DEFAULT_CREDENTIALS_REFRESH_TIMEOUT_MS
-  }
-  return Math.min(configured, MAX_CREDENTIALS_REFRESH_TIMEOUT_MS)
-}
-
-function getLogoutTimeoutMs(): number {
-  const configured = Number(process.env.ORIZU_LOGOUT_TIMEOUT_MS)
-  if (!Number.isSafeInteger(configured) || configured <= 0) {
-    return DEFAULT_LOGOUT_TIMEOUT_MS
-  }
-  return Math.min(configured, MAX_LOGOUT_TIMEOUT_MS)
-}
-
-async function withAbortDeadline<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
-  callerSignal: AbortSignal | null | undefined,
-  timeoutMs: number,
-  timeoutError: Error
-): Promise<T> {
-  const controller = new AbortController()
-  const handleCallerAbort = () => controller.abort(callerSignal?.reason)
-  if (callerSignal?.aborted) handleCallerAbort()
-  else callerSignal?.addEventListener('abort', handleCallerAbort, { once: true })
-
-  const timer = setTimeout(() => controller.abort(timeoutError), timeoutMs)
-  const cancellation = new Promise<never>((_resolve, reject) => {
-    const handleAbort = () => reject(controller.signal.reason ?? new Error('Request aborted.'))
-    if (controller.signal.aborted) handleAbort()
-    else controller.signal.addEventListener('abort', handleAbort, { once: true })
-  })
-
-  try {
-    return await Promise.race([operation(controller.signal), cancellation])
-  } finally {
-    clearTimeout(timer)
-    callerSignal?.removeEventListener('abort', handleCallerAbort)
-  }
-}
-
-async function withCredentialsRefreshDeadline<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
-  callerSignal?: AbortSignal | null
-): Promise<T> {
-  const timeoutMs = getCredentialsRefreshTimeoutMs()
-  const timeoutError = new Error(
-    `ORIZU_CREDENTIALS_REFRESH_TIMEOUT: session refresh exceeded ${timeoutMs}ms.`
-  )
-  return await withAbortDeadline(operation, callerSignal, timeoutMs, timeoutError)
-}
-
-async function withLogoutDeadline<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
-  callerSignal?: AbortSignal | null
-): Promise<T> {
-  const timeoutMs = getLogoutTimeoutMs()
-  const timeoutError = new Error(
-    `ORIZU_LOGOUT_TIMEOUT: remote logout exceeded ${timeoutMs}ms.`
-  )
-  timeoutError.name = 'TimeoutError'
-  return await withAbortDeadline(operation, callerSignal, timeoutMs, timeoutError)
-}
-
 export function credentialRequestRedirectPolicy(): Pick<RequestInit, 'redirect'> {
   return process.env.ORIZU_CLI_AUTH_REDIRECT === 'error' ? { redirect: 'error' } : {}
 }
 
-async function refreshCredentials(
-  baseUrl: string,
-  credentials: ServerCredentials,
-  callerSignal?: AbortSignal | null
-): Promise<ServerCredentials> {
-  if (!isSessionCredentials(credentials)) {
-    throw new Error('API key credentials do not refresh. Run `orizu login` again if access fails.')
-  }
-
-  assertSecureTokenTransport(baseUrl)
-  const refreshToken = rememberResolvedBearer(credentials.refreshToken)
-  const data = await withCredentialsRefreshDeadline(async signal => {
-    const response = await fetch(`${baseUrl}/api/cli/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken }),
-      ...credentialRequestRedirectPolicy(),
-      signal,
-    })
-
-    if (!response.ok) {
-      throw new Error('Session expired. Run `orizu login` again.')
-    }
-    return await response.json() as LoginResponse
-  }, callerSignal)
-  if (!data.accessToken || !data.refreshToken || !data.expiresAt) {
-    throw new Error('Server returned invalid refresh credentials. Run `orizu login` again.')
-  }
-
-  const refreshed = rememberSessionCredentials({
-    credentialType: 'session' as const,
-    accessToken: data.accessToken,
-    refreshToken: data.refreshToken,
-    expiresAt: data.expiresAt,
-  })
-  if (isExpired(refreshed.expiresAt)) {
-    throw new Error(
-      'ORIZU_CREDENTIALS_REFRESH_UNUSABLE: refreshed session expires within the 30-second safety window.'
-    )
-  }
-  return refreshed
-}
-
-interface StoredRefreshResult {
-  status: 'refreshed' | 'changed'
-  credentials: ServerCredentials | null
-}
-
-async function refreshStoredCredentialsIfCurrent(
-  baseUrl: string,
-  expected: ServerCredentials,
-  callerSignal?: AbortSignal | null
-): Promise<StoredRefreshResult> {
-  return await withCredentialsTransactionLockAsync(async () => {
-    const current = getServerCredentials(baseUrl)
-    if (!current || !credentialsEqual(current, expected)) {
-      return { status: 'changed', credentials: current }
-    }
-
-    const refreshed = await refreshCredentials(baseUrl, expected, callerSignal)
-    if (!updateServerCredentialsIfCurrent(baseUrl, expected, refreshed)) {
-      return { status: 'changed', credentials: getServerCredentials(baseUrl) }
-    }
-    return { status: 'refreshed', credentials: refreshed }
-  })
-}
-
-function requireCurrentCredentials(baseUrl: string, credentials: ServerCredentials | null): ServerCredentials {
-  if (credentials) return credentials
-  throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
-}
-
-interface ResolvedStoredCredentials {
-  credentials: ServerCredentials
-  didRefresh: boolean
-}
-
-async function refreshExpiredStoredCredentials(
-  baseUrl: string,
-  initial: ServerCredentials,
-  callerSignal?: AbortSignal | null
-): Promise<ResolvedStoredCredentials> {
-  if (!isSessionCredentials(initial) || !isExpired(initial.expiresAt)) {
-    return { credentials: initial, didRefresh: false }
-  }
-  const result = await refreshStoredCredentialsIfCurrent(baseUrl, initial, callerSignal)
-  if (result.status === 'changed') {
-    throw new Error(
-      'ORIZU_AUTH_CONTEXT_CHANGED: stored credentials changed before this request began; the request was not sent.'
-    )
-  }
-  return {
-    credentials: requireCurrentCredentials(baseUrl, result.credentials),
-    didRefresh: true,
-  }
-}
+const storedSessionRequests = () => import('./stored-session-requests.js')
 
 export type AuthenticatedRequestSource = 'ORIZU_TOKEN' | 'ORIZU_TOKEN_FILE' | 'stored'
 
@@ -332,6 +136,10 @@ export interface AuthenticatedRequestContext {
 export interface LogoutResult {
   remoteError: string | null
   localCredentialCleared: boolean
+}
+
+function notLoggedIn(baseUrl: string): Error {
+  return new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
 }
 
 /**
@@ -387,92 +195,39 @@ export function captureAuthenticatedRequestContext(
   }
 
   const capturedCredentials = getServerCredentials(baseUrl)
-  if (!capturedCredentials) {
-    throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
-  }
-  void getAuthorizationToken(capturedCredentials)
+  if (!capturedCredentials) throw notLoggedIn(baseUrl)
+  rememberStoredBearers(capturedCredentials)
   let activeCredentials = capturedCredentials
-
-  async function refreshCapturedCredentials(callerSignal?: AbortSignal | null): Promise<void> {
-    const result = await refreshStoredCredentialsIfCurrent(baseUrl, activeCredentials, callerSignal)
-    if (result.status === 'changed') {
-      throw new Error(
-        'ORIZU_CREDENTIALS_CHANGED: stored credentials changed before the captured session could refresh. Reconfirm the account and retry.'
-      )
-    }
-    activeCredentials = requireCurrentCredentials(baseUrl, result.credentials)
-  }
+  const changed = 'ORIZU_CREDENTIALS_CHANGED: stored credentials changed before the captured session could refresh. Reconfirm the account and retry.'
 
   return {
     baseUrl,
     source: 'stored',
     async fetch(path: string, init: RequestInit = {}, onRequestStart?: () => void) {
-      let didRefresh = false
-      if (
-        allowRefresh
-        && isSessionCredentials(activeCredentials)
-        && isExpired(activeCredentials.expiresAt)
-      ) {
-        await refreshCapturedCredentials(init.signal)
-        didRefresh = true
-      }
-
-      onRequestStart?.()
-      let response = await fetch(`${baseUrl}${path}`, {
-        ...init,
-        headers: {
-          ...(init.headers || {}),
-          Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
-        },
-        ...credentialRequestRedirectPolicy(),
-      })
-
-      if (
-        allowRefresh
-        && response.status === 401
-        && isSessionCredentials(activeCredentials)
-        && !didRefresh
-      ) {
-        await refreshCapturedCredentials(init.signal)
-        onRequestStart?.()
-        response = await fetch(`${baseUrl}${path}`, {
-          ...init,
-          headers: {
-            ...(init.headers || {}),
-            Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
-          },
-          ...credentialRequestRedirectPolicy(),
-        })
-      }
-      return response
+      const { storedRequest } = await storedSessionRequests()
+      return await storedRequest({
+        baseUrl,
+        credentials: activeCredentials,
+        allowRefresh,
+        changedBeforeRequest: changed,
+        changedBeforeReplay: changed,
+        onRefreshed: refreshed => { activeCredentials = refreshed },
+      }, path, init, onRequestStart)
     },
     async logout(callerSignal?: AbortSignal | null) {
-      const authorizationToken = getAuthorizationToken(activeCredentials)
-      const refreshToken = isSessionCredentials(activeCredentials)
-        ? rememberResolvedBearer(activeCredentials.refreshToken)
-        : null
-      const secrets = [authorizationToken, ...(refreshToken !== null ? [refreshToken] : [])]
-      let remoteLogoutReason: string | null = null
-      try {
-        remoteLogoutReason = await withLogoutDeadline(async signal => {
-          const response = await fetch(`${baseUrl}/api/cli/auth/logout`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${authorizationToken}`,
-            },
-            body: refreshToken !== null ? JSON.stringify({ refreshToken }) : undefined,
-            ...credentialRequestRedirectPolicy(),
-            signal,
-          })
-          return response.ok ? null : await describeLogoutHttpFailure(response, secrets)
-        }, callerSignal)
-      } catch (error) {
-        remoteLogoutReason = describeLogoutTransportFailure(error, secrets)
-      }
-      const localCredentialCleared = clearServerCredentialsIfCurrent(baseUrl, activeCredentials)
-      return { remoteError: remoteLogoutReason, localCredentialCleared }
+      const { storedLogout } = await storedSessionRequests()
+      return await storedLogout(baseUrl, baseUrl, activeCredentials, callerSignal)
     },
+  }
+}
+
+// Redacts a stored login from diagnostics from the moment it is read.
+function rememberStoredBearers(credentials: ServerCredentials): void {
+  if ('accessToken' in credentials) {
+    rememberResolvedBearer(credentials.accessToken)
+    rememberResolvedBearer(credentials.refreshToken)
+  } else {
+    rememberResolvedBearer(credentials.apiKey)
   }
 }
 
@@ -504,47 +259,14 @@ export async function authedFetch(path: string, init: RequestInit = {}, onReques
   }
 
   const credentials = getServerCredentials(baseUrl)
-  if (!credentials) {
-    throw new Error(`Not logged in for ${baseUrl}. Run \`orizu login --server ${baseUrl}\` (or \`--local\`) first.`)
-  }
+  if (!credentials) throw notLoggedIn(baseUrl)
 
-  const resolved = await refreshExpiredStoredCredentials(baseUrl, credentials, init.signal)
-  let activeCredentials = resolved.credentials
-
-  let response = await fetchResource(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      ...(init.headers || {}),
-      Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
-    },
-    ...credentialRequestRedirectPolicy(),
-  })
-
-  if (
-    response.status === 401
-    && isSessionCredentials(activeCredentials)
-    && !resolved.didRefresh
-  ) {
-    const refreshResult = await refreshStoredCredentialsIfCurrent(
-      baseUrl,
-      activeCredentials,
-      init.signal
-    )
-    if (refreshResult.status === 'changed') {
-      throw new Error(
-        'ORIZU_AUTH_CONTEXT_CHANGED: stored credentials changed after this request began; the request was not replayed.'
-      )
-    }
-    activeCredentials = requireCurrentCredentials(baseUrl, refreshResult.credentials)
-    response = await fetchResource(`${baseUrl}${path}`, {
-      ...init,
-      headers: {
-        ...(init.headers || {}),
-        Authorization: `Bearer ${getAuthorizationToken(activeCredentials)}`,
-      },
-      ...credentialRequestRedirectPolicy(),
-    })
-  }
-
-  return response
+  const { storedRequest } = await storedSessionRequests()
+  return await storedRequest({
+    baseUrl,
+    credentials,
+    allowRefresh: true,
+    changedBeforeRequest: 'ORIZU_AUTH_CONTEXT_CHANGED: stored credentials changed before this request began; the request was not sent.',
+    changedBeforeReplay: 'ORIZU_AUTH_CONTEXT_CHANGED: stored credentials changed after this request began; the request was not replayed.',
+  }, path, init, onRequestStart)
 }
