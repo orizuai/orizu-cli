@@ -634,20 +634,13 @@ async function addTeamMember() {
     throw new Error('Usage: orizu teams members add --email <email> [--team <teamSlug>]')
   }
 
-  const response = await authedFetch(`/api/cli/teams/${encodeURIComponent(teamSlug)}/members`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
-  })
-  if (!response.ok) {
-    throw new Error(`Failed to add team member: ${await response.text()}`)
-  }
-  const data = await parseJsonResponse<{ member: TeamMember }>(response, 'Team member add')
+  const { addTeamMemberWithDeadline } = await import('./team-member-add-workflow.js')
+  const member = await addTeamMemberWithDeadline(teamSlug, email, authedFetch)
   if (hasJsonFlag()) {
-    printJson({ member: data.member })
+    printJson({ member })
     return
   }
-  printLine(`Added team member ${sanitizeTerminalText(data.member.email)} (${sanitizeTerminalText(data.member.id)})`)
+  printLine(`Added team member ${sanitizeTerminalText(member.email)} (${sanitizeTerminalText(member.id)})`)
 }
 
 async function removeTeamMember() {
