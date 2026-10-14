@@ -387,6 +387,30 @@ export function loadCredentialsConfig(): StoredCredentialsV2 | StoredCredentials
   return null
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+/**
+ * A saved sign-in this CLI can use: a session (it has an access token) or an
+ * API key. Plain code, not Effect Schema: this file is loaded by every
+ * command, including hosted sessions signed with ORIZU_TOKEN, which must never
+ * load Effect.
+ */
+function isServerCredentials(value: unknown): value is ServerCredentials {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const entry = value as Record<string, unknown>
+  if ('accessToken' in entry) {
+    return isNonEmptyString(entry.accessToken)
+      && isNonEmptyString(entry.refreshToken)
+      && typeof entry.expiresAt === 'number'
+      && Number.isFinite(entry.expiresAt)
+  }
+  return isNonEmptyString(entry.apiKey)
+}
+
+const warnedUnreadableServers = new Set<string>()
+
 export function getServerCredentials(baseUrl: string): ServerCredentials | null {
   const config = loadCredentialsConfig()
   if (!config) {
@@ -397,7 +421,19 @@ export function getServerCredentials(baseUrl: string): ServerCredentials | null 
     return null
   }
 
-  return config.servers[baseUrl] || null
+  const entry: unknown = config.servers[baseUrl]
+  if (entry === null || entry === undefined) return null
+  if (!isServerCredentials(entry)) {
+    // Never the value: a hand-edited file may hold a token here (ORI-2675).
+    if (!warnedUnreadableServers.has(baseUrl)) {
+      warnedUnreadableServers.add(baseUrl)
+      console.warn(
+        `Warning: the saved sign-in for ${baseUrl} is not in a format this CLI understands. Run \`orizu login --server ${baseUrl}\` to replace it, or \`orizu logout --server ${baseUrl}\` to remove it.`
+      )
+    }
+    return null
+  }
+  return entry
 }
 
 export function saveServerCredentials(baseUrl: string, credentials: ServerCredentials) {
@@ -433,6 +469,8 @@ export function updateServerCredentials(baseUrl: string, credentials: ServerCred
 }
 
 export function credentialsEqual(left: ServerCredentials, right: ServerCredentials): boolean {
+  // Entries read straight from the file may be malformed; those never match.
+  if (!isServerCredentials(left) || !isServerCredentials(right)) return false
   if ('apiKey' in left || 'apiKey' in right) {
     return 'apiKey' in left && 'apiKey' in right && left.apiKey === right.apiKey
   }
@@ -457,9 +495,29 @@ export function updateServerCredentialsIfCurrent(
   })
 }
 
+function isServerAddress(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  try {
+    normalizeBaseUrl(value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Never the value: the "Invalid server URL" error would print it (ORI-2675).
+// No fallback to the default server either: with an app.orizu.ai sign-in
+// saved, that would run the command as a different account.
+function unreadableActiveServerError(): Error {
+  return new Error('The saved server in credentials.json isn\'t a valid address. Run `orizu login --server <url>`.')
+}
+
 export function getActiveBaseUrl(): string | null {
   const config = loadCredentialsConfig()
-  return config?.activeBaseUrl || null
+  const active: unknown = config?.activeBaseUrl
+  if (active === null || active === undefined || active === '') return null
+  if (isServerAddress(active)) return active
+  throw unreadableActiveServerError()
 }
 
 /** Resolve the selected server and move a retired production credential atomically. */
@@ -476,7 +534,11 @@ export function resolveCredentialServer(selected?: string): string | null {
   return withCredentialsTransactionLock(() => {
     const config = loadCredentialsConfig()
     // Another process may have selected a different server while we waited.
-    const currentSource = selected ?? config?.activeBaseUrl
+    const storedSource: unknown = config?.activeBaseUrl
+    if (!selected && storedSource !== null && storedSource !== undefined && storedSource !== '' && !isServerAddress(storedSource)) {
+      throw unreadableActiveServerError()
+    }
+    const currentSource = selected ?? (isServerAddress(storedSource) ? storedSource : null)
     if (!currentSource) return null
     const currentTarget = canonicalServerUrl(currentSource)
     if (!config || normalizeBaseUrl(currentSource) === currentTarget) return currentTarget
@@ -640,6 +702,24 @@ export function clearServerCredentials(baseUrl: string): boolean {
     if (config.activeBaseUrl === baseUrl) {
       config.activeBaseUrl = null
     }
+    writeCredentials(config)
+    return true
+  })
+}
+
+/**
+ * Remove a saved sign-in this CLI cannot read (it may be a pasted token).
+ * Returns false when there is none, or when it has become readable since.
+ */
+export function clearUnreadableServerCredentials(baseUrl: string): boolean {
+  return withCredentialsTransactionLock(() => {
+    const config = loadCredentialsConfig()
+    if (!config || !Object.hasOwn(config.servers, baseUrl)) return false
+    const entry: unknown = config.servers[baseUrl]
+    if (entry === null || entry === undefined || isServerCredentials(entry)) return false
+
+    delete config.servers[baseUrl]
+    if (config.activeBaseUrl === baseUrl) config.activeBaseUrl = null
     writeCredentials(config)
     return true
   })

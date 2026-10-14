@@ -13,6 +13,7 @@ import {
   authedFetch,
 } from './http.js'
 import {
+  clearUnreadableServerCredentials,
   hasResolvableAuth,
   rememberProcessSecret,
   saveServerCredentials,
@@ -309,6 +310,15 @@ async function logout(baseUrlOverride?: string) {
   const { baseUrl, credentialBaseUrl } = resolveLogoutTarget(baseUrlOverride)
   const credentials = getServerCredentials(credentialBaseUrl)
   if (!credentials) {
+    // A saved sign-in this CLI cannot read is removed: it may be a pasted token (ORI-2675).
+    if (clearUnreadableServerCredentials(credentialBaseUrl)) {
+      if (hasJsonFlag()) {
+        printJson({ status: 'removed-unreadable', server: baseUrl })
+        return
+      }
+      printLine(`Removed the saved sign-in for ${sanitizeTerminalText(baseUrl)}, which this CLI could not read.`)
+      return
+    }
     if (hasJsonFlag()) {
       printJson({ status: 'already-logged-out', server: baseUrl })
       return
