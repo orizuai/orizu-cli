@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'child_process'
+import { spawn } from 'child_process'
 import {
   closeSync,
   existsSync,
@@ -13,38 +13,21 @@ import {
 } from 'fs'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
-import { stderr as errorOutput, stdout as output } from 'process'
 
 import { parseGlobalFlags } from './global-flags.js'
-import { sanitizeTerminalText } from './json-response.js'
 import { findUnknownOption } from './option-validation.js'
 
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000, CHECK_TIMEOUT_MS = 5_000, CHILD_TIMEOUT_MS = 60_000
+const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000, CHECK_TIMEOUT_MS = 5_000
 // A claim file outliving this window belongs to a process that died mid-claim;
 // treating it as live would silently disable the daily refresh forever.
 const ABANDONED_CLAIM_MS = 60_000
-const STDERR_TAIL_CHARS = 4_000
-const MANUAL_INSTALL_COMMAND = 'npm i -g orizu@latest'
+export const MANUAL_INSTALL_COMMAND = 'npm i -g orizu@latest'
 const UPDATE_OPTIONS = new Set(['--dry-run', '--json', '--refresh-cache'])
 const UPDATE_USAGE = 'Usage: orizu update [--dry-run] [--json]'
 
 interface UpdateCache { checkedAt: string; latest: string | null }
-interface GlobalInstall { binPath: string; prefix: string }
-interface CommandResult { status: number; stderr: string; stdout?: string; timedOut: boolean }
-interface Invocation { command: string; args: string[] }
-interface UpdateResult { installed: string; latest: string | null; action: string; prefix: string | null; skills: string }
-
-export interface SelfUpdateIo {
-  dryRun: boolean; installed: string; json: boolean; refreshCache: boolean
-  printLine(message?: string): void; printError(message: string): void
-}
-
-interface UpdateCommandIo {
-  getCliVersion(): string
-  json: boolean
-  printLine(message?: string): void
-  printError(message: string): void
-}
+export interface GlobalInstall { binPath: string; prefix: string }
+export interface Invocation { command: string; args: string[] }
 
 export interface PassiveUpdateState { cache: UpdateCache | null; install: GlobalInstall; installed: string }
 export interface PassiveUpdateIo { exit(code: number): void; spawn: typeof spawn }
@@ -136,7 +119,7 @@ function writeCache(latest: string | null): void {
   renameSync(temporary, path)
 }
 
-function tryWriteCache(latest: string | null): void {
+export function tryWriteCache(latest: string | null): void {
   try {
     writeCache(latest)
   } catch {
@@ -189,7 +172,7 @@ function claimPassiveRefresh(previousCache: UpdateCache | null): boolean {
   }
 }
 
-function resolveUpdateRegistry(): string {
+export function resolveUpdateRegistry(): string {
   const registry = process.env.ORIZU_UPDATE_REGISTRY ?? 'https://registry.npmjs.org'
   let parsed: URL
   try {
@@ -203,7 +186,7 @@ function resolveUpdateRegistry(): string {
   return registry.replace(/\/+$/u, '')
 }
 
-async function resolveLatest(registry = resolveUpdateRegistry()): Promise<string> {
+export async function resolveLatest(registry = resolveUpdateRegistry()): Promise<string> {
   const response = await fetch(`${registry}/orizu/latest`, {
     headers: { accept: 'application/json' },
     signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
@@ -215,253 +198,14 @@ async function resolveLatest(registry = resolveUpdateRegistry()): Promise<string
   return body.version
 }
 
-function npmInvocation(): Invocation {
+export function npmInvocation(): Invocation {
   // Windows is refused in detectNpmGlobalInstall, so only the POSIX layout is reachable here.
   const sibling = join(dirname(process.execPath), 'npm')
   return { command: existsSync(sibling) ? sibling : 'npm', args: [] }
 }
 
-function cliInvocation(install: GlobalInstall, args: string[]): Invocation {
+export function cliInvocation(install: GlobalInstall, args: string[]): Invocation {
   return { command: install.binPath, args }
-}
-
-function verifyTimeoutMs(): number {
-  const override = process.env.ORIZU_UPDATE_TEST_VERIFY_TIMEOUT_MS
-  if (override === undefined) return CHILD_TIMEOUT_MS
-  const parsed = Number(override)
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : CHILD_TIMEOUT_MS
-}
-
-type SkillsRefreshStatus = 'none' | 'refreshed' | 'already-current'
-
-interface SkillsRefreshResult { status: number; timedOut: boolean; skills: SkillsRefreshStatus }
-
-/**
- * Refresh managed skills through the given CLI binary and classify the outcome
- * from the child's --json report, never from its human text: an install with
- * no skill targets reports 'none', the one state a caller of `update --json`
- * most needs to see (ADR-001 coupling).
- */
-async function refreshManagedSkills(command: string, args: string[], io: SelfUpdateIo): Promise<SkillsRefreshResult> {
-  const child = await runStreaming(command, [...args, 'skills', 'update', '--json'], io, CHILD_TIMEOUT_MS, undefined, true)
-  if (child.status !== 0) return { status: child.status, timedOut: child.timedOut, skills: 'none' }
-  let updates: Array<{ path?: unknown; action?: unknown }>
-  try {
-    const parsed = JSON.parse(child.stdout || '') as { updates?: unknown }
-    if (!Array.isArray(parsed.updates)) throw new Error('missing updates')
-    updates = parsed.updates as Array<{ path?: unknown; action?: unknown }>
-  } catch {
-    return { status: 1, timedOut: false, skills: 'none' }
-  }
-  if (!io.json) {
-    if (updates.length === 0) io.printLine('No Orizu skill installs found. Run `orizu install-skill` first.')
-    for (const update of updates) {
-      const path = sanitizeTerminalText(String(update.path ?? ''))
-      if (update.action === 'already-current') io.printLine(`Current ${path}`)
-      else if (update.action === 'relinked') io.printLine(`Relinked ${path}`)
-      else io.printLine(`Updated ${path}`)
-    }
-  }
-  if (updates.length === 0) return { status: 0, timedOut: false, skills: 'none' }
-  const refreshed = updates.some(update => update.action !== 'already-current')
-  return { status: 0, timedOut: false, skills: refreshed ? 'refreshed' : 'already-current' }
-}
-
-function runStreaming(
-  command: string,
-  args: string[],
-  io: SelfUpdateIo,
-  timeoutMs?: number,
-  onStdout?: (text: string) => void,
-  captureStdout = false
-): Promise<CommandResult> {
-  return new Promise(resolve => {
-    let stderr = ''
-    let stdout = ''
-    let settled = false
-    let timedOut = false
-    let timer: NodeJS.Timeout | undefined
-    const finish = (status: number): void => {
-      if (settled) return
-      settled = true
-      if (timer) clearTimeout(timer)
-      resolve({ status, stderr: stderr.slice(-STDERR_TAIL_CHARS), stdout, timedOut })
-    }
-    const child = spawn(command, args, {
-      env: { ...process.env, ORIZU_NO_UPDATE_CHECK: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    if (timeoutMs !== undefined) {
-      timer = setTimeout(() => {
-        timedOut = true
-        child.kill('SIGKILL')
-      }, timeoutMs)
-    }
-    child.stdout?.on('data', chunk => {
-      const text = sanitizeTerminalText(chunk)
-      onStdout?.(text)
-      if (captureStdout) {
-        stdout = `${stdout}${text}`
-        return
-      }
-      if (io.json) errorOutput.write(text)
-      else output.write(text)
-    })
-    child.stderr?.on('data', chunk => {
-      const text = sanitizeTerminalText(chunk)
-      stderr = `${stderr}${text}`.slice(-STDERR_TAIL_CHARS)
-      errorOutput.write(text)
-    })
-    child.once('error', error => {
-      stderr = `${stderr}${sanitizeTerminalText(error.message)}`
-      finish(1)
-    })
-    child.once('close', code => finish(code ?? 1))
-  })
-}
-
-function emit(io: SelfUpdateIo, result: UpdateResult): void {
-  if (io.json) io.printLine(JSON.stringify(result))
-}
-
-function fail(io: SelfUpdateIo, code: string, detail: string, result: UpdateResult): number {
-  io.printError(`${code}: ${detail}`)
-  emit(io, result)
-  return 1
-}
-
-export async function selfUpdateCommand(io: SelfUpdateIo): Promise<number> {
-  if (io.refreshCache) {
-    const oldCache = readCache()
-    try {
-      writeCache(await resolveLatest())
-    } catch {
-      tryWriteCache(oldCache?.latest ?? null)
-    }
-    return 0
-  }
-
-  const install = detectNpmGlobalInstall()
-  if (!install) {
-    return fail(io, 'update_unsupported_install', `orizu is not installed npm-globally. Run \`${MANUAL_INSTALL_COMMAND}\`.`, {
-      installed: io.installed, latest: null, action: 'unsupported', prefix: null, skills: 'not-run',
-    })
-  }
-
-  let latest: string
-  let registry: string
-  try {
-    registry = resolveUpdateRegistry()
-    latest = await resolveLatest(registry)
-    tryWriteCache(latest)
-  } catch (error) {
-    return fail(io, 'update_check_failed', sanitizeTerminalText(error instanceof Error ? error.message : error), {
-      installed: io.installed, latest: null, action: 'check-failed', prefix: install.prefix, skills: 'not-run',
-    })
-  }
-
-  if (compareSemver(io.installed, latest) >= 0) {
-    if (!io.json) io.printLine(`orizu ${io.installed} is already the latest.`)
-    if (io.dryRun) {
-      emit(io, { installed: io.installed, latest, action: 'already-latest', prefix: install.prefix, skills: 'not-run' })
-      return 0
-    }
-    const skills = await refreshManagedSkills(install.binPath, [], io)
-    if (skills.status !== 0) {
-      const detail = skills.timedOut
-        ? 'orizu is already the latest, but its managed skills refresh timed out.'
-        : 'orizu is already the latest, but its managed skills could not be refreshed.'
-      return fail(io, 'update_skills_refresh_failed', detail, {
-        installed: io.installed, latest, action: 'already-latest', prefix: install.prefix, skills: 'refresh-failed',
-      })
-    }
-    emit(io, { installed: io.installed, latest, action: 'already-latest', prefix: install.prefix, skills: skills.skills })
-    return 0
-  }
-
-  if (io.dryRun) {
-    if (!io.json) io.printLine(`Would update orizu ${io.installed} → ${latest} in ${install.prefix}.`)
-    emit(io, { installed: io.installed, latest, action: 'would-update', prefix: install.prefix, skills: 'would-refresh' })
-    return 0
-  }
-
-  const npmCommand = npmInvocation()
-  const registryArgs = process.env.ORIZU_UPDATE_REGISTRY !== undefined
-    ? ['--registry', registry]
-    : []
-  const npm = await runStreaming(npmCommand.command, [...npmCommand.args,
-    'install', '-g', `orizu@${latest}`, '--prefix', install.prefix, '--no-audit', '--no-fund',
-    ...registryArgs,
-  ], io)
-  if (npm.status !== 0) {
-    const tail = npm.stderr.trim() ? ` npm stderr tail: ${npm.stderr.trim()}` : ''
-    return fail(io, 'update_install_failed', `${tail} Run \`${MANUAL_INSTALL_COMMAND}\`.`, {
-      installed: io.installed, latest, action: 'install-failed', prefix: install.prefix, skills: 'not-run',
-    })
-  }
-
-  const verifyCommand = cliInvocation(install, ['--version'])
-  const verificationTimeoutMs = verifyTimeoutMs()
-  const verified = spawnSync(verifyCommand.command, verifyCommand.args, {
-    encoding: 'utf8',
-    env: { ...process.env, ORIZU_NO_UPDATE_CHECK: '1' },
-    killSignal: 'SIGKILL',
-    timeout: verificationTimeoutMs,
-  })
-  const observed = sanitizeTerminalText(verified.stdout || '').trim()
-  if ((verified.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
-    return fail(io, 'update_verify_mismatch', `verification timed out after ${verificationTimeoutMs} ms.`, {
-      installed: io.installed, latest, action: 'verify-mismatch', prefix: install.prefix, skills: 'not-run',
-    })
-  }
-  if (verified.status !== 0 || observed !== `orizu ${latest}`) {
-    const launchError = verified.error ? ` launch error: ${sanitizeTerminalText(verified.error.message)}.` : ''
-    const exit = verified.status === null ? `signal ${verified.signal ?? 'unknown'}` : `exit ${verified.status}`
-    const errorTail = sanitizeTerminalText(verified.stderr || '').trim().split('\n').slice(-3).join(' ')
-    const detail = `expected orizu ${latest}, observed ${observed || '<no version>'} (${exit}).${launchError}${errorTail ? ` ${errorTail}` : ''}`
-    return fail(io, 'update_verify_mismatch', `${detail} Run \`${MANUAL_INSTALL_COMMAND}\` to reinstall.`, {
-      installed: io.installed, latest, action: 'verify-mismatch', prefix: install.prefix, skills: 'not-run',
-    })
-  }
-
-  if (!io.json) io.printLine(`orizu ${latest} installed.`)
-  const skillsCommand = cliInvocation(install, [])
-  const skills = await refreshManagedSkills(skillsCommand.command, skillsCommand.args, io)
-  if (skills.status !== 0) {
-    const detail = skills.timedOut
-      ? 'the CLI was updated, but its managed skills refresh timed out.'
-      : 'the CLI was updated, but its managed skills could not be refreshed.'
-    return fail(io, 'update_skills_refresh_failed', detail, {
-      installed: io.installed, latest, action: 'updated', prefix: install.prefix, skills: 'refresh-failed',
-    })
-  }
-  emit(io, { installed: io.installed, latest, action: 'updated', prefix: install.prefix, skills: skills.skills })
-  return 0
-}
-
-export async function runUpdateCommand(rawArgs: string[], io: UpdateCommandIo): Promise<number> {
-  const commandIndex = rawArgs.indexOf('update')
-  const args = commandIndex === -1
-    ? rawArgs
-    : [...rawArgs.slice(0, commandIndex), ...rawArgs.slice(commandIndex + 1)]
-  const unknownOption = findUnknownOption(args, UPDATE_OPTIONS)
-  if (unknownOption) {
-    io.printError(`unknown option ${unknownOption}\n${UPDATE_USAGE}`)
-    return 1
-  }
-  const positional = args.find(argument => argument === '-' || !argument.startsWith('-'))
-  if (positional) {
-    io.printError(`unexpected argument ${positional}\n${UPDATE_USAGE}`)
-    return 1
-  }
-  return selfUpdateCommand({
-    dryRun: args.includes('--dry-run'),
-    installed: io.getCliVersion(),
-    json: io.json,
-    printLine: io.printLine,
-    printError: io.printError,
-    refreshCache: args.includes('--refresh-cache'),
-  })
 }
 
 function isPassiveUpdateDisabled(): boolean {
@@ -545,4 +289,64 @@ export function finishPassiveUpdate(
   } catch {
     // Passive update checks never affect the command that just completed.
   }
+}
+
+export interface SelfUpdateIo {
+  dryRun: boolean; installed: string; json: boolean
+  printLine(message?: string): void; printError(message: string): void
+}
+
+interface UpdateCommandIo {
+  getCliVersion(): string
+  json: boolean
+  printLine(message?: string): void
+  printError(message: string): void
+}
+
+/**
+ * `orizu update`. Checking the arguments, the daily background cache refresh
+ * and refusing an install npm doesn't own stay plain code; only an update of
+ * an npm-global install loads the Effect workflow (ORI-2424).
+ */
+export async function runUpdateCommand(rawArgs: string[], io: UpdateCommandIo): Promise<number> {
+  const commandIndex = rawArgs.indexOf('update')
+  const args = commandIndex === -1
+    ? rawArgs
+    : [...rawArgs.slice(0, commandIndex), ...rawArgs.slice(commandIndex + 1)]
+  const unknownOption = findUnknownOption(args, UPDATE_OPTIONS)
+  if (unknownOption) {
+    io.printError(`unknown option ${unknownOption}\n${UPDATE_USAGE}`)
+    return 1
+  }
+  const positional = args.find(argument => argument === '-' || !argument.startsWith('-'))
+  if (positional) {
+    io.printError(`unexpected argument ${positional}\n${UPDATE_USAGE}`)
+    return 1
+  }
+
+  if (args.includes('--refresh-cache')) {
+    const oldCache = readCache()
+    try {
+      writeCache(await resolveLatest())
+    } catch {
+      tryWriteCache(oldCache?.latest ?? null)
+    }
+    return 0
+  }
+
+  const installed = io.getCliVersion()
+  const install = detectNpmGlobalInstall()
+  if (!install) {
+    io.printError(`update_unsupported_install: orizu is not installed npm-globally. Run \`${MANUAL_INSTALL_COMMAND}\`.`)
+    if (io.json) io.printLine(JSON.stringify({ installed, latest: null, action: 'unsupported', prefix: null, skills: 'not-run' }))
+    return 1
+  }
+  const { runSelfUpdate } = await import('./self-update-command.js')
+  return runSelfUpdate({
+    dryRun: args.includes('--dry-run'),
+    installed,
+    json: io.json,
+    printLine: io.printLine,
+    printError: io.printError,
+  }, install)
 }
