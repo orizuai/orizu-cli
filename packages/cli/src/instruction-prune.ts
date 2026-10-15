@@ -2,7 +2,7 @@ import { join } from 'node:path'
 
 import { Cause, Effect, Exit } from 'effect'
 
-import { runWithStops, type Interrupted } from './instruction-delivery.js'
+import { runWithStops, type Interrupted } from './cli-stops.js'
 import {
   finishPrune,
   rollBackPrune,

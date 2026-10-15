@@ -6,21 +6,10 @@
  * parsing and human/JSON output.
  */
 
-import { spawnSync } from 'child_process'
-
-import { authedFetch } from './http.js'
 import { findUnknownOption } from './option-validation.js'
-import { hasStagedChanges, NOTHING_STAGED_ERROR, unstageOrizuSkillLinks } from './orizu-skill-links.js'
 import { formatRunEventDigest } from './run-event-digest.js'
-import {
-  createStartIntentId,
-  isAmbiguousStartResponseStatus,
-  isStartIntentId,
-  START_RESPONSE_LOSS_MAX_RETRIES,
-  type StartIntentIdGenerator,
-} from './start-intent.js'
-import { getWorkspaceRoot, workspaceExists } from './workspace.js'
-import { attachedWorkspaceId, stringOrNull } from './workspace-sync.js'
+import type { StartIntentIdGenerator } from './start-intent.js'
+import type { StoppableOutcome } from './workbench-workflows.js'
 
 export interface WorkbenchFetcher {
   (path: string, init?: RequestInit): Promise<Response>
@@ -119,30 +108,6 @@ export interface SessionGitResult {
 
 /** Injectable git seam (tests use a recording fake; prod spawns git). */
 export type SessionGitRunner = (args: string[], opts?: { cwd?: string }) => SessionGitResult
-
-function defaultSessionGit(args: string[], opts?: { cwd?: string }): SessionGitResult {
-  try {
-    // Strip repo-context env (set by git when running inside hooks) so the
-    // child git is scoped strictly to cwd/args (same pattern as github-setup).
-    const env: NodeJS.ProcessEnv = { ...process.env }
-    delete env.GIT_DIR
-    delete env.GIT_WORK_TREE
-    delete env.GIT_INDEX_FILE
-    const result = spawnSync('git', args, { cwd: opts?.cwd, encoding: 'utf8', env })
-    return {
-      status: result.status ?? 1,
-      stdout: typeof result.stdout === 'string' ? result.stdout : '',
-      stderr: typeof result.stderr === 'string' ? result.stderr : '',
-    }
-  } catch {
-    return { status: 1, stdout: '', stderr: 'git is not available' }
-  }
-}
-
-/** True when `root` is the workbench clone: contract marker + a git repo. */
-function isWorkbenchClone(root: string, git: SessionGitRunner): boolean {
-  return workspaceExists(root) && git(['rev-parse', '--git-dir'], { cwd: root }).status === 0
-}
 
 export interface SessionCheckout {
   branch: string
@@ -320,15 +285,7 @@ export interface WorkbenchCommandIo {
   generateStartIntentId?: StartIntentIdGenerator
 }
 
-const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
 const SESSION_STATUSES = new Set(['active', 'ended'])
-const DEFAULT_TAIL_LIMIT = 100
-const MAX_TAIL_LIMIT = 500
-const DEFAULT_TAIL_INTERVAL_SECONDS = 2
-// Floor for the continuous poll sleep so `--interval 0` (or negatives) cannot
-// hot-spin against the API while a non-terminal run is quiet. Draining full
-// pages intentionally skips the sleep — that is catch-up, not polling.
-const MIN_TAIL_INTERVAL_MS = 500
 const SESSION_START_OPTIONS = new Set([
   '--project',
   '--workspace',
@@ -351,645 +308,63 @@ const WORKBENCH_VALUE_OPTIONS = new Set([
   '--workspace',
 ])
 
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
 export const SESSION_REPOSITORY_PENDING_RETRY_MS = 2_000
 export const SESSION_REPOSITORY_PENDING_MAX_RETRIES = 30
 
-function numberOrFallback(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
-}
-
-function normalizeTailLimit(limit: number | undefined): number {
-  return typeof limit === 'number' && Number.isFinite(limit) && limit > 0
-    ? Math.min(Math.floor(limit), MAX_TAIL_LIMIT)
-    : DEFAULT_TAIL_LIMIT
-}
-
-function normalizeProjectSlug(value: string | null | undefined): string | null {
-  const raw = stringOrNull(value)
-  if (!raw) {
-    return null
-  }
-  const segments = raw.split('/').map(segment => segment.trim()).filter(Boolean)
-  return segments.length > 0 ? segments[segments.length - 1] : null
-}
-
-function resolveAttachedWorkspaceId(opts: SessionStartOptions | SessionStatusOptions): string {
-  const explicit = stringOrNull(opts.workspaceId ?? undefined)
-  if (explicit) {
-    return explicit
-  }
-  const root = getWorkspaceRoot(opts.cwd)
-  const attached = attachedWorkspaceId(root)
-  if (!attached) {
-    throw new Error('This workspace is not attached yet; run `orizu workspace sync` first to attach it.')
-  }
-  return attached
-}
-
-async function readJson(response: Response): Promise<Record<string, unknown>> {
-  try {
-    return await response.json() as Record<string, unknown>
-  } catch {
-    return {}
-  }
-}
-
-async function responseMessage(response: Response): Promise<string> {
-  try {
-    const data = await response.clone().json() as Record<string, unknown>
-    return stringOrNull(data.error) || stringOrNull(data.message) || response.statusText || String(response.status)
-  } catch {
-    try {
-      const text = await response.text()
-      return text.trim() || response.statusText || String(response.status)
-    } catch {
-      return response.statusText || String(response.status)
-    }
-  }
-}
-
-async function assertOk(response: Response, action: string): Promise<void> {
-  if (response.ok) {
-    return
-  }
-  throw new Error(`${action} failed (${response.status}): ${await responseMessage(response)}`)
-}
-
-function fetcherFrom(opts: { fetcher?: WorkbenchFetcher }): WorkbenchFetcher {
-  return opts.fetcher ?? authedFetch
-}
-
-function requiredBodyObject(data: Record<string, unknown>, key: string, action: string): Record<string, unknown> {
-  const value = data[key]
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${action} response did not include ${key}`)
-  }
-  return value as Record<string, unknown>
-}
-
-function sessionFrom(data: Record<string, unknown>, action: string): WorkbenchSession {
-  return requiredBodyObject(data, 'session', action) as WorkbenchSession
-}
-
-function runFrom(data: Record<string, unknown>, action: string): WorkbenchRun {
-  return requiredBodyObject(data, 'run', action) as WorkbenchRun
-}
-
-function sessionsFrom(data: Record<string, unknown>): WorkbenchSession[] {
-  return Array.isArray(data.sessions) ? data.sessions as WorkbenchSession[] : []
-}
-
-function eventsFrom(data: Record<string, unknown>): WorkbenchRunEvent[] {
-  return Array.isArray(data.events) ? data.events as WorkbenchRunEvent[] : []
-}
-
-/**
- * Fetch the freshly-cut remote session branch and check out a local tracking
- * branch, so a human can start committing immediately. Best-effort by design:
- * every failure (not the clone, no git, fetch/checkout error) returns a
- * 'skipped' result with a human-usable detail — it NEVER throws, because
- * checkout ergonomics must never fail a successfully started session.
- */
-function checkoutSessionBranchLocally(
-  cwd: string | undefined,
-  branch: string,
-  git: SessionGitRunner
-): SessionCheckout {
-  const root = getWorkspaceRoot(cwd)
-  try {
-    if (!isWorkbenchClone(root, git)) {
-      return { branch, state: 'skipped', detail: 'not inside the workbench clone' }
-    }
-    if (git(['fetch', 'origin', branch], { cwd: root }).status !== 0) {
-      return { branch, state: 'skipped', detail: `could not fetch origin/${branch}` }
-    }
-    const haveLocal =
-      git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: root }).status === 0
-    const checkout = haveLocal
-      ? git(['checkout', branch], { cwd: root })
-      : git(['checkout', '-b', branch, '--track', `origin/${branch}`], { cwd: root })
-    if (checkout.status !== 0) {
-      const reason = checkout.stderr.trim() || `exit ${checkout.status}`
-      return { branch, state: 'skipped', detail: `checkout failed: ${reason}` }
-    }
-    return {
-      branch,
-      state: 'checked-out',
-      detail: haveLocal ? `switched to existing local branch ${branch}` : `tracking origin/${branch}`,
-    }
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    return { branch, state: 'skipped', detail: reason }
-  }
-}
-
-/** Local ahead/behind vs origin/<branch>; counts are null when not computable. */
-function computeSessionBranchSync(
-  cwd: string | undefined,
-  branch: string,
-  git: SessionGitRunner
-): SessionBranchSync {
-  const root = getWorkspaceRoot(cwd)
-  try {
-    if (!isWorkbenchClone(root, git)) {
-      return { branch, ahead: null, behind: null }
-    }
-    const counts = git(
-      ['rev-list', '--left-right', '--count', `origin/${branch}...${branch}`],
-      { cwd: root }
-    )
-    if (counts.status !== 0) {
-      return { branch, ahead: null, behind: null }
-    }
-    // `--left-right --count origin/b...b` prints "<origin-only>\t<local-only>".
-    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(counts.stdout)
-    if (!match) {
-      return { branch, ahead: null, behind: null }
-    }
-    return { branch, ahead: Number(match[2]), behind: Number(match[1]) }
-  } catch {
-    return { branch, ahead: null, behind: null }
-  }
-}
+// The workflows run on Effect in workbench-workflows (ORI-2734), loaded only
+// when a command runs, so CLI startup and the hosted session CLI never load
+// Effect. These exports keep their signatures and add no stop handlers.
+const workflows = () => import('./workbench-workflows.js')
 
 export async function runSessionStart(opts: SessionStartOptions = {}): Promise<SessionStartResult> {
-  const fetcher = fetcherFrom(opts)
-  const workspaceId = resolveAttachedWorkspaceId(opts)
-  const projectSlug = normalizeProjectSlug(opts.projectSlug)
-  const suppliedStartIntentId = stringOrNull(
-    opts.startIntentId
-  )
-  if (
-    suppliedStartIntentId &&
-    !isStartIntentId(suppliedStartIntentId)
-  ) {
-    throw new Error(
-      'session start --start-intent must be a UUIDv4'
-    )
-  }
-  const startIntentId =
-    suppliedStartIntentId ??
-    createStartIntentId(opts.generateStartIntentId)
-  const suppliedReconcileSessionId = stringOrNull(
-    opts.reconcileSessionId
-  )
-  if (suppliedReconcileSessionId && !suppliedStartIntentId) {
-    throw new Error(
-      'session start --session requires --start-intent'
-    )
-  }
-  const body: Record<string, unknown> = { startIntentId }
-  if (projectSlug) {
-    body.projectSlug = projectSlug
-  }
-  if (opts.clientInfo) {
-    body.clientInfo = opts.clientInfo
-  }
-
-  let response: Response
-  let data: Record<string, unknown>
-  let reconcileSessionId: string | null =
-    suppliedReconcileSessionId
-  let repositoryPendingAttempts = 0
-  let ambiguousResponseAttempts = 0
-  for (;;) {
-    try {
-      response = await fetcher(
-        `/api/cli/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...body,
-            ...(reconcileSessionId
-              ? { sessionId: reconcileSessionId }
-              : {}),
-          }),
-        }
-      )
-    } catch (error) {
-      if (
-        ambiguousResponseAttempts <
-        START_RESPONSE_LOSS_MAX_RETRIES
-      ) {
-        ambiguousResponseAttempts += 1
-        continue
-      }
-      throw error
-    }
-    data = await readJson(response.clone())
-    if (
-      isAmbiguousStartResponseStatus(response.status) &&
-      ambiguousResponseAttempts <
-        START_RESPONSE_LOSS_MAX_RETRIES
-    ) {
-      ambiguousResponseAttempts += 1
-      continue
-    }
-    const repository =
-      data.repository &&
-      typeof data.repository === 'object' &&
-      !Array.isArray(data.repository)
-        ? data.repository as Record<string, unknown>
-        : null
-    const pendingSession =
-      response.status === 202 &&
-      repository?.state === 'pending'
-        ? sessionFrom(data, 'Session start')
-        : null
-    const pendingSessionId = pendingSession
-      ? stringOrNull(pendingSession.id)
-      : null
-    if (pendingSessionId) {
-      if (
-        repositoryPendingAttempts >=
-        SESSION_REPOSITORY_PENDING_MAX_RETRIES
-      ) {
-        throw new SessionRepositoryPendingError({
-          sessionId: pendingSessionId,
-          startIntentId,
-          projectSlug,
-          workspaceDirectory: stringOrNull(opts.cwd),
-        })
-      }
-      repositoryPendingAttempts += 1
-      ambiguousResponseAttempts = 0
-      reconcileSessionId = pendingSessionId
-      const retryAfterSeconds =
-        typeof repository?.retryAfterSeconds === 'number' &&
-        Number.isInteger(repository.retryAfterSeconds) &&
-        repository.retryAfterSeconds >= 1 &&
-        repository.retryAfterSeconds <= 60
-          ? repository.retryAfterSeconds
-          : SESSION_REPOSITORY_PENDING_RETRY_MS / 1_000
-      await (opts.sleep ?? defaultSleep)(retryAfterSeconds * 1_000)
-      continue
-    }
-    break
-  }
-  await assertOk(response, 'Session start')
-  const session = sessionFrom(data, 'Session start')
-  // The session is started; local checkout is best-effort ergonomics only,
-  // and only when explicitly requested (the CLI human path). The temporary
-  // Artifacts compatibility branch is `main` in a separate remote; never run
-  // the legacy `git fetch origin/main` flow against the caller's current
-  // checkout.
-  const branch = stringOrNull(session.repoBranch)
-  const artifactsRepositoryId =
-    stringOrNull(session.workingRepositoryId)
-  const checkout = artifactsRepositoryId
-    ? null
-    : branch && opts.localCheckout
-    ? checkoutSessionBranchLocally(opts.cwd, branch, opts.git ?? defaultSessionGit)
-    : branch
-      ? { branch, state: 'skipped' as const, detail: 'local checkout not requested' }
-      : null
-  return { session, checkout }
+  const { runPlain, sessionStart } = await workflows()
+  return runPlain(sessionStart(opts))
 }
 
 export async function runSessionStatus(opts: SessionStatusOptions = {}): Promise<SessionStatusResult> {
-  const fetcher = fetcherFrom(opts)
-  const sessionId = stringOrNull(opts.sessionId ?? undefined)
-  if (sessionId) {
-    const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(sessionId)}`)
-    await assertOk(response, 'Session status')
-    const data = await readJson(response)
-    const session = sessionFrom(data, 'Session status')
-    const branch = stringOrNull(session.repoBranch)
-    const artifactsRepositoryId = stringOrNull(
-      session.workingRepositoryId
-    )
-    const branchSync = branch && !artifactsRepositoryId
-      ? computeSessionBranchSync(opts.cwd, branch, opts.git ?? defaultSessionGit)
-      : null
-    return { session, branchSync }
-  }
-
-  const workspaceId = resolveAttachedWorkspaceId(opts)
-  const status = stringOrNull(opts.status ?? undefined)
-  const query = status ? `?status=${encodeURIComponent(status)}` : ''
-  const response = await fetcher(`/api/cli/workspaces/${encodeURIComponent(workspaceId)}/sessions${query}`)
-  await assertOk(response, 'Session status')
-  const data = await readJson(response)
-  return { sessions: sessionsFrom(data) }
+  const { runPlain, sessionStatus } = await workflows()
+  return runPlain(sessionStatus(opts))
 }
 
 export async function runSessionEnd(opts: SessionEndOptions): Promise<SessionEndResult> {
-  const fetcher = fetcherFrom(opts)
-  if (!stringOrNull(opts.sessionId)) {
-    throw new Error('Usage: orizu session end --session <id> [--json]')
-  }
-  const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(opts.sessionId)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: 'ended' }),
-  })
-  await assertOk(response, 'Session end')
-  const data = await readJson(response)
-  return {
-    session: sessionFrom(data, 'Session end'),
-    branchStatus: stringOrNull(data.branchStatus) ?? undefined,
-  }
-}
-
-/**
- * Finish-time local checks (ALI-1028): when run inside the workbench clone
- * with the session branch checked out, uncommitted or unpushed local work is
- * reported (it would silently miss the manifest otherwise), and the opt-in
- * `--push` stages/commits/pushes it first. Raw git remains the default
- * workflow — without --push nothing local is mutated.
- */
-async function prepareLocalSessionBranch(
-  opts: SessionFinishOptions,
-  fetcher: WorkbenchFetcher
-): Promise<{ localWarnings: string[]; pushed: boolean }> {
-  const git = opts.git ?? defaultSessionGit
-  const localWarnings: string[] = []
-
-  // Resolve the server-owned repository mode before invoking Git at all.
-  // Artifacts temporarily exposes repoBranch=main for hosted compatibility,
-  // but that branch belongs to the private working repository. Treating it as
-  // a legacy branch in the caller's current checkout can stage, commit, and
-  // push origin/main before the server has a chance to reject finish-branch.
-  const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(opts.sessionId)}`)
-  if (!response.ok) {
-    // Best-effort: the finish call right after will surface the real error.
-    return { localWarnings, pushed: false }
-  }
-  const session = sessionFrom(await readJson(response), 'Session status')
-  if (stringOrNull(session.workingRepositoryId)) {
-    if (opts.push) {
-      throw new Error(
-        'session finish --push is not supported for an Artifacts-backed session; the hosted session owns its private repository'
-      )
-    }
-    return { localWarnings, pushed: false }
-  }
-
-  const root = getWorkspaceRoot(opts.cwd)
-  if (!isWorkbenchClone(root, git)) {
-    if (opts.push) {
-      throw new Error(
-        'session finish --push must run inside the workbench clone (it stages, commits, and pushes the session branch checkout)'
-      )
-    }
-    return { localWarnings, pushed: false }
-  }
-
-  const branch = stringOrNull(session.repoBranch)
-  if (!branch) {
-    return { localWarnings, pushed: false }
-  }
-
-  const head = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: root })
-  const onSessionBranch = head.status === 0 && head.stdout.trim() === branch
-  if (!onSessionBranch) {
-    if (opts.push) {
-      const current = head.status === 0 ? head.stdout.trim() : '(unknown)'
-      throw new Error(
-        `session finish --push requires the session branch checkout: HEAD is ${current}, not ${branch}`
-      )
-    }
-    return { localWarnings, pushed: false }
-  }
-
-  const status = git(['status', '--porcelain'], { cwd: root })
-  const hasUncommitted = status.status === 0 && status.stdout.trim() !== ''
-
-  if (opts.push) {
-    if (hasUncommitted) {
-      const add = git(['add', '-A'], { cwd: root })
-      if (add.status !== 0) {
-        throw new Error(`session finish --push: git add failed: ${add.stderr.trim() || `exit ${add.status}`}`)
-      }
-      // A hosted session's Orizu skill links are sandbox-local; never ship
-      // them (ORI-2442). Commit only if something else is still staged.
-      const skillGit = (args: readonly string[]) => {
-        const result = git([...args], { cwd: root })
-        return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr }
-      }
-      const unstage = unstageOrizuSkillLinks(skillGit)
-      if (!unstage.ok) {
-        throw new Error(`session finish --push: ${unstage.error}`)
-      }
-      const staged = hasStagedChanges(skillGit)
-      if (typeof staged !== 'boolean') {
-        throw new Error(`session finish --push: ${staged.error}`)
-      }
-      if (!staged && unstage.unstaged.length === 0) {
-        throw new Error(`session finish --push: ${NOTHING_STAGED_ERROR}`)
-      }
-      if (staged) {
-        const message = stringOrNull(opts.message) ?? `Session ${opts.sessionId} work (orizu session finish --push)`
-        const commit = git(['commit', '-m', message], { cwd: root })
-        if (commit.status !== 0) {
-          throw new Error(`session finish --push: git commit failed: ${commit.stderr.trim() || `exit ${commit.status}`}`)
-        }
-      }
-    }
-    const push = git(['push', 'origin', branch], { cwd: root })
-    if (push.status !== 0) {
-      throw new Error(`session finish --push: git push failed: ${push.stderr.trim() || `exit ${push.status}`}`)
-    }
-    return { localWarnings, pushed: true }
-  }
-
-  if (hasUncommitted) {
-    localWarnings.push(
-      `uncommitted changes in your ${branch} checkout — they won't be in the manifest. ` +
-        `Commit and push them first (git add/commit/push), or re-run with --push.`
-    )
-  }
-  const counts = git(['rev-list', '--count', `origin/${branch}..${branch}`], { cwd: root })
-  const unpushed = counts.status === 0 ? Number.parseInt(counts.stdout.trim(), 10) : 0
-  if (Number.isFinite(unpushed) && unpushed > 0) {
-    localWarnings.push(
-      `${unpushed} unpushed commit${unpushed === 1 ? '' : 's'} on ${branch} — they won't be in the manifest. ` +
-        `Run \`git push origin ${branch}\` first, or re-run with --push.`
-    )
-  }
-  return { localWarnings, pushed: false }
+  const { runPlain, sessionEnd } = await workflows()
+  return runPlain(sessionEnd(opts))
 }
 
 export async function runSessionFinish(opts: SessionFinishOptions): Promise<SessionFinishResult> {
-  const fetcher = fetcherFrom(opts)
-  if (!stringOrNull(opts.sessionId)) {
-    throw new Error(
-      'Usage: orizu session finish --session <id> [--project <team/project>] [--push [--message <text>]] [--json]'
-    )
-  }
-  const { localWarnings, pushed } = await prepareLocalSessionBranch(opts, fetcher)
-  const body: Record<string, unknown> = {}
-  const projectSlug = normalizeProjectSlug(opts.projectSlug)
-  if (projectSlug) {
-    body.projectSlug = projectSlug
-  }
-  const response = await fetcher(`/api/cli/sessions/${encodeURIComponent(opts.sessionId)}/finish-branch`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  await assertOk(response, 'Session finish')
-  const data = await readJson(response)
-  const manifest =
-    data.manifest && typeof data.manifest === 'object' && !Array.isArray(data.manifest)
-      ? (data.manifest as Record<string, unknown>)
-      : undefined
-  return {
-    outcome: stringOrNull(data.outcome) || 'unknown',
-    branch: stringOrNull(data.branch) ?? undefined,
-    branchDeleted: typeof data.branchDeleted === 'boolean' ? data.branchDeleted : undefined,
-    manifest,
-    localWarnings: localWarnings.length > 0 ? localWarnings : undefined,
-    pushed: pushed || undefined,
-  }
+  const { runPlain, sessionFinish } = await workflows()
+  return runPlain(sessionFinish(opts))
 }
 
 export async function runWorkbenchRunStart(opts: WorkbenchRunStartOptions): Promise<WorkbenchRunResult> {
-  const fetcher = fetcherFrom(opts)
-  if (!stringOrNull(opts.sessionId) || !stringOrNull(opts.title)) {
-    throw new Error('Usage: orizu run start --session <id> --title <title> [--project <team/project>] [--json]')
-  }
-  const projectSlug = normalizeProjectSlug(opts.projectSlug)
-  const body: Record<string, unknown> = {
-    workspaceSessionId: opts.sessionId,
-    title: opts.title,
-  }
-  if (projectSlug) {
-    body.projectSlug = projectSlug
-  }
-
-  const response = await fetcher('/api/cli/workbench-runs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (response.status === 409) {
-    // PR #1284 contract: starting a run on an ended session is a 409.
-    const message = await responseMessage(response)
-    const hint = /ended/i.test(message) ? ' Run `orizu session start` to open a new session.' : ''
-    throw new Error(`Run start failed (409): ${message}${hint}`)
-  }
-  await assertOk(response, 'Run start')
-  const data = await readJson(response)
-  return { run: runFrom(data, 'Run start') }
+  const { runPlain, runStart } = await workflows()
+  return runPlain(runStart(opts))
 }
 
 export async function runWorkbenchRunStatus(opts: WorkbenchRunStatusOptions): Promise<WorkbenchRunResult> {
-  const fetcher = fetcherFrom(opts)
-  if (!stringOrNull(opts.runId)) {
-    throw new Error('Usage: orizu run status --run <id> [--json]')
-  }
-  const response = await fetcher(`/api/cli/workbench-runs/${encodeURIComponent(opts.runId)}`)
-  await assertOk(response, 'Run status')
-  const data = await readJson(response)
-  return { run: runFrom(data, 'Run status') }
+  const { runPlain, runStatus } = await workflows()
+  return runPlain(runStatus(opts))
 }
 
 export async function runWorkbenchRunTerminal(opts: WorkbenchRunTerminalOptions): Promise<WorkbenchRunResult> {
-  const fetcher = fetcherFrom(opts)
-  if (!stringOrNull(opts.runId) || !TERMINAL_RUN_STATUSES.has(opts.status)) {
-    throw new Error('Usage: orizu run <complete|fail|cancel> --run <id> [--summary <text>] [--json]')
-  }
-  const body: Record<string, unknown> = { status: opts.status }
-  if (opts.summary) {
-    body.summary = { note: opts.summary }
-  }
-  if (opts.evidence) {
-    body.evidence = opts.evidence
-  }
-
-  const response = await fetcher(`/api/cli/workbench-runs/${encodeURIComponent(opts.runId)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (response.status === 409) {
-    // PR #1284 contract: "Run already <status>" names the STORED status when a
-    // different terminal status was requested — report it plus a status hint.
-    const message = await responseMessage(response)
-    const alreadyMatch = /^Run already (\S+)/.exec(message)
-    if (alreadyMatch) {
-      throw new Error(
-        `Run update rejected (409): run is already '${alreadyMatch[1]}' (requested '${opts.status}'). Check \`orizu run status --run ${opts.runId}\`.`
-      )
-    }
-    throw new Error(`Run update failed (409): ${message}`)
-  }
-  await assertOk(response, 'Run update')
-  const data = await readJson(response)
-  return { run: runFrom(data, 'Run update') }
+  const { runPlain, runTerminal } = await workflows()
+  return runPlain(runTerminal(opts))
 }
 
 export async function tailOnce(
   fetcher: WorkbenchFetcher,
   runId: string,
   cursor: number,
-  limit = DEFAULT_TAIL_LIMIT
+  limit?: number
 ): Promise<TailOnceResult> {
-  // The API requires an integer cursor: only send back whole non-negative
-  // sequences (PR #1284 contract — non-numeric/negative `after` is a 400).
-  const safeCursor = Number.isFinite(cursor) && cursor > 0 ? Math.floor(cursor) : 0
-  const safeLimit = normalizeTailLimit(limit)
-  const response = await fetcher(
-    `/api/cli/workbench-runs/${encodeURIComponent(runId)}/events?after=${safeCursor}&limit=${safeLimit}`
-  )
-  await assertOk(response, 'Run tail')
-  const data = await readJson(response)
-  return {
-    events: eventsFrom(data),
-    cursor: numberOrFallback(data.cursor, safeCursor),
-    runStatus: stringOrNull(data.runStatus) || 'unknown',
-  }
+  const workflow = await workflows()
+  return workflow.runPlain(workflow.tailOnce(fetcher, runId, cursor, limit))
 }
 
+/** Also the hosted session CLI's attached tail: same signature, no stop handlers. */
 export async function tailWorkbenchRun(opts: TailWorkbenchRunOptions): Promise<TailOnceResult> {
-  const fetcher = fetcherFrom(opts)
-  if (!stringOrNull(opts.runId)) {
-    throw new Error(
-      'Usage: orizu run tail --run <id> [--after <seq>] [--interval <seconds>] [--once] [--json]  (--once drains all currently persisted events, then exits without following)'
-    )
-  }
-  const sleep = opts.sleep ?? defaultSleep
-  let cursor = typeof opts.after === 'number' && Number.isFinite(opts.after) && opts.after > 0 ? Math.floor(opts.after) : 0
-  const intervalMs = Math.max(MIN_TAIL_INTERVAL_MS, Math.round((opts.intervalSeconds ?? DEFAULT_TAIL_INTERVAL_SECONDS) * 1000))
-  const pageLimit = normalizeTailLimit(opts.limit)
-
-  while (true) {
-    const previousCursor = cursor
-    const result = await tailOnce(fetcher, opts.runId, cursor, opts.limit)
-    cursor = result.cursor
-    for (const event of result.events) {
-      opts.onEvent?.(event)
-    }
-    // A full page means more events may already be persisted — keep draining
-    // back-to-back (no sleep). Exit conditions are only evaluated on a SHORT
-    // page: a terminal runStatus on a full page would otherwise truncate a
-    // completed run that has more unread pages.
-    if (result.events.length >= pageLimit) {
-      // Protocol invariant: a full page always implies the server advanced
-      // the cursor past what we asked for. If it didn't, draining back-to-back
-      // would spin hot forever on a misbehaving/stalled server. We pick the
-      // simpler of the two acceptable fixes (apply the normal poll sleep
-      // before retrying, rather than failing after one retry) because it
-      // matches this loop's existing backoff-on-no-progress shape (see the
-      // MIN_TAIL_INTERVAL_MS floor above) without introducing a new
-      // retry-count/error path.
-      if (cursor > previousCursor) {
-        continue
-      }
-      await sleep(intervalMs)
-      continue
-    }
-    if (opts.once || TERMINAL_RUN_STATUSES.has(result.runStatus)) {
-      return result
-    }
-    await sleep(intervalMs)
-  }
+  const { runPlain, tail } = await workflows()
+  return runPlain(tail(opts))
 }
 
 function hasFlag(args: string[], flag: string): boolean {
@@ -1259,6 +634,27 @@ export async function workbenchCommand(args: string[], io: WorkbenchCommandIo): 
   }
 }
 
+/**
+ * Ctrl-C (130) and SIGTERM (143) end a local command's waits and reads. A
+ * write already sent finishes and its reply prints before the stop's exit
+ * code. A session start stopped while its repository is pending prints how to
+ * resume it.
+ */
+function finishStoppable<A>(io: WorkbenchCommandIo, outcome: StoppableOutcome<A>, print: (value: A) => void): number {
+  if ('value' in outcome) {
+    print(outcome.value)
+    return outcome.interrupted ?? 0
+  }
+  if (outcome.pending) {
+    const { sessionId, startIntentId, resumeCommand } = new SessionRepositoryPendingError(outcome.pending)
+    const message =
+      'Session start interrupted while its repository is still provisioning. ' +
+      `Resume the same session without creating a duplicate: ${resumeCommand}`
+    io.print(io.json ? JSON.stringify({ error: message, sessionId, startIntentId, resumeCommand }) : message)
+  }
+  return outcome.interrupted
+}
+
 async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo): Promise<number> {
   const positional = positionalArgs(args)
   const group = positional[0]
@@ -1289,7 +685,8 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
           `unknown option ${unknownOption}\nUsage: orizu session start [--project <team/project>] [--workspace <dir>] [--start-intent <uuid> --session <uuid>] [--json]`
         )
       }
-      const result = await runSessionStart({
+      const { runStoppable, sessionStart } = await workflows()
+      const outcome = await runStoppable<SessionStartResult>((settled, stop) => sessionStart({
         fetcher,
         cwd: workspaceDir,
         git: io.git,
@@ -1300,33 +697,34 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
         clientInfo: { source: 'orizu-cli' },
         generateStartIntentId: io.generateStartIntentId,
         sleep: io.sleep,
-      })
-      emit(io, formatSessionStart(result), result as unknown as Record<string, unknown>)
-      return 0
+      }, settled, stop))
+      return finishStoppable(io, outcome, result => emit(io, formatSessionStart(result), result as unknown as Record<string, unknown>))
     }
     if (subcommand === 'status') {
       const status = argValue(args, '--status')
       if (status && !SESSION_STATUSES.has(status)) {
         throw new Error('Usage: orizu session status [--session <id> | --status active|ended] [--json]')
       }
-      const result = await runSessionStatus({
+      const { runStoppable, sessionStatus } = await workflows()
+      const outcome = await runStoppable<SessionStatusResult>(() => sessionStatus({
         fetcher,
         cwd: workspaceDir,
         git: io.git,
         sessionId: argValue(args, '--session'),
         status,
-      })
-      emit(io, formatSessionStatus(result), result as unknown as Record<string, unknown>)
-      return 0
+      }, true))
+      return finishStoppable(io, outcome, result => emit(io, formatSessionStatus(result), result as unknown as Record<string, unknown>))
     }
     if (subcommand === 'end') {
-      const result = await runSessionEnd({ fetcher, sessionId: argValue(args, '--session') || '' })
-      const hint =
-        result.branchStatus === 'has-changes'
-          ? '\nsession branch has changes — run `orizu session finish --session ' + result.session.id + '` to promote them'
-          : ''
-      emit(io, `session ended: ${result.session.id}${hint}`, result as unknown as Record<string, unknown>)
-      return 0
+      const { runStoppable, sessionEnd } = await workflows()
+      const outcome = await runStoppable<SessionEndResult>(settled => sessionEnd({ fetcher, sessionId: argValue(args, '--session') || '' }, settled))
+      return finishStoppable(io, outcome, result => {
+        const hint =
+          result.branchStatus === 'has-changes'
+            ? '\nsession branch has changes — run `orizu session finish --session ' + result.session.id + '` to promote them'
+            : ''
+        emit(io, `session ended: ${result.session.id}${hint}`, result as unknown as Record<string, unknown>)
+      })
     }
     if (subcommand === 'finish') {
       const message = argValue(args, '--message')
@@ -1334,7 +732,8 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
       if (message && !push) {
         throw new Error('`--message` only applies with `--push` (orizu session finish --session <id> --push --message <text>)')
       }
-      const result = await runSessionFinish({
+      const { runStoppable, sessionFinish } = await workflows()
+      const outcome = await runStoppable<SessionFinishResult>(settled => sessionFinish({
         fetcher,
         cwd: workspaceDir,
         git: io.git,
@@ -1342,30 +741,30 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
         projectSlug: argValue(args, '--project'),
         push,
         message,
-      })
-      emit(io, formatSessionFinish(result), result as unknown as Record<string, unknown>)
-      return 0
+      }, settled, true))
+      return finishStoppable(io, outcome, result => emit(io, formatSessionFinish(result), result as unknown as Record<string, unknown>))
     }
   }
 
   if (group === 'run') {
     if (subcommand === 'start') {
-      const result = await runWorkbenchRunStart({
+      const { runStoppable, runStart } = await workflows()
+      const outcome = await runStoppable<WorkbenchRunResult>(settled => runStart({
         fetcher,
         sessionId: argValue(args, '--session') || '',
         title: argValue(args, '--title') || '',
         projectSlug: argValue(args, '--project'),
-      })
-      emit(io, `run started: ${result.run.id}`, result as unknown as Record<string, unknown>)
-      return 0
+      }, settled))
+      return finishStoppable(io, outcome, result => emit(io, `run started: ${result.run.id}`, result as unknown as Record<string, unknown>))
     }
     if (subcommand === 'status') {
-      const result = await runWorkbenchRunStatus({ fetcher, runId: argValue(args, '--run') || '' })
-      emit(io, formatRunStatus(result.run), result as unknown as Record<string, unknown>)
-      return 0
+      const { runStoppable, runStatus } = await workflows()
+      const outcome = await runStoppable<WorkbenchRunResult>(() => runStatus({ fetcher, runId: argValue(args, '--run') || '' }, true))
+      return finishStoppable(io, outcome, result => emit(io, formatRunStatus(result.run), result as unknown as Record<string, unknown>))
     }
     if (subcommand === 'tail') {
-      await tailWorkbenchRun({
+      const { runStoppable, tail } = await workflows()
+      const outcome = await runStoppable<TailOnceResult>(() => tail({
         fetcher,
         runId: argValue(args, '--run') || '',
         after: numberArg(args, '--after'),
@@ -1373,19 +772,19 @@ async function dispatchWorkbenchCommand(args: string[], io: WorkbenchCommandIo):
         once: hasFlag(args, '--once'),
         sleep: io.sleep,
         onEvent: event => io.print(io.json ? JSON.stringify(event) : formatEventLine(event)),
-      })
-      return 0
+      }, true))
+      return finishStoppable(io, outcome, () => {})
     }
     const status = terminalStatusForCommand(subcommand || '')
     if (status) {
-      const result = await runWorkbenchRunTerminal({
+      const { runStoppable, runTerminal } = await workflows()
+      const outcome = await runStoppable<WorkbenchRunResult>(settled => runTerminal({
         fetcher,
         runId: argValue(args, '--run') || '',
         status,
         summary: argValue(args, '--summary'),
-      })
-      emit(io, formatRunStatus(result.run), result as unknown as Record<string, unknown>)
-      return 0
+      }, settled))
+      return finishStoppable(io, outcome, result => emit(io, formatRunStatus(result.run), result as unknown as Record<string, unknown>))
     }
   }
 

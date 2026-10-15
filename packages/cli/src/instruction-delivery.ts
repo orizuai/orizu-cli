@@ -2,6 +2,7 @@ import { join } from 'node:path'
 
 import { Cause, Effect, Exit } from 'effect'
 
+import { runWithStops, type Interrupted } from './cli-stops.js'
 import { authedFetch } from './http.js'
 import { responsePayload } from './json-response.js'
 import { stageSyncPayload, type SyncDiskOptions, type SyncDiskResult, type SyncPayload, type SyncRequestPlan } from './instruction-set-sync/index.js'
@@ -10,8 +11,6 @@ import { attempt, holdSyncLock } from './instruction-sync-lock.js'
 
 // Loaded only through `await import(...)` from instruction-sets-cli, so CLI
 // startup and the published loader never load Effect.
-
-export interface Interrupted { interrupted: 130 | 143 }
 
 function readPayload(path: string, action: string) {
   return Effect.tryPromise({
@@ -44,27 +43,6 @@ async function runOrThrow<A>(program: Effect.Effect<A, unknown>, signal: AbortSi
   const exit = await Effect.runPromiseExit(program, { signal })
   if (Exit.isSuccess(exit)) return exit.value
   throw Cause.squash(exit.cause)
-}
-
-/**
- * Runs the program with Ctrl-C and SIGTERM turned into an interrupt, and says
- * which stop arrived, if any. `once`: a second signal falls through to Node's
- * default kill. The handlers are removed before this returns.
- */
-export async function runWithStops<A>(program: (signal: AbortSignal) => Effect.Effect<A, unknown>) {
-  const controller = new AbortController()
-  let interrupted: Interrupted['interrupted'] | undefined
-  const handleInterrupt = () => { interrupted ??= 130; controller.abort() }
-  const handleTerminate = () => { interrupted ??= 143; controller.abort() }
-  process.once('SIGINT', handleInterrupt)
-  process.once('SIGTERM', handleTerminate)
-  try {
-    const exit = await Effect.runPromiseExit(program(controller.signal), { signal: controller.signal })
-    return { exit, interrupted }
-  } finally {
-    process.removeListener('SIGINT', handleInterrupt)
-    process.removeListener('SIGTERM', handleTerminate)
-  }
 }
 
 async function runDelivery<A>(program: (signal: AbortSignal) => Effect.Effect<A, unknown>): Promise<A | Interrupted> {
