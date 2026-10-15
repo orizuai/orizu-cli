@@ -6,8 +6,8 @@ import {
   getServerCredentials,
   rememberResolvedBearer,
   updateServerCredentialsIfCurrent,
-  withCredentialsTransactionLockAsync,
 } from './credentials.js'
+import { withCredentialsTransaction } from './credentials-transaction.js'
 import { assertSecureTokenTransport, credentialRequestRedirectPolicy } from './http.js'
 import { describeLogoutHttpFailure, describeLogoutTransportFailure } from './logout-diagnostic.js'
 import { ServerCredentials, SessionServerCredentials } from './types.js'
@@ -182,7 +182,9 @@ async function refreshStoredCredentialsIfCurrent(
   const stop = lockStopWindow(callerSignal)
   stop.listen()
   try {
-    return await withCredentialsTransactionLockAsync(async () => {
+    // A stop or the caller's cancel also ends the wait for the lock.
+    const waitSignal = callerSignal ? AbortSignal.any([callerSignal, stop.signal]) : stop.signal
+    return await withCredentialsTransaction(async () => {
       const current = getServerCredentials(baseUrl)
       if (!current || !credentialsEqual(current, expected)) {
         return { status: 'changed', credentials: current }
@@ -193,7 +195,7 @@ async function refreshStoredCredentialsIfCurrent(
         return { status: 'changed', credentials: getServerCredentials(baseUrl) }
       }
       return { status: 'refreshed', credentials: refreshed }
-    })
+    }, waitSignal)
   } finally {
     stop.unlisten()
     await stop.endIfStopped()
@@ -311,6 +313,7 @@ export async function storedLogout(
   } catch (error) {
     remoteError = describeLogoutTransportFailure(error, secrets)
   }
-  const localCredentialCleared = clearServerCredentialsIfCurrent(credentialKey, credentials)
+  // Not stopped by the caller's cancel: a cancelled logout still removes the login, as before.
+  const localCredentialCleared = await withCredentialsTransaction(async () => clearServerCredentialsIfCurrent(credentialKey, credentials))
   return { remoteError, localCredentialCleared }
 }

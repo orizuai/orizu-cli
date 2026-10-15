@@ -29,6 +29,12 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error
 }
 
+// The system's short error code (EACCES, EPERM), never the message: messages
+// from fs calls carry paths, and this one goes to the terminal.
+function errorCode(error: unknown): string {
+  return isNodeError(error) && typeof error.code === 'string' ? error.code : 'unknown error'
+}
+
 export function getConfigDir(): string {
   if (process.env.ORIZU_CONFIG_DIR) {
     return process.env.ORIZU_CONFIG_DIR
@@ -42,7 +48,7 @@ function getCredentialsPath(): string {
 
 const DEFAULT_CREDENTIALS_LOCK_TIMEOUT_MS = 2_000
 const MAX_CREDENTIALS_LOCK_TIMEOUT_MS = 10_000
-const CREDENTIALS_LOCK_RETRY_MS = 20
+export const CREDENTIALS_LOCK_RETRY_MS = 20
 
 interface CredentialsLockMetadata {
   version: 1
@@ -52,7 +58,7 @@ interface CredentialsLockMetadata {
   instanceId: string
 }
 
-interface HeldCredentialsLock {
+export interface HeldCredentialsLock {
   path: string
   metadata: string
   depth: number
@@ -81,69 +87,85 @@ function sleepSync(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
 }
 
-function acquireCredentialsLock(): HeldCredentialsLock {
+export function credentialsLockTimeoutMs(): number {
+  return readLockDuration(
+    'ORIZU_CREDENTIALS_LOCK_TIMEOUT_MS',
+    DEFAULT_CREDENTIALS_LOCK_TIMEOUT_MS,
+    MAX_CREDENTIALS_LOCK_TIMEOUT_MS
+  )
+}
+
+export function credentialsLockTimeoutError(timeoutMs: number): Error {
+  return new Error(
+    `ORIZU_CREDENTIALS_LOCK_TIMEOUT: credentials mutation did not acquire the lock within ${timeoutMs}ms. Verify no Orizu process is running, then remove credentials.json.lock manually.`
+  )
+}
+
+/**
+ * One try at the cross-process lock. Returns null when another owner holds
+ * it. The waits between tries belong to the caller: a blocking one below for
+ * synchronous writers, an Effect sleep in credentials-transaction.ts.
+ */
+export function tryAcquireCredentialsLock(): HeldCredentialsLock | null {
   const dir = getConfigDir()
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
 
   const lockPath = getCredentialsLockPath()
-  const timeoutMs = readLockDuration(
-    'ORIZU_CREDENTIALS_LOCK_TIMEOUT_MS',
-    DEFAULT_CREDENTIALS_LOCK_TIMEOUT_MS,
-    MAX_CREDENTIALS_LOCK_TIMEOUT_MS
+  const metadata = JSON.stringify({
+    version: 1,
+    pid: process.pid,
+    hostname: hostname(),
+    createdAt: Date.now(),
+    instanceId: randomBytes(16).toString('hex'),
+  } satisfies CredentialsLockMetadata)
+  const tempPath = join(
+    dir,
+    `.credentials.json.lock.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
   )
-  const deadline = Date.now() + timeoutMs
 
-  while (true) {
-    const metadata = JSON.stringify({
-      version: 1,
-      pid: process.pid,
-      hostname: hostname(),
-      createdAt: Date.now(),
-      instanceId: randomBytes(16).toString('hex'),
-    } satisfies CredentialsLockMetadata)
-    const tempPath = join(
-      dir,
-      `.credentials.json.lock.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
-    )
+  try {
+    const fd = openSync(tempPath, 'wx', 0o600)
+    try {
+      writeFileSync(fd, metadata, 'utf8')
+      fsyncSync(fd)
+      chmodSync(tempPath, 0o600)
+    } finally {
+      closeSync(fd)
+    }
 
     try {
-      const fd = openSync(tempPath, 'wx', 0o600)
-      try {
-        writeFileSync(fd, metadata, 'utf8')
-        fsyncSync(fd)
-        chmodSync(tempPath, 0o600)
-      } finally {
-        closeSync(fd)
-      }
-
-      try {
-        // link(2) publishes the already-complete inode without replacing an
-        // existing owner. No contender ever unlinks the canonical lock.
-        linkSync(tempPath, lockPath)
-      } catch (error) {
-        if (!(isNodeError(error) && error.code === 'EEXIST')) throw error
-        if (Date.now() >= deadline) {
-          throw new Error(
-            `ORIZU_CREDENTIALS_LOCK_TIMEOUT: credentials mutation did not acquire the lock within ${timeoutMs}ms. Verify no Orizu process is running, then remove credentials.json.lock manually.`
-          )
-        }
-        sleepSync(Math.min(CREDENTIALS_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())))
-        continue
-      }
-
-      let resolveReleased = () => {}
-      const released = new Promise<void>(resolve => { resolveReleased = resolve })
-      return { path: lockPath, metadata, depth: 1, released, resolveReleased }
-    } finally {
-      // The unique owner-only preparation link is never retained, whether
-      // publication succeeds, loses to an owner, or fails unexpectedly.
-      rmSync(tempPath, { force: true })
+      // link(2) publishes the already-complete inode without replacing an
+      // existing owner. No contender ever unlinks the canonical lock.
+      linkSync(tempPath, lockPath)
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'EEXIST') return null
+      throw error
     }
+
+    let resolveReleased = () => {}
+    const released = new Promise<void>(resolve => { resolveReleased = resolve })
+    return { path: lockPath, metadata, depth: 1, released, resolveReleased }
+  } finally {
+    // The unique owner-only preparation link is never retained, whether
+    // publication succeeds, loses to an owner, or fails unexpectedly.
+    rmSync(tempPath, { force: true })
   }
 }
 
-function releaseCredentialsLock(lock: HeldCredentialsLock): void {
+/** Blocks the process between tries; only for synchronous writers. */
+function acquireCredentialsLock(): HeldCredentialsLock {
+  const timeoutMs = credentialsLockTimeoutMs()
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const lock = tryAcquireCredentialsLock()
+    if (lock) return lock
+    if (Date.now() >= deadline) throw credentialsLockTimeoutError(timeoutMs)
+    sleepSync(Math.min(CREDENTIALS_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())))
+  }
+}
+
+export function releaseCredentialsLock(lock: HeldCredentialsLock): void {
   let currentMetadata: string
   try {
     currentMetadata = readFileSync(lock.path, 'utf8')
@@ -183,15 +205,26 @@ export function withCredentialsTransactionLock<T>(operation: () => T): T {
 
   const lock = acquireCredentialsLock()
   heldCredentialsLock = lock
+  let failed = false
   try {
     return operation()
+  } catch (error) {
+    failed = true
+    throw error
   } finally {
     heldCredentialsLock = null
-    try {
-      releaseCredentialsLock(lock)
-    } finally {
-      lock.resolveReleased()
-    }
+    endTransaction(lock, failed)
+  }
+}
+
+/** Release the lock if it is still ours. A release error never hides the transaction's own error. */
+function endTransaction(lock: HeldCredentialsLock, failed: boolean): void {
+  try {
+    releaseCredentialsLock(lock)
+  } catch (releaseError) {
+    if (!failed) throw releaseError
+  } finally {
+    lock.resolveReleased()
   }
 }
 
@@ -201,7 +234,10 @@ export function withCredentialsTransactionLock<T>(operation: () => T): T {
  * async execution context; unrelated same-process work must wait or fail.
  */
 export async function withCredentialsTransactionLockAsync<T>(
-  operation: () => Promise<T>
+  operation: () => Promise<T>,
+  // How to wait for the cross-process lock. The default blocks the process
+  // between tries; stored-login commands pass credentials-transaction.ts's.
+  acquire: () => HeldCredentialsLock | Promise<HeldCredentialsLock> = acquireCredentialsLock
 ): Promise<T> {
   const lockPath = getCredentialsLockPath()
   const currentOwner = credentialsTransactionOwner.getStore()
@@ -218,38 +254,30 @@ export async function withCredentialsTransactionLockAsync<T>(
       }
     }
 
-    const timeoutMs = readLockDuration(
-      'ORIZU_CREDENTIALS_LOCK_TIMEOUT_MS',
-      DEFAULT_CREDENTIALS_LOCK_TIMEOUT_MS,
-      MAX_CREDENTIALS_LOCK_TIMEOUT_MS
-    )
+    const timeoutMs = credentialsLockTimeoutMs()
     let timer: ReturnType<typeof setTimeout> | undefined
     const didRelease = await Promise.race([
       heldCredentialsLock.released.then(() => true),
       new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs) }),
     ])
     if (timer) clearTimeout(timer)
-    if (!didRelease) {
-      throw new Error(
-        `ORIZU_CREDENTIALS_LOCK_TIMEOUT: credentials mutation did not acquire the lock within ${timeoutMs}ms. Verify no Orizu process is running, then remove credentials.json.lock manually.`
-      )
-    }
-    return await withCredentialsTransactionLockAsync(operation)
+    if (!didRelease) throw credentialsLockTimeoutError(timeoutMs)
+    return await withCredentialsTransactionLockAsync(operation, acquire)
   }
 
-  const lock = acquireCredentialsLock()
+  const lock = await acquire()
   const owner = Symbol('credentials-transaction-owner')
   lock.asyncOwner = owner
   heldCredentialsLock = lock
+  let failed = false
   try {
     return await credentialsTransactionOwner.run(owner, operation)
+  } catch (error) {
+    failed = true
+    throw error
   } finally {
     heldCredentialsLock = null
-    try {
-      releaseCredentialsLock(lock)
-    } finally {
-      lock.resolveReleased()
-    }
+    endTransaction(lock, failed)
   }
 }
 
@@ -319,18 +347,26 @@ function writeCredentials(config: StoredCredentialsV2 | StoredCredentialsV3) {
   const payload = JSON.stringify(config, null, 2) + '\n'
 
   try {
-    const fd = openSync(tempPath, 'wx', 0o600)
     try {
-      writeFileSync(fd, payload, 'utf-8')
-      fsyncSync(fd)
-    } finally {
-      closeSync(fd)
-    }
+      const fd = openSync(tempPath, 'wx', 0o600)
+      try {
+        writeFileSync(fd, payload, 'utf-8')
+        fsyncSync(fd)
+      } finally {
+        closeSync(fd)
+      }
 
-    chmodSync(tempPath, 0o600)
-    // Never delete the destination to emulate replacement. If this platform
-    // cannot atomically replace it, preserve the old file and surface the error.
-    renameSync(tempPath, path)
+      chmodSync(tempPath, 0o600)
+      // Never delete the destination to emulate replacement. If this platform
+      // cannot atomically replace it, preserve the old file and surface the error.
+      renameSync(tempPath, path)
+    } catch (error) {
+      // Until the rename succeeds the saved file is untouched.
+      throw new Error(
+        `ORIZU_CREDENTIALS_WRITE_FAILED: could not save sign-ins to ${path} (${errorCode(error)}). The saved file is unchanged.`,
+        { cause: error }
+      )
+    }
     chmodSync(path, 0o600)
   } finally {
     // On success rename has already removed this path; on every error this
@@ -347,11 +383,17 @@ function createEmptyCredentialsConfig(): StoredCredentialsV3 {
   }
 }
 
+// A missing file, invalid JSON or an unknown format start empty (the "log in
+// again" recovery). A file that exists but cannot be read is never replaced:
+// that would delete every other saved sign-in.
 function loadCredentialsConfigForWrite(): StoredCredentialsV2 | StoredCredentialsV3 {
   try {
     return loadCredentialsConfig() || createEmptyCredentialsConfig()
-  } catch {
-    return createEmptyCredentialsConfig()
+  } catch (error) {
+    throw new Error(
+      `ORIZU_CREDENTIALS_READ_FAILED: could not read ${getCredentialsPath()} (${errorCode(error)}). Saved sign-ins were not changed. Move it aside, then run \`orizu login\` again.`,
+      { cause: error }
+    )
   }
 }
 

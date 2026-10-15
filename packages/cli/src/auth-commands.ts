@@ -142,6 +142,10 @@ interface AuthenticatedLoginResponse extends LoginResponse {
   apiKey: string
 }
 
+function isCredentialsFileFailure(message: string): boolean {
+  return message.startsWith('ORIZU_CREDENTIALS_READ_FAILED:') || message.startsWith('ORIZU_CREDENTIALS_WRITE_FAILED:')
+}
+
 async function login(baseUrlOverride?: string) {
   const target = baseUrlOverride !== undefined
     ? { baseUrl: baseUrlOverride, isDefault: false }
@@ -153,13 +157,14 @@ async function login(baseUrlOverride?: string) {
   try {
     loginData = await authenticateAtBaseUrl(baseUrl)
     if (!loginData) return
-    saveServerCredentials(baseUrl, {
-      credentialType: 'pat',
-      apiKey: loginData.apiKey,
-    })
+    const apiKey = loginData.apiKey
+    // Waits for the lock without freezing the CLI (ORI-2421).
+    const { withCredentialsTransaction } = await import('./credentials-transaction.js')
+    await withCredentialsTransaction(async () => saveServerCredentials(baseUrl, { credentialType: 'pat', apiKey }))
   } catch (error) {
-    if (target.isDefault) {
-      const detail = error instanceof Error ? error.message : String(error)
+    const detail = error instanceof Error ? error.message : String(error)
+    // Reading or saving credentials.json is a disk problem, not a connection one.
+    if (target.isDefault && !isCredentialsFileFailure(detail)) {
       throw new Error(
         `${detail} Check connectivity to https://app.orizu.ai, then retry \`orizu login\`.`,
         { cause: error }
