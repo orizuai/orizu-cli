@@ -75,6 +75,20 @@ async function runProbe(provider: ProviderEntry, model: string, io: ModelConfigs
   if (report.classification) throw new Error(`provider_probe_failed:${report.classification}`)
 }
 
+// Runs before the add request: warnings, then the probe unless --no-probe.
+async function warnOrProbe(provider: ProviderEntry, flags: Map<string, string>, io: ModelConfigsCommandIo): Promise<void> {
+  const suspicious = new URL(provider.baseUrl).pathname.split('/').some(segment => segment.length > 32 || segment.includes('sk-'))
+  if (suspicious) io.print(io.json ? JSON.stringify({ warning: 'Base URL path may contain a secret; project members can read it.' }) : 'Warning: base URL path may contain a secret; project members can read it.')
+  if (flags.has('--no-probe')) {
+    if (flags.has('--probe-model')) io.print(io.json ? JSON.stringify({ warning: '--probe-model is ignored with --no-probe.' }) : 'Warning: --probe-model is ignored with --no-probe.')
+    io.print(io.json ? JSON.stringify({ warning: 'Provider is unproven (--no-probe).' }) : 'Warning: provider is unproven (--no-probe).')
+  } else {
+    const model = flags.get('--probe-model')
+    if (!model) throw new Error('--probe-model is required unless --no-probe')
+    await runProbe(provider, model, io)
+  }
+}
+
 export async function providersCommand(args: string[], io: ModelConfigsCommandIo, checkIdentity?: string): Promise<number> {
   try {
     const { positional, flags } = parseArgs(args)
@@ -90,6 +104,16 @@ export async function providersCommand(args: string[], io: ModelConfigsCommandIo
     if (checkIdentity === undefined && command === 'list' && positional.length === 1) {
       const { listProviders } = await import('./provider-list-workflow.js')
       return listProviders(flags.get('--project') || null, io)
+    }
+    if (checkIdentity === undefined && command === 'remove' && id && positional.length === 2) {
+      const { writeProvider } = await import('./provider-write-workflow.js')
+      return writeProvider(flags.get('--project') || null, { kind: 'remove', id }, io)
+    }
+    if (checkIdentity === undefined && command === 'add' && provider) {
+      const adding = provider
+      const { builtIn: _builtIn, ...body } = adding
+      const { writeProvider } = await import('./provider-write-workflow.js')
+      return writeProvider(flags.get('--project') || null, { kind: 'add', id: adding.id, body, before: () => warnOrProbe(adding, flags, io) }, io)
     }
     const project = await io.resolveProjectSlug?.(flags.get('--project') || null)
     if (!project) throw new Error('Project resolver unavailable')
@@ -118,23 +142,6 @@ export async function providersCommand(args: string[], io: ModelConfigsCommandIo
       const entry = lookup.find(identity.provider)
       if (!entry) throw new Error('provider_not_found')
       await runProbe(entry, identity.modelId, io)
-    } else if (command === 'remove' && id && positional.length === 2) {
-      await request(`/api/cli/providers/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`, { method: 'DELETE' })
-      io.print(io.json ? JSON.stringify({ removed: id }) : `Removed provider ${id}`)
-    } else if (command === 'add' && provider) {
-      const suspicious = new URL(provider.baseUrl).pathname.split('/').some(segment => segment.length > 32 || segment.includes('sk-'))
-      if (suspicious) io.print(io.json ? JSON.stringify({ warning: 'Base URL path may contain a secret; project members can read it.' }) : 'Warning: base URL path may contain a secret; project members can read it.')
-      if (flags.has('--no-probe')) {
-        if (flags.has('--probe-model')) io.print(io.json ? JSON.stringify({ warning: '--probe-model is ignored with --no-probe.' }) : 'Warning: --probe-model is ignored with --no-probe.')
-        io.print(io.json ? JSON.stringify({ warning: 'Provider is unproven (--no-probe).' }) : 'Warning: provider is unproven (--no-probe).')
-      } else {
-        const model = flags.get('--probe-model')
-        if (!model) throw new Error('--probe-model is required unless --no-probe')
-        await runProbe(provider, model, io)
-      }
-      const { builtIn: _builtIn, ...body } = provider
-      const result = await request(root, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-      io.print(io.json ? JSON.stringify(result) : `Added provider ${id}`)
     } else throw new Error('Usage: orizu providers <add|list|remove> [--project <team/project>] [--json]')
     return 0
   } catch (error) {
