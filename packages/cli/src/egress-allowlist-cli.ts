@@ -9,11 +9,10 @@
  * The BASE allowlist (Orizu API + model provider + git host) is code-owned and
  * NOT shown/managed here — this surface only widens a team's egress with domains
  * a customer workflow needs. Human ADMIN only: the server rejects agent bearers
- * and non-admins (the definer RPC gates on is_team_admin). Pure command logic
- * with an injected fetcher.
+ * and non-admins (the definer RPC gates on is_team_admin). The arguments and
+ * output live here; the requests run on Effect in egress-allowlist-workflow.ts
+ * (ORI-2764), loaded only when this command runs.
  */
-
-import { authedFetch } from './http.js'
 
 /** Mirrors MAX_TEAM_EGRESS_DOMAINS in the shared read-side validator
  *  (workers/session-coordinator/src/egress-domains.ts). The coordinator only
@@ -28,11 +27,8 @@ export interface EgressAllowlistCommandIo {
   json: boolean
   print: (line: string) => void
   printErr?: (line: string) => void
+  /** Stands in for `authedFetch` in tests. */
   fetcher?: CliFetcher
-}
-
-function fetcherFrom(io: EgressAllowlistCommandIo): CliFetcher {
-  return io.fetcher ?? authedFetch
 }
 
 function argValue(args: readonly string[], flag: string): string | null {
@@ -59,24 +55,14 @@ function printErr(io: EgressAllowlistCommandIo, message: string): void {
   ;(io.printErr ?? io.print)(message)
 }
 
-async function responseMessage(response: Response): Promise<string> {
-  try {
-    const data = (await response.clone().json()) as Record<string, unknown>
-    const error = typeof data.error === 'string' ? data.error : null
-    return error || response.statusText || String(response.status)
-  } catch {
-    return response.statusText || String(response.status)
-  }
-}
-
-function splitDomains(value: string): string[] {
+export function splitDomains(value: string): string[] {
   return value
     .split(',')
     .map(d => d.trim())
     .filter(d => d.length > 0)
 }
 
-interface CurrentAllowlist {
+export interface CurrentAllowlist {
   domains: string[]
   /** ALI-1174: legacy entries the server flags as failing the tightened
    *  validator — stored, shown by GET, but silently dropped by the
@@ -87,7 +73,7 @@ interface CurrentAllowlist {
   capped: string[]
 }
 
-function stringArray(value: unknown): string[] {
+export function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((d): d is string => typeof d === 'string') : []
 }
 
@@ -102,7 +88,7 @@ function stringArray(value: unknown): string[] {
  * shrink-by-one on an oversized legacy row leaves the returned set still
  * over-cap and the server does not send cappedDomains back.
  */
-function deriveCapped(stored: readonly string[], invalid: readonly string[]): string[] {
+export function deriveCapped(stored: readonly string[], invalid: readonly string[]): string[] {
   const invalidSet = new Set(invalid)
   const capped: string[] = []
   let validCount = 0
@@ -114,20 +100,7 @@ function deriveCapped(stored: readonly string[], invalid: readonly string[]): st
   return capped
 }
 
-async function fetchCurrent(fetcher: CliFetcher, path: string): Promise<CurrentAllowlist> {
-  const response = await fetcher(path, { method: 'GET' })
-  if (!response.ok) {
-    throw new Error(`show failed (${response.status}): ${await responseMessage(response)}`)
-  }
-  const data = (await response.json()) as { extraDomains?: unknown; invalidDomains?: unknown; cappedDomains?: unknown }
-  return {
-    domains: stringArray(data.extraDomains),
-    invalid: stringArray(data.invalidDomains),
-    capped: stringArray(data.cappedDomains),
-  }
-}
-
-function emit(io: EgressAllowlistCommandIo, teamSlug: string, current: CurrentAllowlist): void {
+export function emit(io: EgressAllowlistCommandIo, teamSlug: string, current: CurrentAllowlist): void {
   if (io.json) {
     io.print(
       JSON.stringify({
@@ -164,58 +137,13 @@ export async function egressAllowlistCommand(args: string[], io: EgressAllowlist
     printErr(io, 'Usage: orizu team egress-allowlist <team> [--add <domain>|--remove <domain>|--set a.com,b.com|--clear] [--json]')
     return 1
   }
-  const path = `/api/cli/teams/${encodeURIComponent(teamSlug)}/egress-allowlist`
-  const fetcher = fetcherFrom(io)
-
-  const setValue = argValue(args, '--set')
-  const addValue = argValue(args, '--add')
-  const removeValue = argValue(args, '--remove')
-  const clear = args.includes('--clear')
-  const isMutation = setValue !== null || addValue !== null || removeValue !== null || clear
-
-  try {
-    if (!isMutation) {
-      emit(io, teamSlug, await fetchCurrent(fetcher, path))
-      return 0
-    }
-
-    // Compute the next set. --set/--clear replace; --add/--remove mutate current.
-    let next: string[]
-    if (setValue !== null) {
-      next = splitDomains(setValue)
-    } else if (clear) {
-      next = []
-    } else {
-      const current = await fetchCurrent(fetcher, path)
-      const set = new Set(current.domains)
-      if (addValue) for (const d of splitDomains(addValue)) set.add(d)
-      if (removeValue) for (const d of splitDomains(removeValue)) set.delete(d)
-      next = [...set]
-    }
-
-    const response = await fetcher(path, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domains: next }),
-    })
-    if (!response.ok) {
-      printErr(io, `egress-allowlist update failed (${response.status}): ${await responseMessage(response)}`)
-      return 1
-    }
-    const data = (await response.json()) as { extraDomains?: unknown; invalidDomains?: unknown }
-    const stored = Array.isArray(data.extraDomains) ? stringArray(data.extraDomains) : next
-    const invalid = stringArray(data.invalidDomains)
-    // Grandfathered retention: a successful PUT may still STORE legacy
-    // invalid entries the admin retained — the server flags them and we show
-    // it. Round 5 (P2): a >100-entry legacy row can only shrink one entry per
-    // PUT (the write RPC's GREATEST(100, stored-1) bound), so the returned
-    // set can still be OVER the cap. Re-derive the cap annotations from the
-    // returned set — same positional logic GET uses — instead of assuming
-    // the RPC left it at/under 100.
-    emit(io, teamSlug, { domains: stored, invalid, capped: deriveCapped(stored, invalid) })
-    return 0
-  } catch (error) {
-    printErr(io, error instanceof Error ? error.message : String(error))
-    return 1
-  }
+  const { runEgressAllowlist } = await import('./egress-allowlist-workflow.js')
+  return await runEgressAllowlist({
+    teamSlug,
+    path: `/api/cli/teams/${encodeURIComponent(teamSlug)}/egress-allowlist`,
+    setValue: argValue(args, '--set'),
+    addValue: argValue(args, '--add'),
+    removeValue: argValue(args, '--remove'),
+    clear: args.includes('--clear'),
+  }, io)
 }
