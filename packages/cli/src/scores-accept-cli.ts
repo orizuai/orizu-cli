@@ -11,22 +11,13 @@
  * own argument parsing and printing via injected io.
  */
 
-import { authedFetch } from './http.js'
 import { sanitizeTerminalText } from './json-response.js'
 
 export interface ScoresAcceptIo {
   json: boolean
   print: (line: string) => void
   resolveProjectSlug: (projectArg: string | null) => Promise<string>
-  fetcher?: (path: string, init?: RequestInit) => Promise<Response>
-}
-
-interface AcceptedScoreRun {
-  id: string
-  provenance: string
-  acceptedByUserId: string | null
-  acceptedAt: string | null
-  alreadyAccepted: boolean
+  fetcher?: (path: string, init: RequestInit) => Promise<Response>
 }
 
 function argValue(args: readonly string[], flag: string): string | null {
@@ -35,29 +26,6 @@ function argValue(args: readonly string[], flag: string): string | null {
     return null
   }
   return args[index + 1]
-}
-
-// Shared-parser behavior (artifact-pull.ts pattern): a non-JSON or malformed
-// body becomes a bounded, sanitized error — never a raw JSON.parse throw.
-async function parseJsonPayload<T>(response: Response, context: string): Promise<T> {
-  const contentType = response.headers.get('content-type') || ''
-  const rawBody = await response.text()
-
-  if (!contentType.includes('application/json')) {
-    throw new Error(
-      `${context} returned non-JSON response (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
-
-  try {
-    return JSON.parse(rawBody) as T
-  } catch {
-    throw new Error(
-      `${context} returned invalid JSON (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
 }
 
 // Only these options consume the following token as their value. Valueless
@@ -87,19 +55,9 @@ export async function acceptScoreRunCommand(args: string[], io: ScoresAcceptIo):
   }
 
   const project = argValue(args, '--project') || await io.resolveProjectSlug(null)
-  const fetcher = io.fetcher || authedFetch
-
-  const response = await fetcher(`/api/cli/scores/accept?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scoreRunId }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to accept score run: ${await response.text()}`)
-  }
-
-  const data = await parseJsonPayload<{ scoreRun: AcceptedScoreRun }>(response, 'Score accept')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite({ ...writes.scoreAccept(project, scoreRunId), ...(io.fetcher ? { fetcher: io.fetcher } : {}) }, io)
+  if (!data) return
   if (io.json) {
     io.print(JSON.stringify(data))
     return

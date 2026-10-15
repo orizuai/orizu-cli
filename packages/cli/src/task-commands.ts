@@ -20,7 +20,6 @@ import { authedFetch, getBaseUrl } from './http.js'
 import { formatTaskCreateError } from './task-create-error.js'
 import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
 import { shellQuote } from './auth-commands.js'
-import { extractErrorMessage } from './error-response.js'
 import { askYesNo } from './setup-and-skills-commands.js'
 import type { TaskStatusPayload } from './account-directory.js'
 
@@ -154,37 +153,12 @@ async function createTask() {
     requestBody.requiredAssignmentsPerRow = labelsPerItem
   }
 
-  const response = await authedFetch('/api/cli/tasks', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  })
-
-  if (!response.ok) {
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.taskCreate(requestBody, async response => {
     const cliError = await formatTaskCreateError(response)
-    if (hasJsonFlag()) {
-      const payload = cliError.structuredPayload ?? { error: cliError.message }
-      printLine(JSON.stringify({
-        ...payload,
-        httpStatus: cliError.httpStatus,
-      }, null, 2))
-    }
-    throw cliError
-  }
-
-  const data = await parseJsonResponse<{
-    task: {
-      id: string
-      title: string
-      status: string
-      requiredAssignmentsPerRow: number
-      versionId: string
-      versionNum: number
-    }
-    assignmentsCreated: number
-    assignmentShortfall?: number
-    warning?: string
-  }>(response, 'Task create')
+    return { message: cliError.message, json: { error: cliError.message, ...cliError.structuredPayload, httpStatus: cliError.httpStatus } }
+  }), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
 
   if (hasJsonFlag()) {
     printLine(JSON.stringify({
@@ -295,29 +269,9 @@ async function updateTask() {
     throw new Error('Usage: orizu tasks update --task <taskId> [--title <text>] [--description <text>|--description-file <path>] [--instructions <text>|--instructions-file <path>] [--dataset <datasetId>] [--app <appId> [--version <n>]] [--labels-per-item <n>] [--assignees <userIdOrEmail1,userIdOrEmail2> | --assignment-file <path>] [--json]')
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to update task: ${await extractErrorMessage(response)}`)
-  }
-
-  const data = await parseJsonResponse<{
-    task: {
-      id: string
-      title?: string | null
-      status?: string | null
-      dataset_id?: string | null
-      app_id?: string | null
-      version_id?: string | null
-      required_assignments_per_row?: number | null
-    }
-    assignmentMode?: string
-    assignmentsCreated?: number
-  }>(response, 'Task update')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.taskUpdate(taskId, requestBody), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
 
   if (hasJsonFlag()) {
     printJson({
@@ -368,15 +322,9 @@ async function discardTask() {
     }
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}`, {
-    method: 'DELETE',
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to discard draft task: ${await extractErrorMessage(response)}`)
-  }
-
-  const data = await parseJsonResponse<{ success: boolean }>(response, 'Task discard')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.taskDiscard(taskId), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson({ taskId, discarded: data.success })
     return
@@ -400,31 +348,12 @@ async function publishTask() {
     throw new Error('Usage: orizu tasks publish --task <taskId> (--assignees <userId1,userId2> | --assignment-file <path>) [--json]')
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/publish`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(
-      explicitAssignments
-        ? { explicitAssignments }
-        : { memberIds: assignees }
-    ),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to publish task: ${await extractErrorMessage(response)}`)
-  }
-
-  const data = await parseJsonResponse<{
-    task: { id: string; status: string }
-    assignmentsProcessed: number
-    assignmentsCreated: number
-    assignmentsRemoved?: number
-    assignmentShortfall?: number
-    warning?: string
-  }>(
-    response,
-    'Task publish'
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(
+    writes.taskPublish(taskId, explicitAssignments ? { explicitAssignments } : { memberIds: assignees }),
+    { json: hasJsonFlag(), print: printLine }
   )
+  if (!data) return
 
   if (hasJsonFlag()) {
     printLine(JSON.stringify({
@@ -477,23 +406,9 @@ async function assignTask() {
     requestBody.replaceExisting = true
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/assign`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to assign task: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    assignmentsProcessed?: number
-    assignmentsCreated: number
-    assignmentsRemoved?: number
-    assignmentShortfall?: number
-    warning?: string
-  }>(response, 'Task assign')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.taskAssign(taskId, requestBody), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson({
       assignmentMode: explicitAssignments ? 'custom' : 'auto',
@@ -571,17 +486,9 @@ async function updateTaskStatus(targetStatus: 'paused' | 'active' | 'completed')
     throw new Error(`Usage: orizu tasks ${labels.verb} --task <taskId>`)
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: targetStatus }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to ${labels.verb} task: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ task: { id: string; status: string } }>(response, 'Task status update')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.taskStatus(taskId, labels.verb, targetStatus), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson({ task: data.task })
     return

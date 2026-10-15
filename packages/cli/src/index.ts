@@ -303,10 +303,8 @@ async function logOptimizationEvent() {
     throw new Error('Usage: orizu log <event_type> --run-id <id> --sequence <n> --payload @event.json')
   }
 
-  const response = await authedFetch(`/api/cli/optimization-runs/${encodeURIComponent(runId)}/events`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.optimizationEvent(runId, {
       eventId: getArg('--event-id') || randomUUID(),
       sequence,
       eventType,
@@ -317,14 +315,8 @@ async function logOptimizationEvent() {
       parentCandidateId: getArg('--parent-candidate-id'),
       childCandidateId: getArg('--child-candidate-id'),
       payload,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to log event: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ eventId: string }>(response, 'Optimization event log')
+  }), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson({ eventId: data.eventId })
     return
@@ -1135,10 +1127,8 @@ async function startOptimizationRun() {
     })),
   ]
 
-  const response = await authedFetch(`/api/cli/optimization-runs?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.optimizationStart(project, {
       optimizerVersionId,
       promptVersionIds,
       judgeVersionIds,
@@ -1148,22 +1138,8 @@ async function startOptimizationRun() {
       trainSplitName: getArg('--train-split') || undefined,
       validationSplitName: getArg('--validation-split') || undefined,
       metadata,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to start optimization run: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    optimization_run_id: string
-    optimizationRun: {
-      id: string
-      status: string
-      startedAt?: string | null
-      createdAt?: string | null
-    }
-  }>(response, 'Optimization run start')
+  }), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
 
   if (hasJsonFlag()) {
     printJson(data)
@@ -1236,29 +1212,9 @@ async function updateOptimizationRunLifecycle(action: OptimizationLifecycleActio
     }
   }
 
-  const response = await authedFetch(`/api/cli/optimization-runs/${encodeURIComponent(runId)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to update optimization run: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    optimizationRun: {
-      id: string
-      status?: string
-      startedAt?: string | null
-      finishedAt?: string | null
-      bestScore?: number | null
-      bestCandidateId?: string | null
-      resultPromptVersionId?: string | null
-      metadata?: Record<string, unknown>
-    }
-    cancellationStatus?: 'already_terminal'
-  }>(response, 'Optimization run update')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.optimizationLifecycle(runId, body), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
 
   if (hasJsonFlag()) {
     printJson(data)

@@ -310,6 +310,7 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
       throw new Error(`Usage: orizu manifests ${subcommand} <id> [--json]`)
     }
     const id = await resolveManifestId(io, args, idArg)
+    if (subcommand === 'reject') return await rejectManifest(io, id)
     const postAction = () =>
       fetcherFrom(io)(`/api/cli/promotion-manifests/${encodeURIComponent(id)}`, {
         method: 'POST',
@@ -341,32 +342,44 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
     }
     const data = await requireOk(response, `Manifest ${subcommand}`)
     const manifest = (data.manifest ?? {}) as Record<string, unknown>
-    const lines = [manifestLine(manifest)]
-    // Reject reaps the session branch best-effort; a failed reap must never be
-    // silent (ALI-1043) — surface it with the exact cleanup command.
-    if (subcommand === 'reject' && manifest.actionType === 'repo_merge') {
-      const outcome = asRecord(manifest.outcome)
-      const branch = asRecord(manifest.proposedState).branch
-      // Terse server-provided reason for a failed reap (ALI-1043) — shown so
-      // the operator knows WHY manual cleanup is needed.
-      const cause =
-        typeof outcome.branchDeleteError === 'string' && outcome.branchDeleteError.length > 0
-          ? ` (${outcome.branchDeleteError})`
-          : ''
-      if (outcome.branchDeleted === true) {
-        lines.push('session branch deleted')
-      } else if (typeof branch === 'string' && branch.length > 0) {
-        lines.push(
-          `warning: the session branch could not be deleted${cause} — remove it with: git push origin --delete ${branch}`
-        )
-      } else {
-        lines.push(`warning: the session branch could not be deleted${cause} (branch name unavailable)`)
-      }
-    }
-    emit(io, { manifest }, lines.join('\n'))
+    emit(io, { manifest }, manifestLine(manifest))
     return 0
   }
 
   io.print('Usage: orizu manifests <list|show|approve|reject|apply|revert> ... [--json]')
   return 1
+}
+
+// ORI-2726: one write with a deadline and Ctrl-C handling; a lost answer says
+// the manifest may already be rejected instead of printing "(unknown)".
+async function rejectManifest(io: ManifestsCommandIo, id: string): Promise<number> {
+  const { manifestReject } = await import('./cli-write-commands.js')
+  const { sendOneRequestWrite } = await import('./one-request-write.js')
+  const sent = await sendOneRequestWrite({ ...manifestReject(id), json: io.json, print: io.print, ...(io.fetcher ? { fetcher: io.fetcher } : {}) })
+  if (sent.kind === 'interrupted') return sent.exitCode
+  const manifest = sent.reply.manifest
+  const lines = [manifestLine(manifest)]
+  // Reject reaps the session branch best-effort; a failed reap must never be
+  // silent (ALI-1043) — surface it with the exact cleanup command.
+  if (manifest.actionType === 'repo_merge') {
+    const outcome = asRecord(manifest.outcome)
+    const branch = asRecord(manifest.proposedState).branch
+    // Terse server-provided reason for a failed reap (ALI-1043) — shown so
+    // the operator knows WHY manual cleanup is needed.
+    const cause =
+      typeof outcome.branchDeleteError === 'string' && outcome.branchDeleteError.length > 0
+        ? ` (${outcome.branchDeleteError})`
+        : ''
+    if (outcome.branchDeleted === true) {
+      lines.push('session branch deleted')
+    } else if (typeof branch === 'string' && branch.length > 0) {
+      lines.push(
+        `warning: the session branch could not be deleted${cause} — remove it with: git push origin --delete ${branch}`
+      )
+    } else {
+      lines.push(`warning: the session branch could not be deleted${cause} (branch name unavailable)`)
+    }
+  }
+  emit(io, { manifest }, lines.join('\n'))
+  return 0
 }

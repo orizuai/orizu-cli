@@ -506,24 +506,9 @@ async function linkAppDataset() {
     appId = selected.appId
   }
 
-  const response = await authedFetch(`/api/cli/apps/${encodeURIComponent(appId)}/link-dataset`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      datasetId,
-      versionNum,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to link dataset: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
-    app: { id: string; name: string }
-    linkedDataset: { id: string; name: string }
-    versionNum: number
-  }>(response, 'App link dataset')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.appLinkDataset(appId, { datasetId, ...(versionNum === undefined ? {} : { versionNum }) }), { json: hasJsonFlag(), print: printLine })
+  if (!data) return
 
   if (hasJsonFlag()) {
     printJson({ app: data.app, linkedDataset: data.linkedDataset, versionNum: data.versionNum })
