@@ -4,7 +4,8 @@ import { redactSecrets } from './secret-redaction.js'
 export const LOGOUT_DIAGNOSTIC_LIMIT = 180
 
 function boundedLogoutDiagnostic(value: string, secrets: readonly string[]): string {
-  const bounded = sanitizeTerminalText(redactSecrets(value, { secrets }))
+  // Scrubbed again after control characters are stripped, so one inside a secret can't hide it.
+  const bounded = redactSecrets(sanitizeTerminalText(redactSecrets(value, { secrets })), { secrets })
     .slice(0, LOGOUT_DIAGNOSTIC_LIMIT)
   return sanitizeHumanInlineText(sanitizeTerminalText, bounded).slice(0, LOGOUT_DIAGNOSTIC_LIMIT)
 }

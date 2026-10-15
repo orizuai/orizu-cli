@@ -173,7 +173,8 @@ import { killSwitchCommand } from './kill-switch-cli.js'
 import { egressAllowlistCommand } from './egress-allowlist-cli.js'
 import { teamConnectorsCommand } from './team-connectors-cli.js'
 import { inspectExistingWorkspaceTeam, getWorkspaceRoot } from './workspace.js'
-import { writeLastErrorRecord, extractLastErrorCode } from './last-error-record.js'
+import { errorOutputSecrets, writeLastErrorRecord, extractLastErrorCode } from './last-error-record.js'
+import { redactSecrets } from './secret-redaction.js'
 import type { CliLengthStats, CliLengthMeasurementUnavailableReason } from './prompt-length-wire.js'
 import type { RunnerInstructionSet } from './runner-instruction-set-contract.js'
 import type { ReportCommentsCliContext } from './report-comments-cli.js'
@@ -2244,9 +2245,18 @@ function isCliEntrypoint(): boolean {
   }
 }
 
+// A secret this process holds (a login code, its verifier, a poll token, a
+// bearer, a forwarded runner key) is never printed, even when a server echoes
+// it back in an error. last-error.json hides the same values. Scrubbed again
+// after control characters are stripped, so one inside a secret can't hide it.
+function printErrorWithoutSecrets(message: string): void {
+  const secrets = errorOutputSecrets()
+  printError(redactSecrets(sanitizeTerminalText(redactSecrets(message, { secrets })), { secrets }))
+}
+
 if (isCliEntrypoint()) {
   const rawArgs = process.argv.slice(2)
-  withPassiveUpdateNotice(rawArgs, getCliVersion, printError, args =>
+  withPassiveUpdateNotice(rawArgs, getCliVersion, printErrorWithoutSecrets, args =>
     // ORI-2429: the process-boundary adapter stays a Promise (ADR-038 guide); the record write is Effect-owned and never replaces this error.
     main(args).catch(async error => {
       const message = error instanceof Error ? error.message : 'Unknown error'

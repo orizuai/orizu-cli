@@ -187,6 +187,21 @@ function isSerializedRecordTooLarge(record: LastErrorRecord): boolean {
   return Buffer.byteLength(serializeRecord(record), 'utf8') > LAST_ERROR_FILE_MAX_BYTES
 }
 
+/** Shorter values are left alone: replacing them would garble ordinary text. */
+const MIN_ERROR_OUTPUT_SECRET_LENGTH = 8
+
+/**
+ * The values no error output may show: this process's remembered secrets, the
+ * current bearer and runner-forwarded keys. last-error.json and the terminal's
+ * error line both use this list. Longest first, so a secret inside another
+ * can't leave part of the longer one behind.
+ */
+export function errorOutputSecrets(): string[] {
+  return [...new Set([...resolveActiveProcessSecrets(), ...runnerForwardedSecretValues()])]
+    .filter(secret => typeof secret === 'string' && secret.length >= MIN_ERROR_OUTPUT_SECRET_LENGTH)
+    .sort((left, right) => right.length - left.length)
+}
+
 function resolveActiveProcessSecrets(): readonly string[] {
   const rememberedSecrets = getSecretsSeenThisProcess()
   try {
@@ -314,8 +329,7 @@ export async function writeLastErrorRecord(
       ...input,
       homeDir: input.homeDir === undefined ? resolveHomeDir() : input.homeDir,
       secrets: [
-        ...resolveActiveProcessSecrets(),
-        ...runnerForwardedSecretValues(),
+        ...errorOutputSecrets(),
         ...(input.secrets ?? []),
       ],
     })
