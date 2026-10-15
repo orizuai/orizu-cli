@@ -5,7 +5,8 @@ import { stdout as output } from 'process'
 import { renderBanner } from './banner.js'
 import { renderRootHelp } from './help.js'
 import { sanitizeTerminalText } from './json-response.js'
-import { hasJsonFlag } from './command-line-arguments.js'
+import { cliArgs, hasJsonFlag } from './command-line-arguments.js'
+import { hideHeldSecrets } from './json-output-scrub.js'
 import { reportReplacementWarning } from './report-replacement-warning.js'
 
 function getErrorMessage(error: unknown): string {
@@ -24,8 +25,9 @@ function getCliVersion(): string {
   return packageJson.version
 }
 
+// ORI-2744: under --json, stdout never carries a secret this process holds.
 function printLine(message = '') {
-  output.write(`${message}\n`)
+  output.write(`${hasJsonFlag() ? hideHeldSecrets(message) : message}\n`)
 }
 
 function printVersion() {
@@ -69,9 +71,21 @@ function printJson(value: Record<string, unknown>) {
   printLine(JSON.stringify(value))
 }
 
+/**
+ * The one --json output allowed to carry a held secret: `orizu env --json`
+ * prints the token so a script can export it. Any new caller needs its own
+ * reviewed change and a case in cli-json-output-scrub-process.test.ts.
+ */
+function printJsonWithHeldSecrets(value: Record<string, unknown>) {
+  // Any other command is scrubbed as usual, so a wrong caller can't leak.
+  if (cliArgs[0] !== 'env') return printJson(value)
+  output.write(`${JSON.stringify(value)}\n`)
+}
+
 export {
   getErrorMessage,
   printJson,
+  printJsonWithHeldSecrets,
   printLine,
   printPushDisclosures,
   getCliVersion,

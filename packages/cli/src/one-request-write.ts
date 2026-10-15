@@ -4,9 +4,7 @@ import { datasetTransferTimeoutMs } from './dataset-transfer-policy.js'
 import { isJsonErrorResponsePayload } from './error-response.js'
 import { authedFetch } from './http.js'
 import { sanitizeTerminalText } from './json-response.js'
-import { errorOutputSecrets } from './last-error-record.js'
 import { unreachedCode } from './request-outcome.js'
-import { redactSecrets } from './secret-redaction.js'
 
 // ORI-2726: one CLI write sent as one request, with a deadline, Ctrl-C and
 // SIGTERM handling, and one way of saying that a write may already be saved
@@ -147,12 +145,6 @@ function send<A>(write: OneRequestWrite<A>, timeoutMs: number, onSent: () => voi
   })
 }
 
-// A `--json` failure object can quote the server's error text, so secrets this
-// process holds (the bearer, a forwarded key) are hidden there as on stderr.
-function printJson(write: Pick<OneRequestWrite<unknown>, 'print'>, value: Record<string, unknown>): void {
-  write.print(JSON.stringify(redactSecrets(value, { secrets: errorOutputSecrets() })))
-}
-
 /**
  * Sends one write. Ctrl-C or SIGTERM stops the wait and returns `interrupted`
  * with the shell's usual exit code; the server may still finish on its own, so
@@ -175,14 +167,14 @@ export async function sendOneRequestWrite<A>(write: OneRequestWrite<A>): Promise
     if (interrupted !== undefined) {
       const message = `${write.name} interrupted.`
       const unknown = sent ? mayAlreadyBeSavedFields(write.mayAlreadyBeSaved.advice) : {}
-      if (write.json) printJson(write, { error: message, ...unknown })
+      if (write.json) write.print(JSON.stringify({ error: message, ...unknown }))
       process.stderr.write(sent ? `${message}\n${noteLine(write.mayAlreadyBeSaved)}\n` : `${message}\n`)
       return { kind: 'interrupted', exitCode: interrupted }
     }
     const failure = Cause.squash(exit.cause)
     if (!(failure instanceof WriteFailure)) throw failure
     if (write.json) {
-      printJson(write, { ...failure.json, ...(failure.mayBeSaved ? mayAlreadyBeSavedFields(write.mayAlreadyBeSaved.advice) : {}) })
+      write.print(JSON.stringify({ ...failure.json, ...(failure.mayBeSaved ? mayAlreadyBeSavedFields(write.mayAlreadyBeSaved.advice) : {}) }))
     }
     throw new Error(failure.mayBeSaved ? `${failure.message}\n${noteLine(write.mayAlreadyBeSaved)}` : failure.message)
   } finally {

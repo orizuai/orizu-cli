@@ -18,7 +18,7 @@ import {
   getServerCredentials,
   resolveAuthTokenForBaseUrl,
 } from './credentials.js'
-import { printJson, printLine, printLoginProgress } from './cli-console-output.js'
+import { printJson, printJsonWithHeldSecrets, printLine, printLoginProgress } from './cli-console-output.js'
 import { resolveProjectSelection } from './account-directory.js'
 
 import type { LoginResponse } from './types.js'
@@ -246,7 +246,7 @@ async function printEnv() {
   const projectSlug = project ? `${project.teamSlug}/${project.slug}` : process.env.ORIZU_PROJECT || ''
 
   if (hasJsonFlag()) {
-    printJson({
+    printJsonWithHeldSecrets({
       ORIZU_API_URL: baseUrl,
       ORIZU_TOKEN: token,
       ORIZU_PROJECT_ID: projectId,
