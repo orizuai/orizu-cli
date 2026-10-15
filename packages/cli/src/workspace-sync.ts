@@ -1,9 +1,11 @@
 /**
  * Workspace tracked-resource sync commands (ALI-976 CLI half, revised spec).
  *
- * Pure logic + injected HTTP: no process.argv parsing and no printing live in
- * the command functions (the thin `workspaceSyncCommand` entry point prints).
- * This module implements the client side of the ALI-933 sync semantics:
+ * This module holds the plain parts: the inventory, hashes, cache and manifest
+ * file contents, and the thin `workspaceSyncCommand` entry point. The requests
+ * and the commands run on Effect in workspace-sync-workflow.ts (ORI-2762),
+ * loaded only when `orizu workspace` runs. Together they implement the client
+ * side of the ALI-933 sync semantics:
  *
  *   - Inventory: walk the durable workspace contract (manifests + instruction/
  *     memory/readme files) and compute each tracked file's content sha256.
@@ -46,11 +48,10 @@
  */
 
 import { spawnSync } from 'child_process'
-import { createHash } from 'crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'fs'
-import { join, relative, sep } from 'path'
+import { createHash, randomBytes } from 'crypto'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { dirname, join, relative, sep } from 'path'
 
-import { authedFetch } from './http.js'
 import {
   type CanonicalOwner,
   getWorkspaceRoot,
@@ -372,6 +373,33 @@ export function collectUntrackedPaths(cwd: string, inventory: InventoryEntry[]):
   return untracked.sort()
 }
 
+// ---- Local files: each one is replaced whole ------------------------------
+
+/** One local file a command is about to replace, with its new contents. */
+export interface PlannedWrite {
+  path: string
+  text: string
+}
+
+/**
+ * Writes a temp file beside `path`, then renames it over `path`, so the file
+ * holds either its old bytes or its new ones, never part of either. The temp
+ * file is removed when the rename fails.
+ */
+export function writeFileWhole(write: PlannedWrite, rename: (from: string, to: string) => void = renameSync): void {
+  mkdirSync(dirname(write.path), { recursive: true })
+  const temp = `${write.path}.${process.pid}-${randomBytes(4).toString('hex')}.tmp`
+  writeFileSync(temp, write.text)
+  try {
+    rename(temp, write.path)
+  } catch (error) {
+    rmSync(temp, { force: true })
+    throw error
+  }
+}
+
+const jsonText = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`
+
 // ---- Cache snapshots ------------------------------------------------------
 
 export function cacheSnapshotPath(cwd: string, relPath: string): string {
@@ -391,10 +419,12 @@ export function readCacheSnapshot(cwd: string, relPath: string): CacheSnapshot |
   }
 }
 
+export function cacheSnapshotWrite(cwd: string, snapshot: CacheSnapshot): PlannedWrite {
+  return { path: cacheSnapshotPath(cwd, snapshot.path), text: jsonText(snapshot) }
+}
+
 export function writeCacheSnapshot(cwd: string, snapshot: CacheSnapshot): void {
-  const file = cacheSnapshotPath(cwd, snapshot.path)
-  mkdirSync(join(getWorkspaceRoot(cwd), CACHE_SYNC_SUBDIR), { recursive: true })
-  writeFileSync(file, `${JSON.stringify(snapshot, null, 2)}\n`)
+  writeFileWhole(cacheSnapshotWrite(cwd, snapshot))
 }
 
 /** Every readable cache snapshot (regenerable; unreadable files are skipped). */
@@ -421,7 +451,7 @@ function listCacheSnapshots(cwd: string): CacheSnapshot[] {
 }
 
 /** Cache-known paths absent from the inventory — the `missing` transport (§3.1). */
-function missingCachePaths(cwd: string, inventory: InventoryEntry[]): string[] {
+export function missingCachePaths(cwd: string, inventory: InventoryEntry[]): string[] {
   const inventoryPaths = new Set(inventory.map(entry => entry.path))
   return listCacheSnapshots(cwd)
     .map(snapshot => snapshot.path)
@@ -431,20 +461,20 @@ function missingCachePaths(cwd: string, inventory: InventoryEntry[]): string[] {
 // Record the server row id WITHOUT advancing the base: base/versionId move
 // only on a clean confirmation or on pull/apply; the row id is pure identity
 // and is safe to persist for every sync response.
-function recordCacheResourceId(cwd: string, path: string, resourceId: string | null): void {
+export function cacheResourceIdWrite(cwd: string, path: string, resourceId: string | null): PlannedWrite | null {
   if (!resourceId) {
-    return
+    return null
   }
   const existing = readCacheSnapshot(cwd, path)
   if (existing?.resourceId === resourceId) {
-    return
+    return null
   }
   // Preserve every other field (base/version/lastSynced AND the §3.3
   // content-pending guard): recording a row id must never advance the base nor
   // silently clear a pending mark. A non-clean sync between pull and apply keeps
   // the guard intact; only a `clean` convergence (or a reconciled apply/pull)
   // clears it.
-  writeCacheSnapshot(cwd, {
+  return cacheSnapshotWrite(cwd, {
     ...(existing ?? { path, baseSha256: null, versionId: null, lastSyncedAt: null }),
     path,
     resourceId,
@@ -453,21 +483,17 @@ function recordCacheResourceId(cwd: string, path: string, resourceId: string | n
 
 // ---- Manifest edits (preserve all other fields + formatting) --------------
 
-function writeManifest(absPath: string, manifest: Record<string, unknown>): void {
-  writeFileSync(absPath, `${JSON.stringify(manifest, null, 2)}\n`)
-}
-
-function patchCanonical(absPath: string, patch: Record<string, unknown>): void {
+export function canonicalPatchWrite(absPath: string, patch: Record<string, unknown>): PlannedWrite {
   const manifest = readJsonManifest(absPath) ?? {}
   const canonical = { ...readCanonical(manifest), ...patch }
-  writeManifest(absPath, { ...manifest, canonical })
+  return { path: absPath, text: jsonText({ ...manifest, canonical }) }
 }
 
 // Attach writes ONLY `setup.attachedWorkspaceId` (ALI-1075: fresh manifests
 // carry no `canonical` block and attach must not resurrect one). A legacy
 // manifest that still has `canonical.serviceId` gets it updated in place so
 // the two ids can never disagree; it is never created.
-function patchTeamWorkspaceId(root: string, workspaceId: string): void {
+export function teamWorkspaceIdWrite(root: string, workspaceId: string): PlannedWrite {
   const absPath = join(root, 'orizu.team.json')
   const manifest = readJsonManifest(absPath) ?? {}
   const legacyCanonical = readCanonical(manifest)
@@ -476,30 +502,12 @@ function patchTeamWorkspaceId(root: string, workspaceId: string): void {
     : {}
   const setupRaw = manifest.setup
   const setup = { ...(setupRaw && typeof setupRaw === 'object' && !Array.isArray(setupRaw) ? setupRaw : {}), attachedWorkspaceId: workspaceId }
-  writeManifest(absPath, { ...manifest, ...canonicalPatch, setup })
+  return { path: absPath, text: jsonText({ ...manifest, ...canonicalPatch, setup }) }
 }
 
-// ---- HTTP helpers ---------------------------------------------------------
+// ---- Workspace identity ---------------------------------------------------
 
-async function readJson(response: Response): Promise<Record<string, unknown>> {
-  try {
-    return (await response.json()) as Record<string, unknown>
-  } catch {
-    return {}
-  }
-}
-
-interface SyncResourceResult {
-  /** Server tracked-resource ROW id (null for untracked — no row exists). */
-  id: string | null
-  path: string
-  status: string
-  serverVersionId: string | null
-  serverSha256: string | null
-  lastSyncedAt: string | null
-}
-
-function teamSlugOf(root: string): string {
+export function teamSlugOf(root: string): string {
   const manifest = readJsonManifest(join(root, 'orizu.team.json'))
   return stringOrNull(manifest?.slug) || 'local-team'
 }
@@ -513,40 +521,9 @@ export function attachedWorkspaceId(root: string): string | null {
   return fromSetup || stringOrNull(readCanonical(manifest).serviceId)
 }
 
-// Create-or-attach the server workspace. Deliberately does NOT write the
-// manifest: the caller persists the id only after the first sync round-trip
-// succeeds, so a failed sync never leaves a partially-attached manifest.
-async function createOrAttachWorkspace(root: string, fetcher: WorkspaceSyncFetcher): Promise<string> {
-  const teamSlug = teamSlugOf(root)
-  const response = await fetcher('/api/cli/workspaces', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ teamSlug, name: teamSlug, slug: teamSlug }),
-  })
-  if (!response.ok) {
-    const error = await readJson(response)
-    throw new Error(`Failed to attach workspace: ${stringOrNull(error.error) || response.status}`)
-  }
-  const data = await readJson(response)
-  const workspace = data.workspace as Record<string, unknown> | undefined
-  const id = stringOrNull(workspace?.id)
-  if (!id) {
-    throw new Error('Workspace attach response did not include an id')
-  }
-  return id
-}
-
-function requireAttachedWorkspaceId(root: string, opts: CommonOptions): string {
-  const known = stringOrNull(opts.workspaceId ?? undefined) || attachedWorkspaceId(root)
-  if (!known) {
-    throw new Error('This workspace is not attached yet. Run `orizu workspace sync` first to attach it.')
-  }
-  return known
-}
-
 // One entry per inventoried path plus `{path, missing: true}` for every
 // cache-known path absent from the inventory (spec §3.1 missing transport).
-function syncBody(root: string, entries: InventoryEntry[]) {
+export function syncBody(root: string, entries: InventoryEntry[]) {
   return {
     resources: [
       ...entries.map(entry => ({
@@ -565,47 +542,10 @@ function syncBody(root: string, entries: InventoryEntry[]) {
   }
 }
 
-async function callSync(root: string, workspaceId: string, entries: InventoryEntry[], fetcher: WorkspaceSyncFetcher): Promise<SyncResourceResult[]> {
-  const response = await fetcher(`/api/cli/workspaces/${workspaceId}/sync`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(syncBody(root, entries)),
-  })
-  if (!response.ok) {
-    const error = await readJson(response)
-    throw new Error(`Sync failed: ${stringOrNull(error.error) || response.status}`)
-  }
-  const data = await readJson(response)
-  return (Array.isArray(data.resources) ? data.resources : []) as SyncResourceResult[]
-}
-
-// ---- Commands -------------------------------------------------------------
-
-export interface StatusResourceLine {
-  path: string
-  kind: TrackedResourceKind | null
-  owner: CanonicalOwner | null
-  repoState: RepoState | null
-  localSha: string | null
-  baseSha: string | null
-  dirty: boolean
-  /**
-   * Metadata-only-pull guard (spec §3.3): the base was pulled ahead of the
-   * working content, so `apply` will refuse until the bytes are delivered.
-   */
-  contentPending?: boolean
-  /** Definitional local statuses: cache-known-but-deleted / rule-less files. */
-  localStatus?: 'missing' | 'untracked'
-  remoteStatus?: string
-  serverVersionId?: string | null
-}
-
-// -- Hosted-repo freshness + stale-branch report (ALI-996 / WS-G, ALI-972) ----
-
 /** Resolves a git ref (e.g. `origin/main`) to a SHA; null when absent/non-git. */
 export type GitRefReader = (cwd: string, ref: string) => string | null
 
-function defaultGitRef(cwd: string, ref: string): string | null {
+export function defaultGitRef(cwd: string, ref: string): string | null {
   try {
     // Strip repo-context env (set by git inside hooks) so the query answers
     // about `cwd`, not whatever repo GIT_DIR points at.
@@ -623,473 +563,6 @@ function defaultGitRef(cwd: string, ref: string): string | null {
   }
 }
 
-/**
- * "repo moved since your last pull" — the server's recorded DEFAULT-branch push
- * SHA differs from what the LOCAL repo knows the default branch to be. Compared
- * against the default-branch ref (never bare HEAD) so being on a feature branch
- * or carrying local commits never triggers a false positive.
- */
-export interface FreshnessSignal {
-  serverSha: string
-  branch: string | null
-  pushedAt: string | null
-  localDefaultSha: string
-}
-
-/** A session branch worth reporting: an old active session or an ended, unmerged one. */
-export interface StaleSessionBranch {
-  sessionId: string
-  branch: string
-  startedAt: string | null
-  reason: 'active-stale' | 'unmerged'
-}
-
-const STALE_ACTIVE_MS = 24 * 60 * 60 * 1000
-
-// Fetch the workspace record and compare its recorded DEFAULT-branch push SHA
-// against what the local repo knows that same branch to be. Best-effort: any
-// server/non-hosted/non-git/unknown-branch condition yields null so `status`
-// never fails — and never false-warns — for a local-only, offline, or
-// feature-branch checkout.
-async function fetchFreshness(
-  root: string,
-  workspaceId: string,
-  fetcher: WorkspaceSyncFetcher,
-  gitRef: GitRefReader
-): Promise<FreshnessSignal | null> {
-  const teamSlug = teamSlugOf(root)
-  const response = await fetcher(`/api/cli/workspaces?team=${encodeURIComponent(teamSlug)}`)
-  if (!response.ok) return null
-  const data = await readJson(response)
-  const workspaces = Array.isArray(data.workspaces) ? (data.workspaces as Array<Record<string, unknown>>) : []
-  const ws = workspaces.find(item => stringOrNull(item.id) === workspaceId) ?? null
-  const serverSha = ws ? stringOrNull(ws.repoLastPushSha) : null
-  const branch = ws ? stringOrNull(ws.repoLastPushBranch) : null
-  // Without the server's default-branch name we cannot locate the right local
-  // ref to compare — stay silent rather than compare against the wrong branch.
-  if (!serverSha || !branch) return null
-  // Prefer the remote-tracking ref (what the last fetch/pull observed on the
-  // default branch); fall back to the local branch. HEAD is deliberately NOT
-  // used: a feature-branch checkout must never read as "repo moved".
-  const localDefaultSha = gitRef(root, `origin/${branch}`) ?? gitRef(root, branch)
-  if (!localDefaultSha || localDefaultSha === serverSha) return null
-  return {
-    serverSha,
-    branch,
-    pushedAt: stringOrNull(ws?.repoLastPushAt ?? null),
-    localDefaultSha,
-  }
-}
-
-// List the workspace's branched sessions and flag the stale ones. Report,
-// don't reap (ALI-972): active sessions still holding a branch past 24h, and
-// ended sessions whose branch metadata persists (unmerged write-back).
-async function fetchStaleSessionBranches(
-  workspaceId: string,
-  fetcher: WorkspaceSyncFetcher,
-  now: number
-): Promise<StaleSessionBranch[]> {
-  const response = await fetcher(`/api/cli/workspaces/${workspaceId}/sessions?branched=true`)
-  if (!response.ok) return []
-  const data = await readJson(response)
-  const sessions = Array.isArray(data.sessions) ? (data.sessions as Array<Record<string, unknown>>) : []
-  const stale: StaleSessionBranch[] = []
-  for (const session of sessions) {
-    // Artifacts uses compatibility repoBranch=main for its separate private
-    // working repository. It is never a stale branch in the caller's legacy
-    // GitHub workbench checkout.
-    if (stringOrNull(session.workingRepositoryId)) continue
-    const branch = stringOrNull(session.repoBranch)
-    if (!branch) continue
-    const status = stringOrNull(session.status)
-    const startedAt = stringOrNull(session.startedAt)
-    const sessionId = stringOrNull(session.id) ?? ''
-    if (status === 'active') {
-      const started = startedAt ? Date.parse(startedAt) : NaN
-      if (!Number.isNaN(started) && now - started > STALE_ACTIVE_MS) {
-        stale.push({ sessionId, branch, startedAt, reason: 'active-stale' })
-      }
-    } else if (status === 'ended') {
-      stale.push({ sessionId, branch, startedAt, reason: 'unmerged' })
-    }
-  }
-  return stale
-}
-
-export interface StatusResult {
-  root: string
-  workspaceId: string | null
-  remote: boolean
-  resources: StatusResourceLine[]
-  /** Set only when the hosted repo's default branch moved past the local ref (ALI-996). */
-  freshness?: FreshnessSignal | null
-  /** Branched sessions worth attention; empty for local-only workspaces (ALI-972). */
-  staleSessionBranches?: StaleSessionBranch[]
-}
-
-export async function runWorkspaceStatus(
-  opts: CommonOptions & { remote?: boolean; gitRef?: GitRefReader; now?: () => number } = {}
-): Promise<StatusResult> {
-  const root = getWorkspaceRoot(opts.cwd)
-  const fetcher = opts.fetcher ?? authedFetch
-  const inventory = collectInventory(root)
-
-  const lines: StatusResourceLine[] = inventory.map(entry => {
-    const snapshot = readCacheSnapshot(root, entry.path)
-    const base = snapshot?.baseSha256 ?? null
-    // Surface the §3.3 guard only while it still bites: if the working content
-    // has since reconciled to the pending base, apply would clear it and proceed.
-    const pendingBase = snapshot?.contentPending === true
-      ? stringOrNull(snapshot.pendingBaseSha256 ?? snapshot.baseSha256 ?? null)
-      : null
-    const contentPending = pendingBase !== null && pendingBase !== entry.contentSha256
-    return {
-      path: entry.path,
-      kind: entry.kind,
-      owner: entry.owner,
-      repoState: entry.repoState,
-      localSha: entry.contentSha256,
-      baseSha: base,
-      dirty: base !== null && base !== entry.contentSha256,
-      ...(contentPending ? { contentPending: true } : {}),
-    }
-  })
-
-  // Cache-known paths that no longer exist on disk (spec §3.2 `missing`).
-  for (const path of missingCachePaths(root, inventory)) {
-    lines.push({
-      path,
-      kind: null,
-      owner: null,
-      repoState: null,
-      localSha: null,
-      baseSha: readCacheSnapshot(root, path)?.baseSha256 ?? null,
-      dirty: false,
-      localStatus: 'missing',
-    })
-  }
-
-  // Rule-less files under managed dirs (spec §3.2 `untracked`) — local only.
-  for (const path of collectUntrackedPaths(root, inventory)) {
-    lines.push({
-      path,
-      kind: null,
-      owner: null,
-      repoState: null,
-      localSha: null,
-      baseSha: null,
-      dirty: false,
-      localStatus: 'untracked',
-    })
-  }
-
-  let workspaceId: string | null = opts.workspaceId ?? attachedWorkspaceId(root)
-  if (opts.remote) {
-    // No read-only remote status exists in v0 (spec §3.1): this is the same
-    // server-side reconciliation as `sync` (it registers/updates records).
-    // It never writes the local cache, though.
-    workspaceId = requireAttachedWorkspaceId(root, opts)
-    const remote = await callSync(root, workspaceId, inventory, fetcher)
-    const byPath = new Map(remote.map(item => [item.path, item]))
-    for (const line of lines) {
-      const match = byPath.get(line.path)
-      if (match) {
-        line.remoteStatus = match.status
-        line.serverVersionId = match.serverVersionId
-      }
-    }
-  }
-
-  // Hosted-repo freshness + stale-branch report (best-effort): only for attached
-  // workspaces, and every server/non-git failure is swallowed so a local-only or
-  // offline `status` behaves exactly as before.
-  let freshness: FreshnessSignal | null = null
-  let staleSessionBranches: StaleSessionBranch[] = []
-  if (workspaceId) {
-    const gitRef = opts.gitRef ?? defaultGitRef
-    const now = (opts.now ?? (() => Date.now()))()
-    try {
-      freshness = await fetchFreshness(root, workspaceId, fetcher, gitRef)
-    } catch {
-      freshness = null
-    }
-    try {
-      staleSessionBranches = await fetchStaleSessionBranches(workspaceId, fetcher, now)
-    } catch {
-      staleSessionBranches = []
-    }
-  }
-
-  return { root, workspaceId, remote: Boolean(opts.remote), resources: lines, freshness, staleSessionBranches }
-}
-
-export interface SyncResultLine extends SyncResourceResult {
-  cacheAdvanced: boolean
-}
-
-export interface SyncResult {
-  root: string
-  workspaceId: string
-  resources: SyncResultLine[]
-}
-
-export async function runWorkspaceSync(opts: CommonOptions = {}): Promise<SyncResult> {
-  const root = getWorkspaceRoot(opts.cwd)
-  const fetcher = opts.fetcher ?? authedFetch
-  const knownId = stringOrNull(opts.workspaceId ?? undefined) || attachedWorkspaceId(root)
-  const workspaceId = knownId ?? await createOrAttachWorkspace(root, fetcher)
-  const inventory = collectInventory(root)
-  const remote = await callSync(root, workspaceId, inventory, fetcher)
-
-  // Persist the attachment only after the sync round-trip succeeded, so a
-  // failed first sync leaves orizu.team.json byte-identical.
-  if (!knownId) {
-    patchTeamWorkspaceId(root, workspaceId)
-  }
-
-  const resources: SyncResultLine[] = remote.map(item => {
-    // Cache base advances ONLY on a `clean` convergence confirmation; every
-    // other status leaves the last-sync base untouched (spec §3.1 metadata-first).
-    // The server row id, however, is recorded for EVERY returned resource —
-    // it is what `apply` addresses, so losing it would strand new resources.
-    const resourceId = stringOrNull(item.id) ?? readCacheSnapshot(root, item.path)?.resourceId ?? null
-    let cacheAdvanced = false
-    if (item.status === 'clean') {
-      writeCacheSnapshot(root, {
-        path: item.path,
-        baseSha256: item.serverSha256,
-        versionId: item.serverVersionId,
-        lastSyncedAt: item.lastSyncedAt,
-        resourceId,
-      })
-      cacheAdvanced = true
-    } else {
-      recordCacheResourceId(root, item.path, resourceId)
-    }
-    return { ...item, cacheAdvanced }
-  })
-
-  return { root, workspaceId, resources }
-}
-
-export interface PullResult {
-  path: string
-  status: 'converged' | 'refused' | 'noop'
-  remoteStatus: string | null
-  reason?: string
-  note?: string
-  manifestUpdated: boolean
-  cacheAdvanced: boolean
-}
-
-export async function runWorkspacePull(targetPath: string, opts: CommonOptions = {}): Promise<PullResult> {
-  const root = getWorkspaceRoot(opts.cwd)
-  const fetcher = opts.fetcher ?? authedFetch
-  const entry = collectInventory(root).find(item => item.path === targetPath)
-  if (!entry) {
-    const known = readCacheSnapshot(root, targetPath)
-    return {
-      path: targetPath,
-      status: 'noop',
-      remoteStatus: null,
-      reason: known
-        ? `File is missing locally at ${targetPath}. Restore it via Git; v0 pull reconciles metadata only and does not materialize content.`
-        : `No tracked resource at ${targetPath}`,
-      manifestUpdated: false,
-      cacheAdvanced: false,
-    }
-  }
-
-  const workspaceId = requireAttachedWorkspaceId(root, opts)
-  const results = await callSync(root, workspaceId, [entry], fetcher)
-  const remote = results.find(item => item.path === entry.path) ?? null
-  const remoteStatus = remote?.status ?? null
-
-  if (remoteStatus === 'divergent' || remoteStatus === 'conflicted') {
-    return {
-      path: targetPath,
-      status: 'refused',
-      remoteStatus,
-      reason: 'Pull refused: local edits are ahead of the last-sync base; resolve in the working tree (Git) or `apply` to promote.',
-      manifestUpdated: false,
-      cacheAdvanced: false,
-    }
-  }
-
-  // Fast-forward ONLY from server-carried truth. Truthless statuses
-  // (local-only/stale/missing/untracked) have nothing to pull; fabricating a
-  // base from local bytes is forbidden (spec §3.2).
-  const serverSha256 = stringOrNull(remote?.serverSha256 ?? null)
-  const serverVersionId = stringOrNull(remote?.serverVersionId ?? null)
-  if (!remote || serverSha256 === null) {
-    const reason = remoteStatus === 'stale'
-      ? 'Nothing to pull: no verifiable server truth for this resource. Refresh it through the primitive-specific command (e.g. `orizu prompts pull`, `orizu datasets download`), then sync.'
-      : 'Nothing to pull: this resource has no server truth yet. `orizu workspace apply` promotes repo-owned resources; run `orizu workspace sync` first if it is not registered.'
-    return { path: targetPath, status: 'noop', remoteStatus, reason, manifestUpdated: false, cacheAdvanced: false }
-  }
-
-  // Metadata fast-forward: advance cache base + manifest canonical to the
-  // SERVER truth (never local bytes). v0 is metadata-level: source bytes
-  // converge through Git; DB-native/object bytes materialize via the
-  // primitive-specific commands.
-  //
-  // Metadata-only-pull guard (spec §3.3): this pull advanced the base to the
-  // server hash WITHOUT delivering the bytes. For a repo-owned resource whose
-  // working content does not already match that hash, the working tree is now
-  // BEHIND the base — a naive three-way read would call it `divergent` and a
-  // CAS `apply` would pass (base == server truth) and silently revert the
-  // pulled version. Mark the resource content-pending so `apply` refuses until
-  // Git delivers the bytes (working == base again). If the content already
-  // matches (Git first, the §7 happy path), leave it unmarked.
-  const contentPending = entry.owner === 'repo' && entry.contentSha256 !== serverSha256
-  writeCacheSnapshot(root, {
-    path: entry.path,
-    baseSha256: serverSha256,
-    versionId: serverVersionId,
-    lastSyncedAt: remote.lastSyncedAt ?? new Date().toISOString(),
-    resourceId: stringOrNull(remote.id) ?? readCacheSnapshot(root, entry.path)?.resourceId ?? null,
-    ...(contentPending
-      ? { contentPending: true, pendingBaseSha256: serverSha256 }
-      : {}),
-  })
-  let manifestUpdated = false
-  if (entry.manifestPath) {
-    patchCanonical(entry.manifestPath, {
-      versionId: serverVersionId,
-      contentSha256: serverSha256,
-      lastPulledAt: remote.lastSyncedAt ?? new Date().toISOString(),
-    })
-    manifestUpdated = true
-  }
-
-  const note = contentPending
-    ? 'Base advanced to the server version but the working content has not been delivered yet (content-pending). `apply` will refuse until Git delivers the new bytes (working == base); run `git pull` to fetch them first.'
-    : entry.owner === 'repo'
-      ? undefined
-      : 'v0 pull reconciles metadata only; materialize bulk content with the primitive-specific command (e.g. `orizu prompts pull`, `orizu datasets download`).'
-  return { path: targetPath, status: 'converged', remoteStatus, note, manifestUpdated, cacheAdvanced: true }
-}
-
-export interface ApplyResult {
-  path: string
-  status: 'applied' | 'refused' | 'noop'
-  reason?: string
-  /** Recovery guidance for server 409 refusals (re-sync, then re-drive). */
-  hint?: string
-  versionId?: string | null
-  contentSha256?: string | null
-  lastSyncedAt?: string | null
-  manifestUpdated: boolean
-  cacheAdvanced: boolean
-}
-
-export async function runWorkspaceApply(targetPath: string, opts: CommonOptions = {}): Promise<ApplyResult> {
-  const root = getWorkspaceRoot(opts.cwd)
-  const fetcher = opts.fetcher ?? authedFetch
-  const entry = collectInventory(root).find(item => item.path === targetPath)
-  if (!entry) {
-    return { path: targetPath, status: 'noop', reason: `No tracked resource at ${targetPath}`, manifestUpdated: false, cacheAdvanced: false }
-  }
-  if (entry.owner !== 'repo') {
-    return {
-      path: targetPath,
-      status: 'refused',
-      reason: `Apply refused: ${entry.owner} resources are pull-only; change DB-native state through the primitive's own command and promotion flow.`,
-      manifestUpdated: false,
-      cacheAdvanced: false,
-    }
-  }
-  // Apply identity (spec §3.1): STRICTLY the sync-recorded tracked-resource
-  // row id. The manifest's canonical.serviceId is informational/legacy and is
-  // never used — the API resolves by row id only, so a serviceId would 404.
-  const snapshot = readCacheSnapshot(root, entry.path)
-  const resourceId = stringOrNull(snapshot?.resourceId ?? null)
-  if (!resourceId) {
-    return {
-      path: targetPath,
-      status: 'noop',
-      reason: 'No server tracked-resource id is recorded for this path. Run `orizu workspace sync` first to register it and record its row id, then retry apply.',
-      manifestUpdated: false,
-      cacheAdvanced: false,
-    }
-  }
-
-  // Metadata-only-pull guard (spec §3.3): a prior `pull` advanced the base to
-  // the server hash without delivering the bytes. If the working content still
-  // doesn't match that pulled base, the working tree is BEHIND and a CAS apply
-  // would pass (base == server truth) and silently revert the pulled version.
-  // Refuse before any server call. Once Git delivers the bytes (working ==
-  // pending base), clear the mark and proceed — a genuine later edit off that
-  // base is then a legitimate, applyable `divergent`.
-  if (snapshot?.contentPending === true) {
-    const pendingBase = stringOrNull(snapshot.pendingBaseSha256 ?? snapshot.baseSha256 ?? null)
-    if (pendingBase !== null && entry.contentSha256 !== pendingBase) {
-      return {
-        path: targetPath,
-        status: 'refused',
-        reason: 'Apply refused: this resource is content-pending — a metadata-only pull advanced its base but the working file still holds the old content. Reconcile the working file to the pulled base first (e.g. `git pull`, or re-pull once Git has delivered the content), then retry apply.',
-        manifestUpdated: false,
-        cacheAdvanced: false,
-      }
-    }
-    // Working content now matches the pulled base — the pull is fully realized.
-    writeCacheSnapshot(root, { ...snapshot, contentPending: false, pendingBaseSha256: null })
-  }
-
-  const workspaceId = requireAttachedWorkspaceId(root, opts)
-  const baseSha = snapshot?.baseSha256 ?? null
-  const response = await fetcher(`/api/cli/workspaces/${workspaceId}/resources/${resourceId}/apply`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contentSha256: entry.contentSha256, baseSha256: baseSha }),
-  })
-
-  if (response.status === 409) {
-    // Owner refusal, conflicted, remote-newer, or CAS loss — in every case
-    // the recovery loop is the same: re-sync, converge, retry.
-    const error = await readJson(response)
-    return {
-      path: targetPath,
-      status: 'refused',
-      reason: stringOrNull(error.error) || 'Apply refused',
-      hint: 'Run `orizu workspace sync` to refresh statuses, converge per the reported status (pull/merge), then retry the apply.',
-      manifestUpdated: false,
-      cacheAdvanced: false,
-    }
-  }
-  if (!response.ok) {
-    const error = await readJson(response)
-    throw new Error(`Apply failed: ${stringOrNull(error.error) || response.status}`)
-  }
-
-  const data = await readJson(response)
-  const resource = (data.resource as Record<string, unknown>) ?? {}
-  const versionId = stringOrNull(resource.versionId)
-  const contentSha256 = stringOrNull(resource.contentSha256) ?? entry.contentSha256
-  const lastSyncedAt = stringOrNull(resource.lastSyncedAt) ?? new Date().toISOString()
-
-  if (entry.manifestPath) {
-    patchCanonical(entry.manifestPath, { versionId, contentSha256, lastPulledAt: lastSyncedAt })
-  }
-  writeCacheSnapshot(root, {
-    path: entry.path,
-    baseSha256: contentSha256,
-    versionId,
-    lastSyncedAt,
-    resourceId: stringOrNull(resource.id) ?? resourceId,
-  })
-
-  return {
-    path: targetPath,
-    status: 'applied',
-    versionId,
-    contentSha256,
-    lastSyncedAt,
-    manifestUpdated: Boolean(entry.manifestPath),
-    cacheAdvanced: true,
-  }
-}
-
 // ---- Thin entry point (index.ts dispatch calls this) ----------------------
 
 export interface WorkspaceSyncIo {
@@ -1098,62 +571,22 @@ export interface WorkspaceSyncIo {
   fetcher?: WorkspaceSyncFetcher
 }
 
-function emit(io: WorkspaceSyncIo, human: string, payload: Record<string, unknown>) {
-  io.print(io.json ? JSON.stringify(payload) : human)
-}
+const WORKSPACE_USAGE = 'Usage: orizu workspace <status|sync|pull|apply> [<path>] [--remote] [--json]'
 
+/**
+ * `orizu workspace <status|sync|pull|apply>`. The requests, the deadline,
+ * Ctrl-C and the folder lock live in workspace-sync-workflow.ts, loaded only
+ * here, so other commands never load Effect.
+ */
 export async function workspaceSyncCommand(args: string[], io: WorkspaceSyncIo): Promise<number> {
   const positional = args.filter(arg => !arg.startsWith('--'))
   const subcommand = positional[0]
   const target = positional[1]
   const remote = args.includes('--remote')
-  const fetcher = io.fetcher
-
-  if (subcommand === 'status') {
-    const result = await runWorkspaceStatus({ remote, fetcher })
-    const lines = result.resources.map(r =>
-      `${r.dirty ? '*' : ' '} ${r.path}  [${r.kind ?? '?'}/${r.owner ?? '?'}/${r.repoState ?? '?'}]`
-      + `${r.localStatus ? `  ${r.localStatus}` : ''}${r.remoteStatus ? `  ${r.remoteStatus}` : ''}`
-      + `${r.contentPending ? '  (content-pending)' : ''}`
-    )
-    if (result.freshness) {
-      const { serverSha, branch, pushedAt } = result.freshness
-      lines.push(
-        `repo moved since your last pull: ${serverSha}`
-        + `${branch ? ` on ${branch}` : ''}${pushedAt ? ` at ${pushedAt}` : ''}`
-      )
-    }
-    if (result.staleSessionBranches && result.staleSessionBranches.length > 0) {
-      lines.push('stale session branches:')
-      for (const stale of result.staleSessionBranches) {
-        const detail = stale.reason === 'active-stale' ? 'active >24h' : 'unmerged'
-        lines.push(`  ${stale.branch} (started ${stale.startedAt ?? '?'}, ${detail})`)
-      }
-    }
-    emit(io, ['workspace status', ...lines].join('\n'), result as unknown as Record<string, unknown>)
-    return 0
+  if (subcommand === 'status' || subcommand === 'sync' || ((subcommand === 'pull' || subcommand === 'apply') && target)) {
+    const { runWorkspaceCommand } = await import('./workspace-sync-workflow.js')
+    return await runWorkspaceCommand({ subcommand, target: target ?? null, remote }, io)
   }
-  if (subcommand === 'sync') {
-    const result = await runWorkspaceSync({ fetcher })
-    const lines = result.resources.map(r => `${r.status.padEnd(13)} ${r.path}`)
-    emit(io, [`workspace sync (workspace ${result.workspaceId})`, ...lines].join('\n'), result as unknown as Record<string, unknown>)
-    return 0
-  }
-  if (subcommand === 'pull' && target) {
-    const result = await runWorkspacePull(target, { fetcher })
-    const human = [`${result.status}: ${result.path}${result.reason ? ` — ${result.reason}` : ''}`, result.note].filter(Boolean).join('\n')
-    emit(io, human, result as unknown as Record<string, unknown>)
-    return result.status === 'refused' ? 1 : 0
-  }
-  if (subcommand === 'apply' && target) {
-    const result = await runWorkspaceApply(target, { fetcher })
-    const human = [`${result.status}: ${result.path}${result.reason ? ` — ${result.reason}` : ''}`, result.hint]
-      .filter(Boolean)
-      .join('\n')
-    emit(io, human, result as unknown as Record<string, unknown>)
-    return result.status === 'applied' ? 0 : 1
-  }
-
-  io.print('Usage: orizu workspace <status|sync|pull|apply> [<path>] [--remote] [--json]')
+  io.print(WORKSPACE_USAGE)
   return 1
 }
