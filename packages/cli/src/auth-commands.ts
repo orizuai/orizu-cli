@@ -1,7 +1,5 @@
 // ORI-2044: moved from index.ts to keep auth commands together.
 import { randomBytes, createHash } from 'crypto'
-import { spawn } from 'child_process'
-import { createServer } from 'http'
 
 import { sanitizeTerminalText, parseJsonResponse } from './json-response.js'
 import { isInteractiveTerminal, hasArg, hasJsonFlag, getArg } from './command-line-arguments.js'
@@ -21,8 +19,6 @@ import {
   resolveAuthTokenForBaseUrl,
 } from './credentials.js'
 import { printJson, printLine, printLoginProgress } from './cli-console-output.js'
-import { shouldUseHeadlessLogin, waitForHeadlessAuthorization } from './headless-login.js'
-import { renderCliAuthBrowserPage } from './cli-auth-browser-page.js'
 import { resolveProjectSelection } from './account-directory.js'
 
 import type { LoginResponse } from './types.js'
@@ -69,33 +65,6 @@ export function validateBrowserUrl(url: string, expectedOrigin?: string): URL {
   }
 
   return parsed
-}
-
-function openInBrowser(url: string) {
-  const parsed = validateBrowserUrl(url)
-  const platform = process.platform
-  const href = parsed.href
-  if (platform === 'darwin') {
-    spawn('open', [href], {
-      detached: true,
-      stdio: 'ignore',
-    }).unref()
-    return
-  }
-
-  if (platform === 'win32') {
-    spawn('rundll32.exe', ['url.dll,FileProtocolHandler', href], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    }).unref()
-    return
-  }
-
-  spawn('xdg-open', [href], {
-    detached: true,
-    stdio: 'ignore',
-  }).unref()
 }
 
 export function formatTerminalLink(url: string): string {
@@ -201,101 +170,13 @@ async function authenticateAtBaseUrl(baseUrl: string): Promise<AuthenticatedLogi
 
   const codeVerifier = rememberProcessSecret(createCodeVerifier())
   const codeChallenge = createCodeChallenge(codeVerifier)
+  // Effect loads here, after the already-logged-in check (ORI-2422).
+  const { completeLogin, shouldUseHeadlessLogin } = await import('./login-flow.js')
   const isHeadlessLogin = shouldUseHeadlessLogin({ isForced: hasArg('--headless') })
-  const callbackPort = isHeadlessLogin ? undefined : resolveAuthCallbackPort()
-  const redirectUri = callbackPort === undefined ? undefined : `http://127.0.0.1:${callbackPort}/callback`
-  const callbackCode = isHeadlessLogin
-    ? await waitForHeadlessAuthorization(
-      { baseUrl, codeChallenge },
-      {
-        parseJsonResponse,
-        printProgress: printLoginProgress,
-        sanitizeTerminalText,
-        validateBrowserUrl,
-      }
-    )
-    : await new Promise<string>((resolve, reject) => {
-    const server = createServer((request, response) => {
-      try {
-        const url = new URL(request.url || '/', `http://127.0.0.1:${callbackPort}`)
-        const code = url.searchParams.get('code')
-
-        if (!code) {
-          response.statusCode = 400
-          response.setHeader('content-type', 'text/html; charset=utf-8')
-          response.end(renderCliAuthBrowserPage('error'))
-          return
-        }
-
-        response.statusCode = 200
-        response.setHeader('content-type', 'text/html; charset=utf-8')
-        response.end(renderCliAuthBrowserPage('success'))
-
-        server.close()
-        resolve(code)
-      } catch (error) {
-        server.close()
-        reject(error)
-      }
-    })
-
-    server.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code === 'EADDRINUSE') {
-        reject(new Error(
-          `Port ${callbackPort} is already in use. Set ORIZU_AUTH_PORT to a different port (1024–65535) and retry.`
-        ))
-      } else {
-        reject(error)
-      }
-    })
-
-    server.listen(callbackPort, '127.0.0.1', async () => {
-      try {
-        const response = await fetch(`${baseUrl}/api/cli/auth/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ codeChallenge, redirectUri }),
-        })
-
-        if (!response.ok) {
-          const text = await response.text()
-          server.close()
-          reject(new Error(`Failed to start login: ${text}`))
-          return
-        }
-
-        const { authorizeUrl } = await parseJsonResponse<{ authorizeUrl: string }>(
-          response,
-          'CLI auth start'
-        )
-        const safeAuthorizeUrl = validateBrowserUrl(authorizeUrl, baseUrl).href
-        printLoginProgress(`Opening browser for login: ${sanitizeTerminalText(safeAuthorizeUrl)}`)
-        openInBrowser(safeAuthorizeUrl)
-      } catch (error) {
-        server.close()
-        reject(error)
-      }
-    })
-  })
-
-  rememberProcessSecret(callbackCode)
-  const exchangeResponse = await fetch(`${baseUrl}/api/cli/auth/exchange`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code: callbackCode, codeVerifier, redirectUri }),
-  })
-
-  if (!exchangeResponse.ok) {
-    const text = await exchangeResponse.text()
-    throw new Error(`Failed to exchange auth code: ${text}`)
-  }
-
-  const loginData = await parseJsonResponse<LoginResponse>(exchangeResponse, 'CLI auth exchange')
-  if (!loginData.apiKey) {
-    throw new Error('Server did not return an API key. Upgrade the Orizu server and run `orizu login` again.')
-  }
-
-  return { ...loginData, apiKey: loginData.apiKey }
+  return completeLogin(
+    { baseUrl, codeVerifier, codeChallenge, callbackPort: isHeadlessLogin ? undefined : resolveAuthCallbackPort() },
+    { parseJsonResponse, printProgress: printLoginProgress, sanitizeTerminalText, validateBrowserUrl },
+  )
 }
 
 async function whoami() {
