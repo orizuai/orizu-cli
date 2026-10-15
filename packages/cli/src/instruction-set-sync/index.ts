@@ -22,10 +22,6 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error
 }
 
-function sleepSync(milliseconds: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
-}
-
 export type SyncTarget = 'ts'
 
 export function parseSyncTarget(value: string | undefined): SyncTarget {
@@ -526,7 +522,7 @@ export function startSyncLockClaim(appRoot: string): SyncLockClaim {
 }
 
 // One claim attempt: returns the release function, or how long to wait before
-// trying again. Waiting is the caller's job so it can be blocking or not.
+// trying again. The caller waits without blocking (instruction-sync-lock.ts).
 export function tryClaimSyncLock({ lockPath, metadata, deadline }: SyncLockClaim): (() => void) | number {
   while (true) {
     try {
@@ -561,27 +557,6 @@ export function tryClaimSyncLock({ lockPath, metadata, deadline }: SyncLockClaim
   }
 }
 
-export function withSyncLock<T>(appRoot: string, operation: () => T): T {
-  const claim = startSyncLockClaim(appRoot)
-  let release = tryClaimSyncLock(claim)
-  while (typeof release === 'number') {
-    sleepSync(release)
-    release = tryClaimSyncLock(claim)
-  }
-  let result: T
-  try {
-    result = operation()
-  } catch (error) {
-    release()
-    throw error
-  }
-  if (result && typeof (result as { then?: unknown }).then === 'function') {
-    return Promise.resolve(result).finally(release) as T
-  }
-  release()
-  return result
-}
-
 // Test-only process boundary hooks. Production behavior is unchanged unless a
 // test child explicitly supplies one of the bounded ORIZU_TEST_SYNC_* values.
 function processTestMilliseconds(
@@ -602,10 +577,11 @@ function processTestMilliseconds(
   return milliseconds
 }
 
+// Holds the real step in place, as a slow disk would, so a test can act mid-step.
 function holdForProcessTest(name: string): void {
   const milliseconds = processTestMilliseconds(name, 0, 10_000)
   if (milliseconds === undefined) return
-  sleepSync(milliseconds)
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
 }
 
 export interface SyncDiskResult { destination: string; wasPresent: boolean; warnings: string[] }
@@ -625,22 +601,6 @@ export interface StagedSync {
   publish: () => string[]
   /** Removes the staged version if it was not published. Safe to call more than once. */
   discard: () => void
-}
-
-export function syncPayloadToDisk(
-  out: string,
-  project: string,
-  plan: SyncRequestPlan,
-  payload: SyncPayload,
-  options: SyncDiskOptions = {}
-): SyncDiskResult {
-  const staged = stageSyncPayload(out, project, plan, payload, options)
-  try {
-    const warnings = withSyncLock(staged.appRoot, staged.publish)
-    return { destination: staged.destination, wasPresent: staged.wasPresent, warnings }
-  } finally {
-    staged.discard()
-  }
 }
 
 export function stageSyncPayload(

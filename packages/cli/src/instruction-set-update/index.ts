@@ -11,7 +11,7 @@ import {
   type InstructionSetLockV1,
 } from '../instruction-set-lock/index.js'
 import { assertOutputConfined, reconcileGeneratedIndex } from '../instruction-set-sync/helpers.js'
-import { profileSlug, recordResolvedPayloadInLock, syncPayloadToDisk, withSyncLock, type SyncDiskResult, type SyncPayload } from '../instruction-set-sync/index.js'
+import { profileSlug, recordResolvedPayloadInLock, type SyncDiskOptions, type SyncDiskResult, type SyncPayload, type SyncRequestPlan } from '../instruction-set-sync/index.js'
 import { verifyInstructionSetTree, verifyMaterializedVersionAgainstLock } from '../instruction-set-verify/index.js'
 
 export interface UpdateResolution {
@@ -217,58 +217,66 @@ async function assertGeneratedModulesVerified(appRootPath: string, lock: Instruc
   }
 }
 
+/** --no-sync: records the planned Pointers in the Lock. The caller holds the folder lock. */
+export async function publishNoSyncUpdate(
+  out: string,
+  project: string,
+  plan: UpdatePlan,
+  now: () => Date = () => new Date()
+): Promise<UpdateResult> {
+  const absent: string[] = []
+  const warnings: string[] = []
+  let lock = readUpdateLock(out, project)
+  for (const resolution of plan.resolutions) {
+    const set = resolution.payload.instructionSet
+    const material = set.version!
+    const versionSlug = `v${material.versionNumber}`
+    const destination = join(appRoot(out), 'instruction-sets', set.slug, set.profile.profileSlug, versionSlug)
+    lock = recordResolvedPayloadInLock(lock, resolution.payload, now)
+    if (!existsSync(join(destination, 'components.generated.ts'))) {
+      absent.push(`${set.slug}/${resolution.profileIdentity}@${versionSlug}`)
+    }
+  }
+  const appRootPath = appRoot(out)
+  const missing = missingVersionModules(appRootPath, lock)
+  const importMapPath = join(appRootPath, 'generated', 'index.ts')
+  const hasImportMap = existsSync(importMapPath)
+  if (missing.length === 0) await assertGeneratedModulesVerified(appRootPath, lock)
+  if (missing.length === 0 && hasImportMap) {
+    const priorImportMap = readFileSync(importMapPath, 'utf8')
+    waitAtUpdateLockPublicationBarrierForProcessTest()
+    let wasReconciled = false
+    try {
+      reconcileGeneratedIndex(out, appRootPath, lock)
+      wasReconciled = true
+      atomicWrite(join(appRootPath, 'orizu.lock.json'), serializeLock(lock))
+    } catch (error) {
+      if (wasReconciled) atomicWrite(importMapPath, priorImportMap)
+      throw error
+    }
+    return { absent, warnings }
+  }
+  if (!hasImportMap) {
+    warnings.push('instruction_set_update_generated_index_missing; the generated index was not reconciled — run orizu instructions sync <specifier> then orizu instructions verify')
+  } else if (missing.length > 0) {
+    warnings.push(`instruction_set_update_generated_index_stale:${missing[0]}; the generated index still resolves the previous Version — run orizu instructions sync <specifier> then orizu instructions verify`)
+  }
+  atomicWrite(join(appRootPath, 'orizu.lock.json'), serializeLock(lock))
+  return { absent, warnings }
+}
+
+export type SyncStep = (out: string, project: string, plan: SyncRequestPlan, payload: SyncPayload, options: SyncDiskOptions) => Promise<SyncDiskResult>
+
+/** Syncs every newly referenced Version; `sync` takes the folder lock for each one. */
 export async function applyUpdate(
   out: string,
   project: string,
   plan: UpdatePlan,
-  noSync: boolean,
-  now: () => Date = () => new Date(),
-  sync: (...args: Parameters<typeof syncPayloadToDisk>) => SyncDiskResult | Promise<SyncDiskResult> = syncPayloadToDisk
+  now: () => Date,
+  sync: SyncStep
 ): Promise<UpdateResult> {
   const absent: string[] = []
   const warnings: string[] = []
-  if (noSync) {
-    await withSyncLock(appRoot(out), async () => {
-      let lock = readUpdateLock(out, project)
-      for (const resolution of plan.resolutions) {
-        const set = resolution.payload.instructionSet
-        const material = set.version!
-        const versionSlug = `v${material.versionNumber}`
-        const destination = join(appRoot(out), 'instruction-sets', set.slug, set.profile.profileSlug, versionSlug)
-        lock = recordResolvedPayloadInLock(lock, resolution.payload, now)
-        if (!existsSync(join(destination, 'components.generated.ts'))) {
-          absent.push(`${set.slug}/${resolution.profileIdentity}@${versionSlug}`)
-        }
-      }
-      const appRootPath = appRoot(out)
-      const missing = missingVersionModules(appRootPath, lock)
-      const importMapPath = join(appRootPath, 'generated', 'index.ts')
-      const hasImportMap = existsSync(importMapPath)
-      if (missing.length === 0) await assertGeneratedModulesVerified(appRootPath, lock)
-      if (missing.length === 0 && hasImportMap) {
-        const priorImportMap = readFileSync(importMapPath, 'utf8')
-        waitAtUpdateLockPublicationBarrierForProcessTest()
-        let wasReconciled = false
-        try {
-          reconcileGeneratedIndex(out, appRootPath, lock)
-          wasReconciled = true
-          atomicWrite(join(appRootPath, 'orizu.lock.json'), serializeLock(lock))
-        } catch (error) {
-          if (wasReconciled) atomicWrite(importMapPath, priorImportMap)
-          throw error
-        }
-        return
-      }
-      if (!hasImportMap) {
-        warnings.push('instruction_set_update_generated_index_missing; the generated index was not reconciled — run orizu instructions sync <specifier> then orizu instructions verify')
-      } else if (missing.length > 0) {
-        warnings.push(`instruction_set_update_generated_index_stale:${missing[0]}; the generated index still resolves the previous Version — run orizu instructions sync <specifier> then orizu instructions verify`)
-      }
-      atomicWrite(join(appRootPath, 'orizu.lock.json'), serializeLock(lock))
-    })
-    return { absent, warnings }
-  }
-
   let lock = plan.lock
   for (const resolution of plan.resolutions) {
     const set = resolution.payload.instructionSet
@@ -403,87 +411,130 @@ export interface PruneResult {
   skipped: PrunePlan['removals']
 }
 
-export async function applyPrune(out: string, plan: PrunePlan, keepSpecifiers: string[] = []): Promise<PruneResult> {
-  return withSyncLock(appRoot(out), async () => {
-    const currentPlan = await planPrune(out, keepSpecifiers)
-    const currentRemovalKeys = new Set(currentPlan.removals.map(removal => removal.key))
-    let removals = plan.removals.filter(removal => currentRemovalKeys.has(removal.key))
-    const skipped = plan.removals
-      .filter(removal => !currentRemovalKeys.has(removal.key))
-      .map(removal => ({ ...removal, reason: 'became_referenced_after_planning' }))
-    const removalKeys = new Set(removals.map(removal => removal.key))
-    const unmanagedProfileKeys = new Set<string>()
-    for (const [setSlug, set] of Object.entries(currentPlan.lock.instructionSets)) {
-      for (const [profileSlugValue, profile] of Object.entries(set.profiles)) {
-        const versionSlugs = Object.keys(profile.versions)
-        if (!versionSlugs.every(versionSlug => removalKeys.has(`${setSlug}/${profileSlugValue}/${versionSlug}`))) continue
-        const profilePath = join(appRoot(out), 'instruction-sets', setSlug, profileSlugValue)
-        assertOutputConfined(out, profilePath)
-        const lockedVersions = new Set(versionSlugs)
-        const unmanagedEntries = readdirSync(profilePath, { withFileTypes: true })
-          .filter(entry => !entry.isDirectory() || !lockedVersions.has(entry.name))
-          .map(entry => entry.name)
-          .sort()
-        if (unmanagedEntries.length === 0) continue
-        unmanagedProfileKeys.add(`${setSlug}/${profileSlugValue}`)
-        for (const removal of removals) {
-          if (!removal.key.startsWith(`${setSlug}/${profileSlugValue}/`)) continue
-          skipped.push({ ...removal, reason: 'profile_directory_has_unmanaged_files', unmanagedEntries })
-        }
-      }
-    }
-    removals = removals.filter(removal => {
-      const [setSlug, profileSlugValue] = removal.key.split('/')
-      return !unmanagedProfileKeys.has(`${setSlug}/${profileSlugValue}`)
-    })
-    const candidate = parseLock(serializeLock(currentPlan.lock))
-    const lockPath = join(appRoot(out), 'orizu.lock.json')
-    const importMapPath = join(appRoot(out), 'generated', 'index.ts')
-    const priorLock = readFileSync(lockPath, 'utf8')
-    const priorImportMap = existsSync(importMapPath) ? readFileSync(importMapPath, 'utf8') : null
-    const stagingRoot = join(appRoot(out), `.prune-${randomUUID()}.tmp`)
-    mkdirSync(stagingRoot)
-    const staged: Array<{ removal: PrunePlan['removals'][number]; stagedPath: string; specifier: string }> = []
+export interface PruneSelection {
+  lock: InstructionSetLockV1
+  removals: PrunePlan['removals']
+  skipped: PrunePlan['removals']
+}
 
-    try {
-      for (const [index, removal] of removals.entries()) {
-        assertOutputConfined(out, removal.path)
-        const [setSlug, profileSlugValue, versionSlug] = removal.key.split('/')
-        const manifest = JSON.parse(readFileSync(join(removal.path, 'manifest.json'), 'utf8')) as { modelConfigIdentity: string }
-        const stagedPath = join(stagingRoot, String(index))
-        renameSync(removal.path, stagedPath)
-        staged.push({ removal, stagedPath, specifier: `${setSlug}/${manifest.modelConfigIdentity}@${versionSlug}` })
-        const profile = candidate.instructionSets[setSlug]!.profiles[profileSlugValue]!
-        delete profile.versions[versionSlug]
-        if (Object.keys(profile.versions).length === 0) delete candidate.instructionSets[setSlug]!.profiles[profileSlugValue]
+/**
+ * Plans again under the folder lock: keeps only approved removals that are
+ * still unreferenced (never adds one) and skips profiles holding unmanaged
+ * files. Reads only.
+ */
+export async function selectPruneRemovals(out: string, plan: PrunePlan, keepSpecifiers: string[]): Promise<PruneSelection> {
+  const currentPlan = await planPrune(out, keepSpecifiers)
+  const currentRemovalKeys = new Set(currentPlan.removals.map(removal => removal.key))
+  let removals = plan.removals.filter(removal => currentRemovalKeys.has(removal.key))
+  const skipped = plan.removals
+    .filter(removal => !currentRemovalKeys.has(removal.key))
+    .map(removal => ({ ...removal, reason: 'became_referenced_after_planning' }))
+  const removalKeys = new Set(removals.map(removal => removal.key))
+  const unmanagedProfileKeys = new Set<string>()
+  for (const [setSlug, set] of Object.entries(currentPlan.lock.instructionSets)) {
+    for (const [profileSlugValue, profile] of Object.entries(set.profiles)) {
+      const versionSlugs = Object.keys(profile.versions)
+      if (!versionSlugs.every(versionSlug => removalKeys.has(`${setSlug}/${profileSlugValue}/${versionSlug}`))) continue
+      const profilePath = join(appRoot(out), 'instruction-sets', setSlug, profileSlugValue)
+      assertOutputConfined(out, profilePath)
+      const lockedVersions = new Set(versionSlugs)
+      const unmanagedEntries = readdirSync(profilePath, { withFileTypes: true })
+        .filter(entry => !entry.isDirectory() || !lockedVersions.has(entry.name))
+        .map(entry => entry.name)
+        .sort()
+      if (unmanagedEntries.length === 0) continue
+      unmanagedProfileKeys.add(`${setSlug}/${profileSlugValue}`)
+      for (const removal of removals) {
+        if (!removal.key.startsWith(`${setSlug}/${profileSlugValue}/`)) continue
+        skipped.push({ ...removal, reason: 'profile_directory_has_unmanaged_files', unmanagedEntries })
       }
-      const handledProfiles = new Set<string>()
-      for (const item of staged) {
-        const [setSlug, profileSlugValue] = item.removal.key.split('/')
-        const profilePath = join(item.removal.path, '..')
-        if (candidate.instructionSets[setSlug]!.profiles[profileSlugValue] || handledProfiles.has(profilePath)) continue
-        handledProfiles.add(profilePath)
-        rmdirSync(profilePath)
-      }
-      atomicWrite(lockPath, serializeLock(candidate))
-      if (existsSync(importMapPath)) reconcileGeneratedIndex(out, appRoot(out), candidate)
-      holdBeforePruneVerifyForProcessTest()
-      const report = await verifyInstructionSetTree(out)
-      if (!report.ok) {
-        throw new Error(`instruction_set_prune_verification_failed:${report.failures[0]?.code ?? 'unknown'}`)
-      }
-      rmSync(stagingRoot, { recursive: true, force: true })
-      return { skipped }
-    } catch (error) {
-      for (const item of [...staged].reverse()) {
-        mkdirSync(join(item.removal.path, '..'), { recursive: true })
-        if (existsSync(item.stagedPath)) renameSync(item.stagedPath, item.removal.path)
-      }
-      atomicWrite(lockPath, priorLock)
-      if (priorImportMap === null) rmSync(importMapPath, { force: true })
-      else atomicWrite(importMapPath, priorImportMap)
-      rmSync(stagingRoot, { recursive: true, force: true })
-      throw error
     }
+  }
+  removals = removals.filter(removal => {
+    const [setSlug, profileSlugValue] = removal.key.split('/')
+    return !unmanagedProfileKeys.has(`${setSlug}/${profileSlugValue}`)
   })
+  return { lock: currentPlan.lock, removals, skipped }
+}
+
+/** A prune in progress: what it moved aside and what it must restore on failure. */
+export interface StagedPrune {
+  lockPath: string
+  importMapPath: string
+  priorLock: string
+  priorImportMap: string | null
+  stagingRoot: string
+  staged: Array<{ removal: PrunePlan['removals'][number]; stagedPath: string }>
+}
+
+export function startPrune(out: string): StagedPrune {
+  const lockPath = join(appRoot(out), 'orizu.lock.json')
+  const importMapPath = join(appRoot(out), 'generated', 'index.ts')
+  const stagingRoot = join(appRoot(out), `.prune-${randomUUID()}.tmp`)
+  const prune = {
+    lockPath,
+    importMapPath,
+    priorLock: readFileSync(lockPath, 'utf8'),
+    priorImportMap: existsSync(importMapPath) ? readFileSync(importMapPath, 'utf8') : null,
+    stagingRoot,
+    staged: [],
+  }
+  mkdirSync(stagingRoot)
+  return prune
+}
+
+/**
+ * Moves each removal into the staging folder, then writes the new Lock and
+ * generated index. Records each move as it happens so a failure part-way can
+ * be rolled back.
+ */
+export function stagePruneRemovals(out: string, prune: StagedPrune, selection: PruneSelection): void {
+  const candidate = parseLock(serializeLock(selection.lock))
+  for (const [index, removal] of selection.removals.entries()) {
+    assertOutputConfined(out, removal.path)
+    const [setSlug, profileSlugValue, versionSlug] = removal.key.split('/')
+    // A Version without a readable manifest stops the prune before it moves, as before.
+    JSON.parse(readFileSync(join(removal.path, 'manifest.json'), 'utf8'))
+    const stagedPath = join(prune.stagingRoot, String(index))
+    renameSync(removal.path, stagedPath)
+    prune.staged.push({ removal, stagedPath })
+    const profile = candidate.instructionSets[setSlug]!.profiles[profileSlugValue]!
+    delete profile.versions[versionSlug]
+    if (Object.keys(profile.versions).length === 0) delete candidate.instructionSets[setSlug]!.profiles[profileSlugValue]
+  }
+  const handledProfiles = new Set<string>()
+  for (const item of prune.staged) {
+    const [setSlug, profileSlugValue] = item.removal.key.split('/')
+    const profilePath = join(item.removal.path, '..')
+    if (candidate.instructionSets[setSlug]!.profiles[profileSlugValue] || handledProfiles.has(profilePath)) continue
+    handledProfiles.add(profilePath)
+    rmdirSync(profilePath)
+  }
+  atomicWrite(prune.lockPath, serializeLock(candidate))
+  if (existsSync(prune.importMapPath)) reconcileGeneratedIndex(out, appRoot(out), candidate)
+  holdBeforePruneVerifyForProcessTest()
+}
+
+/** Verifies the pruned tree; the error names the first failure. */
+export async function verifyPrunedTree(out: string): Promise<void> {
+  const report = await verifyInstructionSetTree(out)
+  if (!report.ok) {
+    throw new Error(`instruction_set_prune_verification_failed:${report.failures[0]?.code ?? 'unknown'}`)
+  }
+}
+
+export function finishPrune(prune: StagedPrune): void {
+  rmSync(prune.stagingRoot, { recursive: true, force: true })
+}
+
+/** Puts back every moved folder, the prior Lock and the prior generated index. */
+export function rollBackPrune(prune: StagedPrune): void {
+  for (const item of [...prune.staged].reverse()) {
+    mkdirSync(join(item.removal.path, '..'), { recursive: true })
+    if (existsSync(item.stagedPath)) renameSync(item.stagedPath, item.removal.path)
+  }
+  atomicWrite(prune.lockPath, prune.priorLock)
+  if (prune.priorImportMap === null) rmSync(prune.importMapPath, { force: true })
+  else atomicWrite(prune.importMapPath, prune.priorImportMap)
+  rmSync(prune.stagingRoot, { recursive: true, force: true })
 }

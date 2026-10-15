@@ -3,8 +3,9 @@ import { INSTRUCTION_SET_COMPONENT_KEY } from './instruction-set-lock/index.js'
 import { loadInstructionSetManifest, MAX_INSTRUCTION_SET_COMPONENT_BYTES, type InstructionSetManifest } from './instruction-set-manifest.js'
 import { responsePayload, sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 import { parseSyncTarget, planSyncRequest, type SyncTarget } from './instruction-set-sync/index.js'
-import { applyPrune, planPrune, PruneKeepUnresolvedError } from './instruction-set-update/index.js'
+import { planPrune, PruneKeepUnresolvedError } from './instruction-set-update/index.js'
 import { printVerifyReport, verifyInstructionSetTree } from './instruction-set-verify/index.js'
+import type { PruneOutcome } from './instruction-prune.js'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -76,6 +77,18 @@ function lifecycleOptionValues(args: string[], command: 'update' | 'prune', flag
 
 function printInterrupted(io: InstructionSetsCommandIo, message: string) {
   io.print(io.json ? JSON.stringify({ error: message }) : message)
+}
+
+function pruneStoppedMessage(outcome: PruneOutcome): string {
+  if (outcome.kind === 'removed') {
+    const versions = outcome.count === 1 ? '1 version was removed' : `${outcome.count} versions were removed`
+    return `Instruction sets prune interrupted after it finished; ${versions}. Run orizu instructions verify.`
+  }
+  if (outcome.kind === 'rolled back') {
+    const code = outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+    return `Instruction sets prune interrupted after it failed; the prune was rolled back and nothing was removed (${code}). Run orizu instructions verify.`
+  }
+  return 'Instruction sets prune interrupted; nothing was removed.'
 }
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
@@ -257,6 +270,8 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
   if (!subcommand || !knownSubcommands.has(subcommand)) {
     throw new Error('Usage: orizu instructions list|show|sync|update|prune|verify|archive|restore')
   }
+  // verify stays plain code: a local, read-only hash check with no network,
+  // lock, writes or clean-up for Effect to own (ORI-2728).
   if (subcommand === 'verify') {
     const report = await verifyInstructionSetTree(requiredOptionValue(args, subcommand, '--out') ?? '.')
     printVerifyReport(report, io.json, io.print)
@@ -281,6 +296,7 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
       return 1
     }
     const isApproved = args.includes('--yes')
+    // Plan-only prune stays plain code: like verify, it only reads and reports (ORI-2728).
     if (!isApproved) {
       if (io.json) io.print(JSON.stringify({ removals: plan.removals, skipped: [], applied: false }))
       else {
@@ -291,7 +307,12 @@ export async function instructionSetsCommand(args: string[], io: InstructionSets
     }
     waitAtPrunePlanBarrierForProcessTest()
     try {
-      const result = await applyPrune(output, plan, keepSpecifiers)
+      const { pruneInstructionSets } = await import('./instruction-prune.js')
+      const result = await pruneInstructionSets(output, plan, keepSpecifiers)
+      if ('interrupted' in result) {
+        printInterrupted(io, pruneStoppedMessage(result.outcome))
+        return result.interrupted
+      }
       if (io.json) io.print(JSON.stringify({ removals: plan.removals, skipped: result.skipped, applied: true }))
       else {
         for (const removal of plan.removals) io.print(`Remove ${removal.key}: ${removal.reason}`)
