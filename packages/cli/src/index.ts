@@ -373,7 +373,6 @@ async function listScorers() {
 async function registerScorer() {
   return runScorersRegister({
     getArg, resolveProjectSlug, readJsonFile, hasJsonFlag, printJson, printLine,
-    parseJsonResponse: (response, label) => parseJsonResponse<Record<string, unknown>>(response, label),
   })
 }
 
@@ -443,17 +442,9 @@ async function setScorerLabel() {
     throw new Error('Usage: orizu scorers labels set <scorer-name> <label> --version <scorer-version-id> [--project <team/project>] [--json]')
   }
 
-  const response = await authedFetch(`/api/cli/scorers/labels?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scorerName, label, scorerVersionId }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to set scorer label: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Scorer label set')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.labelMove('scorer', project, { scorerName, label, scorerVersionId }), { json: hasJsonFlag(), print: printLine })
+  if (data === null) return
   if (hasJsonFlag()) {
     printJson(data)
     return
@@ -467,7 +458,6 @@ async function pushRunnerArtifact(kind: 'runner' | 'optimizer') {
   return runZipArtifactPush(kind, {
     getArg, getPositionalArg, resolveProjectSlug, readManifestFile, expandHomePath,
     hasJsonFlag, printJson, printLine,
-    parseJsonResponse: (response, label) => parseJsonResponse<Record<string, unknown>>(response, label),
   })
 }
 
@@ -499,12 +489,14 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
   // ADR-007 P4 (ALI-1074): in a session the version is a COMMIT-FIRST git
   // draft (pins repo_path/content_sha/commit_sha) — see prompt-draft-push.ts.
   if (sessionId) {
-    const { data, message } = await pushPromptDraft({
+    const pushed = await pushPromptDraft({
       kind, project, sessionId, manifest, sidecars, runnerVersionId, parentVersionId,
       displayName: String(manifest.name || promptDir),
       bodyKind: primaryText.bodyKind, primaryBody: primaryText.body,
-      report,
+      report, json: hasJsonFlag(), print: printLine,
     })
+    if (!pushed) return
+    const { data, message } = pushed
     if (hasJsonFlag()) printJson(data)
     else {
       printPushDisclosures(data)
@@ -515,45 +507,40 @@ async function pushPromptArtifact(kind: 'prompt' | 'judge') {
 
   // LEGACY SESSIONLESS PATH (no branch to commit to; the server dual-writes
   // the DB body). TODO(ALI-1074 P6): retire when sessionless goes git.
-  const endpoint = kind === 'judge' ? 'judges' : 'prompts'
-  const response = await authedFetch(`/api/cli/${endpoint}?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: manifest.name,
-      role: kind === 'judge' && manifest.role === undefined ? 'judge_per_row' : manifest.role,
-      description: manifest.description,
-      body: primaryText.body,
-      bodyKind: primaryText.bodyKind,
-      providerSettings: manifest.provider_settings || {},
-      bundle: {
-        ...baseBundle,
-        tags: manifest.tags || [],
-        provenance: manifest.provenance || {},
-        primaryText: {
-          path: primaryText.path,
-          kind: primaryText.bodyKind,
-        },
-        sidecars,
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.artifactPush(kind, `/api/cli/${kind}s?project=${encodeURIComponent(project)}`, {
+    name: manifest.name,
+    role: kind === 'judge' && manifest.role === undefined ? 'judge_per_row' : manifest.role,
+    description: manifest.description,
+    body: primaryText.body,
+    bodyKind: primaryText.bodyKind,
+    providerSettings: manifest.provider_settings || {},
+    bundle: {
+      ...baseBundle,
+      tags: manifest.tags || [],
+      provenance: manifest.provenance || {},
+      primaryText: {
+        path: primaryText.path,
+        kind: primaryText.bodyKind,
       },
-      runnerVersionId,
-      parentVersionId,
-      versionLabel: manifest.version_label,
-      createdBy: manifest.provenance || { kind: 'human-edit' },
-      ...(report
-        ? {
-            reportMarkdown: report.markdown,
-            reportSourceName: report.sourceName,
-          }
-        : {}),
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(await promptPushErrorMessage(response, kind, Boolean(report)))
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(response, `${kind} push`)
+      sidecars,
+    },
+    runnerVersionId,
+    parentVersionId,
+    versionLabel: manifest.version_label,
+    createdBy: manifest.provenance || { kind: 'human-edit' },
+    ...(report
+      ? {
+          reportMarkdown: report.markdown,
+          reportSourceName: report.sourceName,
+        }
+      : {}),
+  }, report ? async response => {
+    // The "attach the report instead" hint for an identical push keeps its own words.
+    const message = await promptPushErrorMessage(response, kind, true)
+    return { message, json: { error: message, httpStatus: response.status } }
+  } : undefined), { json: hasJsonFlag(), print: printLine })
+  if (data === null) return
   if (hasJsonFlag()) {
     printJson(data)
     return

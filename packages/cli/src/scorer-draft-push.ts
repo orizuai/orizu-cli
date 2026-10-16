@@ -1,4 +1,3 @@
-import { authedFetch } from './http.js'
 import { sanitizeTerminalText } from './json-response.js'
 import { appendRegistrationTagWarning } from './registration-tag-warning.js'
 
@@ -30,7 +29,6 @@ export interface ScorersRegisterContext {
   hasJsonFlag: () => boolean
   printJson: (value: Record<string, unknown>) => void
   printLine: (message?: string) => void
-  parseJsonResponse: (response: Response, label: string) => Promise<Record<string, unknown>>
 }
 
 /** The full `orizu scorers register` command (moved out of index.ts for the
@@ -54,14 +52,18 @@ export async function runScorersRegister(ctx: ScorersRegisterContext): Promise<v
     if (ctx.getArg('--label')) {
       throw new Error('--label cannot be combined with --session: labels address sealed versions; move the label after the session merges')
     }
-    const { data, message } = await pushScorerDraft({
+    const pushed = await pushScorerDraft({
       project,
       sessionId,
       name,
       manifest,
       promptVersionId: ctx.getArg('--prompt-version') || undefined,
       runnerVersionId: ctx.getArg('--runner-version') || undefined,
+      json: ctx.hasJsonFlag(),
+      print: line => ctx.printLine(line),
     })
+    if (!pushed) return
+    const { data, message } = pushed
     if (ctx.hasJsonFlag()) ctx.printJson(data)
     else ctx.printLine(message)
     return
@@ -70,23 +72,15 @@ export async function runScorersRegister(ctx: ScorersRegisterContext): Promise<v
   // LEGACY SESSIONLESS PATH (no branch to commit to; the server keeps the
   // DB/object-store manifest). TODO(ALI-1074 P6): retire when sessionless
   // goes git.
-  const response = await authedFetch(`/api/cli/scorers?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name,
-      manifest,
-      promptVersionId: ctx.getArg('--prompt-version') || undefined,
-      runnerVersionId: ctx.getArg('--runner-version') || undefined,
-      label: ctx.getArg('--label') || undefined,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to register scorer: ${await response.text()}`)
-  }
-
-  const data = await ctx.parseJsonResponse(response, 'Scorer register')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.artifactPush('scorer', `/api/cli/scorers?project=${encodeURIComponent(project)}`, {
+    name,
+    manifest,
+    promptVersionId: ctx.getArg('--prompt-version') || undefined,
+    runnerVersionId: ctx.getArg('--runner-version') || undefined,
+    label: ctx.getArg('--label') || undefined,
+  }), { json: ctx.hasJsonFlag(), print: line => ctx.printLine(line) })
+  if (data === null) return
   if (ctx.hasJsonFlag()) {
     ctx.printJson(data)
     return
@@ -103,8 +97,11 @@ export interface PushScorerDraftInput {
   manifest: Record<string, unknown>
   promptVersionId?: string
   runnerVersionId?: string
+  /** `--json`: a failure also prints one object on stdout. */
+  json?: boolean
+  print?: (line: string) => void
   /** Test seam; defaults to the authenticated CLI fetcher. */
-  fetcher?: (path: string, init?: RequestInit) => Promise<Response>
+  fetcher?: (path: string, init: RequestInit) => Promise<Response>
 }
 
 export interface PushScorerDraftResult {
@@ -112,35 +109,17 @@ export interface PushScorerDraftResult {
   message: string
 }
 
-export async function pushScorerDraft(input: PushScorerDraftInput): Promise<PushScorerDraftResult> {
-  const fetcher = input.fetcher ?? authedFetch
-
-  const response = await fetcher(`/api/cli/scorers/drafts?project=${encodeURIComponent(input.project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: input.sessionId,
-      name: input.name,
-      manifest: input.manifest,
-      promptVersionId: input.promptVersionId,
-      runnerVersionId: input.runnerVersionId,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to register scorer: ${await response.text()}`)
-  }
-
-  const rawBody = await response.text()
-  let data: Record<string, unknown>
-  try {
-    data = JSON.parse(rawBody) as Record<string, unknown>
-  } catch {
-    throw new Error(
-      `scorer draft push returned invalid JSON (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
+/** Null when Ctrl-C or SIGTERM stopped the wait; the exit code is already set (ORI-1105). */
+export async function pushScorerDraft(input: PushScorerDraftInput): Promise<PushScorerDraftResult | null> {
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.draftPush('scorer', `/api/cli/scorers/drafts?project=${encodeURIComponent(input.project)}`, {
+    sessionId: input.sessionId,
+    name: input.name,
+    manifest: input.manifest,
+    promptVersionId: input.promptVersionId,
+    runnerVersionId: input.runnerVersionId,
+  }), { json: input.json ?? false, print: input.print ?? (line => process.stdout.write(`${line}\n`)), ...(input.fetcher ? { fetcher: input.fetcher } : {}) })
+  if (data === null) return null
 
   const versionId = sanitizeTerminalText(String(data.scorer_version_id || 'unknown version'))
   const commit = sanitizeTerminalText(String(data.commit_sha || 'unknown commit')).slice(0, 12)

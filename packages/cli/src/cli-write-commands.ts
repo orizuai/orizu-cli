@@ -10,7 +10,7 @@ import { sendOneRequestWrite, type MayAlreadyBeSavedNote, type OneRequestWrite }
 const SAFE = 'running the same command again is safe'
 const note = (thing: string, done: string, advice: string): MayAlreadyBeSavedNote => ({ thing, done, advice })
 
-type Write<A> = Pick<OneRequestWrite<A>, 'label' | 'name' | 'path' | 'method' | 'body' | 'reply' | 'mayAlreadyBeSaved' | 'describeError'>
+type Write<A> = Pick<OneRequestWrite<A>, 'label' | 'name' | 'path' | 'method' | 'body' | 'reply' | 'mayAlreadyBeSaved' | 'describeError' | 'timeoutMs'>
 
 const task = (id: string) => `/api/cli/tasks/${encodeURIComponent(id)}`
 const Count = Schema.Number
@@ -134,8 +134,46 @@ export const manifestReject = (id: string): Write<typeof ManifestRejected.Type> 
   mayAlreadyBeSaved: note('manifest', 'rejected', `check \`orizu manifests show ${id}\``),
 })
 
+const Reply = Schema.Record(Text, Schema.Unknown)
+type Pushed = typeof Reply.Type
+type Artifact = 'prompt' | 'judge' | 'runner' | 'optimizer' | 'scorer'
+// A runner or optimizer zip is stored and then committed one file at a time,
+// which can outlast two minutes; wait as long as the policy allows.
+const zipWait = (kind: Artifact) => kind === 'runner' || kind === 'optimizer' ? { timeoutMs: 300_000 } : {}
+const pushWords = (kind: Artifact) => kind === 'scorer'
+  ? { label: 'register scorer', name: 'Scorer register', done: 'registered' }
+  : { label: `push ${kind}`, name: `${kind[0]!.toUpperCase()}${kind.slice(1)} push`, done: 'pushed' }
+
+/**
+ * A session push: the server keys the draft by the version's whole identity,
+ * so a repeat answers with the same draft and commits nothing new (ORI-1105).
+ */
+export const draftPush = (kind: Artifact, path: string, body: Record<string, unknown>): Write<Pushed> => ({
+  label: pushWords(kind).label, name: pushWords(kind).name, path, method: 'POST', body, reply: Reply, ...zipWait(kind),
+  mayAlreadyBeSaved: note(`${kind} draft`, 'saved', `${SAFE} (it reuses the draft)`),
+})
+
+/**
+ * A push without a session. Runners and optimizers with the same bytes reuse
+ * their version. A judge with the same text is refused as identical, and a
+ * scorer registered again gets a second version, so their advice is to look first.
+ */
+export const artifactPush = (kind: Artifact, path: string, body: Record<string, unknown>, describeError?: Write<Pushed>['describeError']): Write<Pushed> => ({
+  label: pushWords(kind).label, name: pushWords(kind).name, path, method: 'POST', body, reply: Reply, ...zipWait(kind),
+  ...(describeError ? { describeError } : {}),
+  mayAlreadyBeSaved: note(kind, pushWords(kind).done, kind === 'scorer'
+    ? 'check `orizu scorers list` before registering it again (running it again makes a second version)'
+    : kind === 'judge' || kind === 'prompt' ? `check \`orizu ${kind}s list\` before pushing again` : SAFE),
+})
+
+/** Points the label at the same version again, so a repeat is safe. */
+export const labelMove = (kind: 'prompt' | 'scorer', project: string, body: Record<string, unknown>): Write<Pushed> => ({
+  label: `set ${kind} label`, name: kind === 'prompt' ? 'Prompt label move' : 'Scorer label move', path: `/api/cli/${kind}s/labels?project=${encodeURIComponent(project)}`, method: 'POST', body, reply: Reply,
+  mayAlreadyBeSaved: note('label move', 'saved', SAFE),
+})
+
 /** Sends a write with this command's `--json` setting and output. Ctrl-C sets the exit code and returns null. */
-export async function sendCommandWrite<A>(write: Write<A>, io: { json: boolean; print: (line: string) => void }): Promise<A | null> {
+export async function sendCommandWrite<A>(write: Write<A>, io: Pick<OneRequestWrite<A>, 'json' | 'print' | 'fetcher'>): Promise<A | null> {
   const outcome = await sendOneRequestWrite({ ...write, ...io })
   if (outcome.kind === 'saved') return outcome.reply
   process.exitCode = outcome.exitCode

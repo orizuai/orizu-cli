@@ -1,4 +1,3 @@
-import { authedFetch } from './http.js'
 import { sanitizeTerminalText } from './json-response.js'
 import { appendRegistrationTagWarning } from './registration-tag-warning.js'
 
@@ -74,8 +73,11 @@ export interface PushPromptDraftInput {
   runnerVersionId: string
   parentVersionId?: string
   report?: { markdown: string; sourceName: string | null } | null
+  /** `--json`: a failure also prints one object on stdout. */
+  json?: boolean
+  print?: (line: string) => void
   /** Test seam; defaults to the authenticated CLI fetcher. */
-  fetcher?: (path: string, init?: RequestInit) => Promise<Response>
+  fetcher?: (path: string, init: RequestInit) => Promise<Response>
 }
 
 export interface PushPromptDraftResult {
@@ -83,59 +85,45 @@ export interface PushPromptDraftResult {
   message: string
 }
 
-export async function pushPromptDraft(input: PushPromptDraftInput): Promise<PushPromptDraftResult> {
+/**
+ * Sends the push with a deadline and Ctrl-C handling (ORI-1105). Null when
+ * Ctrl-C or SIGTERM stopped the wait; the exit code is already set.
+ */
+export async function pushPromptDraft(input: PushPromptDraftInput): Promise<PushPromptDraftResult | null> {
   const { kind, manifest } = input
   const files = buildPromptDraftFiles(input.primaryBody, input.sidecars)
-  const fetcher = input.fetcher ?? authedFetch
   const baseBundle = isRecord(manifest.bundle) ? manifest.bundle : {}
 
-  const response = await fetcher(`/api/cli/prompts/drafts?project=${encodeURIComponent(input.project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: input.sessionId,
-      name: manifest.name,
-      role: kind === 'judge' && manifest.role === undefined ? 'judge_per_row' : manifest.role,
-      description: manifest.description,
-      bodyKind: input.bodyKind,
-      providerSettings: manifest.provider_settings || {},
-      bundle: {
-        ...baseBundle,
-        tags: manifest.tags || [],
-        provenance: manifest.provenance || {},
-        primaryText: {
-          path: PROMPT_PRIMARY_GIT_FILENAME,
-          kind: input.bodyKind,
-        },
-        sidecars: input.sidecars,
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.draftPush(kind, `/api/cli/prompts/drafts?project=${encodeURIComponent(input.project)}`, {
+    sessionId: input.sessionId,
+    name: manifest.name,
+    role: kind === 'judge' && manifest.role === undefined ? 'judge_per_row' : manifest.role,
+    description: manifest.description,
+    bodyKind: input.bodyKind,
+    providerSettings: manifest.provider_settings || {},
+    bundle: {
+      ...baseBundle,
+      tags: manifest.tags || [],
+      provenance: manifest.provenance || {},
+      primaryText: {
+        path: PROMPT_PRIMARY_GIT_FILENAME,
+        kind: input.bodyKind,
       },
-      runnerVersionId: input.runnerVersionId,
-      parentVersionId: input.parentVersionId,
-      createdBy: manifest.provenance || { kind: 'human-edit' },
-      files,
-      ...(input.report
-        ? {
-            reportMarkdown: input.report.markdown,
-            reportSourceName: input.report.sourceName,
-          }
-        : {}),
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to push ${kind}: ${await response.text()}`)
-  }
-
-  const rawBody = await response.text()
-  let data: Record<string, unknown>
-  try {
-    data = JSON.parse(rawBody) as Record<string, unknown>
-  } catch {
-    throw new Error(
-      `${kind} draft push returned invalid JSON (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
+      sidecars: input.sidecars,
+    },
+    runnerVersionId: input.runnerVersionId,
+    parentVersionId: input.parentVersionId,
+    createdBy: manifest.provenance || { kind: 'human-edit' },
+    files,
+    ...(input.report
+      ? {
+          reportMarkdown: input.report.markdown,
+          reportSourceName: input.report.sourceName,
+        }
+      : {}),
+  }), { json: input.json ?? false, print: input.print ?? (line => process.stdout.write(`${line}\n`)), ...(input.fetcher ? { fetcher: input.fetcher } : {}) })
+  if (data === null) return null
 
   const versionId = sanitizeTerminalText(String(data.prompt_version_id || 'unknown version'))
   const commit = sanitizeTerminalText(String(data.commit_sha || 'unknown commit')).slice(0, 12)

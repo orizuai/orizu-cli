@@ -1,5 +1,4 @@
-import { authedFetch } from './http.js'
-import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
+import { sanitizeTerminalText } from './json-response.js'
 
 interface PromptLabelCliContext {
   getArg: (name: string) => string | null
@@ -8,16 +7,6 @@ interface PromptLabelCliContext {
   printJson: (value: Record<string, unknown>) => void
   printLine: (value: string) => void
   resolveProjectSlug: (project: string | null) => Promise<string>
-}
-
-interface PromptLabelResponse {
-  prompt_id: string
-  prompt_version_id: string
-  label: string
-  owner?: {
-    instructionSetSlug: string
-    componentKey: string
-  } | null
 }
 
 export async function setPromptLabel(context: PromptLabelCliContext): Promise<void> {
@@ -30,26 +19,20 @@ export async function setPromptLabel(context: PromptLabelCliContext): Promise<vo
     throw new Error('Usage: orizu prompts labels set <prompt-name> <label> --version <prompt-version-id> [--project <team/project>] [--json]')
   }
 
-  const response = await authedFetch(`/api/cli/prompts/labels?project=${encodeURIComponent(project)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ promptName, label, promptVersionId }),
-  })
-  if (!response.ok) {
-    throw new Error(`Failed to set prompt label: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<PromptLabelResponse>(response, 'Prompt label set')
+  const writes = await import('./cli-write-commands.js')
+  const reply = await writes.sendCommandWrite(writes.labelMove('prompt', project, { promptName, label, promptVersionId }), { json: context.json, print: context.printLine })
+  if (reply === null) return
   if (context.json) {
-    context.printJson(data as unknown as Record<string, unknown>)
+    context.printJson(reply)
     return
   }
-
   context.printLine(`Moved ${sanitizeTerminalText(label)} to ${sanitizeTerminalText(promptVersionId)}`)
-  if (data.owner) {
+  // The reply is printed whole with --json, so it is kept as the server sent it.
+  const owner = reply.owner
+  if (typeof owner === 'object' && owner !== null && 'instructionSetSlug' in owner && 'componentKey' in owner) {
     context.printLine(
-      `Owner: ${sanitizeTerminalText(promptName)} (${sanitizeTerminalText(data.prompt_id)}) -> ` +
-      `${sanitizeTerminalText(data.owner.instructionSetSlug)} / ${sanitizeTerminalText(data.owner.componentKey)}`
+      `Owner: ${sanitizeTerminalText(promptName)} (${sanitizeTerminalText(String(reply.prompt_id))}) -> ` +
+      `${sanitizeTerminalText(String(owner.instructionSetSlug))} / ${sanitizeTerminalText(String(owner.componentKey))}`
     )
   }
 }

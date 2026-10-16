@@ -56,6 +56,11 @@ export interface OneRequestWrite<A> {
   describeError?: (response: Response) => Promise<{ message: string; json: { error: string } & Record<string, unknown> }>
   json: boolean
   print: (line: string) => void
+  /**
+   * The time limit when the person set none. For writes whose server work can
+   * outlast the usual two minutes (a runner zip committed file by file).
+   */
+  timeoutMs?: number
   /** Stands in for `authedFetch` in tests; the request counts as sent once it is called. */
   fetcher?: (path: string, init: RequestInit) => Promise<Response>
 }
@@ -73,7 +78,9 @@ class WriteFailure {
   constructor(readonly message: string, readonly mayBeSaved: boolean, json: { error: string } & Record<string, unknown>) { this.json = json }
 }
 
-const MAX_ERROR_LENGTH = 180
+// Long enough for a refusal that names what to run instead, such as the
+// hosted agent's "Re-run with --session <id>." (ORI-1105).
+const MAX_ERROR_LENGTH = 400
 
 function send<A>(write: OneRequestWrite<A>, timeoutMs: number, onSent: () => void): Effect.Effect<A, WriteFailure> {
   const failed = (reason: string) => `Failed to ${write.label}: ${reason}`
@@ -105,7 +112,10 @@ function send<A>(write: OneRequestWrite<A>, timeoutMs: number, onSent: () => voi
             const refused = response.status >= 400 && response.status < 500
             if (!isJsonErrorResponsePayload(response, data) || data.error.length === 0) {
               // Never print a page body: a gateway's HTML says nothing useful.
-              const reason = `the server returned a page that isn't JSON (status ${response.status})`
+              // The host refuses an oversized body before the app runs (ORI-1105).
+              const reason = response.status === 413
+                ? `the request is too large for the server (status ${response.status})`
+                : `the server returned a page that isn't JSON (status ${response.status})`
               throw new WriteFailure(failed(reason), !refused, { error: reason, httpStatus: response.status })
             }
             if (write.describeError) {
@@ -153,7 +163,7 @@ function send<A>(write: OneRequestWrite<A>, timeoutMs: number, onSent: () => voi
  * every failure also prints one object on stdout.
  */
 export async function sendOneRequestWrite<A>(write: OneRequestWrite<A>): Promise<OneRequestWriteOutcome<A>> {
-  const timeoutMs = datasetTransferTimeoutMs()
+  const timeoutMs = datasetTransferTimeoutMs(write.timeoutMs)
   const controller = new AbortController()
   let interrupted: 130 | 143 | undefined
   let sent = false
