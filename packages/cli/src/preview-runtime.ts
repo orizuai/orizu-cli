@@ -1,16 +1,6 @@
-import { createServer } from 'http'
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'fs'
-import { tmpdir } from 'os'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
-import { fileURLToPath, pathToFileURL } from 'url'
+import { existsSync, readFileSync } from 'fs'
+import { dirname, join, resolve } from 'path'
+import { fileURLToPath } from 'url'
 import type { Plugin } from 'esbuild'
 
 export const PREVIEW_RUNTIME_REGISTRY_VERSION = 1
@@ -85,6 +75,8 @@ export interface AppPreviewOptions {
   forceSnapshot?: boolean
   playwright?: PreviewPlaywright
   chromiumExecutablePath?: string | null
+  /** Called once the page is ready (and screenshotted), before a keep-open wait. */
+  onRendered?: (result: AppPreviewResult) => void
 }
 
 export interface AppPreviewResult {
@@ -98,13 +90,13 @@ interface Issue {
   message: string
 }
 
-interface PreviewPlaywright {
+export interface PreviewPlaywright {
   chromium: {
     launch: (options: Record<string, unknown>) => Promise<PreviewBrowser>
   }
 }
 
-interface PreviewBrowser {
+export interface PreviewBrowser {
   newPage: (options: Record<string, unknown>) => Promise<PreviewPage>
   close: () => Promise<void>
   once?: (event: string, listener: () => void) => unknown
@@ -112,7 +104,7 @@ interface PreviewBrowser {
   off?: (event: string, listener: () => void) => unknown
 }
 
-interface PreviewPage {
+export interface PreviewPage {
   goto: (url: string, options: Record<string, unknown>) => Promise<unknown>
   waitForSelector: (selector: string, options: Record<string, unknown>) => Promise<unknown>
   screenshot: (options: { path: string; fullPage: boolean }) => Promise<unknown>
@@ -120,10 +112,6 @@ interface PreviewPage {
   once?: (event: string, listener: () => void) => unknown
   on?: (event: string, listener: (error: Error) => void) => unknown
   off?: (event: string, listener: (error: Error) => void) => unknown
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error
 }
 
 const SUPPORTED_SCHEMA_KEYS = new Set(['type', 'required', 'properties', 'items', 'enum'])
@@ -181,167 +169,10 @@ export function validatePreviewInputs(options: AppPreviewOptions): Issue[] {
   return issues
 }
 
+/** Loads the preview workflow (and Effect) only when a preview runs. */
 export async function runLocalAppPreview(options: AppPreviewOptions): Promise<AppPreviewResult> {
-  const issues = validatePreviewInputs(options)
-  const errors = issues.filter(issue => issue.level === 'error')
-  if (errors.length > 0) {
-    throw new Error(errors.map(issue => issue.message).join('\n'))
-  }
-
-  const tempDir = mkdtempSync(join(tmpdir(), 'orizu-app-preview-'))
-  const appPath = realpathSync(options.filePath)
-  const repoRoot = options.forceSnapshot
-    ? null
-    : findPreviewRepoRoot(options.cwd || process.cwd(), appPath)
-  const cliPackageRoot = findCliPackageRoot()
-  const entryPath = join(tempDir, 'entry.tsx')
-  const cssPath = join(tempDir, 'preview.css')
-  const htmlPath = join(tempDir, 'index.html')
-  const globalsPath = join(tempDir, 'runtime-globals.ts')
-  const outDir = join(tempDir, 'dist')
-
-  writeFileSync(entryPath, buildEntrySource(appPath, options.sampleRow), 'utf8')
-  writeFileSync(htmlPath, buildPreviewHtml(), 'utf8')
-  writeFileSync(globalsPath, buildRuntimeGlobalsSource(), 'utf8')
-
-  let server: { port: number; close: () => Promise<void> } | null = null
-  try {
-    const esbuild = await import('esbuild').catch(() => null)
-    if (!esbuild) {
-      throw new Error(
-        'Local preview requires esbuild. Install project dependencies with `bun install` or run from an Orizu checkout.'
-      )
-    }
-
-    const nodePaths = [
-      ...(repoRoot ? [join(repoRoot, 'node_modules')] : []),
-      ...(cliPackageRoot ? findNodeModuleDirs(cliPackageRoot) : []),
-    ]
-    const missingRuntimeDeps = findMissingPreviewRuntimeDeps(nodePaths)
-    if (missingRuntimeDeps.length > 0) {
-      throw new Error(
-        `Local preview requires ${missingRuntimeDeps.join(' and ')} to be installed nearby ` +
-          '(run inside a project that has them, `npm install react react-dom` next to your app, ' +
-          'or run from an Orizu checkout after `bun install`).'
-      )
-    }
-
-    // After the dependency checks, so their actionable errors come before a Tailwind warning.
-    writeFileSync(cssPath, await buildPreviewCss(repoRoot, appPath), 'utf8')
-    await esbuild.build({
-      entryPoints: [entryPath],
-      bundle: true,
-      outdir: outDir,
-      format: 'esm',
-      platform: 'browser',
-      target: 'es2020',
-      jsx: 'automatic',
-      jsxImportSource: 'react',
-      // Only replaces names the app uses without declaring or importing them.
-      inject: [globalsPath],
-      loader: {
-        '.css': 'css',
-        '.tsx': 'tsx',
-        '.ts': 'ts',
-      },
-      absWorkingDir: repoRoot || cliPackageRoot || process.cwd(),
-      nodePaths,
-      alias: repoRoot ? { '@': repoRoot } : undefined,
-      plugins: repoRoot ? undefined : [createPreviewSnapshotPlugin()],
-      logLevel: 'silent',
-    })
-
-    let url = pathToFileURL(htmlPath).href
-    try {
-      server = await serveDirectory(tempDir)
-      url = `http://127.0.0.1:${server.port}/index.html`
-    } catch {
-      server = null
-    }
-    const playwright = options.playwright || await loadPlaywright()
-    const chromiumExecutablePath = 'chromiumExecutablePath' in options
-      ? options.chromiumExecutablePath
-      : resolveChromiumExecutablePath()
-    const browser = await playwright.chromium.launch({
-      headless: !options.headed,
-      ...(chromiumExecutablePath ? { executablePath: chromiumExecutablePath } : {}),
-    })
-    let page: PreviewPage | null = null
-    let handleRenderError: ((error: Error) => void) | undefined
-    let hasFinishedKeepingOpen = false
-    try {
-      page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
-      const renderError = new Promise<never>((_, reject) => {
-        handleRenderError = error => reject(new Error(`App preview render failed: ${error.message}`))
-        page?.on?.('pageerror', handleRenderError)
-      })
-      // Listen before navigation: React can fail before the ready marker mounts.
-      await Promise.race([
-        page.goto(url, { waitUntil: 'networkidle' }).then(() =>
-          page!.waitForSelector('[data-orizu-preview-ready="true"]', { timeout: 15_000 })
-        ),
-        renderError,
-      ])
-      if (options.screenshotPath) {
-        await page.screenshot({ path: options.screenshotPath, fullPage: true })
-      }
-      if (options.keepOpen) {
-        await waitForPreviewClose(page, browser)
-        hasFinishedKeepingOpen = true
-      }
-    } finally {
-      if (handleRenderError) page?.off?.('pageerror', handleRenderError)
-      if (!hasFinishedKeepingOpen) {
-        await browser.close()
-      }
-    }
-
-    return {
-      url,
-      screenshotPath: options.screenshotPath,
-      warnings: issues.filter(issue => issue.level === 'warn').map(issue => issue.message),
-    }
-  } finally {
-    await server?.close()
-    rmSync(tempDir, { recursive: true, force: true })
-  }
-}
-
-function waitForPreviewClose(page: PreviewPage, browser: PreviewBrowser): Promise<void> {
-  return new Promise(resolveClose => {
-    const cleanups: Array<() => void> = []
-    let settled = false
-    const done = () => {
-      if (settled) return
-      settled = true
-      for (const cleanup of cleanups) cleanup()
-      resolveClose()
-    }
-
-    const listen = (target: PreviewPage | PreviewBrowser, event: string) => {
-      if (typeof target.once === 'function') {
-        target.once(event, done)
-        return true
-      }
-      if (typeof target.on === 'function') {
-        target.on(event, done)
-        if (typeof target.off === 'function') {
-          cleanups.push(() => target.off?.(event, done))
-        }
-        return true
-      }
-      return false
-    }
-
-    const listening = [
-      listen(page, 'close'),
-      listen(browser, 'disconnected'),
-    ].some(Boolean)
-
-    if (!listening) {
-      page.waitForTimeout(24 * 60 * 60 * 1000).then(done, done)
-    }
-  })
+  const { runPreview } = await import('./preview-workflow.js')
+  return runPreview(options)
 }
 
 function validateImports(source: string, issues: Issue[]) {
@@ -552,7 +383,7 @@ function validatePayload(schema: unknown, payload: unknown, path: string, issues
   }
 }
 
-function findPreviewRepoRoot(cwd: string, appPath: string): string | null {
+export function findPreviewRepoRoot(cwd: string, appPath: string): string | null {
   // ORI-1565 move: this detects local development inside the Orizu monorepo
   // itself (to borrow its real Tailwind setup instead of the packaged
   // snapshot CSS); components/, app/globals.css and lib/available-
@@ -582,7 +413,7 @@ function fileURLPath(): string {
   return fileURLToPath(new URL('.', import.meta.url))
 }
 
-function findCliPackageRoot(): string | null {
+export function findCliPackageRoot(): string | null {
   let current = resolve(dirname(fileURLPath()))
   while (true) {
     if (
@@ -611,7 +442,7 @@ export function findMissingPreviewRuntimeDeps(nodeModuleDirs: string[]): string[
   )
 }
 
-function findNodeModuleDirs(start: string): string[] {
+export function findNodeModuleDirs(start: string): string[] {
   const dirs: string[] = []
   let current = resolve(start)
   while (true) {
@@ -626,7 +457,7 @@ function findNodeModuleDirs(start: string): string[] {
   return dirs
 }
 
-function buildEntrySource(appPath: string, sampleRow: Record<string, unknown>) {
+export function buildEntrySource(appPath: string, sampleRow: Record<string, unknown>) {
   return `
 import React from 'react'
 import { createRoot } from 'react-dom/client'
@@ -663,13 +494,13 @@ root.render(React.createElement(PreviewShell))
 `
 }
 
-function buildRuntimeGlobalsSource() {
+export function buildRuntimeGlobalsSource() {
   return Object.entries(PREVIEW_RUNTIME_GLOBALS)
     .map(([name, path]) => `import ${name} from ${JSON.stringify(path)}\nexport { ${name} }\n`)
     .join('')
 }
 
-function buildPreviewHtml() {
+export function buildPreviewHtml() {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -788,7 +619,7 @@ function buildSnapshotTailwindCss() {
 `
 }
 
-function createPreviewSnapshotPlugin(): Plugin {
+export function createPreviewSnapshotPlugin(): Plugin {
   const modules = buildPreviewSnapshotModules()
   return {
     name: 'orizu-preview-runtime-snapshot',
@@ -1104,97 +935,4 @@ export function ShortcutButton({ shortcut, shortcutLabel, children, className, d
 
 export function getPreviewSnapshotModulePaths(): string[] {
   return Object.keys(buildPreviewSnapshotModules()).sort()
-}
-
-async function serveDirectory(root: string): Promise<{ port: number; close: () => Promise<void> }> {
-  const server = createServer((request, response) => {
-    const url = new URL(request.url || '/', 'http://127.0.0.1')
-    const requestedPath = url.pathname === '/' ? '/index.html' : url.pathname
-    const filePath = resolve(root, `.${requestedPath}`)
-    const relativePath = relative(root, filePath)
-    if (relativePath.startsWith('..') || isAbsolute(relativePath) || !existsSync(filePath)) {
-      response.statusCode = 404
-      response.end('Not found')
-      return
-    }
-    try {
-      if (!statSync(filePath).isFile()) {
-        response.statusCode = 404
-        response.end('Not found')
-        return
-      }
-    } catch {
-      response.statusCode = 404
-      response.end('Not found')
-      return
-    }
-    const ext = basename(filePath).split('.').pop()
-    const contentType =
-      ext === 'html' ? 'text/html; charset=utf-8' :
-      ext === 'js' ? 'text/javascript; charset=utf-8' :
-      ext === 'css' ? 'text/css; charset=utf-8' :
-      'application/octet-stream'
-    response.setHeader('content-type', contentType)
-    try {
-      response.end(readFileSync(filePath))
-    } catch {
-      response.statusCode = 500
-      response.end('Internal server error')
-    }
-  })
-  const port = await listenOnAvailablePort(server)
-  const address = server.address()
-  if (!address || typeof address === 'string') {
-    throw new Error('Unable to start local preview server.')
-  }
-  return {
-    port,
-    close: () => new Promise(resolveClose => server.close(() => resolveClose())),
-  }
-}
-
-async function listenOnAvailablePort(server: ReturnType<typeof createServer>): Promise<number> {
-  const firstPort = 39000 + Math.floor(Math.random() * 1000)
-  for (let offset = 0; offset < 20; offset += 1) {
-    const port = firstPort + offset
-    try {
-      await new Promise<void>((resolveListen, reject) => {
-        server.once('error', reject)
-        server.listen(port, '127.0.0.1', () => {
-          server.off('error', reject)
-          resolveListen()
-        })
-      })
-      return port
-    } catch (error: unknown) {
-      server.removeAllListeners('error')
-      if (!isNodeError(error) || error.code !== 'EADDRINUSE') throw error
-    }
-  }
-  throw new Error('Unable to find an available localhost port for app preview.')
-}
-
-async function loadPlaywright(): Promise<PreviewPlaywright> {
-  const fromTest = await import('@playwright/test').catch(() => null)
-  if (fromTest?.chromium) return fromTest as unknown as PreviewPlaywright
-  const fromPlaywright = await import('playwright').catch(() => null)
-  if (fromPlaywright?.chromium) return fromPlaywright as unknown as PreviewPlaywright
-  throw new Error(
-    'Local preview requires Playwright. Install project dependencies with `bun install`, then rerun `orizu apps preview`.'
-  )
-}
-
-function resolveChromiumExecutablePath(): string | null {
-  const candidates = [
-    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    'C:/Program Files/Google/Chrome/Application/chrome.exe',
-    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  ].filter(Boolean) as string[]
-
-  return candidates.find(candidate => existsSync(candidate)) || null
 }

@@ -1975,7 +1975,13 @@ export async function main(rawArgs = process.argv.slice(2)) {
   }
 
   if (command === 'apps' && subcommand === 'preview') {
-    await previewAppFromFile()
+    const stopped = await previewAppFromFile()
+    if (stopped !== undefined) {
+      process.exitCode = stopped
+      // A Chromium launch can't be cancelled; one still starting holds the process
+      // until it arrives and is closed. Exit anyway once the 10 s budget is spent.
+      setTimeout(() => process.exit(stopped), 10_000).unref()
+    }
     return
   }
 

@@ -31,7 +31,7 @@ import { inspectAppDestination } from './app-publish-paths.js'
 import { authedFetch, getBaseUrl } from './http.js'
 import { appPageUrl } from './app-page-url.js'
 import { parseJsonResponse, sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
-import { runLocalAppPreview } from './preview-runtime.js'
+import type { AppPreviewResult } from './preview-runtime.js'
 import type { AppFiles } from './app-publish-workspace.js'
 import { findWorkspaceRoot } from './workspace.js'
 
@@ -343,7 +343,8 @@ async function createAppFromFile() {
   }
 }
 
-async function previewAppFromFile() {
+/** Resolves to the exit code of a stop (130 or 143), or undefined when the preview ended normally. */
+async function previewAppFromFile(): Promise<number | undefined> {
   const filePath = getArg('--file')
   const inputSchemaPath = getArg('--input-schema')
   const outputSchemaPath = getArg('--output-schema')
@@ -363,7 +364,30 @@ async function previewAppFromFile() {
   const sampleRow = readJsonFile(sampleRowPath)
   const expandedScreenshotPath = screenshotPath ? expandHomePath(screenshotPath) : undefined
 
-  const result = await runLocalAppPreview({
+  const printRendered = (result: AppPreviewResult) => {
+    if (hasJsonFlag()) {
+      printJson({
+        url: result.url,
+        screenshotPath: result.screenshotPath || null,
+        warnings: result.warnings,
+      })
+      return
+    }
+    printLine(`Preview rendered: ${formatTerminalLink(result.url)}`)
+    if (result.screenshotPath) {
+      printLine(`Screenshot: ${sanitizeTerminalText(result.screenshotPath)}`)
+    }
+    if (headed || keepOpen) {
+      printLine('Headed preview is running. Close Chromium or stop the command when you are done.')
+    }
+    if (result.warnings.length > 0) {
+      printLine(`Warnings: ${sanitizeTerminalText(result.warnings.join('; '))}`)
+    }
+  }
+
+  const { runPreviewCommand } = await import('./preview-workflow.js')
+  // Printed once the page is ready, so a keep-open preview says so while it is open.
+  const outcome = await runPreviewCommand({
     filePath: expandedFilePath,
     inputSchema: inputJsonSchema,
     outputSchema: outputJsonSchema,
@@ -372,26 +396,10 @@ async function previewAppFromFile() {
     componentName: component,
     headed,
     keepOpen,
+    onRendered: printRendered,
   })
-
-  if (hasJsonFlag()) {
-    printJson({
-      url: result.url,
-      screenshotPath: result.screenshotPath || null,
-      warnings: result.warnings,
-    })
-    return
-  }
-  printLine(`Preview rendered: ${formatTerminalLink(result.url)}`)
-  if (result.screenshotPath) {
-    printLine(`Screenshot: ${sanitizeTerminalText(result.screenshotPath)}`)
-  }
-  if (headed || keepOpen) {
-    printLine('Headed preview is running. Close Chromium or stop the command when you are done.')
-  }
-  if (result.warnings.length > 0) {
-    printLine(`Warnings: ${sanitizeTerminalText(result.warnings.join('; '))}`)
-  }
+  // A stop prints nothing more.
+  return 'interrupted' in outcome ? outcome.interrupted : undefined
 }
 
 async function updateAppFromFile() {
