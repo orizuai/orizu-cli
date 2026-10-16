@@ -102,7 +102,13 @@ export async function readDirectoryList<T>(
   const timer = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
   try {
     const response = await request(path, { signal: controller.signal })
-    if (!response.ok) throw new Error(`${shape.failed}: ${await response.text()}`)
+    if (!response.ok) {
+      // A refusal's JSON is the server's own words; any other page (a gateway's HTML) is named, never printed (ORI-2725).
+      const text = await response.text()
+      let isJson = true
+      try { JSON.parse(text) } catch { isJson = false }
+      throw new Error(`${shape.failed}: ${isJson ? text : `the server returned a page that isn't JSON (status ${response.status})`}`)
+    }
     const data = await parseJsonResponse<unknown>(response, shape.label)
     const list = isRecord(data) ? data[shape.field] : undefined
     const unreadable = new Error(`The server sent a ${shape.what} Orizu can't read. Run \`orizu update\` and try again; if it still fails, the server may be having trouble.`)

@@ -6,7 +6,7 @@
  * renders the canonical response without inventing client-side state.
  */
 
-import { authedFetch } from './http.js'
+import { readOne } from './one-request-read.js'
 import { extractErrorMessage } from './error-response.js'
 import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 
@@ -184,29 +184,6 @@ export function printScorerSummaries(
   )
 }
 
-async function parseJsonPayload<T>(
-  response: Response,
-  context: string
-): Promise<T> {
-  const contentType = response.headers.get('content-type') || ''
-  const rawBody = await response.text()
-  if (!contentType.includes('application/json')) {
-    throw new Error(
-      `${context} returned non-JSON response (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
-
-  try {
-    return JSON.parse(rawBody) as T
-  } catch {
-    throw new Error(
-      `${context} returned invalid JSON (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
-}
-
 function parseStatus(args: readonly string[]): ArchiveStatus {
   const value = argValue(args, '--status') || 'active'
   if (value !== 'active' && value !== 'archived' && value !== 'all') {
@@ -292,18 +269,12 @@ export async function listAssignmentsCommand(
   const params = new URLSearchParams({ project, status })
   if (assigneeId) params.set('assignee', assigneeId)
 
-  const fetcher = io.fetcher || authedFetch
-  const response = await fetcher(`/api/cli/assignments?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(
-      `Failed to list assignments: ${await extractErrorMessage(response)}`
-    )
-  }
-
-  const data = await parseJsonPayload<{ assignments: AssignmentSummary[] }>(
-    response,
-    'Assignments list'
-  )
+  const data = await readOne<{ assignments: AssignmentSummary[] }>({
+    failed: 'Failed to list assignments', name: 'Assignments list', path: `/api/cli/assignments?${params.toString()}`,
+    refusedMessage: async response => `Failed to list assignments: ${await extractErrorMessage(response)}`,
+    ...(io.fetcher ? { fetcher: io.fetcher } : {}),
+  })
+  if (!data) return
   if (io.json) {
     io.print(JSON.stringify(data))
     return

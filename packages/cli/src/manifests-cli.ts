@@ -11,6 +11,7 @@
  */
 
 import { authedFetch } from './http.js'
+import { readOne, readOneWithoutStops, type OneRequestRead } from './one-request-read.js'
 
 export type CliFetcher = (path: string, init?: RequestInit) => Promise<Response>
 
@@ -60,6 +61,15 @@ async function requireOk(response: Response, action: string): Promise<Record<str
     return (await response.json()) as Record<string, unknown>
   } catch {
     return {}
+  }
+}
+
+// ORI-2725: a reply that isn't JSON fails instead of reading as no manifests.
+function manifestRead(io: ManifestsCommandIo, name: string, path: string): OneRequestRead {
+  return {
+    failed: `${name} failed`, name, path,
+    refusedMessage: async response => `${name} failed (${response.status}): ${await responseMessage(response)}`,
+    ...(io.fetcher ? { fetcher: io.fetcher } : {}),
   }
 }
 
@@ -118,10 +128,8 @@ async function resolveManifestId(io: ManifestsCommandIo, args: string[], id: str
   }
 
   const projectSlug = await requireProjectSlug(io, args)
-  const response = await fetcherFrom(io)(
-    `/api/cli/promotion-manifests?project=${encodeURIComponent(projectSlug)}`
-  )
-  const data = await requireOk(response, 'Manifest lookup')
+  // A lookup inside a longer command keeps Node's default Ctrl-C (one-request-read.ts).
+  const data = await readOneWithoutStops<Record<string, unknown>>(manifestRead(io, 'Manifest lookup', `/api/cli/promotion-manifests?project=${encodeURIComponent(projectSlug)}`))
   const manifests = Array.isArray(data.manifests) ? (data.manifests as Record<string, unknown>[]) : []
   const needle = id.toLowerCase()
   const matches = manifests
@@ -281,8 +289,8 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
     const query = status
       ? `?project=${encodeURIComponent(projectSlug)}&status=${encodeURIComponent(status)}`
       : `?project=${encodeURIComponent(projectSlug)}`
-    const response = await fetcherFrom(io)(`/api/cli/promotion-manifests${query}`)
-    const data = await requireOk(response, 'Manifest list')
+    const data = await readOne<Record<string, unknown>>(manifestRead(io, 'Manifest list', `/api/cli/promotion-manifests${query}`))
+    if (!data) return Number(process.exitCode)
     const manifests = Array.isArray(data.manifests) ? (data.manifests as Record<string, unknown>[]) : []
     emit(io, { manifests }, manifestsTable(manifests, Date.now()))
     return 0
@@ -294,8 +302,8 @@ export async function manifestsCommand(args: string[], io: ManifestsCommandIo): 
       throw new Error('Usage: orizu manifests show <id> [--json]')
     }
     const id = await resolveManifestId(io, args, idArg)
-    const response = await fetcherFrom(io)(`/api/cli/promotion-manifests/${encodeURIComponent(id)}`)
-    const data = await requireOk(response, 'Manifest show')
+    const data = await readOne<Record<string, unknown>>(manifestRead(io, 'Manifest show', `/api/cli/promotion-manifests/${encodeURIComponent(id)}`))
+    if (!data) return Number(process.exitCode)
     const manifest = (data.manifest ?? {}) as Record<string, unknown>
     const base = manifest.actionType === 'repo_merge' ? repoMergeShow(manifest) : manifestLine(manifest)
     const note = autoApplyNote(manifest)

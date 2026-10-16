@@ -11,9 +11,8 @@
  * own argument parsing and printing via injected io.
  */
 
-import { authedFetch } from './http.js'
+import { readOne } from './one-request-read.js'
 import { extractErrorMessage } from './error-response.js'
-import { sanitizeTerminalText } from './json-response.js'
 
 export interface OptimizationsListIo {
   json: boolean
@@ -53,29 +52,7 @@ function argValue(args: readonly string[], flag: string): string | null {
 
 // Shared-parser behavior (artifact-pull.ts pattern): a non-JSON or malformed
 // body becomes a bounded, sanitized error — never a raw JSON.parse throw.
-async function parseJsonPayload<T>(response: Response, context: string): Promise<T> {
-  const contentType = response.headers.get('content-type') || ''
-  const rawBody = await response.text()
-
-  if (!contentType.includes('application/json')) {
-    throw new Error(
-      `${context} returned non-JSON response (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
-
-  try {
-    return JSON.parse(rawBody) as T
-  } catch {
-    throw new Error(
-      `${context} returned invalid JSON (status ${response.status}). ` +
-      `Body preview: ${sanitizeTerminalText(rawBody.slice(0, 180))}`
-    )
-  }
-}
-
 export async function listOptimizationRunsCommand(args: string[], io: OptimizationsListIo): Promise<void> {
-  const fetcher = io.fetcher || authedFetch
   const project = argValue(args, '--project') || await io.resolveProjectSlug(null)
   const status = argValue(args, '--status') || 'active'
   if (!['active', 'archived', 'all'].includes(status)) {
@@ -88,15 +65,12 @@ export async function listOptimizationRunsCommand(args: string[], io: Optimizati
   if (status !== 'active') params.set('status', status)
   const profileVersionId = argValue(args, '--profile-version')
   if (profileVersionId) params.set('profileVersionId', profileVersionId)
-  const response = await fetcher(`/api/cli/optimization-runs?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(
-      'Failed to list optimization runs: ' +
-      await extractErrorMessage(response)
-    )
-  }
-
-  const data = await parseJsonPayload<{ optimizationRuns: OptimizationRunSummary[] }>(response, 'Optimization runs list')
+  const data = await readOne<{ optimizationRuns: OptimizationRunSummary[] }>({
+    failed: 'Failed to list optimization runs', name: 'Optimization runs list', path: `/api/cli/optimization-runs?${params.toString()}`,
+    refusedMessage: async response => `Failed to list optimization runs: ${await extractErrorMessage(response)}`,
+    ...(io.fetcher ? { fetcher: io.fetcher } : {}),
+  })
+  if (!data) return
   if (io.json) {
     // Parity with the table (thread 3): stamp each row's bestScore provenance
     // and carry the notice as a payload field (a stdout warning line would

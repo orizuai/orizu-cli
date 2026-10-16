@@ -30,6 +30,7 @@ import { AppPublishFailure } from './app-publish-failure.js'
 import { inspectAppDestination } from './app-publish-paths.js'
 import { authedFetch, getBaseUrl } from './http.js'
 import { appPageUrl } from './app-page-url.js'
+import { readOne } from './one-request-read.js'
 import { parseJsonResponse, sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 import type { AppPreviewResult } from './preview-runtime.js'
 import type { AppFiles } from './app-publish-workspace.js'
@@ -40,8 +41,9 @@ import { findWorkspaceRoot } from './workspace.js'
 async function listApps() {
   const project = getArg('--project') || await resolveProjectSlug(null)
   const baseUrl = getBaseUrl()
-  const apps = (await fetchApps(project, getArchiveListStatus('apps')))
-    .map(app => ({ ...app, pageUrl: appPageUrl(baseUrl, app.id) }))
+  const listed = await fetchApps(project, getArchiveListStatus('apps'))
+  if (!listed) return
+  const apps = listed.map(app => ({ ...app, pageUrl: appPageUrl(baseUrl, app.id) }))
   if (hasJsonFlag()) {
     printJson({ apps })
     return
@@ -583,12 +585,8 @@ async function appDetail() {
   const projectSlug = project || await resolveProjectSlug(null)
 
   // Single fetch — the apps endpoint already returns full detail (ALI-544)
-  const detailResponse = await authedFetch(`/api/cli/apps?project=${encodeURIComponent(projectSlug)}`)
-  if (!detailResponse.ok) {
-    throw new Error(`Failed to fetch app detail: ${await detailResponse.text()}`)
-  }
-
-  const detailData = await parseJsonResponse<{ apps: AppDetailPayload[] }>(detailResponse, 'App detail')
+  const detailData = await readOne<{ apps: AppDetailPayload[] }>({ failed: 'Failed to fetch app detail', name: 'App detail', path: `/api/cli/apps?project=${encodeURIComponent(projectSlug)}` })
+  if (!detailData) return
   const detail = detailData.apps.find(a => a.id === appId)
 
   if (!detail) {
@@ -653,12 +651,12 @@ async function exportAppSource() {
   }
 
   const suffix = query.toString() ? `?${query.toString()}` : ''
-  const response = await authedFetch(`/api/cli/apps/${encodeURIComponent(appId)}/export${suffix}`)
-  if (!response.ok) {
-    throw new Error(`Failed to export app (${response.status}): ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<AppExportPayload>(response, 'App export')
+  // The file is written only after the whole reply is read, so a stop writes nothing.
+  const data = await readOne<AppExportPayload>({
+    failed: 'Failed to export app', name: 'App export', path: `/api/cli/apps/${encodeURIComponent(appId)}/export${suffix}`,
+    refusedMessage: async response => `Failed to export app (${response.status}): ${await response.text()}`,
+  })
+  if (!data) return
   const filename = resolveAppExportPath(
     outPathArg,
     defaultAppExportFilename(data.app.name, data.version.versionNum)

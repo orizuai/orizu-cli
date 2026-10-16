@@ -205,17 +205,14 @@ async function fetchDatasetsWithoutStops(project: string): Promise<DatasetSummar
   return (await readOneWithoutStops<{ datasets: DatasetSummary[] }>(datasetsRead(new URLSearchParams({ project })))).datasets
 }
 
-async function fetchApps(project: string, status = 'active'): Promise<AppSummary[]> {
+async function fetchApps(project: string, status = 'active'): Promise<AppSummary[] | null> {
   const params = new URLSearchParams({ project })
   if (status !== 'active') params.set('status', status)
-  const response = await authedFetch(`/api/cli/apps?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch apps: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ apps: AppSummary[] }>(response, 'Apps list')
-  return data.apps
+  const data = await readOne<{ apps: AppSummary[] }>(appsRead(params))
+  return data ? data.apps : null
 }
+
+const appsRead = (params: URLSearchParams) => ({ failed: 'Failed to fetch apps', name: 'Apps list', path: `/api/cli/apps?${params.toString()}` })
 
 async function fetchDatasets(project: string, status = 'active'): Promise<DatasetSummary[] | null> {
   const params = new URLSearchParams({ project })
@@ -357,7 +354,7 @@ async function selectAppIdInteractively(projectArg: string | null): Promise<{ ap
     project = await resolveProjectSlug(null)
   }
 
-  const apps = await fetchApps(project)
+  const apps = (await readOneWithoutStops<{ apps: AppSummary[] }>(appsRead(new URLSearchParams({ project })))).apps
   const app = await promptSelect(
     `Select an app in ${project}`,
     apps,

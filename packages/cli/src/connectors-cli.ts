@@ -6,7 +6,7 @@
  * redacts config and surfaces credentials only as a boolean).
  */
 
-import { authedFetch } from './http.js'
+import { readOne } from './one-request-read.js'
 
 export type CliFetcher = (path: string, init?: RequestInit) => Promise<Response>
 
@@ -45,13 +45,14 @@ async function responseMessage(response: Response): Promise<string> {
   }
 }
 
-export async function fetchConnectors(opts: FetchConnectorsOptions): Promise<ConnectorsResult> {
-  const fetcher = opts.fetcher ?? authedFetch
-  const response = await fetcher(`/api/cli/connectors?project=${encodeURIComponent(opts.projectSlug)}`)
-  if (!response.ok) {
-    throw new Error(`Connector status failed (${response.status}): ${await responseMessage(response)}`)
-  }
-  const data = (await response.json()) as ConnectorsResult
+/** Null when a person stopped the read (already reported, exit code set). */
+export async function fetchConnectors(opts: FetchConnectorsOptions): Promise<ConnectorsResult | null> {
+  const data = await readOne<ConnectorsResult>({
+    failed: 'Connector status failed', name: 'Connector status', path: `/api/cli/connectors?project=${encodeURIComponent(opts.projectSlug)}`,
+    refusedMessage: async response => `Connector status failed (${response.status}): ${await responseMessage(response)}`,
+    ...(opts.fetcher ? { fetcher: opts.fetcher } : {}),
+  })
+  if (!data) return null
   return { connectors: Array.isArray(data.connectors) ? data.connectors : [] }
 }
 
@@ -98,6 +99,7 @@ export async function connectorsCommand(args: string[], io: ConnectorsCommandIo)
   }
   const projectSlug = await resolveProjectSlug(argValue(args, '--project'))
   const result = await fetchConnectors({ fetcher: io.fetcher, projectSlug })
+  if (!result) return Number(process.exitCode)
 
   if (io.json) {
     io.print(JSON.stringify(result))

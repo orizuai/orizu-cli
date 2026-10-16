@@ -2,6 +2,7 @@ import { datasetTransferTimeoutMs } from './dataset-transfer-policy.js'
 import { resolveEnvBearerToken } from './credentials.js'
 import { authedFetch } from './http.js'
 import { parseJsonResponse } from './json-response.js'
+import { unreachedCode } from './request-outcome.js'
 
 // ORI-2725: one CLI read sent as one request, with a time limit that covers the
 // reply's body too, and, for a person signed in at a terminal, Ctrl-C and
@@ -19,17 +20,40 @@ export interface OneRequestRead {
    * The default is `<failed>: <text>`; `tasks status` also prints its `--json` object.
    */
   refused?: (status: number, text: string) => never
+  /** A refusal whose body is JSON, in the command's own words (for example `Manifest list failed (403): …`). */
+  refusedMessage?: (response: Response) => string | Promise<string>
+  /** Stands in for `authedFetch` where a command takes an injected fetcher. */
+  fetcher?: (path: string, init: RequestInit) => Promise<Response>
+}
+
+// Node's fetch reports a connection cut before or during the reply this way.
+const isCutConnection = (error: unknown) => error instanceof TypeError && (error.message === 'fetch failed' || error.message === 'terminated')
+
+function namedNetworkFailure(read: OneRequestRead, error: unknown): unknown {
+  const code = unreachedCode(error)
+  if (code) return new Error(`${read.failed}: could not reach the server (${code})`)
+  if (isCutConnection(error)) return new Error(`${read.failed}: the connection closed before the reply arrived`)
+  return error
 }
 
 /** Sends the read and reads its reply under `signal`. Exported for the stored-login runner only. */
 export async function sendOneRequestRead<T>(read: OneRequestRead, signal: AbortSignal): Promise<T> {
-  const response = await authedFetch(read.path, { signal })
-  const text = await response.text()
+  let response: Response
+  let text: string
+  try {
+    response = await (read.fetcher ?? authedFetch)(read.path, { signal })
+    text = await response.text()
+  } catch (error) {
+    // A stop or the time limit is reported by the caller.
+    if (signal.aborted) throw error
+    throw namedNetworkFailure(read, error)
+  }
   if (!response.ok) {
     let isJson = true
     try { JSON.parse(text) } catch { isJson = false }
     const reason = isJson ? text : `the server returned a page that isn't JSON (status ${response.status})`
     if (read.refused) read.refused(response.status, reason)
+    if (isJson && read.refusedMessage) throw new Error(await read.refusedMessage(new Response(text, { status: response.status, headers: response.headers })))
     throw new Error(`${read.failed}: ${reason}`)
   }
   return await parseJsonResponse<T>(new Response(text, { status: response.status, headers: response.headers }), read.name)

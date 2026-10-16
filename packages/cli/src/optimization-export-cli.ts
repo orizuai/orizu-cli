@@ -1,7 +1,5 @@
-import {
-  parseJsonResponse,
-  sanitizeHumanInlineText,
-} from './json-response.js'
+import { sanitizeHumanInlineText } from './json-response.js'
+import { readOne } from './one-request-read.js'
 
 /**
  * Human-output helpers for `orizu optimizations export`.
@@ -67,17 +65,12 @@ export async function exportOptimizationRunCommand(
     throw new Error('Usage: orizu optimizations export <run-id> [--out <path>] [--json]')
   }
 
-  const response = await ctx.authedFetch(
-    `/api/cli/optimization-runs/${encodeURIComponent(runId)}/export`
-  )
-  if (!response.ok) {
-    throw new Error(`Failed to export optimization run: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(
-    response,
-    'Optimization export'
-  )
+  // The file is written only after the whole reply is read, so a stop writes nothing.
+  const data = await readOne<Record<string, unknown>>({
+    failed: 'Failed to export optimization run', name: 'Optimization export',
+    path: `/api/cli/optimization-runs/${encodeURIComponent(runId)}/export`, fetcher: ctx.authedFetch,
+  })
+  if (!data) return
   if (ctx.hasJsonFlag() && !outPathArg) {
     ctx.printJson(data)
     return
