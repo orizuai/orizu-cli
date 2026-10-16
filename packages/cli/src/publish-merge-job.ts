@@ -57,7 +57,7 @@ const IDENTITY = {
   GIT_COMMITTER_EMAIL: 'publish@orizu.invalid',
 }
 
-interface PublishMergeJobEnv {
+export interface PublishMergeJobEnv {
   bootSecret: string
   jobId: string
   coordinatorUrl: string
@@ -228,6 +228,9 @@ export async function runPublishMergeJob(options: {
   admission?: Partial<typeof ADMISSION>
   /** Shorter timing; tests only. Each is clamped to its production value. */
   timing?: { resultReserveMs?: number; lateCallMs?: number }
+  /** A stop from outside (SIGINT/SIGTERM): ends the job as its deadline
+   * would, so every key is still revoked and the result still posted. */
+  signal?: AbortSignal
 }): Promise<{ reported: boolean; outcome: PublishMergeJobOutcome }> {
   const { env } = options
   const startedAt = Date.now()
@@ -237,6 +240,13 @@ export async function runPublishMergeJob(options: {
   const stop = new AbortController()
   const timer = setTimeout(() => stop.abort(), Math.max(0, Math.min(options.deadlineMs ?? JOB_DEADLINE_MS, wallEnd - reserveMs - startedAt)))
   const deadline = stop.signal
+  let stopped = false
+  const handleStop = () => {
+    stopped = true
+    stop.abort()
+  }
+  if (options.signal?.aborted) handleStop()
+  else options.signal?.addEventListener('abort', handleStop, { once: true })
   const api = (action: string) => `${env.baseUrl}/api/internal/publish-merge/${env.jobId}/${action}`
   const issued: Array<{ target: 'session' | 'team'; tokenId: string }> = []
   let jobToken = ''
@@ -303,10 +313,13 @@ export async function runPublishMergeJob(options: {
     outcome = toOutcome(result)
   } catch (error) {
     if (error instanceof JobFailure && error.code === 'denied') outcome = { outcome: 'denied' }
+    // Stopped from outside: the push may have landed, as for any failure.
+    else if (stopped) outcome = { outcome: 'failed', code: 'publish_failed' }
     else if (deadline.aborted) outcome = { outcome: 'failed', code: 'job_timed_out' }
     else outcome = { outcome: 'failed', code: error instanceof JobFailure && error.code !== 'denied' ? error.code : 'publish_failed' }
   } finally {
     clearTimeout(timer)
+    options.signal?.removeEventListener('abort', handleStop)
     // Revoke whatever is still live, newest first, even past the deadline; an
     // unrevoked key wins over the merge outcome because its authority is then uncertain.
     for (const { target, tokenId } of [...issued].reverse()) {
@@ -344,7 +357,10 @@ export async function publishMergeJobCommand(
     io.printErr?.(`publish-merge-job: ${env}`)
     return 1
   }
-  const result = await runPublishMergeJob({ env })
+  // Effect loads only here, never when hosted-session-cli.ts imports this module.
+  const { runPublishMergeJobWithStops } = await import('./publish-merge-job-stops.js')
+  const { result, stoppedBy } = await runPublishMergeJobWithStops(env)
   io.print(JSON.stringify(result.outcome))
+  if (stoppedBy) return stoppedBy
   return result.reported ? 0 : 1
 }
