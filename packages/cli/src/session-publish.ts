@@ -15,6 +15,10 @@ const PUBLISH_TIMEOUT_MS = 170_000
 // The codes the publish route words itself; their text already says what to do.
 const PUBLISH_CODES = new Set(['publish_conflict', 'publish_race_lost', 'publish_still_running', 'publish_denied', 'publish_unavailable', 'publish_failed'])
 const CHECK_AGAIN = 'It may have landed: wait a moment, then run `orizu session publish` again to check.'
+// ORI-2373 M3: what a stop (Ctrl-C, or SIGTERM from the agent's harness) leaves.
+const STOPPED_WHILE_SAVING = "Not published: stopped while saving to the session copy. Nothing was sent to the team's main. Run `orizu session publish` again."
+const STOPPED_BEFORE_REMOTE = 'Stopped before the orizu-team remote was added: run `orizu session publish` again to add it.'
+const STOPPED_BEFORE_ANSWER = `Not confirmed: stopped before Orizu answered. Your work is saved in this session's copy. ${CHECK_AGAIN}`
 
 export interface SessionPublishIo {
   json: boolean
@@ -37,6 +41,12 @@ function refuse(io: SessionPublishIo, text: string, code: string): number {
   return 1
 }
 
+/** A stop: the same answer shape, with the shell's exit code for the signal. */
+function answerStop(io: SessionPublishIo, text: string, code: string, exitCode: 130 | 143): number {
+  refuse(io, text, code)
+  return exitCode
+}
+
 /** True when `origin` is this session's own Artifacts copy. In an older
  * GitHub-backed session `origin` is the team's repository itself, where a push
  * of main would skip the merge and its checks. Reads the configured URL, not
@@ -48,7 +58,27 @@ function originIsThisSessionCopy(root: string, sessionId: string): boolean {
     new URL(remote).pathname.endsWith(`/hosted-session-${sessionId.replaceAll('-', '')}.git`)
 }
 
+/** Ctrl-C, or SIGTERM from the agent's harness, stops the whole command
+ * (ORI-2373 M3), the way cli-stops' runWithStops does for Effect programs:
+ * `once`, so a second signal falls through to Node's default kill. Each step
+ * gets the stop signal and words what the stop left. Plain listeners, so they
+ * are in place before anything loads. */
 export async function runSessionPublish(io: SessionPublishIo, options: { message?: string | null } = {}): Promise<number> {
+  const controller = new AbortController()
+  let stop: 130 | 143 | undefined
+  const handleInterrupt = () => { stop ??= 130; controller.abort() }
+  const handleTerminate = () => { stop ??= 143; controller.abort() }
+  process.once('SIGINT', handleInterrupt)
+  process.once('SIGTERM', handleTerminate)
+  try {
+    return await publish(io, options, controller.signal, () => stop)
+  } finally {
+    process.removeListener('SIGINT', handleInterrupt)
+    process.removeListener('SIGTERM', handleTerminate)
+  }
+}
+
+async function publish(io: SessionPublishIo, options: { message?: string | null }, signal: AbortSignal, stopped: () => 130 | 143 | undefined): Promise<number> {
   const sessionId = process.env.ORIZU_SESSION_ID?.trim()
   const root = sessionId ? findWorkspaceRoot(process.cwd()) : null
   if (!sessionId || !root) {
@@ -59,13 +89,17 @@ export async function runSessionPublish(io: SessionPublishIo, options: { message
   }
 
   const { addTeamCopyRemote, pushSessionCopy } = await loadAppPublishWorkspace()
-  let pushed: { sha: string; committed: string[] }
+  let pushed: Awaited<ReturnType<typeof pushSessionCopy>> | undefined
   try {
-    pushed = await pushSessionCopy(root, options.message?.trim() || DEFAULT_MESSAGE)
+    if (!stopped()) pushed = await pushSessionCopy(root, options.message?.trim() || DEFAULT_MESSAGE, signal)
   } catch (error) {
-    return refuse(io, `Not published: ${error instanceof Error ? error.message : String(error)}`, 'publish_not_sent')
+    if (!stopped()) return refuse(io, `Not published: ${error instanceof Error ? error.message : String(error)}`, 'publish_not_sent')
   }
+  // Nothing has been sent yet, so a stop up to here is "Not published".
+  const stopBeforeSend = stopped()
+  if (stopBeforeSend || !pushed) return answerStop(io, STOPPED_WHILE_SAVING, 'publish_not_sent', stopBeforeSend ?? 130)
 
+  // Sent once: a stop from here on can't tell whether the merge ran.
   let response: Response
   let text: string
   try {
@@ -73,19 +107,22 @@ export async function runSessionPublish(io: SessionPublishIo, options: { message
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionCommitSha: pushed.sha }),
-      signal: AbortSignal.timeout(PUBLISH_TIMEOUT_MS),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(PUBLISH_TIMEOUT_MS)]),
     })
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    return refuse(io, `Not confirmed: could not reach Orizu (${reason}). Your work is saved in this session's copy. ${CHECK_AGAIN}`, 'publish_unreachable')
+    const stop = stopped()
+    if (stop) return answerStop(io, STOPPED_BEFORE_ANSWER, 'publish_interrupted', stop)
+    return refuse(io, `Not confirmed: could not reach Orizu (${error instanceof Error ? error.message : String(error)}). Your work is saved in this session's copy. ${CHECK_AGAIN}`, 'publish_unreachable')
   }
   try {
     text = await response.text()
   } catch (error) {
+    const stop = stopped()
+    if (stop) return answerStop(io, STOPPED_BEFORE_ANSWER, 'publish_interrupted', stop)
     // The merge may have run before the answer was cut off.
-    const reason = error instanceof Error ? error.message : String(error)
-    return refuse(io, `Not confirmed: could not read the answer from Orizu (${reason}). Your work is saved in this session's copy. ${CHECK_AGAIN}`, 'publish_unreachable')
+    return refuse(io, `Not confirmed: could not read the answer from Orizu (${error instanceof Error ? error.message : String(error)}). Your work is saved in this session's copy. ${CHECK_AGAIN}`, 'publish_unreachable')
   }
+  // Once the answer is in hand it is reported as it came, even after a stop.
   let body: unknown = null
   try {
     body = JSON.parse(text)
@@ -110,7 +147,15 @@ export async function runSessionPublish(io: SessionPublishIo, options: { message
     const code = body.code
     let message = body.error
     if (code === 'publish_conflict') {
-      const remoteNote = await addTeamCopyRemote(root)
+      let remoteNote: string | null
+      try {
+        remoteNote = await addTeamCopyRemote(root, signal)
+      } catch (error) {
+        const stop = stopped()
+        if (!stop) throw error
+        // Its own line: the recovery line above must stay a runnable command.
+        return answerStop(io, `${message}\n${STOPPED_BEFORE_REMOTE}`, code, stop)
+      }
       // Its own line: the recovery line above must stay a runnable command.
       if (remoteNote) message = `${message}\n${remoteNote}`
     }

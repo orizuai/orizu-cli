@@ -55,19 +55,39 @@ class WorkspaceGit extends Context.Service<WorkspaceGit, { readonly run: (args: 
 class WorkspaceFiles extends Context.Service<WorkspaceFiles, { readonly write: (files: readonly { path: string; content: string }[]) => Effect.Effect<void, GitFailed> }>()('WorkspaceFiles') {}
 class PublishApi extends Context.Service<PublishApi, { readonly teamReadRemote: (workspaceId: string) => Effect.Effect<string, TeamRemoteUnavailable>; readonly teamRemoteHelper: string }>()('PublishApi') {}
 
-function liveLayer(root: string, attempt?: { filesMaterialized: boolean }) {
+function liveLayer(root: string, attempt?: { filesMaterialized: boolean }, stopEndsPush = false) {
   const serverOrigin = getBaseUrl()
   const teamRemoteHelper = `!orizu --server '${serverOrigin.replace(/'/g, "'\\''")}' git-credential --purpose=team_read`
   const git = WorkspaceGit.of({
     run: (args) =>
       Effect.callback<GitResult>((resume) => {
-        const child = spawn('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] })
+        // A caller that can be stopped runs the push in its own process group,
+        // so its stop ends git's network helper too (it holds our pipes open
+        // after git itself has gone). Without one, the push stays in the CLI's
+        // group, where a terminal's Ctrl-C ends it along with the CLI.
+        // A SIGKILLed CLI can't run the cleanup, so its push may outlive it:
+        // only the session copy can advance, and the next publish fast-forwards.
+        const stoppablePush = stopEndsPush && args[0] === 'push'
+        const ownGroup = stoppablePush && process.platform !== 'win32'
+        const child = spawn('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], detached: ownGroup })
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (chunk) => (stdout += chunk))
         child.stderr.on('data', (chunk) => (stderr += chunk))
         child.on('error', (error) => resume(Effect.succeed({ code: 127, stdout, stderr: error.message })))
         child.on('close', (code) => resume(Effect.succeed({ code: code ?? 1, stdout, stderr })))
+        // A stop (ORI-2373 M3) ends a push waiting on the network. Local steps
+        // end by themselves, and a commit cut short could leave a lock behind.
+        if (stoppablePush) {
+          return Effect.sync(() => {
+            try {
+              if (ownGroup && child.pid) process.kill(-child.pid, 'SIGTERM')
+              else child.kill('SIGTERM')
+            } catch {
+              // It ended between the stop and the signal.
+            }
+          })
+        }
       }),
   })
   const files = WorkspaceFiles.of({
@@ -208,7 +228,7 @@ const commitAllAndPush = (root: string, message: string) =>
 
 /** Commits all uncommitted work and pushes the session copy. Throws the
  * message the agent should act on; nothing has been published then. */
-export async function pushSessionCopy(root: string, message: string): Promise<{ sha: string; committed: string[] }> {
+export async function pushSessionCopy(root: string, message: string, signal?: AbortSignal): Promise<{ sha: string; committed: string[] }> {
   const program = commitAllAndPush(root, message).pipe(
     Effect.catchTags({
       PushRejected: () =>
@@ -216,7 +236,7 @@ export async function pushSessionCopy(root: string, message: string): Promise<{ 
       GitFailed: (failure) => Effect.fail(new Error(`could not ${failure.step} (${failure.detail}).`)),
     })
   )
-  return Effect.runPromise(Effect.provide(program, liveLayer(root)))
+  return Effect.runPromise(Effect.provide(program, liveLayer(root, undefined, signal !== undefined)), { signal })
 }
 
 // -- The team copy, after a conflict ---------------------------------------------
@@ -251,7 +271,7 @@ const addTeamRemote = (workspaceId: string | null) =>
 
 /** Adds the team copy remote; answers a sentence to add to the conflict
  * message when it could not, else null. */
-export function addTeamCopyRemote(root: string): Promise<string | null> {
+export function addTeamCopyRemote(root: string, signal?: AbortSignal): Promise<string | null> {
   const workspaceId = process.env.ORIZU_WORKSPACE_ID?.trim() || resolveAttachedWorkspaceId(root)
   const program = addTeamRemote(workspaceId).pipe(
     Effect.as(null),
@@ -259,5 +279,5 @@ export function addTeamCopyRemote(root: string): Promise<string | null> {
       Effect.succeed(`The ${TEAM_REMOTE_NAME} remote could not be added (${failure.reason}); add it with "git remote add ${TEAM_REMOTE_NAME} <team copy>".`)
     )
   )
-  return Effect.runPromise(Effect.provide(program, liveLayer(root)))
+  return Effect.runPromise(Effect.provide(program, liveLayer(root)), { signal })
 }
