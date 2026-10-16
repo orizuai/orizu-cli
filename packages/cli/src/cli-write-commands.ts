@@ -172,6 +172,31 @@ export const labelMove = (kind: 'prompt' | 'scorer', project: string, body: Reco
   mayAlreadyBeSaved: note('label move', 'saved', SAFE),
 })
 
+const Promoted = Schema.Union([
+  Schema.Struct({
+    profileVersionId: Text,
+    versionNumber: Count,
+    // An older server sends neither of these; the CLI says so.
+    appliedLabel: Schema.optionalKey(Schema.NullOr(Text)),
+    runSeedVersionNumber: Schema.optionalKey(Count),
+    productionVersionNumber: Schema.optionalKey(Schema.NullOr(Count)),
+    components: Schema.Array(Schema.Struct({ key: Text, status: Text })),
+  }),
+  // Checked second, so a profile reply is never read as a prompt reply.
+  Schema.Struct({ promptVersionId: Text }),
+])
+/**
+ * A repeat never makes a second version: an instruction-set candidate answers
+ * the version it already made, and a prompt candidate is refused as identical (ORI-1105).
+ * Through the GitHub merge job the server can take about 120 s, so the CLI
+ * waits as long as the policy allows.
+ */
+export const candidatePromote = (runId: string, project: string, body: { candidateId: string; label: string | null }): Write<typeof Promoted.Type> => ({
+  label: 'promote optimization candidate', name: 'Candidate promotion', path: `/api/cli/optimization-runs/${encodeURIComponent(runId)}/promote?project=${encodeURIComponent(project)}`, method: 'POST', body, reply: Promoted,
+  timeoutMs: 300_000,
+  mayAlreadyBeSaved: note('candidate promotion', 'saved', `${SAFE}: it never makes a second version, and for a single-prompt run it answers "Prompt version is identical to the current prompt version." once the promotion is saved`),
+})
+
 /** Sends a write with this command's `--json` setting and output. Ctrl-C sets the exit code and returns null. */
 export async function sendCommandWrite<A>(write: Write<A>, io: Pick<OneRequestWrite<A>, 'json' | 'print' | 'fetcher'>): Promise<A | null> {
   const outcome = await sendOneRequestWrite({ ...write, ...io })

@@ -1,4 +1,3 @@
-import { extractErrorMessage } from './error-response.js'
 import { sanitizeHumanInlineText, sanitizeTerminalText } from './json-response.js'
 import type { GlobalFlags } from './global-flags.js'
 import type { SeedAgainstProduction } from './seed-against-production.js'
@@ -9,7 +8,8 @@ export interface OptimizationsPromoteIo {
   print: (line: string) => void
   printErr: (line: string) => void
   resolveProjectSlug: (projectArg: string | null) => Promise<string>
-  fetcher: (path: string, init?: RequestInit) => Promise<Response>
+  /** Stands in for `authedFetch` in tests. */
+  fetcher?: (path: string, init: RequestInit) => Promise<Response>
 }
 
 function option(args: readonly string[], name: string): string | null {
@@ -43,7 +43,7 @@ function shellArgument(value: string): string {
     return `$'${escaped}'`
   }
   const safeValue = sanitizeTerminalText(value)
-  return `'${safeValue.replace(/'/g, `'\\''`)}'`
+  return `'${safeValue.replace(/'/g, "'\\''")}'`
 }
 
 function inlineTerminalText(value: string): string {
@@ -87,18 +87,9 @@ export async function promoteOptimizationCommand(args: string[], io: Optimizatio
     throw new Error('Usage: orizu optimizations promote <run-id> --candidate <id> [--label production] [--project <team/project>] [--json]')
   }
   const project = await io.resolveProjectSlug(option(args, '--project'))
-  const response = await io.fetcher(`/api/cli/optimization-runs/${encodeURIComponent(runId)}/promote?project=${encodeURIComponent(project)}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidateId, label }),
-  })
-  if (!response.ok) throw new Error(`Failed to promote optimization candidate: ${await extractErrorMessage(response)}`)
-  const data = await response.json() as
-    | { promptVersionId: string }
-    | ({
-      profileVersionId: string
-      versionNumber: number
-      appliedLabel?: string | null
-      components: Array<{ key: string; status: string }>
-    } & Partial<SeedAgainstProduction>)
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.candidatePromote(runId, project, { candidateId, label }), { json: io.json, print: io.print, ...(io.fetcher ? { fetcher: io.fetcher } : {}) })
+  if (data === null) return
   const isProfilePromotion = 'profileVersionId' in data
   const replay = isProfilePromotion && data.appliedLabel !== 'production'
     ? productionPromotionReplay(runId, candidateId, project, io.origin)
