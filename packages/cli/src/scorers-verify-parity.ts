@@ -1,6 +1,4 @@
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { extractErrorMessage } from './error-response.js'
@@ -271,6 +269,7 @@ export async function verifyScorerParityCommand(args: string[], io: VerifyParity
   // Resolved from the runner manifest once it is readable; reported either way so
   // the operator can see which payload parity was (or was not) proven under.
   let resolved: { contract: string; field: string } | null = null
+  const contractReport = () => ({ scorer_input_contract: resolved?.contract ?? null, candidate_output_field: resolved?.field ?? null })
 
   const fail = (message: string): number => {
     io.printErr(sanitizeTerminalText(message))
@@ -280,8 +279,7 @@ export async function verifyScorerParityCommand(args: string[], io: VerifyParity
       // leaves an empty `errors` behind an opaque "could not run".
       io.print(JSON.stringify({
         parity: false, compared: 0, mismatches: [], errors, tolerance, clamped,
-        scorer_input_contract: resolved?.contract ?? null,
-        candidate_output_field: resolved?.field ?? null,
+        ...contractReport(),
         error: sanitizeTerminalText(message),
       }))
     }
@@ -369,148 +367,156 @@ export async function verifyScorerParityCommand(args: string[], io: VerifyParity
   const runnerVersionId = context.prompt?.runnerVersionId
   if (!runnerVersionId) return fail('Runner exec context did not resolve a runner version id for this scorer')
 
-  let runner: { runnerDir: string; cleanup: () => void }
-  try {
-    runner = runnerDirArg
-      ? await (async () => {
-          const verified = await verifyRunnerDirRegistered({ runnerVersionId, dir: runnerDirArg, flag: '--runner-dir', fetcher: io.fetcher })
-          return { runnerDir: verified.snapshotDir, cleanup: verified.cleanup }
-        })()
-      : await io.materializeRunnerVersion(runnerVersionId)
-  } catch (error) {
-    return fail(messageOf(error))
-  }
-
+  // ORI-2727: one Effect scope owns the runner copy, each row's temp folder and
+  // process, and the bridge's; a stop removes and stops them all, then ends the
+  // CLI by its signal.
+  const { Effect } = await import('effect')
+  const { heldUntilClose, RemovalLedger, runStoppable } = await import('./runner-folders.js')
+  const { rowFolder, rowProcess, seconds } = await import('./runner-rows.js')
+  const ledger = new RemovalLedger()
   const orizuScores = new Map<string, ExtractedScore>()
+  const originalScores = new Map<string, ExtractedScore>()
   // Resolved from the runner manifest below; the ORIGINAL side must see the row
   // injected at the SAME field, or the two sides read different candidates.
   let candidateField = DEFAULT_CANDIDATE_OUTPUT_FIELD
-  try {
-    let manifest: { command: string[] }
-    try {
-      assertSnapshotManifestConfined(runner.runnerDir, runnerDirArg ? '--runner-dir' : '--runner-version')
-      manifest = io.readRunnerManifest(runner.runnerDir)
-      resolved = resolveScorerInputContract(readManifestExtras(runner.runnerDir), contractFlag, candidateFieldFlag)
-      candidateField = resolved.field
-      // run-gepa overwrites a colliding key too (`{**source_row, field: ...}`,
-      // runner.py:449-458), but the CUSTOMER'S ORIGINAL run never did: their
-      // metric read the row's own value. Injecting over it hands both sides the
-      // candidate, they agree, and the agreement says nothing about the run being
-      // migrated. Refuse and make the operator pick a free field.
-      const collision = sample.find(entry => Object.prototype.hasOwnProperty.call(entry.row, candidateField))
-      if (collision) {
-        throw new Error(
-          `Dataset row ${collision.id} already has a '${candidateField}' field, so injecting the candidate ` +
-          'there would replace a value the original metric reads. run-gepa overwrites it silently, but the ' +
-          "customer's own run never did, so parity proven this way would be meaningless. Pass " +
-          '--scorer-candidate-field <a row field that does not exist> (and the same value to run-gepa).'
-        )
-      }
-    } catch (error) {
-      return fail(messageOf(error))
-    }
-
-    for (const entry of sample) {
-      const candidate = outputs.byRowId.get(entry.id)!
-      const tempDir = mkdtempSync(join(tmpdir(), 'orizu-parity-runner-'))
-      const inputPath = join(tempDir, 'input.json')
-      const outputPath = join(tempDir, 'output.json')
+  const failed = await runStoppable(() => Effect.gen(function* () {
+    const runner = yield* Effect.scoped(Effect.gen(function* () {
+      const copied = yield* Effect.result(heldUntilClose(ledger, 'snapshots', () => runnerDirArg
+        ? verifyRunnerDirRegistered({ runnerVersionId, dir: runnerDirArg, flag: '--runner-dir', fetcher: io.fetcher })
+          .then(verified => ({ runnerDir: verified.snapshotDir, cleanup: verified.cleanup }))
+        : io.materializeRunnerVersion(runnerVersionId)))
+      if (copied._tag === 'Failure') return fail(messageOf(copied.failure))
+      const runnerDir = copied.success.runnerDir
+      let manifest: { command: string[] }
       try {
-        writeFileSync(inputPath, JSON.stringify(flatRowInput(context, entry, candidate, candidateField)))
-        const result = spawnSync(manifest.command[0]!, manifest.command.slice(1), {
-          cwd: runner.runnerDir,
-          env: io.runnerSubprocessEnv(inputPath, outputPath),
-          encoding: 'utf8',
-          maxBuffer: io.maxOutputBytes,
-          timeout: io.timeoutMs,
-        })
-        if (result.error) throw result.error
-        if (result.status !== 0) {
-          throw new Error(`runner exited with code ${result.status}: ${(result.stderr || result.stdout || '').slice(0, 500)}`)
+        assertSnapshotManifestConfined(runnerDir, runnerDirArg ? '--runner-dir' : '--runner-version')
+        manifest = io.readRunnerManifest(runnerDir)
+        resolved = resolveScorerInputContract(readManifestExtras(runnerDir), contractFlag, candidateFieldFlag)
+        candidateField = resolved.field
+        // run-gepa overwrites a colliding key too (`{**source_row, field: ...}`,
+        // runner.py:449-458), but the CUSTOMER'S ORIGINAL run never did: their
+        // metric read the row's own value. Injecting over it hands both sides the
+        // candidate, they agree, and the agreement says nothing about the run being
+        // migrated. Refuse and make the operator pick a free field.
+        const collision = sample.find(entry => Object.prototype.hasOwnProperty.call(entry.row, candidateField))
+        if (collision) {
+          throw new Error(
+            `Dataset row ${collision.id} already has a '${candidateField}' field, so injecting the candidate ` +
+            'there would replace a value the original metric reads. run-gepa overwrites it silently, but the ' +
+            "customer's own run never did, so parity proven this way would be meaningless. Pass " +
+            '--scorer-candidate-field <a row field that does not exist> (and the same value to run-gepa).'
+          )
         }
-        if (statSync(outputPath).size > io.maxOutputBytes) throw new Error('runner output.json exceeds the output size limit')
-        const runnerOutput = JSON.parse(readFileSync(outputPath, 'utf8')) as unknown
-        // `run_file_contract_runner` preserves output.json `error` as
-        // RunnerCallResult.error and run-gepa records it on the RowEvaluation, so a
-        // seed answering `{score, error}` on every row is rejected as an all-error
-        // scorer. Accepting the score here would certify exactly that scorer.
-        const reportedError = isRecord(runnerOutput) ? runnerOutput.error : undefined
-        if (typeof reportedError === 'string' && reportedError.trim() !== '') {
-          throw new Error(`runner reported an error alongside its score: ${reportedError}`)
-        }
-        const extracted = extractParityScore(runnerOutput, 'Runner output.json')
-        orizuScores.set(entry.id, extracted)
-        if (extracted.raw !== extracted.score) clamped.push({ row_id: entry.id, side: 'orizu', raw: extracted.raw, score: extracted.score })
       } catch (error) {
-        errors.push({ row_id: entry.id, side: 'orizu', message: messageOf(error) })
-      } finally {
-        rmSync(tempDir, { recursive: true, force: true })
+        return fail(messageOf(error))
       }
-    }
-  } finally {
-    runner.cleanup()
-  }
 
-  const bridgeDir = mkdtempSync(join(tmpdir(), 'orizu-parity-bridge-'))
-  const originalScores = new Map<string, ExtractedScore>()
-  try {
-    const bridgePath = join(bridgeDir, 'orizu_parity_bridge.py')
-    const bridgeInput = join(bridgeDir, 'input.json')
-    const bridgeOutput = join(bridgeDir, 'output.json')
-    writeFileSync(bridgePath, io.bridgeSource ?? PARITY_BRIDGE_SOURCE)
-    writeFileSync(bridgeInput, JSON.stringify({
-      rows: sample.map(entry => {
+      for (const entry of sample) {
         const candidate = outputs.byRowId.get(entry.id)!
-        return { row_id: entry.id, row: { ...entry.row, [candidateField]: candidate, candidate_error: null }, model_output: candidate }
-      }),
+        const row = yield* Effect.result(Effect.scoped(Effect.gen(function* () {
+          const tempDir = yield* rowFolder(ledger, 'orizu-parity-runner-')
+          const inputPath = join(tempDir, 'input.json')
+          const outputPath = join(tempDir, 'output.json')
+          writeFileSync(inputPath, JSON.stringify(flatRowInput(context, entry, candidate, candidateField)))
+          const result = yield* rowProcess({
+            command: manifest.command[0]!, args: manifest.command.slice(1), cwd: runnerDir,
+            env: io.runnerSubprocessEnv(inputPath, outputPath),
+            timeoutMs: io.timeoutMs, maxOutputBytes: io.maxOutputBytes,
+            timedOut: `Runner timed out for row ${entry.id} after ${seconds(io.timeoutMs)}`,
+            overLimit: `Runner output for row ${entry.id} exceeds ${io.maxOutputBytes} bytes`,
+          })
+          if (result.status !== 0) {
+            return yield* Effect.fail(new Error(`runner exited with code ${result.status}: ${(result.stderr || result.stdout || '').slice(0, 500)}`))
+          }
+          return yield* Effect.try({ try: () => {
+            if (statSync(outputPath).size > io.maxOutputBytes) throw new Error('runner output.json exceeds the output size limit')
+            const runnerOutput = JSON.parse(readFileSync(outputPath, 'utf8')) as unknown
+            // `run_file_contract_runner` preserves output.json `error` as
+            // RunnerCallResult.error and run-gepa records it on the RowEvaluation, so a
+            // seed answering `{score, error}` on every row is rejected as an all-error
+            // scorer. Accepting the score here would certify exactly that scorer.
+            const reportedError = isRecord(runnerOutput) ? runnerOutput.error : undefined
+            if (typeof reportedError === 'string' && reportedError.trim() !== '') {
+              throw new Error(`runner reported an error alongside its score: ${reportedError}`)
+            }
+            return extractParityScore(runnerOutput, 'Runner output.json')
+          }, catch: error => error })
+        })))
+        if (row._tag === 'Failure') {
+          errors.push({ row_id: entry.id, side: 'orizu', message: messageOf(row.failure) })
+          continue
+        }
+        orizuScores.set(entry.id, row.success)
+        if (row.success.raw !== row.success.score) clamped.push({ row_id: entry.id, side: 'orizu', raw: row.success.raw, score: row.success.score })
+      }
+      return null
     }))
-    // The customer's full environment, inherited UNSCRUBBED: it is their
-    // metric in their process, exactly as their own script would run it.
-    // (The runner side stays scrubbed by runnerSubprocessEnv.)
-    const budget = bridgeBudget(io.timeoutMs, io.maxOutputBytes, sample.length)
-    const result = spawnSync(python, [bridgePath], {
-      cwd: process.cwd(),
-      env: { ...process.env, ORIZU_PARITY_INPUT_PATH: bridgeInput, ORIZU_PARITY_OUTPUT_PATH: bridgeOutput, ORIZU_PARITY_ORIGINAL: original },
-      encoding: 'utf8',
-      maxBuffer: budget.maxOutputBytes,
-      timeout: budget.timeoutMs,
-    })
-    if (result.error) return fail(`Failed to run the original metric with '${python}': ${messageOf(result.error)}`)
-    if (result.status !== 0) {
-      return fail(`The original metric could not run: ${(result.stderr || result.stdout || '').trim().slice(0, 1000)}`)
-    }
-    let bridgeScores: unknown
-    try {
-      bridgeScores = (JSON.parse(readFileSync(bridgeOutput, 'utf8')) as { scores?: unknown }).scores
-    } catch (error) {
-      return fail(`The original metric produced no readable result: ${messageOf(error)}`)
-    }
-    if (!Array.isArray(bridgeScores)) return fail('The original metric produced no scores array')
+    if (runner !== null) return runner
 
-    for (const item of bridgeScores) {
-      if (!isRecord(item) || typeof item.row_id !== 'string') {
-        errors.push({ row_id: null, side: 'original', message: 'original result entry has no string row_id' })
-        continue
+    return yield* Effect.scoped(Effect.gen(function* () {
+      const bridgeDir = yield* rowFolder(ledger, 'orizu-parity-bridge-')
+      const bridgePath = join(bridgeDir, 'orizu_parity_bridge.py')
+      const bridgeInput = join(bridgeDir, 'input.json')
+      const bridgeOutput = join(bridgeDir, 'output.json')
+      writeFileSync(bridgePath, io.bridgeSource ?? PARITY_BRIDGE_SOURCE)
+      writeFileSync(bridgeInput, JSON.stringify({
+        rows: sample.map(entry => {
+          const candidate = outputs.byRowId.get(entry.id)!
+          return { row_id: entry.id, row: { ...entry.row, [candidateField]: candidate, candidate_error: null }, model_output: candidate }
+        }),
+      }))
+      // The customer's full environment, inherited UNSCRUBBED: it is their
+      // metric in their process, exactly as their own script would run it.
+      // (The runner side stays scrubbed by runnerSubprocessEnv.)
+      const budget = bridgeBudget(io.timeoutMs, io.maxOutputBytes, sample.length)
+      const ran = yield* Effect.result(rowProcess({
+        command: python, args: [bridgePath], cwd: process.cwd(),
+        env: { ...process.env, ORIZU_PARITY_INPUT_PATH: bridgeInput, ORIZU_PARITY_OUTPUT_PATH: bridgeOutput, ORIZU_PARITY_ORIGINAL: original },
+        timeoutMs: budget.timeoutMs, maxOutputBytes: budget.maxOutputBytes,
+        timedOut: `The original metric timed out after ${seconds(budget.timeoutMs)}`,
+        overLimit: `The original metric's output exceeds ${budget.maxOutputBytes} bytes`,
+      }))
+      if (ran._tag === 'Failure') return fail(`Failed to run the original metric with '${python}': ${messageOf(ran.failure)}`)
+      const result = ran.success
+      if (result.status !== 0) {
+        return fail(`The original metric could not run: ${(result.stderr || result.stdout || '').trim().slice(0, 1000)}`)
       }
-      if (!sampleIds.has(item.row_id)) {
-        errors.push({ row_id: item.row_id, side: 'original', message: `original scored row_id ${item.row_id}, which is not in the sample` })
-        continue
-      }
-      if (typeof item.error === 'string') {
-        errors.push({ row_id: item.row_id, side: 'original', message: sanitizeTerminalText(item.error) })
-        continue
-      }
+      let bridgeScores: unknown
       try {
-        const extracted = extractParityScore({ score: item.score }, `Original metric result for row ${item.row_id}`)
-        originalScores.set(item.row_id, extracted)
-        if (extracted.raw !== extracted.score) clamped.push({ row_id: item.row_id, side: 'original', raw: extracted.raw, score: extracted.score })
+        bridgeScores = (JSON.parse(readFileSync(bridgeOutput, 'utf8')) as { scores?: unknown }).scores
       } catch (error) {
-        errors.push({ row_id: item.row_id, side: 'original', message: messageOf(error) })
+        return fail(`The original metric produced no readable result: ${messageOf(error)}`)
       }
-    }
-  } finally {
-    rmSync(bridgeDir, { recursive: true, force: true })
-  }
+      if (!Array.isArray(bridgeScores)) return fail('The original metric produced no scores array')
+
+      for (const item of bridgeScores) {
+        if (!isRecord(item) || typeof item.row_id !== 'string') {
+          errors.push({ row_id: null, side: 'original', message: 'original result entry has no string row_id' })
+          continue
+        }
+        if (!sampleIds.has(item.row_id)) {
+          errors.push({ row_id: item.row_id, side: 'original', message: `original scored row_id ${item.row_id}, which is not in the sample` })
+          continue
+        }
+        if (typeof item.error === 'string') {
+          errors.push({ row_id: item.row_id, side: 'original', message: sanitizeTerminalText(item.error) })
+          continue
+        }
+        try {
+          const extracted = extractParityScore({ score: item.score }, `Original metric result for row ${item.row_id}`)
+          originalScores.set(item.row_id, extracted)
+          if (extracted.raw !== extracted.score) clamped.push({ row_id: item.row_id, side: 'original', raw: extracted.raw, score: extracted.score })
+        } catch (error) {
+          errors.push({ row_id: item.row_id, side: 'original', message: messageOf(error) })
+        }
+      }
+      return null
+    }))
+  }))
+  // As before, a runner copy or temp folder that could not be removed fails the command.
+  const [removalFailure] = ledger.errors()
+  if (removalFailure !== undefined) throw removalFailure
+  if (failed !== null) return failed
 
   // Pairing is by row_id on BOTH sides, never positional: the bridge is a
   // separate process whose result order is not this loop's order.
@@ -543,8 +549,7 @@ export async function verifyScorerParityCommand(args: string[], io: VerifyParity
   if (io.json) {
     io.print(JSON.stringify({
       parity, compared, scope: { compared, total }, mismatches, errors, tolerance, clamped,
-      scorer_input_contract: resolved?.contract ?? null,
-      candidate_output_field: resolved?.field ?? null,
+      ...contractReport(),
     }))
   } else {
     io.print(parity

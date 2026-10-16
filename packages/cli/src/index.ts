@@ -4,14 +4,10 @@ import { join, delimiter } from 'path'
 import {
   mkdirSync,
   writeFileSync,
-  mkdtempSync,
   readFileSync,
-  rmSync,
   realpathSync,
 } from 'fs'
 import { gunzipSync, gzipSync } from 'zlib'
-import { tmpdir } from 'os'
-import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { materializeRunnerVersion as materializeRegisteredRunnerVersion } from './runner-version-materialization.js'
 import { runnerInstructionSetSyncSet, runnerInputPrompt, runnerInputInstructionSet } from './runner-instruction-set-contract.js'
@@ -1387,6 +1383,11 @@ export function readRunnerManifest(runnerDir: string): { command: string[]; supp
 }
 
 export const RUNNER_TIMEOUT_MS = 120_000
+/** Each runner row's time limit: ORIZU_RUNNER_TIMEOUT_MS when it is a positive whole number, else 120 s (ORI-2727). */
+export function runnerTimeoutMs(): number {
+  const configured = Number(process.env.ORIZU_RUNNER_TIMEOUT_MS)
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : RUNNER_TIMEOUT_MS
+}
 export const RUNNER_OUTPUT_MAX_BYTES = 2 * 1024 * 1024
 export function runnerSubprocessEnv(inputPath: string, outputPath: string, instructionSetDir?: string): NodeJS.ProcessEnv {
   const env = {} as NodeJS.ProcessEnv
@@ -1463,116 +1464,116 @@ async function runnersExec() {
   if (!resolvedRunnerVersionId) {
     throw new Error('Runner exec context did not resolve a runner version id; pass --runner-version explicitly')
   }
-  // ALI-1159 (ADR-007): results stamp the registered runner_version_id, so
-  // ad-hoc --runner-dir bytes must BE that registered version — and execution
-  // runs the verified SNAPSHOT (exact hashed bytes), never the mutable dir.
-  const materializedRunner = runnerDirArg
-    ? await (async () => {
-        const verified = await verifyRunnerDirRegistered({
-          runnerVersionId: resolvedRunnerVersionId,
-          dir: runnerDirArg,
-          flag: '--runner-dir',
-        })
-        return { runnerDir: verified.snapshotDir, cleanup: verified.cleanup }
-      })()
-    : await materializeRunnerVersion(resolvedRunnerVersionId)
-  const runnerDir = materializedRunner.runnerDir
+  // ORI-2727: one Effect scope owns the runner copy, each row's temp folder and
+  // each row's process; it removes and stops them on success, failure and stop
+  // signals, and a stop then ends the CLI by its signal.
+  const { Effect } = await import('effect')
+  const { downloadedRunner, heldUntilClose, RemovalLedger, runStoppable } = await import('./runner-folders.js')
+  const { rowFolder, rowProcess, seconds } = await import('./runner-rows.js')
+  const ledger = new RemovalLedger()
+  const timeoutMs = runnerTimeoutMs()
   try {
-    assertSnapshotManifestConfined(runnerDir, runnerDirArg ? '--runner-dir' : '--runner-version')
-    // Inside the try (codex round-6 P3): a bad manifest must not leak the dir.
-    const manifest = readRunnerManifest(runnerDir)
-    if (manifest.supports_body_kind && !manifest.supports_body_kind.includes(context.prompt.bodyKind)) {
-      throw new Error(
-        `Runner does not support prompt body kind '${context.prompt.bodyKind}'. Supported kinds: ${manifest.supports_body_kind.join(', ')}`
-      )
-    }
-    const resultLines: string[] = []
-    for (const row of context.rows) {
-      const tempDir = mkdtempSync(join(tmpdir(), 'orizu-runner-'))
-      const inputPath = join(tempDir, 'input.json')
-      const outputPath = join(tempDir, 'output.json')
-      const instructionSetDir = context.instructionSet ? join(tempDir, 'instruction-set') : undefined
-      try {
-        const modelOutput = row.row.model_output ?? row.row.modelOutput ?? row.row.output ?? null
-        if (instructionSetDir && context.instructionSet) syncToDisk(instructionSetDir, runnerInstructionSetSyncSet(context.instructionSet))
-        writeFileSync(inputPath, JSON.stringify({
-          row: row.row,
-          prompt: runnerInputPrompt(context.prompt),
-          ...(context.instructionSet ? { instruction_set: runnerInputInstructionSet(context.instructionSet) } : {}),
-          subject: scorerVersion
-            ? {
-                type: 'scorer_row',
-                row_id: row.id,
-                scorer_version_id: context.scorer?.versionId || scorerVersion,
-                prompt_version_id: context.prompt.promptVersionId,
-              }
-            : {
-                type: 'prompt_version',
-                row_id: row.id,
-                prompt_version_id: context.prompt.promptVersionId,
-              },
-          scorer: scorerVersion
-            ? {
-                version_id: context.scorer?.versionId || scorerVersion,
-                metric_key: context.scorer?.metricKey || 'score',
-                higher_is_better: context.scorer?.higherIsBetter ?? true,
-              }
-            : null,
-          model_output: modelOutput,
-          prompt_version_id: context.prompt.promptVersionId,
-          runner_version_id: context.prompt.runnerVersionId,
-          run_id: null,
-        }))
-
-        const result = spawnSync(manifest.command[0], manifest.command.slice(1), {
-          cwd: runnerDir,
-          env: runnerSubprocessEnv(inputPath, outputPath, instructionSetDir),
-          encoding: 'utf8',
-          maxBuffer: RUNNER_OUTPUT_MAX_BYTES,
-          timeout: RUNNER_TIMEOUT_MS,
-        })
-
-        if (result.error) {
-          throw result.error
-        }
-
-        if (result.status !== 0) {
-          throw new Error(
-            `Runner failed for row ${row.id} with exit code ${result.status}: ${sanitizeTerminalText(boundedRunnerOutput(result.stderr || result.stdout))}`
-          )
-        }
-
-        const runnerOutput = JSON.parse(readFileSync(outputPath, 'utf8')) as Record<string, unknown>
-        // Spread runner output first: the scorer/prompt context identity fields
-        // (row_id, version ids, metric_key) are authoritative, never runner-overridable.
-        resultLines.push(JSON.stringify({
-          ...runnerOutput,
-          row_id: row.id,
-          prompt_version_id: context.prompt.promptVersionId,
-          runner_version_id: context.prompt.runnerVersionId,
-          ...(scorerVersion
-            ? { scorer_version_id: context.scorer?.versionId || scorerVersion, metric_key: context.scorer?.metricKey || 'score' }
-            : {}),
-        }))
-      } finally {
-        rmSync(tempDir, { recursive: true, force: true })
+    await runStoppable(() => Effect.gen(function* () {
+      // ALI-1159 (ADR-007): results stamp the registered runner_version_id, so
+      // ad-hoc --runner-dir bytes must BE that registered version — and execution
+      // runs the verified SNAPSHOT (exact hashed bytes), never the mutable dir.
+      const runnerDir = runnerDirArg
+        ? (yield* heldUntilClose(ledger, 'snapshots', async () => {
+            const verified = await verifyRunnerDirRegistered({ runnerVersionId: resolvedRunnerVersionId, dir: runnerDirArg, flag: '--runner-dir' })
+            return { runnerDir: verified.snapshotDir, cleanup: verified.cleanup }
+          })).runnerDir
+        : (yield* downloadedRunner(resolvedRunnerVersionId, ledger, false)).runnerDir
+      assertSnapshotManifestConfined(runnerDir, runnerDirArg ? '--runner-dir' : '--runner-version')
+      const manifest = readRunnerManifest(runnerDir)
+      if (manifest.supports_body_kind && !manifest.supports_body_kind.includes(context.prompt.bodyKind)) {
+        throw new Error(
+          `Runner does not support prompt body kind '${context.prompt.bodyKind}'. Supported kinds: ${manifest.supports_body_kind.join(', ')}`
+        )
       }
-    }
+      const resultLines: string[] = []
+      for (const row of context.rows) {
+        yield* Effect.scoped(Effect.gen(function* () {
+          const tempDir = yield* rowFolder(ledger, 'orizu-runner-')
+          const inputPath = join(tempDir, 'input.json')
+          const outputPath = join(tempDir, 'output.json')
+          const instructionSetDir = context.instructionSet ? join(tempDir, 'instruction-set') : undefined
+          const modelOutput = row.row.model_output ?? row.row.modelOutput ?? row.row.output ?? null
+          if (instructionSetDir && context.instructionSet) syncToDisk(instructionSetDir, runnerInstructionSetSyncSet(context.instructionSet))
+          writeFileSync(inputPath, JSON.stringify({
+            row: row.row,
+            prompt: runnerInputPrompt(context.prompt),
+            ...(context.instructionSet ? { instruction_set: runnerInputInstructionSet(context.instructionSet) } : {}),
+            subject: scorerVersion
+              ? {
+                  type: 'scorer_row',
+                  row_id: row.id,
+                  scorer_version_id: context.scorer?.versionId || scorerVersion,
+                  prompt_version_id: context.prompt.promptVersionId,
+                }
+              : {
+                  type: 'prompt_version',
+                  row_id: row.id,
+                  prompt_version_id: context.prompt.promptVersionId,
+                },
+            scorer: scorerVersion
+              ? {
+                  version_id: context.scorer?.versionId || scorerVersion,
+                  metric_key: context.scorer?.metricKey || 'score',
+                  higher_is_better: context.scorer?.higherIsBetter ?? true,
+                }
+              : null,
+            model_output: modelOutput,
+            prompt_version_id: context.prompt.promptVersionId,
+            runner_version_id: context.prompt.runnerVersionId,
+            run_id: null,
+          }))
 
-    const outPath = expandHomePath(outArg)
-    const resultJsonl = `${resultLines.join('\n')}${resultLines.length > 0 ? '\n' : ''}`
-    if (outPath.endsWith('.gz')) {
-      writeFileSync(outPath, gzipSync(Buffer.from(resultJsonl, 'utf8')))
-    } else {
-      writeFileSync(outPath, resultJsonl)
-    }
-    if (hasJsonFlag()) {
-      printJson({ rowCount: context.rows.length, out: outPath })
-    } else {
-      printLine(`Wrote ${context.rows.length} runner results to ${sanitizeTerminalText(outPath)}`)
-    }
+          const result = yield* rowProcess({
+            command: manifest.command[0], args: manifest.command.slice(1), cwd: runnerDir,
+            env: runnerSubprocessEnv(inputPath, outputPath, instructionSetDir),
+            timeoutMs, maxOutputBytes: RUNNER_OUTPUT_MAX_BYTES,
+            timedOut: `Runner timed out for row ${row.id} after ${seconds(timeoutMs)}`,
+            overLimit: `Runner output for row ${row.id} exceeds ${RUNNER_OUTPUT_MAX_BYTES} bytes`,
+          })
+          if (result.status !== 0) {
+            throw new Error(
+              `Runner failed for row ${row.id} with exit code ${result.status}: ${sanitizeTerminalText(boundedRunnerOutput(result.stderr || result.stdout))}`
+            )
+          }
+
+          const runnerOutput = JSON.parse(readFileSync(outputPath, 'utf8')) as Record<string, unknown>
+          // Spread runner output first: the scorer/prompt context identity fields
+          // (row_id, version ids, metric_key) are authoritative, never runner-overridable.
+          resultLines.push(JSON.stringify({
+            ...runnerOutput,
+            row_id: row.id,
+            prompt_version_id: context.prompt.promptVersionId,
+            runner_version_id: context.prompt.runnerVersionId,
+            ...(scorerVersion
+              ? { scorer_version_id: context.scorer?.versionId || scorerVersion, metric_key: context.scorer?.metricKey || 'score' }
+              : {}),
+          }))
+        }))
+      }
+
+      // Written once every row has finished: a failed or stopped run writes nothing.
+      const outPath = expandHomePath(outArg)
+      const resultJsonl = `${resultLines.join('\n')}${resultLines.length > 0 ? '\n' : ''}`
+      if (outPath.endsWith('.gz')) {
+        writeFileSync(outPath, gzipSync(Buffer.from(resultJsonl, 'utf8')))
+      } else {
+        writeFileSync(outPath, resultJsonl)
+      }
+      if (hasJsonFlag()) {
+        printJson({ rowCount: context.rows.length, out: outPath })
+      } else {
+        printLine(`Wrote ${context.rows.length} runner results to ${sanitizeTerminalText(outPath)}`)
+      }
+    }))
   } finally {
-    materializedRunner.cleanup()
+    // As before, a runner copy or row folder that could not be removed fails the command.
+    const [failure] = ledger.errors()
+    if (failure !== undefined) throw failure
   }
 }
 
@@ -1857,7 +1858,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
       verifyParity: args => verifyScorerParityCommand(args, {
         json: hasJsonFlag(), print: printLine, printErr: printError,
         materializeRunnerVersion, readRunnerManifest, runnerSubprocessEnv,
-        timeoutMs: RUNNER_TIMEOUT_MS, maxOutputBytes: RUNNER_OUTPUT_MAX_BYTES,
+        timeoutMs: runnerTimeoutMs(), maxOutputBytes: RUNNER_OUTPUT_MAX_BYTES,
       }),
     })
     // A read stopped by Ctrl-C has already set 130 or 143 and the router says 0
