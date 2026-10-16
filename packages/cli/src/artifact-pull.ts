@@ -19,6 +19,7 @@ import { dirname, join } from 'path'
 
 import { authedFetch } from './http.js'
 import { sanitizeTerminalText } from './json-response.js'
+import { readOne, readOneBytes } from './one-request-read.js'
 
 export type PullableArtifactKind = 'runner' | 'optimizer'
 
@@ -167,12 +168,11 @@ async function pullArtifactCommand(args: string[], io: PullArtifactIo) {
   if (label) params.set('label', label)
   if (version) params.set('version', version)
 
-  const response = await fetcher(`/api/cli/${plural}/${encodeURIComponent(artifactRef)}?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to pull ${kind}: ${await response.text()}`)
-  }
-
-  const data = await parseJsonPayload<PullArtifactResponse>(response, `${kind} pull`)
+  // ORI-1105 V3: both reads get a time limit, and Ctrl-C answers instead of
+  // killing the pull. A stop has reported itself and set the exit code.
+  const pullName = kind === 'runner' ? 'Runner pull' : 'Optimizer pull'
+  const data = await readOne<PullArtifactResponse>({ failed: `Failed to pull ${kind}`, name: pullName, path: `/api/cli/${plural}/${encodeURIComponent(artifactRef)}?${params.toString()}`, fetcher })
+  if (!data) return
   const artifact = kind === 'runner' ? data.runner : data.optimizer
   if (!artifact) {
     throw new Error(`Failed to pull ${kind}: malformed response`)
@@ -183,12 +183,8 @@ async function pullArtifactCommand(args: string[], io: PullArtifactIo) {
     throw new Error(`Failed to pull ${kind}: version ${data.version.id} has no content hash`)
   }
 
-  const downloadResponse = await fetcher(`/api/cli/${kind}-versions/${encodeURIComponent(data.version.id)}/download`)
-  if (!downloadResponse.ok) {
-    throw new Error(`Failed to download ${kind} artifact: ${await downloadResponse.text()}`)
-  }
-
-  const zipBytes = new Uint8Array(await downloadResponse.arrayBuffer())
+  const zipBytes = await readOneBytes({ failed: `Failed to download ${kind} artifact`, name: pullName, path: `/api/cli/${kind}-versions/${encodeURIComponent(data.version.id)}/download`, fetcher })
+  if (!zipBytes) return
   if (zipBytes.byteLength > ARTIFACT_MAX_BYTES) {
     throw new Error(`${kind} artifact exceeds ${ARTIFACT_MAX_BYTES} bytes`)
   }

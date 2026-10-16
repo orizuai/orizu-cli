@@ -569,12 +569,8 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
   if (version) params.set('version', version)
 
   const endpoint = kind === 'judge' ? 'judges' : 'prompts'
-  const response = await authedFetch(`/api/cli/${endpoint}/${encodeURIComponent(promptRef)}?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to pull ${kind}: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{
+  // ORI-1105 V3: a time limit, and Ctrl-C answers instead of killing the pull.
+  const data = await readOne<{
     prompt: {
       id: string
       name: string
@@ -605,7 +601,9 @@ async function pullPromptArtifact(kind: 'prompt' | 'judge') {
       instructionSetSlug: string
       componentKey: string
     } | null
-  }>(response, `${kind} pull`)
+  }>({ failed: `Failed to pull ${kind}`, name: kind === 'judge' ? 'Judge pull' : 'Prompt pull', path: `/api/cli/${endpoint}/${encodeURIComponent(promptRef)}?${params.toString()}` })
+  // Stopped: the stop is reported and the exit code set; nothing is written.
+  if (!data) return
 
   const targetDir = expandHomePath(outDir)
   mkdirSync(targetDir, { recursive: true })

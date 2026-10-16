@@ -24,6 +24,8 @@ export interface OneRequestRead {
   refusedMessage?: (response: Response) => string | Promise<string>
   /** Stands in for `authedFetch` where a command takes an injected fetcher. */
   fetcher?: (path: string, init: RequestInit) => Promise<Response>
+  /** The reply is bytes (an artifact zip), not JSON. Set by `readOneBytes`. */
+  bytes?: boolean
 }
 
 // Node's fetch reports a connection cut before or during the reply this way.
@@ -39,15 +41,16 @@ function namedNetworkFailure(read: OneRequestRead, error: unknown): unknown {
 /** Sends the read and reads its reply under `signal`. Exported for the stored-login runner only. */
 export async function sendOneRequestRead<T>(read: OneRequestRead, signal: AbortSignal): Promise<T> {
   let response: Response
-  let text: string
+  let raw: Uint8Array
   try {
     response = await (read.fetcher ?? authedFetch)(read.path, { signal })
-    text = await response.text()
+    raw = new Uint8Array(await response.arrayBuffer())
   } catch (error) {
     // A stop or the time limit is reported by the caller.
     if (signal.aborted) throw error
     throw namedNetworkFailure(read, error)
   }
+  const text = new TextDecoder().decode(raw)
   if (!response.ok) {
     let isJson = true
     try { JSON.parse(text) } catch { isJson = false }
@@ -56,6 +59,7 @@ export async function sendOneRequestRead<T>(read: OneRequestRead, signal: AbortS
     if (isJson && read.refusedMessage) throw new Error(await read.refusedMessage(new Response(text, { status: response.status, headers: response.headers })))
     throw new Error(`${read.failed}: ${reason}`)
   }
+  if (read.bytes) return raw as T
   return await parseJsonResponse<T>(new Response(text, { status: response.status, headers: response.headers }), read.name)
 }
 
@@ -68,6 +72,11 @@ export const deadlineMessage = (read: OneRequestRead) => `${read.failed}: the re
  */
 export async function readOne<T>(read: OneRequestRead): Promise<T | null> {
   return await readWith<T>(read, true)
+}
+
+/** `readOne` for a reply that is bytes (ORI-1105 V3: an artifact zip). */
+export async function readOneBytes(read: Omit<OneRequestRead, 'bytes'>): Promise<Uint8Array | null> {
+  return await readWith<Uint8Array>({ ...read, bytes: true }, true)
 }
 
 /**
