@@ -2,13 +2,13 @@
 import { randomBytes, createHash } from 'crypto'
 
 import { sanitizeTerminalText, parseJsonResponse } from './json-response.js'
+import { readOne } from './one-request-read.js'
 import { isInteractiveTerminal, hasArg, hasJsonFlag, getArg } from './command-line-arguments.js'
 import {
   getBaseUrl,
   resolveLoginTarget,
   resolveLogoutTarget,
   assertSecureTokenTransport,
-  authedFetch,
 } from './http.js'
 import {
   clearUnreadableServerCredentials,
@@ -180,11 +180,9 @@ async function authenticateAtBaseUrl(baseUrl: string): Promise<AuthenticatedLogi
 }
 
 async function whoami() {
-  const response = await authedFetch('/api/cli/auth/whoami')
-  if (!response.ok) {
-    throw new Error(`whoami failed: ${await response.text()}`)
-  }
-  const data = await response.json() as { user: { id: string; email: string | null } }
+  const data = await readOne<{ user?: { id: string; email: string | null } }>({ failed: 'whoami failed', name: 'whoami', path: '/api/cli/auth/whoami' })
+  if (!data) return
+  if (!data.user || typeof data.user.id !== 'string') throw new Error("whoami failed: the server's answer could not be read (status 200)")
   if (hasJsonFlag()) {
     printJson({ user: data.user, server: getBaseUrl() })
     return

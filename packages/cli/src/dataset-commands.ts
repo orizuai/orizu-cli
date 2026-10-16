@@ -17,6 +17,7 @@ import {
 import {
   resolveProjectSlug,
   fetchDatasets,
+  fetchDatasetsWithoutStops,
   selectDatasetInteractively,
   selectTaskIdInteractively,
 } from './account-directory.js'
@@ -107,7 +108,7 @@ async function resolveDatasetIdForProject(datasetRef: string, projectArg: string
   }
 
   const project = projectArg || await resolveProjectSlug(null)
-  const datasets = await fetchDatasets(project)
+  const datasets = await fetchDatasetsWithoutStops(project)
   const matches = datasets.filter(dataset => dataset.name === datasetRef || dataset.id === datasetRef)
 
   if (matches.length === 0) {
@@ -229,6 +230,7 @@ async function listDatasets() {
     project,
     getArchiveListStatus('datasets')
   )
+  if (!datasets) return
   if (hasJsonFlag()) {
     printJson({ datasets })
     return

@@ -68,6 +68,7 @@ import {
   getLastResolvedBaseUrl,
 } from './http.js'
 import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
+import { readOne } from './one-request-read.js'
 import {
   resolveProjectSlug,
   listTeams,
@@ -332,12 +333,8 @@ async function listPrompts() {
   }
 
   const params = new URLSearchParams({ project, status })
-  const response = await authedFetch(`/api/cli/prompts?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch prompts: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ prompts: PromptSummary[] }>(response, 'Prompts list')
+  const data = await readOne<{ prompts: PromptSummary[] }>({ failed: 'Failed to fetch prompts', name: 'Prompts list', path: `/api/cli/prompts?${params.toString()}` })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson(data as unknown as Record<string, unknown>)
     return
@@ -353,12 +350,8 @@ async function listJudges() {
   }
 
   const params = new URLSearchParams({ project, status })
-  const response = await authedFetch(`/api/cli/judges?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch judges: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ judges: PromptSummary[] }>(response, 'Judges list')
+  const data = await readOne<{ judges: PromptSummary[] }>({ failed: 'Failed to fetch judges', name: 'Judges list', path: `/api/cli/judges?${params.toString()}` })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson(data as unknown as Record<string, unknown>)
     return
@@ -371,12 +364,8 @@ async function listScorers() {
   const status = getArchiveListStatus('scorers')
   const params = new URLSearchParams({ project })
   if (status !== 'active') params.set('status', status)
-  const response = await authedFetch(`/api/cli/scorers?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch scorers: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ scorers: ScorerSummary[] }>(response, 'Scorers list')
+  const data = await readOne<{ scorers: ScorerSummary[] }>({ failed: 'Failed to fetch scorers', name: 'Scorers list', path: `/api/cli/scorers?${params.toString()}` })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson(data as unknown as Record<string, unknown>)
     return
@@ -402,12 +391,8 @@ async function showScorerDetail() {
   const scorerParams = new URLSearchParams({ project })
   const profileVersionId = getArg('--profile-version')
   if (profileVersionId) scorerParams.set('profileVersionId', profileVersionId)
-  const response = await authedFetch(`/api/cli/scorers/${encodeURIComponent(scorerId)}?${scorerParams.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch scorer: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<Record<string, unknown>>(response, 'Scorer detail')
+  const data = await readOne<Record<string, unknown>>({ failed: 'Failed to fetch scorer', name: 'Scorer detail', path: `/api/cli/scorers/${encodeURIComponent(scorerId)}?${scorerParams.toString()}` })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson(data)
     return
@@ -435,9 +420,8 @@ async function listRuns() {
   if (promptVersionId) params.set('promptVersionId', promptVersionId)
   if (limit) params.set('limit', limit)
 
-  const response = await authedFetch(`/api/cli/runs?${params.toString()}`)
-  if (!response.ok) throw new Error(`Failed to fetch runs: ${await response.text()}`)
-  const data = await parseJsonResponse<{ runs: Array<Record<string, unknown>> }>(response, 'Runs list')
+  const data = await readOne<{ runs: Array<Record<string, unknown>> }>({ failed: 'Failed to fetch runs', name: 'Runs list', path: `/api/cli/runs?${params.toString()}` })
+  if (!data) return
   if (hasJsonFlag()) {
     printJson(data as unknown as Record<string, unknown>)
     return
@@ -1876,7 +1860,9 @@ export async function main(rawArgs = process.argv.slice(2)) {
         timeoutMs: RUNNER_TIMEOUT_MS, maxOutputBytes: RUNNER_OUTPUT_MAX_BYTES,
       }),
     })
-    if (scorersExit !== null) { process.exitCode = scorersExit; return }
+    // A read stopped by Ctrl-C has already set 130 or 143 and the router says 0
+    // (ORI-2725). Compared, not `??=`: tests reset the code to 0, never undefined.
+    if (scorersExit !== null) { if (scorersExit !== 0 || !process.exitCode) process.exitCode = scorersExit; return }
   }
 
   if ((command === 'runners' || command === 'optimizers') && subcommand === 'push') {

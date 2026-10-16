@@ -7,6 +7,7 @@ import { printLine, printError, printJson } from './cli-console-output.js'
 import { sanitizeTerminalText, parseJsonResponse } from './json-response.js'
 import { PROJECT_LIST, readDirectoryList, TEAM_LIST } from './directory-list-read.js'
 import { type AuthenticatedRequestContext, authedFetch } from './http.js'
+import { readOne, readOneWithoutStops } from './one-request-read.js'
 
 interface Team {
   id: string
@@ -183,18 +184,25 @@ async function fetchProjects(
   return await readDirectoryList(request, `/api/cli/projects${query}`, PROJECT_LIST, timeoutMs)
 }
 
-async function fetchTasks(project?: string, status = 'active'): Promise<Task[]> {
+async function fetchTasks(project?: string, status = 'active'): Promise<Task[] | null> {
   const params = new URLSearchParams()
   if (project) params.set('project', project)
   if (status !== 'active') params.set('status', status)
   const query = params.size > 0 ? `?${params.toString()}` : ''
-  const response = await authedFetch(`/api/cli/tasks${query}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch tasks: ${await response.text()}`)
-  }
+  const data = await readOne<{ tasks: Task[] }>(tasksRead(query))
+  return data ? data.tasks : null
+}
 
-  const data = await parseJsonResponse<{ tasks: Task[] }>(response, 'Tasks list')
-  return data.tasks
+const tasksRead = (query: string) => ({ failed: 'Failed to fetch tasks', name: 'Tasks list', path: `/api/cli/tasks${query}` })
+const datasetsRead = (params: URLSearchParams) => ({ failed: 'Failed to fetch datasets', name: 'Datasets list', path: `/api/cli/datasets?${params.toString()}` })
+
+// The pickers inside a longer command keep Node's default Ctrl-C (one-request-read.ts).
+async function fetchProjectTasksWithoutStops(project: string): Promise<Task[]> {
+  return (await readOneWithoutStops<{ tasks: Task[] }>(tasksRead(`?${new URLSearchParams({ project })}`))).tasks
+}
+
+async function fetchDatasetsWithoutStops(project: string): Promise<DatasetSummary[]> {
+  return (await readOneWithoutStops<{ datasets: DatasetSummary[] }>(datasetsRead(new URLSearchParams({ project })))).datasets
 }
 
 async function fetchApps(project: string, status = 'active'): Promise<AppSummary[]> {
@@ -209,16 +217,11 @@ async function fetchApps(project: string, status = 'active'): Promise<AppSummary
   return data.apps
 }
 
-async function fetchDatasets(project: string, status = 'active'): Promise<DatasetSummary[]> {
+async function fetchDatasets(project: string, status = 'active'): Promise<DatasetSummary[] | null> {
   const params = new URLSearchParams({ project })
   if (status !== 'active') params.set('status', status)
-  const response = await authedFetch(`/api/cli/datasets?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch datasets: ${await response.text()}`)
-  }
-
-  const data = await parseJsonResponse<{ datasets: DatasetSummary[] }>(response, 'Datasets list')
-  return data.datasets
+  const data = await readOne<{ datasets: DatasetSummary[] }>(datasetsRead(params))
+  return data ? data.datasets : null
 }
 
 async function fetchTeamMembers(teamSlug: string): Promise<TeamMember[]> {
@@ -337,7 +340,7 @@ async function selectTaskIdInteractively(): Promise<string> {
     { forcePrompt: true }
   )
 
-  const tasks = await fetchTasks(`${project.teamSlug}/${project.slug}`)
+  const tasks = await fetchProjectTasksWithoutStops(`${project.teamSlug}/${project.slug}`)
   const task = await promptSelect(
     `Select a task in ${project.teamSlug}/${project.slug}`,
     tasks,
@@ -374,7 +377,7 @@ async function selectDatasetInteractively(projectArg: string | null): Promise<Da
     project = await resolveProjectSlug(null)
   }
 
-  const datasets = await fetchDatasets(project)
+  const datasets = await fetchDatasetsWithoutStops(project)
   const dataset = await promptSelect(
     `Select a dataset in ${project}`,
     datasets,
@@ -650,6 +653,7 @@ async function changeTeamMemberRole() {
 export {
   resolveProjectSlug,
   fetchDatasets,
+  fetchDatasetsWithoutStops,
   fetchTasks,
   fetchApps,
   createTeamOnServer,

@@ -16,9 +16,10 @@ import { printJson, printLine } from './cli-console-output.js'
 import { printTaskSummaries } from './archive-artifacts-cli.js'
 import { readAssignmentManifestJsonlFile } from './task-assignment-manifest.js'
 import { readSourceFile } from './app-commands.js'
-import { authedFetch, getBaseUrl } from './http.js'
+import { getBaseUrl } from './http.js'
 import { formatTaskCreateError } from './task-create-error.js'
-import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
+import { sanitizeTerminalText } from './json-response.js'
+import { readOne } from './one-request-read.js'
 import { shellQuote } from './auth-commands.js'
 import { askYesNo } from './setup-and-skills-commands.js'
 import type { TaskStatusPayload } from './account-directory.js'
@@ -35,6 +36,7 @@ async function listTasks() {
     project || undefined,
     getArchiveListStatus('tasks')
   )
+  if (!tasks) return
   if (hasJsonFlag()) {
     printJson({ tasks })
     return
@@ -440,9 +442,7 @@ async function taskStatus() {
     throw new Error('Usage: orizu tasks status --task <taskId> [--json]')
   }
 
-  const response = await authedFetch(`/api/cli/tasks/${encodeURIComponent(taskId)}/status`)
-  if (!response.ok) {
-    const rawBody = await response.text()
+  const data = await readOne<TaskStatusPayload>({ failed: 'Failed to fetch task status', name: 'Task status', path: `/api/cli/tasks/${encodeURIComponent(taskId)}/status`, refused: (httpStatus, rawBody) => {
     if (hasJsonFlag()) {
       let errorPayload: Record<string, unknown> = { error: rawBody }
       try {
@@ -455,7 +455,7 @@ async function taskStatus() {
       }
       printLine(JSON.stringify({
         ...errorPayload,
-        httpStatus: response.status,
+        httpStatus,
       }, null, 2))
     }
 
@@ -467,9 +467,8 @@ async function taskStatus() {
       }
     } catch { /* use rawBody as-is */ }
     throw new Error(`Failed to fetch task status: ${errorMsg}`)
-  }
-
-  const data = await parseJsonResponse<TaskStatusPayload>(response, 'Task status')
+  } })
+  if (!data) return
   if (hasJsonFlag()) {
     printLine(JSON.stringify(data, null, 2))
     return
