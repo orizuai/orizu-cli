@@ -1,3 +1,6 @@
+import { extractErrorMessage } from './error-response.js'
+import { readOne } from './one-request-read.js'
+
 interface ReportCommentPerson {
   name: string
   initials?: string
@@ -106,8 +109,6 @@ export interface ReportCommentsCliContext {
   rejectDashPrefixedOptionValue: (name: string, value: string | null) => void
   resolveProjectSlug: (preferredProject: string | null) => Promise<string>
   readSourceFile: (pathArg: string) => string
-  authedFetch: (path: string, init?: RequestInit) => Promise<Response>
-  parseJsonResponse: <T>(response: Response, context: string) => Promise<T>
   hasJsonFlag: () => boolean
   printJson: (value: Record<string, unknown>) => void
   printLine: (message?: string) => void
@@ -148,34 +149,6 @@ function compactTerminalText(
   }
 
   return `${compact.slice(0, Math.max(0, maxLength - 1)).trim()}…`
-}
-
-async function readReportCommentError(
-  ctx: ReportCommentsCliContext,
-  response: Response
-): Promise<string> {
-  const status = response.status
-    ? `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
-    : 'request failed'
-  const contentType = response.headers.get('content-type') || ''
-
-  if (!contentType.toLowerCase().includes('application/json')) {
-    return status
-  }
-
-  try {
-    const parsed = await response.clone().json()
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const error = (parsed as { error?: unknown }).error
-      if (typeof error === 'string' && error.trim()) {
-        return compactTerminalText(ctx, error, 220)
-      }
-    }
-  } catch {
-    // Fall through to the status-only message for malformed JSON errors.
-  }
-
-  return status
 }
 
 function printIndentedBody(
@@ -479,12 +452,13 @@ function readReportCommentViaInput(ctx: ReportCommentsCliContext): string | unde
 
 async function listReportComments(ctx: ReportCommentsCliContext) {
   const params = await reportCommentsTargetParams(ctx, 'list')
-  const response = await ctx.authedFetch(`/api/cli/report-comments?${params.toString()}`)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch report comments: ${await readReportCommentError(ctx, response)}`)
-  }
-
-  const data = await ctx.parseJsonResponse<ReportCommentsPayload>(response, 'Report comments')
+  const data = await readOne<ReportCommentsPayload>({
+    failed: 'Failed to fetch report comments',
+    name: 'Report comments list',
+    path: `/api/cli/report-comments?${params.toString()}`,
+    refusedMessage: async response => `Failed to fetch report comments: ${await extractErrorMessage(response)}`,
+  })
+  if (data === null) return
   if (ctx.hasJsonFlag()) {
     ctx.printJson(data as unknown as Record<string, unknown>)
     return
@@ -496,21 +470,13 @@ async function listReportComments(ctx: ReportCommentsCliContext) {
 async function addReportComment(ctx: ReportCommentsCliContext) {
   const params = await reportCommentsTargetParams(ctx, 'add')
   const body = readReportCommentBodyInput(ctx, 'add')
-  const response = await ctx.authedFetch(`/api/cli/report-comments?${params.toString()}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      body,
-      via: readReportCommentViaInput(ctx),
-      anchor: readReportCommentAnchorInput(ctx),
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to add report comment: ${await readReportCommentError(ctx, response)}`)
-  }
-
-  const data = await ctx.parseJsonResponse<ReportCommentMutationPayload>(response, 'Report comment add')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.commentAdd(params.toString(), {
+    body,
+    via: readReportCommentViaInput(ctx),
+    anchor: readReportCommentAnchorInput(ctx),
+  }), { json: ctx.hasJsonFlag(), print: line => ctx.printLine(line) }) as ReportCommentMutationPayload | null
+  if (data === null) return
   if (ctx.hasJsonFlag()) {
     ctx.printJson(data as unknown as Record<string, unknown>)
     return
@@ -524,20 +490,12 @@ async function replyReportComment(ctx: ReportCommentsCliContext) {
     throw new Error(reportCommentsUsage('reply'))
   }
 
-  const response = await ctx.authedFetch(`/api/cli/report-comments/${encodeURIComponent(commentId)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      body: readReportCommentBodyInput(ctx, 'reply'),
-      via: readReportCommentViaInput(ctx),
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to reply to report comment: ${await readReportCommentError(ctx, response)}`)
-  }
-
-  const data = await ctx.parseJsonResponse<ReportCommentMutationPayload>(response, 'Report comment reply')
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.commentReply(commentId, {
+    body: readReportCommentBodyInput(ctx, 'reply'),
+    via: readReportCommentViaInput(ctx),
+  }), { json: ctx.hasJsonFlag(), print: line => ctx.printLine(line) }) as ReportCommentMutationPayload | null
+  if (data === null) return
   if (ctx.hasJsonFlag()) {
     ctx.printJson(data as unknown as Record<string, unknown>)
     return
@@ -558,17 +516,9 @@ async function updateReportComment(
     ? { body: readReportCommentBodyInput(ctx, 'edit') }
     : { resolved: action === 'resolve' }
 
-  const response = await ctx.authedFetch(`/api/cli/report-comments/${encodeURIComponent(commentId)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Failed to ${action} report comment: ${await readReportCommentError(ctx, response)}`)
-  }
-
-  const data = await ctx.parseJsonResponse<ReportCommentMutationPayload>(response, `Report comment ${action}`)
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.commentUpdate(commentId, action, payload), { json: ctx.hasJsonFlag(), print: line => ctx.printLine(line) }) as ReportCommentMutationPayload | null
+  if (data === null) return
   if (ctx.hasJsonFlag()) {
     ctx.printJson(data as unknown as Record<string, unknown>)
     return

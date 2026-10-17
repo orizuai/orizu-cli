@@ -1,6 +1,5 @@
 import { extractErrorMessage } from './error-response.js'
-import { authedFetch } from './http.js'
-import { parseJsonResponse, sanitizeTerminalText } from './json-response.js'
+import { sanitizeTerminalText } from './json-response.js'
 import { readMarkdownReportInput } from './markdown-report-input.js'
 
 const IDENTICAL_PROMPT_VERSION_ERROR =
@@ -23,7 +22,6 @@ export interface PromptReportCliContext {
   json: boolean
   printJson: (payload: Record<string, unknown>) => void
   printLine: (message?: string) => void
-  fetcher?: (path: string, init?: RequestInit) => Promise<Response>
 }
 
 interface PromptReportResponse {
@@ -85,25 +83,14 @@ export async function promptReportCommand(
   if (version) query.set('version', version)
   else query.set('versionId', versionId as string)
 
-  const fetcher = context.fetcher ?? authedFetch
-  const response = await fetcher(
+  const writes = await import('./cli-write-commands.js')
+  const data = await writes.sendCommandWrite(writes.promptReportSet(
     `/api/cli/prompts/${encodeURIComponent(prompt)}/report?${query.toString()}`,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        reportMarkdown: report.markdown,
-        reportSourceName: report.sourceName,
-      }),
-    }
-  )
-  if (!response.ok) {
-    throw new Error(`Failed to update prompt report: ${await extractErrorMessage(response)}`)
-  }
-
-  const data = await parseJsonResponse<PromptReportResponse>(response, 'Prompt report update')
+    { reportMarkdown: report.markdown, reportSourceName: report.sourceName },
+  ), { json: context.json, print: line => context.printLine(line) }) as PromptReportResponse | null
+  if (data === null) return
   if (context.json) {
-    context.printJson(data as unknown as Record<string, unknown>)
+    context.printJson(data as Record<string, unknown>)
     return
   }
   const versionLabel = data.version

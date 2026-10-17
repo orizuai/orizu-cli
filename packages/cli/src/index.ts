@@ -174,6 +174,7 @@ import { errorOutputSecrets, writeLastErrorRecord, extractLastErrorCode } from '
 import { redactSecrets } from './secret-redaction.js'
 import type { CliLengthStats, CliLengthMeasurementUnavailableReason } from './prompt-length-wire.js'
 import type { RunnerInstructionSet } from './runner-instruction-set-contract.js'
+import type { DiffCommentsCliContext } from './diff-comments-cli.js'
 import type { ReportCommentsCliContext } from './report-comments-cli.js'
 
 
@@ -1306,7 +1307,7 @@ async function runGepaOptimization() {
   }
 }
 
-function createReportCommentsCliContext(): ReportCommentsCliContext {
+function createReportCommentsCliContext(): ReportCommentsCliContext & DiffCommentsCliContext {
   return {
     getArg,
     getRawArgs: () => cliArgs,

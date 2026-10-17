@@ -172,6 +172,32 @@ export const labelMove = (kind: 'prompt' | 'scorer', project: string, body: Reco
   mayAlreadyBeSaved: note('label move', 'saved', SAFE),
 })
 
+/** Replaces the version's report with the same text again, so a repeat is safe. */
+export const promptReportSet = (path: string, body: Record<string, unknown>): Write<Pushed> => ({
+  label: 'update prompt report', name: 'Prompt report update', path, method: 'PATCH', body, reply: Reply,
+  mayAlreadyBeSaved: note('prompt report', 'saved', SAFE),
+})
+
+const comment = (id: string) => `/api/cli/report-comments/${encodeURIComponent(id)}`
+
+/** Nothing removes a repeat, so running it again posts a second comment. */
+export const commentAdd = (query: string, body: Record<string, unknown>): Write<Pushed> => ({
+  label: 'add report comment', name: 'Report comment add', path: `/api/cli/report-comments?${query}`, method: 'POST', body, reply: Reply,
+  mayAlreadyBeSaved: note('comment', 'added', 'check `orizu comments list` with the same target before adding it again (running it again posts a second comment)'),
+})
+
+/** Nothing removes a repeat, so running it again posts a second reply. */
+export const commentReply = (id: string, body: Record<string, unknown>): Write<Pushed> => ({
+  label: 'reply to report comment', name: 'Report comment reply', path: comment(id), method: 'POST', body, reply: Reply,
+  mayAlreadyBeSaved: note('reply', 'added', 'check its thread with `orizu comments list` before replying again (running it again posts a second reply)'),
+})
+
+/** Resolving again only moves its time and the same edit changes nothing, so a repeat is safe. */
+export const commentUpdate = (id: string, action: 'resolve' | 'unresolve' | 'edit', body: Record<string, unknown>): Write<Pushed> => ({
+  label: `${action} report comment`, name: `Report comment ${action}`, path: comment(id), method: 'PATCH', body, reply: Reply,
+  mayAlreadyBeSaved: note(action === 'edit' ? 'comment edit' : 'comment status change', 'saved', SAFE),
+})
+
 const Promoted = Schema.Union([
   Schema.Struct({
     profileVersionId: Text,
