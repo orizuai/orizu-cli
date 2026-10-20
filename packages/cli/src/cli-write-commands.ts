@@ -1,5 +1,6 @@
 import { Schema } from 'effect'
 
+import { sanitizeTerminalText } from './json-response.js'
 import { sendOneRequestWrite, type MayAlreadyBeSavedNote, type OneRequestWrite } from './one-request-write.js'
 
 // ORI-2726: what each one-request write command sends, the reply it expects,
@@ -116,6 +117,49 @@ const Linked = Schema.Struct({ app: Schema.Struct({ id: Text, name: Text }), lin
 export const appLinkDataset = (appId: string, body: { datasetId: string; versionNum?: number }): Write<typeof Linked.Type> => ({
   label: 'link dataset', name: 'Dataset link', path: `/api/cli/apps/${encodeURIComponent(appId)}/link-dataset`, method: 'POST', body, reply: Linked,
   mayAlreadyBeSaved: note('link', 'saved', body.versionNum === undefined ? 'running it again with `--version <n>` for the version you meant is safe' : SAFE),
+})
+
+// The CLI reads only what it prints; every other key the server sends is kept,
+// so `--json` passes the app through as before ORI-2718.
+const AppWritten = Schema.Struct({
+  app: Schema.StructWithRest(Schema.Struct({
+    id: Text,
+    name: Text,
+    versionNum: Count,
+    url: Schema.optionalKey(Text),
+    publishedCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ outcome: Schema.Literals(['merged', 'already_merged']), sha: Text }))),
+  }), [Schema.Record(Text, Schema.Unknown)]),
+  warnings: Schema.optionalKey(Schema.Array(Text)),
+})
+export type AppWritten = typeof AppWritten.Type
+
+/**
+ * The server's refusal of an app source names each rule it breaks in
+ * `validationErrors`; the person and `--json` both keep them (ORI-2718).
+ */
+const appWriteError = (label: string): NonNullable<Write<AppWritten>['describeError']> => async response => {
+  const data = await response.json() as { error: string; validationErrors?: unknown; validationWarnings?: unknown }
+  const texts = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').map(sanitizeTerminalText) : []
+  const problems = texts(data.validationErrors)
+  const reason = [sanitizeTerminalText(data.error), ...(problems.length ? [problems.join('; ')] : [])].join(': ')
+  return {
+    message: `Failed to ${label}: ${reason}`,
+    json: { error: reason, ...(Array.isArray(data.validationErrors) ? { validationErrors: problems, validationWarnings: texts(data.validationWarnings) } : {}), httpStatus: response.status },
+  }
+}
+
+/** Nothing removes a repeat, so creating it again without `--id` makes a second app (ORI-2718). */
+export const appCreate = (body: Record<string, unknown>): Write<AppWritten> => ({
+  label: 'create app', name: 'App create', path: '/api/cli/apps/create-from-file', method: 'POST', body, reply: AppWritten,
+  describeError: appWriteError('create app'),
+  mayAlreadyBeSaved: note('app', 'created', 'check `orizu apps list` before creating it again (running it again makes a second app)'),
+})
+
+/** Each update adds a version, so running it again makes another version (ORI-2718). */
+export const appUpdate = (appId: string, body: Record<string, unknown>): Write<AppWritten> => ({
+  label: 'update app', name: 'App update', path: `/api/cli/apps/${encodeURIComponent(appId)}/update-from-file`, method: 'POST', body, reply: AppWritten,
+  describeError: appWriteError('update app'),
+  mayAlreadyBeSaved: note('app update', 'saved', `check \`orizu apps detail --app ${sanitizeTerminalText(appId)}\` before updating it again (running it again makes another version)`),
 })
 
 const Accepted = Schema.Struct({

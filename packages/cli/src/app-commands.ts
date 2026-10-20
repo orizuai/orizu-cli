@@ -244,6 +244,42 @@ function canonicalRetryInputPath(workspaceRoot: string, folder: string, filename
   }
 }
 
+interface AppReply {
+  app: { id: string; name: string; versionNum: number; componentName?: string | null; url?: string; publishedCommit?: PublishedCommit | null }
+  warnings?: readonly string[]
+}
+
+/** Outside a session: the same words and `--json` as before ORI-2718. */
+function printAppCreated(data: AppReply) {
+  if (hasJsonFlag()) {
+    printJson({ app: { ...data.app, pageUrl: data.app.url || appPageUrl(getBaseUrl(), data.app.id) }, warnings: data.warnings || [] })
+    return
+  }
+  printLine(`Created app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) v${data.app.versionNum}`)
+  if (data.app.url) {
+    printLine(`View app: ${formatTerminalLink(data.app.url)}`)
+  }
+  printAppWritten(data)
+}
+
+function printAppUpdated(data: AppReply) {
+  const pageUrl = appPageUrl(getBaseUrl(), data.app.id)
+  if (hasJsonFlag()) {
+    printJson({ app: { ...data.app, pageUrl }, warnings: data.warnings || [] })
+    return
+  }
+  printLine(`Updated app ${sanitizeTerminalText(data.app.name)} (${sanitizeTerminalText(data.app.id)}) to v${data.app.versionNum}`)
+  printLine(`View app: ${formatTerminalLink(pageUrl)}`)
+  printAppWritten(data)
+}
+
+function printAppWritten(data: AppReply) {
+  printPublishedCommit(data.app.publishedCommit, false)
+  if (data.warnings?.length) {
+    printLine(`Warnings: ${sanitizeTerminalText(data.warnings.join('; '))}`)
+  }
+}
+
 async function createAppFromFile() {
   const workspaceRoot = hostedWorkspaceRoot()
   let project = getArg('--project')
@@ -275,6 +311,18 @@ async function createAppFromFile() {
   const sourceCode = files.sourceCode
   const inputJsonSchema = parseJsonFileContents(files.inputSchema, inputSchemaPath)
   const outputJsonSchema = parseJsonFileContents(files.outputSchema, outputSchemaPath)
+
+  if (!workspaceRoot) {
+    // ORI-2718: outside a session the create is one request with a deadline,
+    // stop handling, and the words for a reply that never came back.
+    const writes = await import('./cli-write-commands.js')
+    const data = await writes.sendCommandWrite(writes.appCreate({
+      projectSlug: project, name, datasetId, sourceCode, componentName: component, inputJsonSchema, outputJsonSchema,
+      ...(requestedAppId !== undefined ? { appId: requestedAppId } : {}),
+    }), { json: hasJsonFlag(), print: printLine })
+    if (data) printAppCreated(data)
+    return
+  }
 
   // In a hosted session the app is committed into its folder and pushed first;
   // the server merges that commit into the team copy before recording the app.
@@ -426,6 +474,15 @@ async function updateAppFromFile() {
   const sourceCode = files.sourceCode
   const inputJsonSchema = parseJsonFileContents(files.inputSchema, inputSchemaPath)
   const outputJsonSchema = parseJsonFileContents(files.outputSchema, outputSchemaPath)
+
+  if (!workspaceRoot) {
+    // ORI-2718: outside a session the update is one request with a deadline,
+    // stop handling, and the words for a reply that never came back.
+    const writes = await import('./cli-write-commands.js')
+    const data = await writes.sendCommandWrite(writes.appUpdate(appId, { sourceCode, componentName: component, inputJsonSchema, outputJsonSchema }), { json: hasJsonFlag(), print: printLine })
+    if (data) printAppUpdated(data)
+    return
+  }
 
   // In a hosted session the app is committed into its folder and pushed first;
   // the server merges that commit into the team copy before recording the version.
