@@ -495,21 +495,6 @@ export function saveServerCredentials(baseUrl: string, credentials: ServerCreden
   })
 }
 
-export function updateServerCredentials(baseUrl: string, credentials: ServerCredentials) {
-  return withCredentialsTransactionLock(() => {
-    const loaded = loadCredentialsConfigForWrite()
-    const config: StoredCredentialsV3 = loaded.version === 3
-      ? loaded
-      : {
-        version: 3,
-        activeBaseUrl: loaded.activeBaseUrl,
-        servers: loaded.servers,
-      }
-    config.servers[baseUrl] = credentials
-    writeCredentials(config)
-  })
-}
-
 export function credentialsEqual(left: ServerCredentials, right: ServerCredentials): boolean {
   // Entries read straight from the file may be malformed; those never match.
   if (!isServerCredentials(left) || !isServerCredentials(right)) return false
@@ -707,14 +692,6 @@ export function hasResolvableAuth(baseUrl: string): boolean {
     // fall through to stored credentials
   }
   return getServerCredentials(baseUrl) !== null
-}
-
-export function setActiveBaseUrl(baseUrl: string | null) {
-  return withCredentialsTransactionLock(() => {
-    const config = loadCredentialsConfigForWrite()
-    config.activeBaseUrl = baseUrl
-    writeCredentials(config)
-  })
 }
 
 export function clearServerCredentialsIfCurrent(

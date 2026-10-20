@@ -6,6 +6,7 @@ import { Cause, Effect, Exit, Fiber, Scope } from 'effect'
 
 import { ARTIFACT_MAX_BYTES } from './artifact-pull.js'
 import { authedFetch } from './http.js'
+import { gepaRunnerDirsToVerify, rewriteFlagValue, verifyRunnerDirRegistered, type VerifiedRunnerSnapshot } from './runner-dir-verify.js'
 import { unzipRunnerArchive } from './runner-version-materialization.js'
 
 // ORI-2429: Effect owns the lifetime of the runner copies the CLI writes to
@@ -110,6 +111,46 @@ export function heldUntilClose<A extends { cleanup: () => void }>(ledger: Remova
       try { resource.cleanup() } catch (error) { ledger.failures.push({ group, error }) }
     }),
   )
+}
+
+/**
+ * Verify run-gepa's local runner folders (ALI-1159, ADR-007) and rewrite their
+ * flags to the verified snapshots. Each runner-version read can be stopped: a
+ * stop aborts it, and the scope removes the snapshots made so far (ORI-2732).
+ */
+export function verifiedGepaRunnerDirs(
+  ledger: RemovalLedger,
+  args: string[],
+  fetcher?: (path: string, init?: RequestInit) => Promise<Response>,
+) {
+  return Effect.gen(function* () {
+    let rewritten = [...args]
+    const verifiedDirs: string[] = []
+    for (const runner of yield* Effect.try({ try: () => gepaRunnerDirsToVerify(args), catch: error => error })) {
+      // Registered before the read starts, so a snapshot the read makes is
+      // always removed when the scope closes.
+      let snapshot: VerifiedRunnerSnapshot | undefined
+      yield* removeOnClose(ledger, 'snapshots', () => snapshot?.cleanup())
+      const verified = yield* Effect.suspend(() => {
+        const read = new AbortController()
+        const reading = verifyRunnerDirRegistered({ runnerVersionId: runner.runnerVersionId, dir: runner.dir, flag: runner.dirFlag, fetcher, signal: read.signal })
+          .then(made => (snapshot = made))
+        // A stop aborts the read, then waits for it to settle: a sign-in
+        // refresh inside it must release the credentials lock and its own stop
+        // handlers before the CLI ends by the signal, and a snapshot it still
+        // made is then the scope's to remove.
+        return Effect.tryPromise({ try: () => reading, catch: error => error }).pipe(
+          Effect.onInterrupt(() => Effect.promise(() => {
+            read.abort()
+            return reading.then(() => undefined, () => undefined)
+          })),
+        )
+      })
+      verifiedDirs.push(verified.snapshotDir)
+      rewritten = rewriteFlagValue(rewritten, runner.dirFlag, verified.snapshotDir)
+    }
+    return { args: rewritten, verifiedDirs }
+  })
 }
 
 const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const

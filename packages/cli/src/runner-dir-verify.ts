@@ -9,7 +9,6 @@ import {
   shouldExcludeArtifactPath,
 } from './artifact-archive.js'
 import { authedFetch } from './http.js'
-import { cleanupAll, throwWithCleanup } from './cleanup.js'
 
 /**
  * ALI-1159 (ADR-007): ad-hoc `--runner-dir` bytes may only execute when they
@@ -58,6 +57,8 @@ export interface VerifyRunnerDirInput {
   /** The CLI flag the dir arrived on (for the error message). */
   flag: string
   fetcher?: (path: string, init?: RequestInit) => Promise<Response>
+  /** Stops the runner-version read. */
+  signal?: AbortSignal
 }
 
 /**
@@ -182,7 +183,8 @@ export async function verifyRunnerDirRegistered(input: VerifyRunnerDirInput): Pr
   }
   const { contentSha256: localSha } = archiveArtifactEntries(entries)
 
-  const response = await fetcher(`/api/cli/runner-versions/${encodeURIComponent(input.runnerVersionId)}`)
+  const path = `/api/cli/runner-versions/${encodeURIComponent(input.runnerVersionId)}`
+  const response = await (input.signal ? fetcher(path, { signal: input.signal }) : fetcher(path))
   if (response.status === 404) {
     throw verificationError(
       'not_registered',
@@ -1002,7 +1004,7 @@ export function extractFlagValue(args: string[], flag: string): string | null {
 /**
 /** Replace the single occurrence of a dir flag's VALUE (either argparse form)
  * with the verified snapshot path. Duplicates were refused before this runs. */
-function rewriteFlagValue(args: string[], flag: string, newValue: string): string[] {
+export function rewriteFlagValue(args: string[], flag: string, newValue: string): string[] {
   const rewritten = [...args]
   for (let index = 0; index < rewritten.length; index += 1) {
     if (rewritten[index] === flag) {
@@ -1017,83 +1019,53 @@ function rewriteFlagValue(args: string[], flag: string, newValue: string): strin
   return rewritten
 }
 
-export interface GepaVerifiedArgs {
-  /** The forwarded argv with each runner-dir flag REWRITTEN to its verified
-   * snapshot path — Python executes the hashed bytes, not the mutable dir. */
-  args: string[]
-  /** The snapshot dirs, for the ORIZU_VERIFIED_RUNNER_DIRS handshake. */
-  verifiedDirs: string[]
-  cleanup: () => void
+/** One runner folder the run-gepa argv asks to execute, and the version it must be. */
+export interface GepaRunnerDirToVerify {
+  dirFlag: string
+  dir: string
+  runnerVersionId: string
 }
 
 /**
- * Verify the run-gepa wrapper's two ad-hoc runner dirs (candidate + scorer)
- * against the FORWARDED argv before the Python optimizer is spawned —
- * scanning the same tokens Python will parse, in both argparse forms, so no
- * spelling of the flags can slip past verification. FAIL-CLOSED: if either
- * half of a pair is present but the pair is incomplete, the wrapper refuses
- * here rather than forwarding an unverified pair to argparse. A pair that is
- * entirely absent is left to the Python CLI's required-argument validation —
- * it cannot execute without both. On success each dir flag is REWRITTEN to
- * the verified snapshot (codex round 4): the optimizer runs the exact hashed
- * bytes, immune to post-hash mutation of the original dirs.
+ * The run-gepa wrapper's two ad-hoc runner dirs (candidate + scorer), read
+ * from the FORWARDED argv before the Python optimizer is spawned: the same
+ * tokens Python will parse, in both argparse forms, so no spelling of the
+ * flags can slip past verification. FAIL-CLOSED: duplicate flags, or a pair
+ * with only one half present, are refused here rather than forwarded to
+ * argparse. A pair that is entirely absent is left to the Python CLI's
+ * required-argument validation; it cannot execute without both. The caller
+ * verifies each dir and rewrites its flag to the verified snapshot
+ * (`rewriteFlagValue`), so the optimizer runs the exact hashed bytes.
  */
-export async function verifyGepaRunnerDirsFromArgs(
-  args: string[],
-  fetcher?: (path: string, init?: RequestInit) => Promise<Response>
-): Promise<GepaVerifiedArgs> {
-  let rewritten = [...args]
-  const verifiedDirs: string[] = []
-  const cleanups: Array<() => void> = []
-  const cleanup = () => cleanupAll(
-    cleanups,
-    'Failed to clean verified runner snapshots'
-  )
-
-  try {
-    for (const pair of GEPA_RUNNER_FLAG_PAIRS) {
-      // Duplicate flags are refused outright (codex round 3, P1): argparse
-      // honors the LAST occurrence, so verifying any single occurrence can
-      // diverge from what Python executes. Refusing beats replicating argparse
-      // resolution — duplicates have no legitimate use here, and last-wins is
-      // exactly the shape an override attack takes.
-      for (const flag of [pair.dirFlag, pair.versionFlag]) {
-        if (flagOccurrences(args, flag) > 1) {
-          throw new Error(
-            `Duplicate ${flag}: pass each runner flag exactly once — the Python optimizer honors the ` +
-            'last occurrence, which could execute a different runner dir than the one verified (ADR-007).'
-          )
-        }
-      }
-      const anyPresent = flagOccurrences(args, pair.dirFlag) > 0 || flagOccurrences(args, pair.versionFlag) > 0
-      if (!anyPresent) {
-        continue
-      }
-      const dir = extractFlagValue(args, pair.dirFlag)
-      const runnerVersionId = extractFlagValue(args, pair.versionFlag)
-      if (!dir || !runnerVersionId) {
+export function gepaRunnerDirsToVerify(args: string[]): GepaRunnerDirToVerify[] {
+  const dirs: GepaRunnerDirToVerify[] = []
+  for (const pair of GEPA_RUNNER_FLAG_PAIRS) {
+    // Duplicate flags are refused outright (codex round 3, P1): argparse
+    // honors the LAST occurrence, so verifying any single occurrence can
+    // diverge from what Python executes. Refusing beats replicating argparse
+    // resolution — duplicates have no legitimate use here, and last-wins is
+    // exactly the shape an override attack takes.
+    for (const flag of [pair.dirFlag, pair.versionFlag]) {
+      if (flagOccurrences(args, flag) > 1) {
         throw new Error(
-          `${pair.dirFlag} and ${pair.versionFlag} must both be provided so the runner bytes can be ` +
-          'verified against the registered version (ADR-007) — refusing to launch with an unverified runner dir.'
+          `Duplicate ${flag}: pass each runner flag exactly once — the Python optimizer honors the ` +
+          'last occurrence, which could execute a different runner dir than the one verified (ADR-007).'
         )
       }
-      const verified = await verifyRunnerDirRegistered({
-        runnerVersionId,
-        dir,
-        flag: pair.dirFlag,
-        fetcher,
-      })
-      cleanups.push(verified.cleanup)
-      verifiedDirs.push(verified.snapshotDir)
-      rewritten = rewriteFlagValue(rewritten, pair.dirFlag, verified.snapshotDir)
     }
-  } catch (error) {
-    throwWithCleanup(
-      error,
-      cleanups,
-      'Runner verification failed and snapshot cleanup also failed'
-    )
+    const anyPresent = flagOccurrences(args, pair.dirFlag) > 0 || flagOccurrences(args, pair.versionFlag) > 0
+    if (!anyPresent) {
+      continue
+    }
+    const dir = extractFlagValue(args, pair.dirFlag)
+    const runnerVersionId = extractFlagValue(args, pair.versionFlag)
+    if (!dir || !runnerVersionId) {
+      throw new Error(
+        `${pair.dirFlag} and ${pair.versionFlag} must both be provided so the runner bytes can be ` +
+        'verified against the registered version (ADR-007) — refusing to launch with an unverified runner dir.'
+      )
+    }
+    dirs.push({ dirFlag: pair.dirFlag, dir, runnerVersionId })
   }
-
-  return { args: rewritten, verifiedDirs, cleanup }
+  return dirs
 }

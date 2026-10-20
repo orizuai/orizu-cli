@@ -99,7 +99,6 @@ import {
 } from './task-commands.js'
 import {
   extractFlagValue,
-  verifyGepaRunnerDirsFromArgs,
   verifyRunnerDirRegistered,
   assertSnapshotManifestConfined,
 } from './runner-dir-verify.js'
@@ -1222,7 +1221,7 @@ async function runGepaOptimization() {
   // ORI-2429: one Effect scope owns every runner copy this run writes to the
   // temp folder; it removes them on success, failure and stop signals.
   const { Effect } = await import('effect')
-  const { downloadedRunner, heldUntilClose, RemovalLedger, runStoppable } = await import('./runner-folders.js')
+  const { downloadedRunner, RemovalLedger, runStoppable, verifiedGepaRunnerDirs } = await import('./runner-folders.js')
   const ledger = new RemovalLedger()
   // Which step failed decides the message when a removal also failed, as before.
   let phase: 'materialize' | 'launch' = 'materialize'
@@ -1247,7 +1246,7 @@ async function runGepaOptimization() {
       // itself (both argparse flag forms), fail-closed on half-populated pairs,
       // and REWRITES the dir flags to verified snapshots (the exact hashed bytes)
       // so a post-hash mutation of the original dirs cannot change what runs.
-      const verified = yield* heldUntilClose(ledger, 'snapshots', () => verifyGepaRunnerDirsFromArgs(materializedArgs))
+      const verified = yield* verifiedGepaRunnerDirs(ledger, materializedArgs)
       let forwardedArgs = verified.args
       // Uniform resolution (ALI-1090): honors ORIZU_TOKEN / ORIZU_TOKEN_FILE before
       // credentials.json so hosted sandboxes can run optimizations. Read at spawn
