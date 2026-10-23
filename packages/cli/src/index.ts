@@ -11,6 +11,7 @@ import { gunzipSync, gzipSync } from 'zlib'
 import { fileURLToPath } from 'url'
 import { materializeRunnerVersion as materializeRegisteredRunnerVersion } from './runner-version-materialization.js'
 import { runnerInstructionSetSyncSet, runnerInputPrompt, runnerInputInstructionSet } from './runner-instruction-set-contract.js'
+import { isRemoteManifest, readRawRunnerManifest } from './remote-runner-kind.js'
 import {
   cliArgs,
   getArg,
@@ -1239,6 +1240,10 @@ async function runGepaOptimization() {
         const materialized = yield* downloadedRunner(runnerVersionId, ledger, false)
         materializedArgs.push(pair.dirFlag, materialized.runnerDir)
       }
+      const scorerDir = extractFlagValue(materializedArgs, '--scorer-runner-dir')
+      if (scorerDir && isRemoteManifest(readRawRunnerManifest(expandHomePath(scorerDir)))) {
+        throw new Error(`Runner version ${extractFlagValue(materializedArgs, '--scorer-runner-version-id')} is a remote runner: remote runners run candidates; scorers stay on Orizu's side`)
+      }
       phase = 'launch'
       // ALI-1159 (ADR-007): GEPA executes ad-hoc local runner dirs while
       // attributing records to registered runner version ids — verify the bytes
@@ -1271,6 +1276,18 @@ async function runGepaOptimization() {
         catch: error => error,
       })
       if (instructionSetProfileVersionId) dispatch.environment.ORIZU_INSTRUCTION_SET_PROFILE_VERSION_ID = instructionSetProfileVersionId
+      // The verified manifest remains the artifact we attribute to the run.
+      // Only remote candidates start the loopback bridge, which reuses exec's
+      // HTTP contract; the optimizer and packaged scorers never see its secret.
+      delete dispatch.environment.ORIZU_REMOTE_RUNNER_BRIDGE_URL
+      const candidateDir = extractFlagValue(verified.args, '--candidate-runner-dir')
+      const remoteManifest = candidateDir ? readRawRunnerManifest(expandHomePath(candidateDir)) : null
+      if (isRemoteManifest(remoteManifest)) {
+        const { configureRemoteGepaRunner } = yield* Effect.promise(() => import('./remote-runner-gepa.js'))
+        const runnerVersionId = extractFlagValue(verified.args, '--runner-version-id')
+        if (!runnerVersionId) throw new Error('A remote runner requires --runner-version-id')
+        yield* configureRemoteGepaRunner(remoteManifest, runnerVersionId, dispatch.environment, printError)
+      }
       selectedEngine = dispatch.engine
       const launch = prepareSkilledProposerLaunch(python, dispatch.engine, dispatch.environment)
       // While the optimizer runs, the launcher owns stop signals (ORI-2402) and
@@ -1469,76 +1486,98 @@ async function runnersExec() {
           })).runnerDir
         : (yield* downloadedRunner(resolvedRunnerVersionId, ledger, false)).runnerDir
       assertSnapshotManifestConfined(runnerDir, runnerDirArg ? '--runner-dir' : '--runner-version')
-      const manifest = readRunnerManifest(runnerDir)
-      if (manifest.supports_body_kind && !manifest.supports_body_kind.includes(context.prompt.bodyKind)) {
-        throw new Error(
-          `Runner does not support prompt body kind '${context.prompt.bodyKind}'. Supported kinds: ${manifest.supports_body_kind.join(', ')}`
-        )
+      const rawManifest = readRawRunnerManifest(runnerDir)
+      const scorerVersionId = context.scorer?.versionId || scorerVersion
+      const inputFor = (row: RunnerExecContext['rows'][number]) => {
+        const modelOutput = row.row.model_output ?? row.row.modelOutput ?? row.row.output ?? null
+        return {
+          row: row.row,
+          prompt: runnerInputPrompt(context.prompt),
+          ...(context.instructionSet ? { instruction_set: runnerInputInstructionSet(context.instructionSet) } : {}),
+          subject: scorerVersion
+            ? {
+                type: 'scorer_row',
+                row_id: row.id,
+                scorer_version_id: scorerVersionId,
+                prompt_version_id: context.prompt.promptVersionId,
+              }
+            : {
+                type: 'prompt_version',
+                row_id: row.id,
+                prompt_version_id: context.prompt.promptVersionId,
+              },
+          scorer: scorerVersion
+            ? {
+                version_id: scorerVersionId,
+                metric_key: context.scorer?.metricKey || 'score',
+                higher_is_better: context.scorer?.higherIsBetter ?? true,
+              }
+            : null,
+          model_output: modelOutput,
+          prompt_version_id: context.prompt.promptVersionId,
+          runner_version_id: context.prompt.runnerVersionId,
+        }
       }
+      // Spread runner output first: the scorer/prompt context identity fields
+      // (row_id, version ids, metric_key) are authoritative, never runner-overridable.
+      const stamp = (row: RunnerExecContext['rows'][number]) => ({
+        row_id: row.id,
+        prompt_version_id: context.prompt.promptVersionId,
+        runner_version_id: context.prompt.runnerVersionId,
+        ...(scorerVersion
+          ? { scorer_version_id: scorerVersionId, metric_key: context.scorer?.metricKey || 'score' }
+          : {}),
+      })
       const resultLines: string[] = []
-      for (const row of context.rows) {
-        yield* Effect.scoped(Effect.gen(function* () {
-          const tempDir = yield* rowFolder(ledger, 'orizu-runner-')
-          const inputPath = join(tempDir, 'input.json')
-          const outputPath = join(tempDir, 'output.json')
-          const instructionSetDir = context.instructionSet ? join(tempDir, 'instruction-set') : undefined
-          const modelOutput = row.row.model_output ?? row.row.modelOutput ?? row.row.output ?? null
-          if (instructionSetDir && context.instructionSet) syncToDisk(instructionSetDir, runnerInstructionSetSyncSet(context.instructionSet))
-          writeFileSync(inputPath, JSON.stringify({
-            row: row.row,
-            prompt: runnerInputPrompt(context.prompt),
-            ...(context.instructionSet ? { instruction_set: runnerInputInstructionSet(context.instructionSet) } : {}),
-            subject: scorerVersion
-              ? {
-                  type: 'scorer_row',
-                  row_id: row.id,
-                  scorer_version_id: context.scorer?.versionId || scorerVersion,
-                  prompt_version_id: context.prompt.promptVersionId,
-                }
-              : {
-                  type: 'prompt_version',
-                  row_id: row.id,
-                  prompt_version_id: context.prompt.promptVersionId,
-                },
-            scorer: scorerVersion
-              ? {
-                  version_id: context.scorer?.versionId || scorerVersion,
-                  metric_key: context.scorer?.metricKey || 'score',
-                  higher_is_better: context.scorer?.higherIsBetter ?? true,
-                }
-              : null,
-            model_output: modelOutput,
-            prompt_version_id: context.prompt.promptVersionId,
-            runner_version_id: context.prompt.runnerVersionId,
-            run_id: null,
-          }))
-
-          const result = yield* rowProcess({
-            command: manifest.command[0], args: manifest.command.slice(1), cwd: runnerDir,
-            env: runnerSubprocessEnv(inputPath, outputPath, instructionSetDir),
-            timeoutMs, maxOutputBytes: RUNNER_OUTPUT_MAX_BYTES,
-            timedOut: `Runner timed out for row ${row.id} after ${seconds(timeoutMs)}`,
-            overLimit: `Runner output for row ${row.id} exceeds ${RUNNER_OUTPUT_MAX_BYTES} bytes`,
-          })
-          if (result.status !== 0) {
-            throw new Error(
-              `Runner failed for row ${row.id} with exit code ${result.status}: ${sanitizeTerminalText(boundedRunnerOutput(result.stderr || result.stdout))}`
-            )
-          }
-
-          const runnerOutput = JSON.parse(readFileSync(outputPath, 'utf8')) as Record<string, unknown>
-          // Spread runner output first: the scorer/prompt context identity fields
-          // (row_id, version ids, metric_key) are authoritative, never runner-overridable.
-          resultLines.push(JSON.stringify({
-            ...runnerOutput,
-            row_id: row.id,
-            prompt_version_id: context.prompt.promptVersionId,
-            runner_version_id: context.prompt.runnerVersionId,
-            ...(scorerVersion
-              ? { scorer_version_id: context.scorer?.versionId || scorerVersion, metric_key: context.scorer?.metricKey || 'score' }
-              : {}),
-          }))
+      if (isRemoteManifest(rawManifest)) {
+        // ORI-2805: a remote runner is called over HTTP instead of started.
+        const { decodeRemoteRunnerManifest } = yield* Effect.promise(() => import('./remote-runner-manifest.js'))
+        const { remoteRunnerResults } = yield* Effect.promise(() => import('./remote-runner-call.js'))
+        const manifest = yield* decodeRemoteRunnerManifest(rawManifest, field => `Runner version ${resolvedRunnerVersionId}: stored manifest field ${field}`)
+        resultLines.push(...yield* remoteRunnerResults({
+          manifest, runnerVersionId: resolvedRunnerVersionId, scorerVersion: scorerVersion || null, rows: context.rows,
+          prompt: context.prompt, instructionSet: context.instructionSet, environment: process.env, stamp,
+          inputFor: row => {
+            const remoteInput = inputFor(row)
+            // A profile's pinned model config is authoritative, not the component's legacy settings.
+            if (context.instructionSet) delete remoteInput.prompt.provider_settings
+            return remoteInput
+          },
+          announce: line => printError(sanitizeTerminalText(line)),
         }))
+      } else {
+        const manifest = readRunnerManifest(runnerDir)
+        if (manifest.supports_body_kind && !manifest.supports_body_kind.includes(context.prompt.bodyKind)) {
+          throw new Error(
+            `Runner does not support prompt body kind '${context.prompt.bodyKind}'. Supported kinds: ${manifest.supports_body_kind.join(', ')}`
+          )
+        }
+        for (const row of context.rows) {
+          yield* Effect.scoped(Effect.gen(function* () {
+            const tempDir = yield* rowFolder(ledger, 'orizu-runner-')
+            const inputPath = join(tempDir, 'input.json')
+            const outputPath = join(tempDir, 'output.json')
+            const instructionSetDir = context.instructionSet ? join(tempDir, 'instruction-set') : undefined
+            if (instructionSetDir && context.instructionSet) syncToDisk(instructionSetDir, runnerInstructionSetSyncSet(context.instructionSet))
+            writeFileSync(inputPath, JSON.stringify({ ...inputFor(row), run_id: null }))
+
+            const result = yield* rowProcess({
+              command: manifest.command[0], args: manifest.command.slice(1), cwd: runnerDir,
+              env: runnerSubprocessEnv(inputPath, outputPath, instructionSetDir),
+              timeoutMs, maxOutputBytes: RUNNER_OUTPUT_MAX_BYTES,
+              timedOut: `Runner timed out for row ${row.id} after ${seconds(timeoutMs)}`,
+              overLimit: `Runner output for row ${row.id} exceeds ${RUNNER_OUTPUT_MAX_BYTES} bytes`,
+            })
+            if (result.status !== 0) {
+              throw new Error(
+                `Runner failed for row ${row.id} with exit code ${result.status}: ${sanitizeTerminalText(boundedRunnerOutput(result.stderr || result.stdout))}`
+              )
+            }
+
+            const runnerOutput = JSON.parse(readFileSync(outputPath, 'utf8')) as Record<string, unknown>
+            resultLines.push(JSON.stringify({ ...runnerOutput, ...stamp(row) }))
+          }))
+        }
       }
 
       // Written once every row has finished: a failed or stopped run writes nothing.
@@ -1858,6 +1897,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
 
   if ((command === 'runners' || command === 'optimizers') && (subcommand === 'pull' || subcommand === 'list')) {
     await runnerOptimizerCommand(cliArgs, { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return
+  }
+
+  if (command === 'runners' && (subcommand === 'add-remote' || subcommand === 'check')) {
+    const { runRemoteRunnerAdd, runRemoteRunnerCheck } = await import('./remote-runner-cli.js')
+    await (subcommand === 'check' ? runRemoteRunnerCheck : runRemoteRunnerAdd)({ hasFlag: flag => cliArgs.includes(flag), getArg, getPositionalArg, resolveProjectSlug, hasJsonFlag, printJson, printLine }); return
   }
 
   if (command === 'runners' && subcommand === 'exec') {

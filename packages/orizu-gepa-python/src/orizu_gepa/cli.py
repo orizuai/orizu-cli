@@ -11,9 +11,32 @@ from .client import OrizuClient, OrizuEventSink
 from .local_log import LocalOptimizationLogger
 from .optimizer import TextGepaConfig, optimize_loaded_text_candidate
 from .reflection import reflect_with_provider
-from .runner import make_candidate_runner, make_scorer_runner, resolve_scorer_input_contract
+from .runner import (
+    make_candidate_runner, make_scorer_runner, remote_runner_summary,
+    resolve_scorer_input_contract, validate_candidate_runner,
+)
 
 BUDGET_OPTION_FLAGS = ("--budget", "--max-metric-calls", "--max-full-evals", "--max-iterations")
+
+
+class _RemoteRunnerEventSink(OrizuEventSink):
+    """Attach the final bridge summary to the legacy owner's terminal PATCH."""
+
+    def __init__(self, client: OrizuClient, run_id: str, *, remote_metadata: dict[str, Any], **kwargs: Any):
+        super().__init__(client, run_id, **kwargs)
+        self.remote_metadata = remote_metadata
+
+    def finish_run(self, **kwargs: Any) -> None:
+        try:
+            self.remote_metadata["remote_runner"] = remote_runner_summary()
+        except Exception:
+            if kwargs.get("status") != "failed":
+                raise
+            # An unavailable bridge must not block the original failed status.
+        kwargs["metadata"] = {**(kwargs.get("metadata") or {}), **self.remote_metadata}
+        if self.local_logger is not None:
+            self.local_logger.update_metadata(self.remote_metadata)
+        super().finish_run(**kwargs)
 
 
 def positive_int(value: str) -> int:
@@ -240,6 +263,7 @@ def main() -> None:
         log_row_snapshots=args.log_row_snapshots,
         allow_degenerate_seed=args.allow_degenerate_seed,
     )
+    is_remote = validate_candidate_runner(args.candidate_runner_dir)
     client = OrizuClient.from_env()
     prompt_context, trainset = client.fetch_exec_context(
         prompt_version_id=args.candidate_version_id,
@@ -263,17 +287,13 @@ def main() -> None:
         split=args.val_split,
     )
 
-    # ALI-1158 review (codex): resolve the scorer input contract BEFORE
-    # start_run — a contract-setup refusal here must exit while no server run
-    # record exists, not strand one as 'running' (the event sink and the
-    # optimizer's failure handler are not entered yet at this point).
-    # make_scorer_runner re-resolves the same deterministic inputs below.
+    # Resolve scorer refusal before any candidate calls or run creation.
     scorer_input_contract, scorer_candidate_output_field = resolve_scorer_input_contract(
         Path(args.scorer_runner_dir),
         input_contract=args.scorer_input_contract,
         candidate_field=args.scorer_candidate_field,
     )
-
+    remote_metadata = {"remote_runner": remote_runner_summary()} if is_remote else {}
     run_metadata = {
         **metadata,
         "engine": "legacy",
@@ -289,6 +309,7 @@ def main() -> None:
         "train_count": len(trainset),
         "validation_count": len(valset),
         "num_threads": args.num_threads,
+        **remote_metadata,
     }
 
     run_id = client.start_run(
@@ -324,6 +345,12 @@ def main() -> None:
         )
         print(f"[orizu-gepa] local log: {local_logger.path}", flush=True)
 
+    event_sink = (
+        _RemoteRunnerEventSink(client, run_id, remote_metadata=remote_metadata,
+                               fail_on_log_error=config.fail_on_log_error, local_logger=local_logger)
+        if is_remote else OrizuEventSink(client, run_id, fail_on_log_error=config.fail_on_log_error,
+                                        local_logger=local_logger)
+    )
     result = optimize_loaded_text_candidate(
         run_id=run_id,
         prompt_context=prompt_context,
@@ -338,17 +365,12 @@ def main() -> None:
             candidate_field=args.scorer_candidate_field,
         ),
         reflector=reflect_with_provider,
-        event_sink=OrizuEventSink(
-            client,
-            run_id,
-            fail_on_log_error=config.fail_on_log_error,
-            local_logger=local_logger,
-        ),
+        event_sink=event_sink,
         config=config,
         local_logger=local_logger,
     )
     if local_logger is not None:
-        local_logger.write_result(result)
+        local_logger.write_result(result, **remote_metadata)
     print(json.dumps({
         "optimization_run_id": result.run_id,
         "best_candidate_id": result.best_candidate_id,
@@ -357,6 +379,7 @@ def main() -> None:
         "promoted_prompt_version_id": result.promoted_prompt_version_id,
         "budget": result.budget.to_payload(),
         "local_log_dir": local_logger.path if local_logger is not None else None,
+        **remote_metadata,
     }))
 
 

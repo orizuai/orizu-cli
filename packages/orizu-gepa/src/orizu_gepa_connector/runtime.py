@@ -21,7 +21,7 @@ from orizu_gepa.local_log import LocalOptimizationLogger
 from orizu_gepa.optimizer import PromotionResult, TextGepaConfig, TextGepaResult
 from orizu_gepa.providers import parse_model_identity, protocol_for_identity
 from orizu_gepa.reflection import protocol_requires_output_cap
-from orizu_gepa.runner import resolve_scorer_input_contract
+from orizu_gepa.runner import remote_runner_summary, resolve_scorer_input_contract, validate_candidate_runner
 
 from .adapter import RunnerEvaluationAdapter, ScorerContractError
 from .callbacks import LifecycleHooks, OrizuCallback
@@ -424,7 +424,8 @@ def _terminal_budget_exhausted(event: dict[str, Any], *, config: TextGepaConfig,
 
 def _result_summary(*, run_id: str, best_id: str, best_score: float, seed_score: float,
                     promoted_prompt_version_id: str | None, budget: Any,
-                    local_logger: LocalOptimizationLogger | None) -> dict[str, Any]:
+                    local_logger: LocalOptimizationLogger | None,
+                    remote_runner: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "optimization_run_id": run_id,
         "best_candidate_id": best_id,
@@ -433,6 +434,7 @@ def _result_summary(*, run_id: str, best_id: str, best_score: float, seed_score:
         "promoted_prompt_version_id": promoted_prompt_version_id,
         "budget": budget.to_payload(),
         "local_log_dir": str(local_logger.path) if local_logger is not None else None,
+        **({"remote_runner": remote_runner} if remote_runner is not None else {}),
     }
 
 
@@ -507,14 +509,24 @@ def _stop_when_parent_exits() -> None:
     threading.Thread(target=watch, daemon=True).start()
 
 
-def _mark_interrupted_run(client: OrizuClient, run_id: str, signal_name: str) -> None:
+def _mark_interrupted_run(client: OrizuClient, run_id: str, signal_name: str, *,
+                          is_remote: bool = False, local_logger: LocalOptimizationLogger | None = None) -> None:
     """Mark a stopped local run cancelled once, waiting at most 10 s; never retry."""
     outcome: list[BaseException | None] = []
 
     def write() -> None:
         try:
-            client.update_run(run_id, status="cancelled",
-                              metadata={"stop_reason": "interrupted", "signal": signal_name})
+            metadata: dict[str, Any] = {"stop_reason": "interrupted", "signal": signal_name}
+            if is_remote:
+                # The launcher aborts POSTs immediately but keeps GET available
+                # until this bounded status write finishes.
+                try:
+                    metadata["remote_runner"] = remote_runner_summary()
+                    if local_logger is not None:
+                        local_logger.update_metadata({"remote_runner": metadata["remote_runner"]})
+                except Exception:
+                    pass  # A lost bridge must not prevent cancellation.
+            client.update_run(run_id, status="cancelled", metadata=metadata)
             outcome.append(None)
         except BaseException as error:  # reported below; the run still stops
             outcome.append(error)
@@ -544,7 +556,9 @@ def run_from_environment() -> dict[str, Any]:
             return _run_from_environment(started)
         except RunInterrupted as interrupt:
             if started.get("run_id") and not started.get("hosted"):
-                _mark_interrupted_run(started["client"], started["run_id"], interrupt.signal_name)
+                _mark_interrupted_run(started["client"], started["run_id"], interrupt.signal_name,
+                                      is_remote=started.get("is_remote", False),
+                                      local_logger=started.get("local_logger"))
             _end_by_signal(interrupt.signum)
             raise
 
@@ -561,6 +575,7 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
     train_split = os.environ.get("ORIZU_TRAIN_SPLIT", "train")
     validation_split = os.environ.get("ORIZU_VALIDATION_SPLIT", "validation")
     config = build_config_from_environment()
+    is_remote = validate_candidate_runner(env["ORIZU_CANDIDATE_RUNNER_DIR"])
     client = OrizuClient.from_env()
     hosted_run_id = os.environ.get("ORIZU_HOSTED_OPTIMIZATION_RUN_ID", "").strip() or None
     if hosted_run_id is not None:
@@ -629,6 +644,7 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
     preflight_metric_calls = int(preflight_verdict.get("preflight_metric_calls", 0))
     budget = resolved_budget(config, trainset_size=len(trainset), valset_size=len(valset), num_components=len(seed_candidate))
     budget_kind, budget_limit = budget.budget_kind, budget.limit
+    remote_metadata = {"remote_runner": remote_runner_summary()} if is_remote else {}
     metadata = {
         **_metadata_from_environment(),
         "optimizer_family": "gepa", "optimizer_package": "orizu-gepa",
@@ -640,6 +656,7 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
         "scorer_lm": scorer_context.provider_settings.get("model"),
         "dataset_size": len(trainset) + len(valset), "train_count": len(trainset), "validation_count": len(valset),
         "num_threads": preflight_adapter.num_threads_plan.to_payload(),
+        **remote_metadata,
     }
     is_multi_component_instruction_set = bool(
         profile_version_id and isinstance(shape, list) and len(shape) > 1
@@ -660,7 +677,7 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
         model_config_settings_version_id=instruction_set.get("model_config_settings_version_id") if isinstance(instruction_set, dict) else None,
         runner_version_id=prompt_context.runner_version_id,
     )
-    started.update(client=client, run_id=run_id, hosted=hosted_run_id is not None)
+    started.update(client=client, run_id=run_id, hosted=hosted_run_id is not None, is_remote=is_remote)
     print(json.dumps({"optimization_run_id": run_id}), flush=True)
     # The frozen sink treats ``None`` as no local artifact writer.  Keep that
     # legacy behavior rather than maintaining a connector-local no-op logger.
@@ -668,6 +685,7 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
         run_id=run_id, env=env, prompt_context=prompt_context, scorer_context=scorer_context,
         trainset=trainset, valset=valset, metadata=metadata,
     )
+    started["local_logger"] = local_logger
     if local_logger is not None:
         print(f"[orizu-gepa] local log: {local_logger.path}", flush=True)
     if local_logger is not None and preflight_verdict.get("warnings"):
@@ -772,6 +790,12 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
                                    config=config,
                                    module_selector=os.environ.get("ORIZU_COMPONENT_SELECTOR", "round_robin").replace("-", "_"))
         require_durable_logging(sink, callback)
+        if is_remote:
+            # Preflight is only a subset of the rows. Refresh after the last
+            # evaluation, before saving results or promoting a candidate.
+            remote_metadata = {"remote_runner": remote_runner_summary()}
+            if local_logger is not None:
+                local_logger.update_metadata(remote_metadata)
         best_id = str(result.best_idx)
         best_score = float(result.val_aggregate_scores[result.best_idx])
         if not scorer_context.higher_is_better:
@@ -837,7 +861,7 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
                 seed_score=seed_score,
                 promoted_prompt_version_id=promoted_prompt_version_id,
                 budget=budget,
-            ))
+            ), **remote_metadata)
             if proposal_observability is not None:
                 proposal_observability.write_terminal_lm_stats_artifact()
             else:
@@ -861,15 +885,18 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
                         "seed_score": seed_score,
                         "budget": budget.to_payload(),
                         "pause_reason": "budget_exhausted",
+                        **remote_metadata,
                     },
                 )
         elif hosted_run_id is None:
             client.update_run(run_id, status="succeeded", best_score=best_score, best_candidate_id=best_id,
-                              result_prompt_version_id=promoted_prompt_version_id)
+                              result_prompt_version_id=promoted_prompt_version_id,
+                              **({"metadata": remote_metadata} if is_remote else {}))
         summary = _result_summary(
             run_id=run_id, best_id=best_id, best_score=best_score, seed_score=seed_score,
             promoted_prompt_version_id=promoted_prompt_version_id, budget=budget,
             local_logger=local_logger,
+            **remote_metadata,
         )
         hosted_result_file = os.environ.get("ORIZU_HOSTED_RESULT_FILE")
         if hosted_result_file:
@@ -886,13 +913,31 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
             temporary_result_path.replace(result_path)
         return summary
     except Exception as error:
-        started.pop("run_id", None)
+        # Keep the cancellation identity while refreshing evidence and writing
+        # failed status: a stop in either step must still settle the run.
+        if is_remote:
+            try:
+                remote_metadata = {"remote_runner": remote_runner_summary()}
+            except Exception:
+                # A closed bridge must not replace the candidate failure.
+                pass
+            if local_logger is not None:
+                try:
+                    local_logger.update_metadata(remote_metadata)
+                except Exception:
+                    pass
         if sink.failed:
             sink.retry_failed_status()
+            if is_remote:
+                try:
+                    client.update_run(run_id, status="failed", metadata=remote_metadata)
+                except Exception:
+                    pass
         elif hosted_run_id is None:
             client.update_run(
                 run_id,
                 status="failed",
-                metadata={"failure_reason": str(error)},
+                metadata={"failure_reason": str(error), **remote_metadata},
             )
+        started.pop("run_id", None)
         raise

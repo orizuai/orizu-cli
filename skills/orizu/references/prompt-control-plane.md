@@ -191,6 +191,10 @@ Output shape:
 
 Exit non-zero only for infrastructure failures. Row-level model or parsing errors should usually be represented in the output JSON with `error`.
 
+### Remote runner
+
+For a customer-hosted URL rather than a packaged runner, follow [Remote runners](remote-runners.md). It is the endpoint-building contract: request and reply fields, candidate-loading helpers, pinned settings and the requirement to apply them or refuse, secret handling, versioned URLs, isolated integrations, `runners check`, and `runners exec`. It covers local inline execution and optimization, shared parallel limits and retries, one deployed version per run, and saved live-data evidence. Spans, callbacks, and hosted remote-runner support are still coming.
+
 ### Scorer-runner input contracts (flat-row vs GEPA)
 
 There are TWO distinct input shapes a scorer/judge runner can receive, and

@@ -620,6 +620,18 @@ export const COMMAND_DOCS: CliCommandDoc[] = [
     group: 'Scorers and runners',
   },
   {
+    path: ['runners', 'add-remote'],
+    usage: 'orizu runners add-remote <name> --url <https://…> --secret-env <ENV_NAME> [--max-parallel <n>] [--timeout-seconds <n>] [--input <file>] [--no-check] [--project <team/project>] [--json]',
+    summary: 'Check and register a remote runner (--no-check skips the check): the customer\'s agent behind their own URL, which `runners exec` calls once per row. --secret-env names the environment variable holding the secret the endpoint expects; Orizu never stores it. --timeout-seconds allows 1 to 3600 (default 900, 15 minutes). Long runs answer 202 and send their result to callback_url; Orizu waits up to the time limit. Scoring stays on Orizu\'s side.',
+    group: 'Scorers and runners',
+  },
+  {
+    path: ['runners', 'check'],
+    usage: 'orizu runners check <name> [--version <id>] [--input <file>] [--project <team/project>] [--json]',
+    summary: 'Send one request and check reachability, secret acceptance, result shape and deployed version. The default input is row {"text":"Reply OK"}, candidate components {"prompt":"Reply OK."}, with model config openai/gpt-5.4-mini, null settings_version_id and empty provider_settings. --input supplies a JSON runner input with row and candidate (components and model_config); Orizu supplies fresh run/request/row identities. A passed check saves a receipt for that exact runner version. A row-level error can pass: this checks the contract, not answer quality.',
+    group: 'Scorers and runners',
+  },
+  {
     path: ['runners', 'exec'],
     usage: 'orizu runners exec (--prompt <prompt-version-id> | --prompt-version <id> --runner-version <id> | --scorer-version <id>) --dataset-version <id> --split-set <id-or-name> --split <name> [--runner-dir <dir>] --out <results.jsonl|results.jsonl.gz>',
     summary: 'Execute a runner locally against a dataset split and write row results. --runner-dir bytes must match the registered runner version (ADR-007) — register with `orizu runners push` first.',

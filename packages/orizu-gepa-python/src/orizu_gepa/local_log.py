@@ -67,6 +67,12 @@ class LocalOptimizationLogger:
             "rows": [dataclasses.asdict(row) for row in valset],
         })
 
+    def update_metadata(self, metadata: dict[str, Any]) -> None:
+        path = self.directory / "run.json"
+        context = json.loads(path.read_text(encoding="utf-8"))
+        context["metadata"].update(metadata)
+        _write_json(path, context)
+
     def append_event(self, event: dict[str, Any]) -> None:
         _append_jsonl(self.directory / "events.jsonl", event)
 
@@ -166,7 +172,7 @@ class LocalOptimizationLogger:
             },
         })
 
-    def write_result(self, result: TextGepaResult) -> None:
+    def write_result(self, result: TextGepaResult, *, remote_runner: dict[str, Any] | None = None) -> None:
         _write_json(self.directory / "result.json", {
             "optimization_run_id": result.run_id,
             "best_candidate_id": result.best_candidate_id,
@@ -175,4 +181,5 @@ class LocalOptimizationLogger:
             "seed_score": result.seed_score,
             "promoted_prompt_version_id": result.promoted_prompt_version_id,
             "budget": result.budget.to_payload(),
+            **({"remote_runner": remote_runner} if remote_runner is not None else {}),
         })

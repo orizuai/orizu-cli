@@ -64,14 +64,86 @@ function own<T>(map: unknown, key: string): T | undefined {
     : undefined
 }
 
-export function loadInstructions(specifier: string): {
+export interface CandidateSource {
+  candidate: unknown
+  expectedShape: readonly string[]
+}
+
+export type InstructionSource = string | CandidateSource
+
+export interface SyncedProvenance {
+  instructionSetId: string
+  profileVersionId: string
+  digest: string
+}
+
+export interface CandidateProvenance {
+  kind: 'candidate'
+}
+
+export type InstructionProvenance = SyncedProvenance | CandidateProvenance
+
+export interface LoadedInstructions<P extends InstructionProvenance = InstructionProvenance> {
   components: Record<string, string>
   settings: Record<string, unknown>
-  provenance: { instructionSetId: string; profileVersionId: string; digest: string }
-  generatedProvenance: { instructionSetId: string; profileVersionId: string; digest: string }
+  provenance: P
+  generatedProvenance: P
   modelConfigIdentity: string
-} {
-  const parsed = parseSpecifier(specifier)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+function isJsonValue(value: unknown, ancestors = new Set<object>()): boolean {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (!Array.isArray(value) && !isRecord(value)) return false
+  if (ancestors.has(value)) return false
+  ancestors.add(value)
+  const valid = Array.from(Array.isArray(value) ? value : Object.values(value))
+    .every(item => isJsonValue(item, ancestors))
+  ancestors.delete(value)
+  return valid
+}
+
+function loadCandidate(source: CandidateSource): LoadedInstructions<CandidateProvenance> {
+  const candidate = source.candidate
+  if (!isRecord(candidate)) throw new InstructionSetLoadError('instruction_set_candidate_invalid')
+  const components = candidate.components
+  if (!isRecord(components) || Object.values(components).some(value => typeof value !== 'string')) {
+    throw new InstructionSetLoadError('instruction_set_candidate_components_invalid')
+  }
+  const names = Object.keys(components)
+  if (names.length !== source.expectedShape.length || source.expectedShape.some(name => !Object.hasOwn(components, name))) {
+    throw new InstructionSetLoadError('instruction_set_candidate_shape_mismatch')
+  }
+  const config = candidate.model_config
+  if (!isRecord(config) || typeof config.identity !== 'string' || config.identity.trim().length === 0) {
+    throw new InstructionSetLoadError('instruction_set_candidate_model_config_identity_invalid')
+  }
+  const settings = Object.hasOwn(config, 'provider_settings') ? config.provider_settings : {}
+  if (!isRecord(settings) || !isJsonValue(settings)) {
+    throw new InstructionSetLoadError('instruction_set_candidate_settings_invalid')
+  }
+  return {
+    components: { ...components } as Record<string, string>,
+    // Validation above makes JSON copying lossless and keeps config freezing request-local.
+    settings: JSON.parse(JSON.stringify(settings)) as Record<string, unknown>,
+    modelConfigIdentity: config.identity,
+    provenance: { kind: 'candidate' },
+    generatedProvenance: { kind: 'candidate' },
+  }
+}
+
+export function loadInstructions(source: string): LoadedInstructions<SyncedProvenance>
+export function loadInstructions(source: CandidateSource): LoadedInstructions<CandidateProvenance>
+export function loadInstructions(source: InstructionSource): LoadedInstructions
+export function loadInstructions(source: InstructionSource): LoadedInstructions {
+  if (typeof source !== 'string') return loadCandidate(source)
+  const parsed = parseSpecifier(source)
   const instructionSet = own<(typeof lock.instructionSets)[keyof typeof lock.instructionSets]>(lock.instructionSets, parsed.set)
   const setVersions = own<(typeof versions)[keyof typeof versions]>(versions, parsed.set)
   if (!instructionSet || !setVersions) throw new InstructionSetLoadError('instruction_set_specifier_unknown')
@@ -180,19 +252,13 @@ export function runLoadSelfCheck(): void {
 }
 `
 
-const PROVENANCE_HELPER = String.raw`export const PROVENANCE_ATTRIBUTE_NAMES = {
+const PROVENANCE_HELPER = String.raw`import type { InstructionProvenance } from './load.js'
+
+export const PROVENANCE_ATTRIBUTE_NAMES = {
   instructionSetId: 'orizu.instruction_set.id',
   profileVersionId: 'orizu.profile_version.id',
   digest: 'orizu.instruction_set.digest',
 } as const
-
-interface LoadedInstructions {
-  provenance: {
-    instructionSetId: string
-    profileVersionId: string
-    digest: string
-  }
-}
 
 interface SpanLike {
   setAttribute(name: string, value: string): unknown
@@ -200,24 +266,22 @@ interface SpanLike {
 
 type AttributionPayload = Record<string, unknown>
 
-export function provenanceOf(loaded: LoadedInstructions): LoadedInstructions['provenance'] {
-  return {
-    instructionSetId: loaded.provenance.instructionSetId,
-    profileVersionId: loaded.provenance.profileVersionId,
-    digest: loaded.provenance.digest,
-  }
+export function provenanceOf<P extends InstructionProvenance>(loaded: { provenance: P }): P {
+  return { ...loaded.provenance }
 }
 
 export function attachProvenance<T extends SpanLike | AttributionPayload>(
   target: T,
-  loaded: LoadedInstructions
+  loaded: { provenance: InstructionProvenance }
 ): T {
   const provenance = provenanceOf(loaded)
-  const attributes = {
-    [PROVENANCE_ATTRIBUTE_NAMES.instructionSetId]: provenance.instructionSetId,
-    [PROVENANCE_ATTRIBUTE_NAMES.profileVersionId]: provenance.profileVersionId,
-    [PROVENANCE_ATTRIBUTE_NAMES.digest]: provenance.digest,
-  }
+  const attributes: Record<string, string> = 'kind' in provenance
+    ? { 'orizu.instructions.source': provenance.kind }
+    : {
+      [PROVENANCE_ATTRIBUTE_NAMES.instructionSetId]: provenance.instructionSetId,
+      [PROVENANCE_ATTRIBUTE_NAMES.profileVersionId]: provenance.profileVersionId,
+      [PROVENANCE_ATTRIBUTE_NAMES.digest]: provenance.digest,
+    }
   if ('setAttribute' in target && typeof target.setAttribute === 'function') {
     for (const [name, value] of Object.entries(attributes)) target.setAttribute(name, value)
   } else {
@@ -489,7 +553,7 @@ export function renderModelConfigHelper(fields: readonly ModelConfigFieldDefinit
   const table = JSON.stringify(fields)
   const optionalFields = fields.filter(({ field }) => field !== 'MODEL')
     .map(({ field, kind }) => `  readonly ${field}?: ${kind}`).join('\n')
-  return `import { loadInstructions } from './load.js'\n\nexport const MODEL_CONFIG_FIELDS = ${table} as const\n\nexport class ModelConfigError extends Error {\n  readonly code: string\n\n  constructor(code: string) {\n    super(code)\n    this.name = 'ModelConfigError'\n    this.code = code\n  }\n}\n\nexport interface ModelConfig {\n  readonly PROVIDER: string\n  readonly MODEL: string\n  readonly CONFIG_IDENTITY: string\n${optionalFields}\n  readonly RAW: Readonly<Record<string, unknown>>\n}\n\nfunction setting(settings: Record<string, unknown>, key: string): { present: boolean; value?: unknown } {\n  const dot = key.indexOf('.')\n  if (dot < 0) return Object.hasOwn(settings, key) ? { present: true, value: settings[key] } : { present: false }\n  const parentKey = key.slice(0, dot)\n  if (!Object.hasOwn(settings, parentKey)) return { present: false }\n  const parent = settings[parentKey]\n  if (parent === null) return { present: false }\n  if (typeof parent !== 'object' || Array.isArray(parent)) {\n    throw new ModelConfigError('instruction_set_model_config_setting_invalid:' + parentKey)\n  }\n  const child = key.slice(dot + 1)\n  return Object.hasOwn(parent, child)\n    ? { present: true, value: (parent as Record<string, unknown>)[child] }\n    : { present: false }\n}\n\nfunction deepFreeze(value: unknown): void {\n  if (Array.isArray(value)) {\n    for (const item of value) deepFreeze(item)\n    Object.freeze(value)\n    return\n  }\n  if (value === null || typeof value !== 'object') return\n  const prototype = Object.getPrototypeOf(value)\n  if (prototype !== Object.prototype && prototype !== null) return\n  for (const item of Object.values(value)) deepFreeze(item)\n  Object.freeze(value)\n}\n\nexport function loadModelConfig(specifier: string): ModelConfig {\n  const loaded = loadInstructions(specifier)\n  const identity = loaded.modelConfigIdentity\n  const slash = identity.indexOf('/')\n  const provider = slash < 0 ? identity : identity.slice(0, slash)\n  const identityModel = slash < 0 ? identity : identity.slice(slash + 1)\n  const mapped: Record<string, unknown> = {}\n  for (const definition of MODEL_CONFIG_FIELDS) {\n    const found = definition.settingsKeys.map(key => ({ key, ...setting(loaded.settings, key) })).filter(item => item.present && item.value !== null)\n    for (const item of found) {\n      if (typeof item.value !== definition.kind || (definition.kind === 'number' && !Number.isFinite(item.value))) {\n        throw new ModelConfigError('instruction_set_model_config_setting_invalid:' + item.key)\n      }\n    }\n    if (found.length > 1 && found.some(item => item.value !== found[0]!.value)) {\n      throw new ModelConfigError('instruction_set_model_config_setting_conflict:' + definition.field)\n    }\n    mapped[definition.field] = found[0]?.value\n  }\n  deepFreeze(loaded.settings)\n  return Object.freeze({\n    ...mapped,\n    PROVIDER: provider,\n    MODEL: (mapped.MODEL as string | undefined) ?? identityModel,\n    CONFIG_IDENTITY: identity,\n    RAW: loaded.settings,\n  }) as unknown as ModelConfig\n}\n`
+  return `import { loadInstructions, type InstructionSource } from './load.js'\n\nexport const MODEL_CONFIG_FIELDS = ${table} as const\n\nexport class ModelConfigError extends Error {\n  readonly code: string\n\n  constructor(code: string) {\n    super(code)\n    this.name = 'ModelConfigError'\n    this.code = code\n  }\n}\n\nexport interface ModelConfig {\n  readonly PROVIDER: string\n  readonly MODEL: string\n  readonly CONFIG_IDENTITY: string\n${optionalFields}\n  readonly RAW: Readonly<Record<string, unknown>>\n}\n\nfunction setting(settings: Record<string, unknown>, key: string): { present: boolean; value?: unknown } {\n  const dot = key.indexOf('.')\n  if (dot < 0) return Object.hasOwn(settings, key) ? { present: true, value: settings[key] } : { present: false }\n  const parentKey = key.slice(0, dot)\n  if (!Object.hasOwn(settings, parentKey)) return { present: false }\n  const parent = settings[parentKey]\n  if (parent === null) return { present: false }\n  if (typeof parent !== 'object' || Array.isArray(parent)) {\n    throw new ModelConfigError('instruction_set_model_config_setting_invalid:' + parentKey)\n  }\n  const child = key.slice(dot + 1)\n  return Object.hasOwn(parent, child)\n    ? { present: true, value: (parent as Record<string, unknown>)[child] }\n    : { present: false }\n}\n\nfunction deepFreeze(value: unknown): void {\n  if (Array.isArray(value)) {\n    for (const item of value) deepFreeze(item)\n    Object.freeze(value)\n    return\n  }\n  if (value === null || typeof value !== 'object') return\n  const prototype = Object.getPrototypeOf(value)\n  if (prototype !== Object.prototype && prototype !== null) return\n  for (const item of Object.values(value)) deepFreeze(item)\n  Object.freeze(value)\n}\n\nexport function loadModelConfig(source: InstructionSource): ModelConfig {\n  const loaded = loadInstructions(source)\n  const identity = loaded.modelConfigIdentity\n  const slash = identity.indexOf('/')\n  const provider = slash < 0 ? identity : identity.slice(0, slash)\n  const identityModel = slash < 0 ? identity : identity.slice(slash + 1)\n  const mapped: Record<string, unknown> = {}\n  for (const definition of MODEL_CONFIG_FIELDS) {\n    const found = definition.settingsKeys.map(key => ({ key, ...setting(loaded.settings, key) })).filter(item => item.present && item.value !== null)\n    for (const item of found) {\n      if (typeof item.value !== definition.kind || (definition.kind === 'number' && !Number.isFinite(item.value))) {\n        throw new ModelConfigError('instruction_set_model_config_setting_invalid:' + item.key)\n      }\n    }\n    if (found.length > 1 && found.some(item => item.value !== found[0]!.value)) {\n      throw new ModelConfigError('instruction_set_model_config_setting_conflict:' + definition.field)\n    }\n    mapped[definition.field] = found[0]?.value\n  }\n  deepFreeze(loaded.settings)\n  return Object.freeze({\n    ...mapped,\n    PROVIDER: provider,\n    MODEL: (mapped.MODEL as string | undefined) ?? identityModel,\n    CONFIG_IDENTITY: identity,\n    RAW: loaded.settings,\n  }) as unknown as ModelConfig\n}\n`
 }
 
 export function renderModelConfigSelfCheck(fields: readonly ModelConfigFieldDefinition[]): string {

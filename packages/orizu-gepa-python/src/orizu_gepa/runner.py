@@ -15,6 +15,7 @@ from typing import Any
 from .client import OrizuClient
 from .optimizer import DatasetRow, PromptContext, RunnerCallResult
 from .providers import effective_provider_registry, load_provider_registry
+from .remote_runner_bridge import read_remote_runner_summary, request_bridge, require_remote_runner_bridge
 
 MAX_RUNNER_ZIP_BYTES = 25 * 1024 * 1024
 MAX_RUNNER_ZIP_ENTRIES = 1000
@@ -275,6 +276,39 @@ def materialize_runner_version(client: OrizuClient, runner_version_id: str) -> t
     return temp_dir
 
 
+def validate_candidate_runner(runner_dir: str | Path) -> bool:
+    """Refuse unsupported remote launches before runner-backed preflight."""
+    # This is a remote-only guard, not new packaged-runner preflight. Missing
+    # packaged files still fail at their existing execution boundary.
+    if not (Path(runner_dir) / "manifest.json").is_file():
+        return False
+    is_remote = read_manifest(runner_dir).get("kind") == "remote"
+    if is_remote:
+        require_remote_runner_bridge()
+    return is_remote
+
+
+def remote_runner_summary() -> dict[str, Any]:
+    return read_remote_runner_summary(max_bytes=MAX_RUNNER_OUTPUT_BYTES)
+
+
+def _runner_call_result(data: dict[str, Any]) -> RunnerCallResult:
+    known = {
+        "model_response", "raw_api_response", "token_in", "token_out",
+        "latency_ms", "cost_usd", "error",
+    }
+    return RunnerCallResult(
+        model_response=data.get("model_response"),
+        raw_api_response=data.get("raw_api_response"),
+        token_in=data.get("token_in"),
+        token_out=data.get("token_out"),
+        latency_ms=data.get("latency_ms"),
+        cost_usd=data.get("cost_usd"),
+        error=data.get("error"),
+        extra={key: value for key, value in data.items() if key not in known},
+    )
+
+
 def run_file_contract_runner(
     *,
     runner_dir: str | Path,
@@ -288,9 +322,34 @@ def run_file_contract_runner(
     prompt_body_present: bool = True,
     timeout_seconds: int = DEFAULT_RUNNER_TIMEOUT_SECONDS,
     extra_payload: dict[str, Any] | None = None,
+    row_id: str | None = None,
 ) -> RunnerCallResult:
     runner_path = Path(runner_dir)
     manifest = read_manifest(runner_path)
+    instruction_set = (extra_payload or {}).get("instruction_set")
+    # Build the ordinary input once. Core fields always override companions.
+    prompt = {"body_kind": body_kind, "provider_settings": provider_settings}
+    if prompt_body_present:
+        prompt["body"] = prompt_body
+    payload_extra = dict(extra_payload or {})
+    if isinstance(instruction_set, dict):
+        payload_extra["instruction_set"] = _runner_instruction_set_payload(instruction_set)
+    payload = {
+        **payload_extra,
+        "row": row,
+        "prompt": prompt,
+        "prompt_version_id": prompt_version_id,
+        "runner_version_id": runner_version_id,
+        "run_id": run_id,
+    }
+    if manifest.get("kind") == "remote":
+        require_remote_runner_bridge()
+        if not isinstance(row_id, str) or not row_id:
+            raise RuntimeError("remote_runner_row_id_required: an authoritative dataset row ID is required")
+        return _runner_call_result(request_bridge(
+            "POST", max_bytes=MAX_RUNNER_OUTPUT_BYTES, payload={**payload, "row_id": row_id},
+        ))
+
     command = manifest.get("command")
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
         raise RuntimeError(f"Runner manifest at {runner_path / 'manifest.json'} must include command: string[]")
@@ -298,31 +357,10 @@ def run_file_contract_runner(
     with tempfile.TemporaryDirectory(prefix="orizu-gepa-call-") as temp_dir:
         input_path = Path(temp_dir) / "input.json"
         output_path = Path(temp_dir) / "output.json"
-        instruction_set = (extra_payload or {}).get("instruction_set")
         instruction_set_dir = Path(temp_dir) / "instruction-set" if isinstance(instruction_set, dict) else None
         if instruction_set_dir is not None:
             _write_instruction_set_layout(instruction_set_dir, instruction_set)
-        # Extra payload first: the core file-contract keys are authoritative
-        # and never overridable by adapter-supplied companions.
-        prompt = {
-            "body_kind": body_kind,
-            "provider_settings": provider_settings,
-        }
-        # The exec-context response decides whether this key exists. Runners
-        # mirror it; no local shape heuristic may silently remove body bytes.
-        if prompt_body_present:
-            prompt["body"] = prompt_body
-        payload_extra = dict(extra_payload or {})
-        if isinstance(instruction_set, dict):
-            payload_extra["instruction_set"] = _runner_instruction_set_payload(instruction_set)
-        input_path.write_text(json.dumps({
-            **payload_extra,
-            "row": row,
-            "prompt": prompt,
-            "prompt_version_id": prompt_version_id,
-            "runner_version_id": runner_version_id,
-            "run_id": run_id,
-        }, ensure_ascii=False), encoding="utf-8")
+        input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
         try:
             result = subprocess.run(
@@ -348,25 +386,7 @@ def run_file_contract_runner(
                 f"Runner failed with exit code {result.returncode}: {stderr or stdout}"
             )
         data = json.loads(output_path.read_text(encoding="utf-8"))
-        known = {
-            "model_response",
-            "raw_api_response",
-            "token_in",
-            "token_out",
-            "latency_ms",
-            "cost_usd",
-            "error",
-        }
-        return RunnerCallResult(
-            model_response=data.get("model_response"),
-            raw_api_response=data.get("raw_api_response"),
-            token_in=data.get("token_in"),
-            token_out=data.get("token_out"),
-            latency_ms=data.get("latency_ms"),
-            cost_usd=data.get("cost_usd"),
-            error=data.get("error"),
-            extra={key: value for key, value in data.items() if key not in known},
-        )
+        return _runner_call_result(data)
 
 
 def make_candidate_runner(runner_dir: str | Path, run_id: str | None):
@@ -402,6 +422,7 @@ def make_candidate_runner(runner_dir: str | Path, run_id: str | None):
         return run_file_contract_runner(
             runner_dir=runner_dir,
             row=row.row,
+            row_id=row.id,
             prompt_body=prompt_body,
             body_kind=prompt_context.body_kind,
             provider_settings=prompt_context.provider_settings,
@@ -441,6 +462,8 @@ def resolve_scorer_input_contract(
     `candidate_output_field`) > defaults ("gepa", "model_output").
     """
     manifest = read_manifest(runner_dir)
+    if manifest.get("kind") == "remote":
+        raise RuntimeError("remote_scorer_not_supported: scorer runners must be packaged runners")
     # ALI-1158 review: resolve by PRESENCE, not truthiness — an empty-string
     # manifest value must fail the validation below, not silently fall back to
     # the default and recreate the wrong-shape silent-zero class.
