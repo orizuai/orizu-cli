@@ -1,6 +1,6 @@
 {
   "name": "orizu",
-  "skillHash": "sha256:8760788ea85fb6f8f035c8c17f077ae35ad90f8e14be83ce9b6b1c5f65a4e750",
+  "skillHash": "sha256:887c0b802286d9150a708cb5651136c80b4924302e702affbe53cb0ecb0525d1",
   "cliVersion": "0.0.6",
   "pluginVersion": "0.5.1",
   "source": "plugin-bundle",

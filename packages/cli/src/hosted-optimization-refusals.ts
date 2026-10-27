@@ -1,6 +1,22 @@
 import { formatProviderList, providerIds } from './provider-registry.js'
 
 export const HOSTED_OPTIMIZATION_REFUSAL_CONTRACTS = {
+  hosted_optimization_remote_runner_invalid: {
+    status: 400,
+    remediation: 'Use a sealed remote runner with a standard-port DNS HTTPS URL.',
+  },
+  hosted_optimization_remote_runner_unchecked: {
+    status: 400,
+    remediation: 'Run `orizu runners check` for this exact runner version before a hosted launch.',
+  },
+  hosted_optimization_remote_runner_credential_missing: {
+    status: 400,
+    remediation: 'Explicitly upload a credential with `orizu runners set-hosted-secret` for this version and host.',
+  },
+  hosted_optimization_remote_scorer_refused: {
+    status: 400,
+    remediation: 'Use a packaged runner for scoring. Remote runners run candidates only.',
+  },
   hosted_optimization_candidate_runner_not_registered: {
     status: 400,
     remediation: 'Register the candidate runner with `orizu runners push` and use the returned runner version ID.',

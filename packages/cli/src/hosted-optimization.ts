@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isRemoteManifest, readRawRunnerManifest } from './remote-runner-kind.js'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -15,7 +16,13 @@ import { REDACTION_PLACEHOLDER, redactSecrets } from './secret-redaction.js'
 interface HostedOptimizationIo { printErr?: (value: string) => void | Promise<void> }
 interface BootEnvironment { agentTokenUrl: URL; baseUrl: URL; bootSecret: string; coordinatorUrl: URL; runId: string; sessionId: string; reflectionModel: string; providers: ProviderLookup }
 interface MintResponse extends Record<string, unknown> { token: string; runId: string; projectRef: string; jobSpec: Record<string, unknown> }
-interface TokenBroker { url: string; stop(): void; token(): string; secrets(): string[] }
+interface TokenBroker {
+  url: string
+  stop(): void
+  token(): string
+  secrets(): string[]
+  request(path: string, init?: RequestInit): Promise<Response>
+}
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -247,10 +254,10 @@ async function postTerminal(boot: BootEnvironment, body: Record<string, unknown>
     await new Promise(resolve => setTimeout(resolve, Math.min(10_000, 250 * 2 ** attempt)))
   }
 }
-async function mint(boot: BootEnvironment): Promise<{ response: Response; body: unknown }> {
+async function mint(boot: BootEnvironment, signal?: AbortSignal): Promise<{ response: Response; body: unknown }> {
   const response = await fetch(boot.agentTokenUrl, {
     headers: { authorization: `Bearer ${boot.bootSecret}` },
-    signal: AbortSignal.timeout(10_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
   })
   let body: unknown = null
   try { body = await response.json() } catch { /* classified by the caller */ }
@@ -319,9 +326,47 @@ async function startTokenBroker(
   boot: BootEnvironment,
   initial: MintResponse
 ): Promise<TokenBroker> {
+  const { Effect } = await import('effect')
   const nonce = randomUUID(), fingerprint = JSON.stringify(initial.jobSpec)
   let activeToken = initial.token
   const tokens = new Set([initial.token])
+  const shutdown = new AbortController()
+  class RefreshRefused extends Error {
+    constructor(readonly status: number, readonly retryAfter: string | null) { super('token refresh failed') }
+  }
+  let refreshing: Promise<void> | undefined
+  const refresh = (): Promise<void> => {
+    if (!refreshing) {
+      refreshing = Effect.runPromise(Effect.gen(function* () {
+        const fresh = yield* Effect.tryPromise({ try: () => mint(boot, shutdown.signal), catch: () => new Error('token refresh failed') })
+        if (!fresh.response.ok) return yield* Effect.fail(new RefreshRefused(fresh.response.status, fresh.response.headers.get('retry-after')))
+        const parsed = parseMint(fresh.body, boot)
+        if (!parsed || parsed.projectRef !== initial.projectRef || JSON.stringify(parsed.jobSpec) !== fingerprint) return yield* Effect.fail(new Error('token refresh failed'))
+        activeToken = parsed.token
+        tokens.add(parsed.token)
+      })).finally(() => { refreshing = undefined })
+    }
+    return refreshing
+  }
+  const request = (path: string, init: RequestInit = {}): Promise<Response> => Effect.runPromise(Effect.gen(function* () {
+    if (!path.startsWith('/api/cli/remote-runner/')) return yield* Effect.fail(new Error('invalid hosted callback path'))
+    const send = () => Effect.tryPromise({
+      try: () => {
+        const headers = new Headers(init.headers)
+        headers.set('authorization', `Bearer ${activeToken}`)
+        return fetch(new URL(path, boot.baseUrl), { ...init, headers, redirect: 'manual',
+          signal: AbortSignal.any([shutdown.signal, ...(init.signal ? [init.signal] : [])]) })
+      }, catch: () => new Error('hosted callback unavailable'),
+    })
+    const sentWith = activeToken
+    const first = yield* send()
+    if (first.status !== 401) return first
+    yield* Effect.promise(() => first.body?.cancel() ?? Promise.resolve())
+    // Another caller/Python may already have renewed this bearer. Otherwise
+    // this bridge read owns one bounded refresh, even while Python is idle.
+    if (activeToken === sentWith) yield* Effect.tryPromise({ try: refresh, catch: () => new Error('token refresh failed') })
+    return yield* send()
+  }))
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     response.setHeader('content-type', 'application/json')
@@ -330,20 +375,12 @@ async function startTokenBroker(
       return
     }
     try {
-      const fresh = await mint(boot)
-      if (!fresh.response.ok) {
-        const retryAfter = fresh.response.headers.get('retry-after')
-        response.writeHead(fresh.response.status, retryAfter ? { 'retry-after': retryAfter } : {})
-        response.end(JSON.stringify({ error: 'token refresh failed' }))
-        return
-      }
-      const parsed = parseMint(fresh.body, boot)
-      if (!parsed || parsed.projectRef !== initial.projectRef || JSON.stringify(parsed.jobSpec) !== fingerprint) throw new Error()
-      activeToken = parsed.token
-      tokens.add(parsed.token)
-      response.end(JSON.stringify({ token: parsed.token }))
-    } catch {
-      response.writeHead(502).end(JSON.stringify({ error: 'token refresh failed' }))
+      await refresh()
+      response.end(JSON.stringify({ token: activeToken }))
+    } catch (cause) {
+      response.writeHead(cause instanceof RefreshRefused ? cause.status : 502,
+        cause instanceof RefreshRefused && cause.retryAfter ? { 'retry-after': cause.retryAfter } : {})
+        .end(JSON.stringify({ error: 'token refresh failed' }))
     }
   })
   await new Promise<void>((resolve, reject) => {
@@ -358,7 +395,8 @@ async function startTokenBroker(
   return {
     url: `http://127.0.0.1:${address.port}/${nonce}`,
     // Also drop open keep-alive connections, so no refresh succeeds after stop.
-    stop: () => { server.close(); server.closeAllConnections() },
+    stop: () => { shutdown.abort(); server.close(); server.closeAllConnections() },
+    request,
     token: () => activeToken,
     secrets: () => [...tokens],
   }
@@ -470,6 +508,14 @@ export async function hostedOptimizationCommand(io: HostedOptimizationIo): Promi
     const startedBroker = broker
     await inScope(removeOnClose(ledger, 'other', () => startedBroker.stop()))
     const environment = childEnvironment(boot, minted, candidate.runnerDir, scorer.runnerDir, broker.url, resultFile)
+    const rawManifest = readRawRunnerManifest(candidate.runnerDir)
+    if (isRemoteManifest(readRawRunnerManifest(scorer.runnerDir))) throw new Error('Hosted scoring requires a packaged runner')
+    delete environment.ORIZU_REMOTE_RUNNER_BRIDGE_URL
+    if (isRemoteManifest(rawManifest)) {
+      const { configureRemoteGepaRunner } = await import('./remote-runner-gepa.js')
+      await inScope(configureRemoteGepaRunner(rawManifest, String(minted.jobSpec.runnerVersionId), environment,
+        line => bootOutput.append(line), { runId: boot.runId, snapshot: minted.jobSpec.remoteRunner, request: broker.request }))
+    } else if (minted.jobSpec.remoteRunner) throw new Error('Hosted runner does not match the admitted kind')
     const launch = prepareSkilledProposerLaunch(process.env.PYTHON || 'python3', 'official', environment)
     reason = 'hosted_optimization_process_failed'
     stop.launcherOwnsStop()

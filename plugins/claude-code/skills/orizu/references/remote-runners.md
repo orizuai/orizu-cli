@@ -2,9 +2,9 @@
 
 A **remote runner** is your agent behind a URL you host. Orizu calls it instead of starting a **packaged runner**, an uploaded copy of your code. Your endpoint runs the candidate with your own model-provider keys, on your bill. Return outputs, not grades: scoring stays on Orizu's side.
 
-**Works now:** local `runners add-remote`, `runners check`, candidate-loading helpers, pinned profile settings, `runners exec`, and local `optimizations run-gepa` with inline replies. Exec and optimization share parallel-call limits, retries, and one deployed version per run. Bare exec writes results for separate scoring/submission; optimization runs the scorer and saves its run evidence.
+**Supported contract:** registration, checks, candidate-loading helpers, pinned profile settings, execution and optimization with inline or callback replies, including spans passed to scorers. Exec and optimization share parallel-call limits, retries, and one deployed version per run. Bare exec writes results for separate scoring/submission; optimization runs the scorer and saves its run evidence. Hosted optimization additionally requires an explicitly stored secret and a passed check for the exact runner version; see [Hosted optimization](#7-hosted-optimization).
 
-**Coming:** spans, callbacks end to end, and hosted remote-runner execution. See [Coming support](#coming-support); build for inline replies today. Remote scorers remain unsupported.
+Availability depends on your installed CLI and the team's hosted activation. A human owns CLI release and production activation. Remote scorers remain unsupported.
 
 ## 1. Choose a versioned URL and isolate side effects
 
@@ -49,6 +49,7 @@ Here are the core fields of an instruction-set request. Row and component names 
 ```
 
 - `run_id` identifies an execution; optimization preflight can run before the saved optimization run exists. `request_id` identifies one logical call and stays unchanged across its retries; `row_id` identifies the dataset row.
+- `callback_url` is a single-use URL for a later result if you answer 202 instead of returning the result inline. It contains a secret token: keep the whole URL out of logs and replies. See [Callbacks](#callbacks).
 - `row` contains the selected row as stored. Prefer captured row inputs over reading a live account.
 - `candidate.components` is the complete instruction-text map to run, not a patch to Production. Use it in your normal agent path. `runners exec` uses saved candidates; local `run-gepa` also sends unsaved candidate text. The helpers accept either without requiring a candidate ID, saved profile version, or resolved Production pointer.
 - `candidate.model_config` carries `identity`, `settings_version_id`, and `provider_settings` together.
@@ -92,7 +93,7 @@ The endpoint MUST apply the supplied Model Config settings to its real model cal
 
 The helper copies candidate values per load and makes the model config immutable. Candidate provenance is `{ kind: 'candidate' }`, not a saved-version ID or digest. It cannot pass synced-version `verifyIntegrity`; do not invent saved provenance for it. Production can continue using `loadInstructions('set/profile@vN')` through the same agent code path.
 
-## 4. Return the output inline
+## 4. Return the result
 
 Return HTTP 200 with a JSON object, for example:
 
@@ -119,9 +120,35 @@ The current validator requires:
 - Optional `error`: a string or `null`.
 - Optional `live_data_inputs`: an array of input **names**, never values, for inputs filled from live data instead of the row. Omit it or use `[]` when none. Exec retains it in the row result. Local optimization also saves the affected row IDs and input names and shows them on the run detail page. Reporting fallback is not permission to use production accounts.
 
-**Maximum reply size: 2 MiB**, including the raw response. Only the listed fields are retained. Unknown fields, including `score`, `judge_score`, `passed`, and spans, are discarded. Orizu adds its own row and registered-version IDs.
+- Optional `spans`: JSON records of the agent's steps; see [Spans](#spans).
+
+**Maximum result size: 10 MiB (10,485,760 bytes)** for every terminal remote result or error reply, including the output, raw response, and spans together. The callback receiver applies the same incoming-body limit; a 202 acknowledgment body is discarded, not treated as a result. This counts received UTF-8 body bytes, not characters. An over-limit inline reply fails the row with its ID and the limit. The callback receiver refuses an over-limit submission with HTTP 413; the CLI still waits for a valid callback until the row deadline. Neither path truncates or scores an over-limit result. Only the listed fields are retained. Unknown fields, including `score`, `judge_score`, and `passed`, are discarded. Orizu adds its own row and registered-version IDs.
 
 The first validated reply sets the deployed version for the whole execution. Local optimization keeps that same version across preflight, seed evaluation, and all later candidates. A different string fails the run rather than mixing versions. Orizu does not send an expected deployed version for the endpoint to enforce.
+
+### Spans
+
+Spans work with `runners exec` and local or hosted `run-gepa`, through inline replies and callbacks. Return them in an optional top-level `spans` field, separate from `raw_api_response`. Use OpenTelemetry JSON and follow its [AI-call conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) for model and tool calls. For example, include trace/span IDs, parent links, timings, attributes, and events so a judge can grade the agent's actions, not just its final answer.
+
+Orizu treats `spans` as opaque JSON: it preserves arrays, objects, and nested values without checking an OpenTelemetry schema, renaming fields, or shortening traces. Callback submissions also retain the coordinator's existing safety limits: at most 100 nesting levels and 100,000 object/array openings and separators outside strings. Local cleanup removes the known local remote secret from all fields, including trace keys or values; hosted secret safety follows the [hostname trust boundary](#7-hosted-optimization) below. Keep credentials and unapproved customer data out of traces yourself. Omit `spans` when unavailable; existing scorers need not change.
+
+Where a scorer reads them:
+
+- After `runners exec`, each result line retains `spans` beside `raw_api_response`. A set scorer's input mapping can select `$subject.spans` or a nested object field.
+- In local or hosted `run-gepa`, a packaged scorer using the default `gepa` input contract receives `row.candidate_spans` beside `row.candidate_raw_response`.
+- A packaged scorer using `flat_row` receives `gepa.candidate_spans` beside `gepa.candidate_raw_response`, outside the dataset row to avoid collisions.
+
+Those Python companions are omitted when the candidate did not return spans. Both scorer contracts are described in [Scorer-runner input contracts](prompt-control-plane.md#scorer-runner-input-contracts-flat-row-vs-gepa).
+
+The runner's 10 MiB per-result limit is not a whole-file upload allowance. Server-side `scorers exec --subject-results` currently sends the entire JSONL file in one app request, so large files may hit the app host's request limit before scoring. Large callback results are read through the app and may also hit its response limit. Local `run-gepa` avoids the server-scoring upload; its inline candidate-result path goes directly to the remote runner.
+
+### Callbacks
+
+For a long agent run, answer HTTP 202 and later POST the same result JSON to the supplied `callback_url` with `Content-Type: application/json`. Include `deployed_version`, output or a string row error, and optional raw response, usage, live-data names, and spans just as for an inline reply. A 202 acknowledgment alone cannot complete a row; its body is ignored. An inline HTTP 200 result remains supported.
+
+The first valid callback consumes the URL; later submissions are refused. The receiver also refuses malformed, over-limit, expired, or credential-bearing deployed versions. Keep the single-use URL out of logs, traces and replies, and keep secrets out of the entire result. Orizu waits for the stored result without resubmitting an accepted endpoint request. A callback can arrive before Orizu finishes reading the acknowledgment. Exec and optimization apply their ordinary result checks and deployed-version rule before scoring or saving it. Checks report whether a callback arrived.
+
+Registration, endpoint attempts, and callback waiting share one configured row budget; see [Shared execution limits and retries](#shared-execution-limits-and-retries). Use callbacks for long runs rather than holding the endpoint response open. Stopping the CLI stops waiting; it does not undo customer-side work.
 
 ### Row errors versus refusals
 
@@ -170,9 +197,9 @@ Without `--input`, add/check sends `row: { "text": "Reply OK" }`, `components: {
 
 ### What the check verifies
 
-Checks make one attempt, without retries; the execution retry policy below does not apply to checks. That call reports `reachable`, `secret` (`accepted`, `refused`, or `not_checked`), `result_shape` (`valid`, `invalid`, or `not_checked`), `deployed_version`, `passed`, and a diagnostic `message`. Stages not reached stay unknown or not checked. A successful command also saves a small passed-check receipt for that exact registered runner version, with the deployed version and server time, not the request, output, or secret.
+Checks make one attempt, without retries; the execution retry policy below does not apply to checks. That call reports `reachable`, `secret` (`accepted`, `refused`, or `not_checked`), `result_shape` (`valid`, `invalid`, or `not_checked`), `callback` (`arrived`, `not_used`, `timed_out`, or `not_checked`), `deployed_version`, `passed`, and a diagnostic `message`. Stages not reached stay unknown or not checked. A successful command also saves a small passed-check receipt for that exact registered runner version, with the deployed version and server time, not the request, output, or secret.
 
-A pass means the supplied secret got a successful response with a valid result for **one sample**. It does **not** test rejection of wrong secrets, answer quality, settings application, safe integrations, duplicate handling, version stability across rows, parallel calls, or callbacks. Test wrong-secret rejection yourself. An HTTP 200 string row error still passes: this is a connection and contract check, not proof the agent succeeded.
+A pass means the supplied secret got a successful response with a valid result for **one sample**. It does **not** test rejection of wrong secrets, answer quality, settings application, safe integrations, duplicate handling, version stability across rows, parallel calls, or callback timing and failure cases beyond that sample. Test wrong-secret rejection yourself. An HTTP 200 string row error still passes: this is a connection and contract check, not proof the agent succeeded.
 
 ### Execute a dataset split
 
@@ -216,10 +243,20 @@ Both `runners exec` and local `run-gepa` respect the registered `max_parallel`: 
 
 Only connection failures and HTTP 502/503/504 are retried, **at most twice** (three attempts total), with the **same `request_id` and body**. Other statuses, including 500, 401/403, and 422, are not retried; neither are malformed replies, version mismatches, or timeouts. Your endpoint must reuse earlier work on repeated request IDs as required above.
 
-The per-row timeout covers all attempts and reading the response body: default 120 seconds, configurable from 1 to 300. Waiting for a parallel-call slot does not consume that row's timeout. Checks still make only one attempt. Hosted remote execution remains refused pending ORI-2817, and scorers must remain packaged runners.
+The per-row timeout covers registration, all attempts, reading the result, and callback waiting: default 900 seconds (15 minutes), configurable from 1 to 3600 (one hour). Waiting for a parallel-call slot does not consume that row's timeout. Checks still make only one attempt. Scorers must remain packaged runners.
 
-## Coming support
+## 7. Hosted optimization
 
-- **Spans:** OpenTelemetry spans, JSON records of the agent's steps, reaching scorers; the planned larger reply limit is about 10 MiB. They are not retained today.
-- **Callbacks:** long-running endpoints returning 202 and later posting a result to a callback URL. A callback receiver exists internally, but the CLI does not yet send `callback_url` or wait for callbacks. A 202 acknowledgment alone cannot complete a row. Build inline replies now; the later plan has a 15-minute default and a one-hour maximum, not today's limits.
-- **Hosted execution:** remote runners called from hosted runs, including hosted secret handling and admission checks. Local registration and a passed check do not provide hosted support today.
+After the exact remote runner version passes a check, a human explicitly uploads its service secret:
+
+```bash
+orizu runners set-hosted-secret <runner-version-id> \
+  --host staging.example.com \
+  --secret-env REMOTE_RUNNER_PLANNER_SECRET --project team/project
+```
+
+Name the registered hostname and local secret variable explicitly. The command stores the value in Supabase Vault for **that project, runner version and host**, not for the variable name. Another version or host needs another explicit upload. Registration, checks and launch never upload a local secret automatically.
+
+Add `--hosted` to the official optimization command above. The team must have hosted access, and its usual budget, capacity and provider checks still apply. An unchecked remote runner or missing stored credential is refused before a sandbox starts. Inline and callback replies use the same endpoint contract, including spans; hosted callbacks belong only to that run's agent session.
+
+Hosted URLs require standard-port HTTPS with a normal DNS hostname, not local/private/IP targets. Only the registered hostname is added to that run's existing allowed hosts. The firewall adds Authorization outside the sandbox; the real secret is not delivered to sandbox processes or files. This trusts **every path at that hostname**. The receiver must never reflect Authorization in responses or logs: outbound header injection cannot prevent a receiver returning its own secret. Hosted HTTP refusals show status-only diagnostics rather than exposing response bodies.

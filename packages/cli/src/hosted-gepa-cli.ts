@@ -153,6 +153,23 @@ export async function runHostedGepaOptimization(options: HostedGepaOptions): Pro
     ['ORIZU_DATASET_VERSION_ID', '--dataset-version-id'], ['ORIZU_SPLIT_SET_ID', '--split-set-id'],
   ] as const
   for (const [name, flag] of required) if (!env[name]) throw new Error(`${flag} is required for hosted optimization.`)
+  // Server metadata, not local environment names, determines hosted eligibility.
+  // No remote module/Effect is loaded for packaged runners.
+  for (const [id, isScorer] of [[env.ORIZU_RUNNER_VERSION_ID, false], [env.ORIZU_SCORER_RUNNER_VERSION_ID, true]] as const) {
+    let eligibility: unknown
+    try {
+      const response = await authedFetch(`/api/cli/runner-versions/${encodeURIComponent(id!)}/hosted-credential?project=${encodeURIComponent(options.project)}`)
+      if (response.ok) eligibility = await response.json()
+    } catch { /* value-free refusal */ }
+    if (!eligibility || typeof eligibility !== 'object' || !('kind' in eligibility)) {
+      refuse('hosted_optimization_runner_verification_unavailable'); return
+    }
+    if (eligibility.kind === 'remote') {
+      if (isScorer) { refuse('hosted_optimization_remote_scorer_refused'); return }
+      if (!('has_passed_check' in eligibility) || eligibility.has_passed_check !== true) { refuse('hosted_optimization_remote_runner_unchecked'); return }
+      if (!('has_credential' in eligibility) || eligibility.has_credential !== true) { refuse('hosted_optimization_remote_runner_credential_missing'); return }
+    } else if (eligibility.kind !== 'packaged') { refuse('hosted_optimization_remote_runner_invalid'); return }
+  }
   const providerSettings = JSON.parse(env.ORIZU_REFLECTION_PROVIDER_SETTINGS ?? '{}') as Record<string, unknown>
   const reflectionModel = env.ORIZU_REFLECTION_MODEL ?? 'anthropic/'
   const reflectionProvider = reflectionModel.split('/', 1)[0] || reflectionModel

@@ -382,6 +382,9 @@ class OrizuClient:
         normalized = tuple({"key": item["key"], "status": item["status"]} for item in components)
         return PromotionResult("profile", version_id, None, version_id, normalized)
 
+    def save_hosted_remote_runner_summary(self, run_id: str, summary: dict[str, Any]) -> None:
+        self._request("POST", f"/api/cli/optimization-runs/{urllib.parse.quote(run_id)}/remote-runner-summary", summary)
+
     def update_run(
         self,
         run_id: str,

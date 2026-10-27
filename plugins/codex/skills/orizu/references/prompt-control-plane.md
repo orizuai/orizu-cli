@@ -193,7 +193,7 @@ Exit non-zero only for infrastructure failures. Row-level model or parsing error
 
 ### Remote runner
 
-For a customer-hosted URL rather than a packaged runner, follow [Remote runners](remote-runners.md). It is the endpoint-building contract: request and reply fields, candidate-loading helpers, pinned settings and the requirement to apply them or refuse, secret handling, versioned URLs, isolated integrations, `runners check`, and `runners exec`. It covers local inline execution and optimization, shared parallel limits and retries, one deployed version per run, and saved live-data evidence. Spans, callbacks, and hosted remote-runner support are still coming.
+For a customer-hosted URL rather than a packaged runner, follow [Remote runners](remote-runners.md). It is the endpoint-building contract: request and reply fields, candidate-loading helpers, pinned settings and the requirement to apply them or refuse, secret handling, versioned URLs, isolated integrations, `runners check`, and `runners exec`. It covers inline and callback replies, shared parallel limits and retries, one deployed version per run, saved live-data evidence, and explicit version-and-host-bound credentials for hosted optimization. Spans reach scorers through both result paths; see the reference for input paths and the 10 MiB result limit. Hosted use requires a passed check, a current CLI and team activation; release and production activation remain human-owned.
 
 ### Scorer-runner input contracts (flat-row vs GEPA)
 

@@ -8,8 +8,8 @@ import { REDACTION_PLACEHOLDER, redactSecrets } from './secret-redaction.js'
 import type { RemoteRunnerManifest } from './remote-runner-manifest.js'
 import type { RunnerInstructionSet } from './runner-instruction-set-contract.js'
 
-/** The most a reply body may hold, matching the packaged runner output cap. */
-const RESULT_MAX_BYTES = 2 * 1024 * 1024
+/** Inclusive bound on the entire received reply body, before filtering or cleanup. */
+const RESULT_MAX_BYTES = 10 * 1024 * 1024
 const PREVIEW_CHARS = 300
 
 class RemoteRunnerUnreachable extends Data.TaggedError('RemoteRunnerUnreachable')<{ message: string }> {}
@@ -68,6 +68,8 @@ export interface RemoteRunnerSessionOptions {
   runnerVersionId: string
   environment: NodeJS.ProcessEnv
   announce: (line: string) => void
+  /** Only the trusted hosted entrypoint selects firewall custody. No secret is delivered here. */
+  hosted?: { runId: string; request: (path: string, init?: RequestInit) => Promise<Response> }
 }
 
 const DeployedVersion = Schema.String.check(Schema.isMaxLength(200), Schema.makeFilter(value => value.trim().length > 0 || 'must not be blank'))
@@ -76,6 +78,7 @@ const Count = Schema.optionalKey(Schema.NullOr(Schema.Finite))
 const RemoteResult = Schema.Struct({
   model_response: Schema.optionalKey(Schema.Unknown),
   raw_api_response: Schema.optionalKey(Schema.Unknown),
+  spans: Schema.optionalKey(Schema.Unknown),
   token_in: Count,
   token_out: Count,
   latency_ms: Count,
@@ -87,7 +90,7 @@ const RemoteResult = Schema.Struct({
 const formatIssue = SchemaIssue.makeFormatterStandardSchemaV1()
 
 /** Every form of the secret that can appear in text: as sent, and JSON-escaped. */
-const secretForms = (secret: string) => [...new Set([secret, JSON.stringify(secret).slice(1, -1)])]
+const secretForms = (secret: string) => secret ? [...new Set([secret, JSON.stringify(secret).slice(1, -1)])] : []
 // Cleanup can join secret fragments separated by control characters. Scrub
 // before and after it, and only shorten a preview after the whole text is safe.
 const formsOf = (secret: string | readonly string[]) => typeof secret === 'string' ? secretForms(secret) : secret
@@ -136,12 +139,14 @@ function refusalDetail(text: string): { code?: string; message?: string } {
 interface RowCall {
   manifest: RemoteRunnerManifest
   secret: string
+  firewall?: boolean
   rowId: string
   modelConfigIdentity: string | null
   body: string
   controllers: Set<AbortController>
   redactions: string[]
   callbackPath?: string
+  callbackFetch?: (path: string, init?: RequestInit) => Promise<Response>
   onCallback?: (status: 'arrived' | 'not_used' | 'timed_out') => void
   onResponse?: (response: Response) => void
   onReply?: (parsed?: unknown) => void
@@ -166,7 +171,7 @@ function registerCallback(call: RowCall): Effect.Effect<void, RemoteRunnerCallEr
     const path = `/api/cli/remote-runner/runs/${encodeURIComponent(body.run_id)}/requests/${encodeURIComponent(body.request_id)}`
     const registration = yield* Effect.tryPromise({
       try: async () => {
-        const response = await authedFetch(path, {
+        const response = await (call.callbackFetch ?? authedFetch)(path, {
           method: 'POST', redirect: 'manual', signal: controller.signal,
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ timeout_seconds: call.manifest.timeout_seconds }),
@@ -196,7 +201,7 @@ function waitForCallback(call: RowCall, signal: AbortSignal): Effect.Effect<stri
       const waitForNextRead = Clock.monotonicTimeNanos.pipe(Effect.flatMap(now =>
         Effect.sleep(Math.max(0, 250 - Number(now - readStartedAt) / 1_000_000))))
       const response = yield* Effect.tryPromise({
-        try: () => authedFetch(call.callbackPath!, { signal, redirect: 'manual' }),
+        try: () => (call.callbackFetch ?? authedFetch)(call.callbackPath!, { signal, redirect: 'manual' }),
         catch: () => new RemoteRunnerUnreachable({ message: 'Orizu could not be reached while waiting for the remote runner callback' }),
       }).pipe(Effect.catch(() => Effect.succeed(null)))
       if (!response || [502, 503, 504].includes(response.status)) {
@@ -206,7 +211,9 @@ function waitForCallback(call: RowCall, signal: AbortSignal): Effect.Effect<stri
       }
       if (!response.ok) return yield* new RemoteRunnerBadReply({ message: `Orizu could not read the remote runner callback (status ${response.status})` })
       const state = yield* Effect.tryPromise({
-        try: async () => Schema.decodeUnknownSync(CallbackState)(JSON.parse(await boundedText(response) ?? 'null')),
+        // The Worker already bounds and validates incoming results. Its state
+        // envelope and rewritten JSON must not reapply the external byte cap.
+        try: async () => Schema.decodeUnknownSync(CallbackState)(await response.json()),
         catch: () => new RemoteRunnerBadReply({ message: 'Orizu returned an invalid remote runner callback result' }),
       })
       if (state.status === 'completed') {
@@ -241,7 +248,7 @@ function remoteRunnerAttempt(call: RowCall): Effect.Effect<typeof RemoteResult.T
         method: 'POST',
         // Never follow a redirect: the secret goes only to the registered URL.
         redirect: 'manual',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${call.secret}` },
+        headers: { 'content-type': 'application/json', ...(call.firewall ? {} : { authorization: `Bearer ${call.secret}` }) },
         body: call.body,
         signal: controller.signal,
       }),
@@ -252,19 +259,26 @@ function remoteRunnerAttempt(call: RowCall): Effect.Effect<typeof RemoteResult.T
       },
     })
     call.onResponse?.(response)
-    if ([502, 503, 504].includes(response.status)) {
-      return yield* new RemoteRunnerTemporaryStatus({ message: clean(`${where} failed row ${rowId} (status ${response.status})`, secret) })
-    }
-    // Classify before reading diagnostics: a broken 500 body must not become a retryable connection error.
+    const isTemporaryStatus = [502, 503, 504].includes(response.status)
+    // A 202 acknowledgment is discarded, not parsed as a terminal result.
     if (response.status === 202) yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve())
     else call.onCallback?.('not_used')
+    // Bound terminal replies before classification; broken ordinary error bodies are not retryable.
     const text = response.status === 202 ? yield* waitForCallback(call, controller.signal) : yield* Effect.tryPromise({
       try: () => boundedText(response),
-      catch: () => response.ok
+      catch: () => response.ok || isTemporaryStatus
         ? new RemoteRunnerUnreachable({ message: clean(`${where} closed the connection before answering row ${rowId}`, secret) })
         : new RemoteRunnerBadReply({ message: clean(`${where} failed row ${rowId} (status ${response.status}); its diagnostic body was interrupted`, secret) }),
     })
-    if (text === null) return yield* new RemoteRunnerTooLarge({ message: clean(`${where} answered row ${rowId} with more than ${RESULT_MAX_BYTES} bytes`, secret) })
+    if (text === null) return yield* new RemoteRunnerTooLarge({ message: clean(`${where} answered row ${rowId} with more than ${RESULT_MAX_BYTES} bytes (10 MiB limit)`, secret) })
+    if (isTemporaryStatus) {
+      return yield* new RemoteRunnerTemporaryStatus({ message: clean(`${where} failed row ${rowId} (status ${response.status})`, secret) })
+    }
+    // Keep the shared byte limit, but never reflect hosted HTTP error bodies:
+    // only the firewall knows the credential that a receiver could echo.
+    if (call.firewall && !response.ok) {
+      return yield* new RemoteRunnerBadReply({ message: `Remote runner refused row ${rowId} (status ${response.status}); hosted calls do not follow redirects or expose error bodies` })
+    }
     if (response.status >= 300 && response.status < 400) {
       return yield* new RemoteRunnerBadReply({ message: clean(`${where} answered row ${rowId} with a redirect (status ${response.status}); redirects are not followed, so the secret only goes to the registered URL. Register the final URL instead.`, secret) })
     }
@@ -375,12 +389,14 @@ export function checkRemoteRunner(manifest: RemoteRunnerManifest, input?: Remote
 export function createRemoteRunnerSession(options: RemoteRunnerSessionOptions): Effect.Effect<RemoteRunnerSession, RemoteRunnerSetupError, Scope.Scope> {
   return Effect.gen(function* () {
     const { manifest } = options
-    const secret = options.environment[manifest.secret_env]
-    if (!secret) {
+    const secret = options.hosted ? '' : options.environment[manifest.secret_env] ?? ''
+    if (!options.hosted && !secret) {
       return yield* new RemoteRunnerRefusedBeforeCall({ message: `${manifest.secret_env} is not set. The remote runner at ${manifest.url} needs its secret in that environment variable; Orizu never stores the secret.` })
     }
     const forms = secretForms(secret)
-    options.announce(clean(`Calling remote runner at ${new URL(manifest.url).host} with the secret from ${manifest.secret_env}`, secret))
+    options.announce(options.hosted
+      ? `Calling remote runner at ${new URL(manifest.url).host} with firewall-held custody; the receiver must not reflect Authorization`
+      : clean(`Calling remote runner at ${new URL(manifest.url).host} with the secret from ${manifest.secret_env}`, secret))
     const semaphore = yield* Semaphore.make(manifest.max_parallel)
     const controllers = new Set<AbortController>()
     const shutdown = new AbortController()
@@ -425,7 +441,7 @@ export function createRemoteRunnerSession(options: RemoteRunnerSessionOptions): 
           ...input,
           prompt,
           row_id: input.row_id,
-          run_id: input.run_id ?? fallbackRunId,
+          run_id: options.hosted?.runId ?? input.run_id ?? fallbackRunId,
           request_id: randomUUID(),
           candidate: {
             components: instructionSet ? instructionSet.components : { prompt: input.prompt.body ?? '' },
@@ -436,7 +452,7 @@ export function createRemoteRunnerSession(options: RemoteRunnerSessionOptions): 
             },
           },
         })
-        const call: RowCall = { manifest, secret, redactions: forms, rowId: input.row_id, modelConfigIdentity, body, controllers }
+        const call: RowCall = { manifest, secret, firewall: Boolean(options.hosted), callbackFetch: options.hosted?.request, redactions: forms, rowId: input.row_id, modelConfigIdentity, body, controllers }
         const attempt = (retriesLeft: number): Effect.Effect<typeof RemoteResult.Type, RemoteRunnerCallError> => Effect.suspend(() => {
           if (shutdown.signal.aborted) return Effect.interrupt
           return remoteRunnerAttempt(call).pipe(Effect.catch(error => {

@@ -892,6 +892,10 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
             client.update_run(run_id, status="succeeded", best_score=best_score, best_candidate_id=best_id,
                               result_prompt_version_id=promoted_prompt_version_id,
                               **({"metadata": remote_metadata} if is_remote else {}))
+        if hosted_run_id is not None and is_remote:
+            # The coordinator owns the hosted terminal transition. Save only
+            # evidence here, before handing it the terminal result file.
+            client.save_hosted_remote_runner_summary(run_id, remote_metadata["remote_runner"])
         summary = _result_summary(
             run_id=run_id, best_id=best_id, best_score=best_score, seed_score=seed_score,
             promoted_prompt_version_id=promoted_prompt_version_id, budget=budget,
@@ -925,6 +929,12 @@ def _run_from_environment(started: dict[str, Any]) -> dict[str, Any]:
                 try:
                     local_logger.update_metadata(remote_metadata)
                 except Exception:
+                    pass
+            if hosted_run_id is not None:
+                try:
+                    client.save_hosted_remote_runner_summary(run_id, remote_metadata["remote_runner"])
+                except Exception:
+                    # Evidence loss must not replace the original runner error.
                     pass
         if sink.failed:
             sink.retry_failed_status()

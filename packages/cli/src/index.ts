@@ -1899,6 +1899,11 @@ export async function main(rawArgs = process.argv.slice(2)) {
     await runnerOptimizerCommand(cliArgs, { json: hasJsonFlag(), print: printLine, resolveProjectSlug }); return
   }
 
+  if (command === 'runners' && subcommand === 'set-hosted-secret') {
+    const { runSetHostedRunnerSecret } = await import('./remote-runner-hosted-cli.js')
+    await runSetHostedRunnerSecret({ hasFlag: flag => cliArgs.includes(flag), getArg, getPositionalArg, resolveProjectSlug, hasJsonFlag, printJson, printLine }); return
+  }
+
   if (command === 'runners' && (subcommand === 'add-remote' || subcommand === 'check')) {
     const { runRemoteRunnerAdd, runRemoteRunnerCheck } = await import('./remote-runner-cli.js')
     await (subcommand === 'check' ? runRemoteRunnerCheck : runRemoteRunnerAdd)({ hasFlag: flag => cliArgs.includes(flag), getArg, getPositionalArg, resolveProjectSlug, hasJsonFlag, printJson, printLine }); return

@@ -6,7 +6,7 @@ import { Data, Effect, Result, Schema, type Scope } from 'effect'
 
 import type { RemoteRunnerCallInput, RemoteRunnerSession } from './remote-runner-call.js'
 
-/** Local packaged inputs may contain large rows; this is separate from the 2 MiB remote reply cap. */
+/** Local packaged inputs may contain large rows; this is separate from the 10 MiB remote reply cap. */
 const INPUT_MAX_BYTES = 16 * 1024 * 1024
 
 export class RemoteRunnerBridgeError extends Data.TaggedError('RemoteRunnerBridgeError')<{ message: string }> {}

@@ -346,8 +346,10 @@ def run_file_contract_runner(
         require_remote_runner_bridge()
         if not isinstance(row_id, str) or not row_id:
             raise RuntimeError("remote_runner_row_id_required: an authoritative dataset row ID is required")
+        # The CLI bounds external bytes before parsing/cleanup; its trusted
+        # loopback JSON can grow when accepted numbers or strings are rewritten.
         return _runner_call_result(request_bridge(
-            "POST", max_bytes=MAX_RUNNER_OUTPUT_BYTES, payload={**payload, "row_id": row_id},
+            "POST", max_bytes=None, payload={**payload, "row_id": row_id},
         ))
 
     command = manifest.get("command")
@@ -555,6 +557,7 @@ def make_scorer_runner(
                 "gepa": {
                     "candidate_id": candidate_id,
                     "candidate_raw_response": candidate_result.raw_api_response,
+                    **({"candidate_spans": candidate_result.extra["spans"]} if "spans" in candidate_result.extra else {}),
                     "candidate_error": candidate_result.error,
                 },
             }
@@ -564,6 +567,7 @@ def make_scorer_runner(
                 "candidate_id": candidate_id,
                 "candidate_output": candidate_result.model_response,
                 "candidate_raw_response": candidate_result.raw_api_response,
+                **({"candidate_spans": candidate_result.extra["spans"]} if "spans" in candidate_result.extra else {}),
                 "candidate_error": candidate_result.error,
             }
         if scorer_context.instruction_set:

@@ -34,12 +34,12 @@ def _bridge_address() -> tuple[str, int, str]:
 
 
 def require_remote_runner_bridge() -> None:
-    if os.environ.get("ORIZU_HOSTED_OPTIMIZATION_RUN_ID", "").strip():
+    if os.environ.get("ORIZU_HOSTED_OPTIMIZATION_RUN_ID", "").strip() and not os.environ.get(BRIDGE_URL_ENV):
         raise RuntimeError("remote_runner_not_supported_for_hosted_optimization: hosted remote runners are not supported yet (ORI-2817)")
     _bridge_address()
 
 
-def request_bridge(method: str, *, max_bytes: int, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def request_bridge(method: str, *, max_bytes: int | None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     host, port, path = _bridge_address()
     # No environment proxy, redirects, retries, or competing call deadline.
     # The CLI bounds the queued remote call and closes sockets on shutdown.
@@ -50,8 +50,8 @@ def request_bridge(method: str, *, max_bytes: int, payload: dict[str, Any] | Non
             connection.request(method, path, body=body,
                                headers={"Content-Type": "application/json"} if body is not None else {})
             response = connection.getresponse()
-            encoded = response.read(max_bytes + 1)
-            if len(encoded) > max_bytes:
+            encoded = response.read() if max_bytes is None else response.read(max_bytes + 1)
+            if max_bytes is not None and len(encoded) > max_bytes:
                 raise ValueError("oversized bridge response")
             data = json.loads(encoded)
             if not isinstance(data, dict):
